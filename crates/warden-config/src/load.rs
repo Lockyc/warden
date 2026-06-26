@@ -85,7 +85,8 @@ colour = "#0f8a8a"
     #[test]
     fn config_path_respects_env() {
         std::env::set_var("WARDEN_CONFIG", "/custom/warden.toml");
-        assert_eq!(config_path(), PathBuf::from("/custom/warden.toml"));
+        let result = config_path();
         std::env::remove_var("WARDEN_CONFIG");
+        assert_eq!(result, PathBuf::from("/custom/warden.toml"));
     }
 }
