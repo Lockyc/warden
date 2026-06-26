@@ -1,12 +1,55 @@
 mod ffi;
+mod geometry;
 mod surface;
 
 #[cfg(target_os = "macos")]
 use surface::{ghostty::GhosttySurface, PixelRect, TabSpec, TerminalSurface};
 
+use geometry::WebRect;
+use std::sync::Mutex;
+
+/// Newtype wrapper that holds the single GhosttySurface in Tauri-managed state.
+/// `GhosttySurface: Send` (see ghostty.rs module docs). `Mutex<T>: Sync` when
+/// `T: Send`, so `SurfaceHolder: Send + Sync` without additional unsafe impls.
+/// All access must be on the main/UI thread (Tauri commands run there).
+struct SurfaceHolder(Mutex<Option<GhosttySurface>>);
+
+#[derive(serde::Deserialize)]
+struct RectArg {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[tauri::command]
+fn set_hole_rect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<SurfaceHolder>,
+    rect: RectArg,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        // inner_size is in physical pixels; divide by scale to get points.
+        let size = window.inner_size().unwrap();
+        let view_h = size.height as f64 / scale;
+        let view_rect = geometry::web_rect_to_view(
+            WebRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            view_h,
+            scale,
+        );
+        if let Some(s) = state.0.lock().unwrap().as_ref() {
+            s.set_frame(view_rect);
+        }
+    }
+    // On non-macOS builds the parameters are unused; suppress the warnings.
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, state, rect);
+}
+
 fn main() {
     // libghostty must be initialised once before any app/surface is created.
-    // (Checkpoint 0 smoke test; non-zero return is logged but non-fatal here.)
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;
@@ -25,6 +68,7 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![set_hole_rect])
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             {
@@ -39,14 +83,13 @@ fn main() {
                     dir: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
                     cmd: std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()),
                 };
-                // Full-window rect (Task 4 will replace this with the reported hole rect).
+                // Full-window rect; `set_hole_rect` IPC updates this on every resize.
                 let rect = PixelRect { x: 0.0, y: 0.0, width: 900.0, height: 600.0 };
 
                 let s = GhosttySurface::new(ns_window, rect, &spec).expect("surface");
                 s.show();
                 s.focus();
-                // Keep it alive for the session (main-thread access only; see module docs).
-                _app.manage(std::sync::Mutex::new(Some(s)));
+                _app.manage(SurfaceHolder(Mutex::new(Some(s))));
             }
             Ok(())
         })

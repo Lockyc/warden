@@ -1,7 +1,21 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8" /><title>warden</title></head>
-  <body style="margin:0;background:#101418;color:#cdd6e0;font-family:system-ui">
-    <p style="padding:1rem">warden spike — shell up</p>
+  <head><meta charset="utf-8" /><title>warden</title>
+    <style>
+      html,body { margin:0; height:100%; background:transparent; }
+      #terminal-hole { position:absolute; inset:0; background:transparent; }
+    </style>
+  </head>
+  <body>
+    <div id="terminal-hole"></div>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      function report() {
+        const r = document.getElementById('terminal-hole').getBoundingClientRect();
+        invoke('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
+      }
+      window.addEventListener('resize', report);
+      window.addEventListener('load', report);
+    </script>
   </body>
 </html>

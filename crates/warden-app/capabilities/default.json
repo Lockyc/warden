@@ -1,1 +1,1 @@
-{ "identifier": "default", "windows": ["main"], "permissions": [] }
+{ "identifier": "default", "windows": ["main"], "permissions": ["core:default"] }

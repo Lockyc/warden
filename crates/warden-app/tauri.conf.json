@@ -7,13 +7,14 @@
     "frontendDist": "ui"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
         "title": "warden",
         "width": 900,
         "height": 600,
-        "transparent": false
+        "transparent": true
       }
     ],
     "security": { "csp": null }
