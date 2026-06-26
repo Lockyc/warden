@@ -3,17 +3,29 @@ mod geometry;
 mod surface;
 
 #[cfg(target_os = "macos")]
-use surface::{ghostty::GhosttySurface, PixelRect, TabSpec, TerminalSurface};
+mod registry;
+
+#[cfg(target_os = "macos")]
+use registry::Registry;
+
+#[cfg(target_os = "macos")]
+use surface::{PixelRect, TabSpec};
 
 use geometry::WebRect;
 use std::sync::Mutex;
 
-/// Newtype wrapper that holds the single GhosttySurface in Tauri-managed state.
-/// `GhosttySurface: Send` (see ghostty.rs module docs). `Mutex<T>: Sync` when
-/// `T: Send`, so `SurfaceHolder: Send + Sync` without additional unsafe impls.
-/// All access must be on the main/UI thread (Tauri commands run there).
+/// Holds the surface registry in Tauri-managed state.
+/// `Registry` contains `GhosttySurface: Send` values behind a `Mutex`; all
+/// access must be on the main/UI thread (Tauri commands run there).
 #[cfg(target_os = "macos")]
-struct SurfaceHolder(Mutex<Option<GhosttySurface>>);
+struct AppState(Mutex<Registry>);
+
+#[derive(serde::Serialize, Clone)]
+struct TabSpecDto {
+    id: String,
+    title: String,
+    colour: String,
+}
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -23,11 +35,64 @@ struct RectArg {
     height: f64,
 }
 
+/// Hardcoded tab specs for the spike. Task 6 reads these from a config Profile.
+#[cfg(target_os = "macos")]
+fn specs() -> Vec<TabSpec> {
+    let home = std::env::var("HOME").unwrap_or("/".into());
+    vec![
+        TabSpec {
+            id: "t0".into(),
+            title: "home".into(),
+            dir: home.into(),
+            cmd: "fish".into(),
+        },
+        TabSpec {
+            id: "t1".into(),
+            title: "tmp".into(),
+            dir: "/tmp".into(),
+            cmd: "bash".into(),
+        },
+        TabSpec {
+            id: "t2".into(),
+            title: "root".into(),
+            dir: "/".into(),
+            cmd: "bash".into(),
+        },
+    ]
+}
+
+/// Return tab descriptors so the web chrome can build the tab bar.
+/// Banner colour is hardcoded for the spike (Plan 2 sources it from Profile.colour).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn init_tabs() -> Vec<TabSpecDto> {
+    specs()
+        .into_iter()
+        .map(|s| TabSpecDto { id: s.id, title: s.title, colour: "#0f8a8a".into() })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn init_tabs() -> Vec<TabSpecDto> {
+    vec![]
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn activate_tab(state: tauri::State<AppState>, id: String) {
+    state.0.lock().unwrap().activate(&id);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn activate_tab(_id: String) {}
+
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn set_hole_rect(
     window: tauri::WebviewWindow,
-    state: tauri::State<SurfaceHolder>,
+    state: tauri::State<AppState>,
     rect: RectArg,
 ) {
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -39,9 +104,7 @@ fn set_hole_rect(
         view_h,
         scale,
     );
-    if let Some(s) = state.0.lock().unwrap().as_ref() {
-        s.set_frame(view_rect);
-    }
+    state.0.lock().unwrap().set_active_frame(view_rect);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -68,7 +131,7 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![set_hole_rect])
+        .invoke_handler(tauri::generate_handler![set_hole_rect, init_tabs, activate_tab])
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             {
@@ -77,19 +140,16 @@ fn main() {
                 let win = _app.get_webview_window("main").expect("main window");
                 let ns_window = win.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 
-                let spec = TabSpec {
-                    id: "t0".into(),
-                    title: "shell".into(),
-                    dir: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
-                    cmd: std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()),
-                };
-                // Full-window rect; `set_hole_rect` IPC updates this on every resize.
+                let tab_specs = specs();
+                // Initial rect; set_hole_rect IPC updates it to the actual hole after chrome lays out.
                 let rect = PixelRect { x: 0.0, y: 0.0, width: 900.0, height: 600.0 };
 
-                let s = GhosttySurface::new(ns_window, rect, &spec).expect("surface");
-                s.show();
-                s.focus();
-                _app.manage(SurfaceHolder(Mutex::new(Some(s))));
+                let mut registry = Registry::new();
+                // Task 5: create only the first tab's surface. Task 6 creates all 3.
+                registry.create(ns_window, rect, &tab_specs[0]);
+                registry.activate("t0");
+
+                _app.manage(AppState(Mutex::new(registry)));
             }
             Ok(())
         })

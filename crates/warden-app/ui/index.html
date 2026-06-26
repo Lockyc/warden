@@ -2,20 +2,52 @@
 <html>
   <head><meta charset="utf-8" /><title>warden</title>
     <style>
-      html,body { margin:0; height:100%; background:transparent; }
-      #terminal-hole { position:absolute; inset:0; background:transparent; }
+      html,body { margin:0; height:100%; background:transparent; font-family:system-ui; color:#eef; }
+      #app { display:flex; flex-direction:column; height:100%; }
+      #banner { height:8px; flex:none; }
+      #tabs { display:flex; gap:.25rem; padding:.25rem; flex:none; background:#0008; }
+      .tab { padding:.2rem .6rem; border-radius:4px; cursor:pointer; background:#0006; }
+      .tab.active { background:#fff3; }
+      #terminal-hole { flex:1; background:transparent; }
     </style>
   </head>
   <body>
-    <div id="terminal-hole"></div>
+    <div id="app">
+      <div id="banner"></div>
+      <div id="tabs"></div>
+      <div id="terminal-hole"></div>
+    </div>
     <script>
       const { invoke } = window.__TAURI__.core;
-      function report() {
+      let active = null;
+      function reportRect() {
         const r = document.getElementById('terminal-hole').getBoundingClientRect();
         invoke('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
       }
-      window.addEventListener('resize', report);
-      window.addEventListener('load', report);
+      async function init() {
+        const tabs = await invoke('init_tabs');
+        document.getElementById('banner').style.background = tabs[0]?.colour ?? '#0f8a8a';
+        const bar = document.getElementById('tabs');
+        tabs.forEach((t, i) => {
+          const el = document.createElement('div');
+          el.className = 'tab'; el.textContent = t.title; el.dataset.id = t.id;
+          el.onclick = () => select(t.id);
+          bar.appendChild(el);
+          if (i === 0) active = t.id;
+        });
+        paint();
+        reportRect();
+      }
+      function paint() {
+        document.querySelectorAll('.tab').forEach(e =>
+          e.classList.toggle('active', e.dataset.id === active));
+      }
+      async function select(id) {
+        active = id; paint(); reportRect();
+        await invoke('activate_tab', { id });
+      }
+      window.addEventListener('resize', reportRect);
+      window.addEventListener('load', init);
     </script>
   </body>
 </html>
