@@ -22,6 +22,9 @@ impl Colour {
         let rest = s
             .strip_prefix('#')
             .ok_or_else(|| ColourError::NoHash(s.to_string()))?;
+        if !rest.is_ascii() {
+            return Err(ColourError::BadDigit(s.to_string()));
+        }
         let expand = |h: &str| u8::from_str_radix(h, 16);
         match rest.len() {
             3 => {
@@ -82,5 +85,15 @@ mod tests {
     #[test]
     fn rejects_non_hex() {
         assert!(matches!(Colour::parse("#gggggg"), Err(ColourError::BadDigit(_))));
+    }
+
+    #[test]
+    fn rejects_non_ascii_without_panic() {
+        assert!(matches!(Colour::parse("#中中"), Err(ColourError::BadDigit(_))));
+    }
+
+    #[test]
+    fn parses_three_digit_uppercase() {
+        assert_eq!(Colour::parse("#0A0").unwrap(), Colour { r: 0, g: 170, b: 0 });
     }
 }
