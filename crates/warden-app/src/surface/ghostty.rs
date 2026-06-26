@@ -370,6 +370,8 @@ impl TerminalSurface for GhosttySurface {
         // &WardenHostView coerces to &NSResponder via the NSView deref chain.
         let responder: &NSResponder = &self.host_view;
         self.window.makeFirstResponder(Some(responder));
+        // Track which surface is focused so keyDown: forwards to the active tab.
+        SURFACE.store(self.surface, Ordering::Release);
         unsafe {
             ffi::ghostty_surface_set_focus(self.surface, true);
             ffi::ghostty_app_set_focus(shared_app(), true);
@@ -378,7 +380,14 @@ impl TerminalSurface for GhosttySurface {
 
     fn close(self) {
         unsafe {
-            SURFACE.store(ptr::null_mut(), Ordering::Release);
+            // Only null the global if it still points at this surface —
+            // closing a non-active surface must not blank the active one.
+            let _ = SURFACE.compare_exchange(
+                self.surface,
+                ptr::null_mut(),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            );
             ffi::ghostty_surface_free(self.surface);
             self.host_view.removeFromSuperview();
         }
