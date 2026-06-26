@@ -7,6 +7,22 @@ pub struct Watcher {
 }
 
 impl Watcher {
+    /// Watch a config file for changes and invoke a callback on filesystem events.
+    ///
+    /// # Preconditions
+    ///
+    /// The parent directory of `path` must already exist. The `notify` crate's `watch()` returns
+    /// an error if the directory is absent, so callers must ensure the config directory exists
+    /// before constructing a `Watcher`. The watcher does not create or retry the directory.
+    ///
+    /// # Known Limitations
+    ///
+    /// The watcher invokes the callback for every filesystem event matching the config file name,
+    /// with **no debounce or coalescing**. Editors that write in place (rather than atomic
+    /// temp-file + rename) can therefore produce a transient `load()` parse error (a partial
+    /// read mid-write) and/or multiple callbacks per save. Debouncing and coalescing are
+    /// intentionally left to the consumer (deferred to Plan 2), which owns the reload UX.
+    /// Atomic-save editors (e.g., vim, VSCode) are unaffected.
     pub fn new(
         path: PathBuf,
         on_change: impl Fn(Result<Loaded, LoadError>) + Send + 'static,

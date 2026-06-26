@@ -25,6 +25,9 @@ impl Colour {
         if !rest.is_ascii() {
             return Err(ColourError::BadDigit(s.to_string()));
         }
+        if !rest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ColourError::BadDigit(s.to_string()));
+        }
         let expand = |h: &str| u8::from_str_radix(h, 16);
         match rest.len() {
             3 => {
@@ -95,5 +98,11 @@ mod tests {
     #[test]
     fn parses_three_digit_uppercase() {
         assert_eq!(Colour::parse("#0A0").unwrap(), Colour { r: 0, g: 170, b: 0 });
+    }
+
+    #[test]
+    fn rejects_plus_prefixed_hex() {
+        assert!(matches!(Colour::parse("#+a0000"), Err(ColourError::BadDigit(_))));
+        assert!(matches!(Colour::parse("#0000 0"), Err(ColourError::BadDigit(_))));
     }
 }

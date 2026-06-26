@@ -11,11 +11,3 @@ pub mod watch;
 pub use load::{load, config_path, Loaded, LoadError};
 pub use model::{Config, Profile, Tab, Warning};
 pub use reconcile::{reconcile, Reconciliation, ProfileUpdate};
-
-#[cfg(test)]
-mod smoke {
-    #[test]
-    fn crate_builds() {
-        assert_eq!(2 + 2, 4);
-    }
-}
