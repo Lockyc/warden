@@ -259,10 +259,11 @@ pub struct GhosttySurface {
 unsafe impl Send for GhosttySurface {}
 
 impl GhosttySurface {
-    /// `content_view` is the NSWindow contentView pointer (from `ns_window()` ->
-    /// `-[NSWindow contentView]`). The host view is inserted above the WKWebView.
+    /// `ns_window` is the raw `NSWindow *` pointer returned by Tauri's
+    /// `WebviewWindow::ns_window()`. The `contentView` is derived here, keeping
+    /// all objc2/AppKit calls inside this module (the seam constraint).
     pub fn new(
-        content_view: *mut c_void,
+        ns_window: *mut c_void,
         rect: PixelRect,
         spec: &TabSpec,
     ) -> Result<Self, SurfaceError> {
@@ -275,7 +276,13 @@ impl GhosttySurface {
             .expect("GhosttySurface::new must be called on the main thread");
 
         unsafe {
-            let content_view: &NSView = &*(content_view as *const NSView);
+            let window_ref: &NSWindow = &*(ns_window as *const NSWindow);
+            let content_view = window_ref
+                .contentView()
+                .ok_or(SurfaceError::SurfaceCreateFailed)?;
+            // Re-derive as Retained<NSWindow> via the view's back-reference so the
+            // struct field gets a proper retain count (same as before, just sourced
+            // from the raw pointer rather than a pre-derived content_view).
             let window = content_view
                 .window()
                 .ok_or(SurfaceError::SurfaceCreateFailed)?;

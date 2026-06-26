@@ -32,8 +32,6 @@ fn main() {
 
                 let win = _app.get_webview_window("main").expect("main window");
                 let ns_window = win.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
-                let content_view = unsafe { content_view_of(ns_window) };
-                assert!(!content_view.is_null(), "window has no contentView");
 
                 let spec = TabSpec {
                     id: "t0".into(),
@@ -44,7 +42,7 @@ fn main() {
                 // Full-window rect (Task 4 will replace this with the reported hole rect).
                 let rect = PixelRect { x: 0.0, y: 0.0, width: 900.0, height: 600.0 };
 
-                let s = GhosttySurface::new(content_view, rect, &spec).expect("surface");
+                let s = GhosttySurface::new(ns_window, rect, &spec).expect("surface");
                 s.show();
                 s.focus();
                 // Keep it alive for the session (main-thread access only; see module docs).
@@ -54,18 +52,4 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running warden");
-}
-
-/// Returns `-[NSWindow contentView]` as a raw pointer. The view is owned by the
-/// window, so the returned pointer stays valid for the window's lifetime.
-#[cfg(target_os = "macos")]
-unsafe fn content_view_of(ns_window: *mut std::os::raw::c_void) -> *mut std::os::raw::c_void {
-    use objc2::rc::Retained;
-    use objc2_app_kit::NSWindow;
-
-    let window: &NSWindow = &*(ns_window as *const NSWindow);
-    match window.contentView() {
-        Some(view) => Retained::as_ptr(&view) as *mut std::os::raw::c_void,
-        None => std::ptr::null_mut(),
-    }
 }
