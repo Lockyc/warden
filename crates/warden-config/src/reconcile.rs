@@ -21,6 +21,17 @@ fn find<'a>(profiles: &'a [Profile], name: &str) -> Option<&'a Profile> {
     profiles.iter().find(|p| p.name == name)
 }
 
+/// Diff two configs and return the set of operations needed to bring a running
+/// session from `old` to `new`.
+///
+/// Detects: profiles opened/closed (matched by `name`), profile colour changes,
+/// and tabs added/removed (matched by `Tab::key`, which is the resolved title).
+///
+/// **Does NOT detect in-place edits to a kept tab whose title is unchanged.**
+/// If a tab's `dir`, `cmd`, or `keep_alive` changes but its title stays the
+/// same, no update operation is emitted — the tab appears identical to the
+/// reconciler. Consumers (e.g. Plan 2 hot-reload) must close and reopen a tab
+/// to pick up such field-level edits.
 pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
     let mut open = Vec::new();
     let mut close = Vec::new();

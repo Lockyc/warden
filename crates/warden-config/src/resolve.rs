@@ -35,7 +35,7 @@ fn expand_tilde(s: &str) -> PathBuf {
 fn basename(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
 
 pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
@@ -243,6 +243,24 @@ colour = "teal"
         )
         .unwrap_err();
         assert!(matches!(err, ResolveError::BadColour { .. }));
+    }
+
+    #[test]
+    fn root_dir_without_title_gets_nonempty_title() {
+        let (cfg, _warns) = resolve_str(
+            r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  dir = "/"
+"##,
+        )
+        .unwrap();
+        let tab = &cfg.profiles[0].tabs[0];
+        assert_eq!(tab.title, "/");
+        assert_eq!(tab.key, "/");
+        assert!(!tab.title.is_empty());
     }
 
     #[test]
