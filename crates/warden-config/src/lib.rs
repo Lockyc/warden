@@ -6,6 +6,7 @@ pub mod model;
 pub mod resolve;
 pub mod reconcile;
 pub mod load;
+pub mod watch;
 
 pub use load::{load, config_path, Loaded, LoadError};
 pub use model::{Config, Profile, Tab, Warning};
