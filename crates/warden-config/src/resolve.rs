@@ -244,4 +244,22 @@ colour = "teal"
         .unwrap_err();
         assert!(matches!(err, ResolveError::BadColour { .. }));
     }
+
+    #[test]
+    fn tilde_in_dir_expands_to_home() {
+        let (cfg, _warns) = resolve_str(
+            r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  dir = "~/some/deep/path"
+"##,
+        )
+        .unwrap();
+        let home = dirs::home_dir().unwrap();
+        let tab = &cfg.profiles[0].tabs[0];
+        assert_eq!(tab.dir, home.join("some/deep/path"));
+        assert_eq!(tab.title, "path"); // basename of the expanded dir
+    }
 }
