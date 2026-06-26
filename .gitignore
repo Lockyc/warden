@@ -1,2 +1,5 @@
 /target
 docs/superpowers/
+
+# Tauri generated
+crates/warden-app/gen/

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "warden",
+  "version": "0.1.0",
+  "identifier": "au.lsjc.warden.spike",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "warden",
+        "width": 900,
+        "height": 600,
+        "transparent": false
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false }
+}
