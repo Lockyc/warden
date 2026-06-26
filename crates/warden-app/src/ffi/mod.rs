@@ -48,6 +48,11 @@ pub enum ghostty_input_action_e {
 // --- ghostty_input_mods_e (bit flags — kept as c_int to allow ORed values) ---
 pub type ghostty_input_mods_e = c_int;
 pub const GHOSTTY_MODS_NONE: ghostty_input_mods_e = 0;
+pub const GHOSTTY_MODS_SHIFT: ghostty_input_mods_e = 1 << 0;
+pub const GHOSTTY_MODS_CTRL: ghostty_input_mods_e = 1 << 1;
+pub const GHOSTTY_MODS_ALT: ghostty_input_mods_e = 1 << 2;
+pub const GHOSTTY_MODS_SUPER: ghostty_input_mods_e = 1 << 3;
+pub const GHOSTTY_MODS_CAPS: ghostty_input_mods_e = 1 << 4;
 
 // --- Platform handle struct (carries NSView* on macOS) ---
 // Transcribed from: typedef struct { void* nsview; } ghostty_platform_macos_s;
@@ -139,24 +144,132 @@ pub struct ghostty_input_key_s {
     pub composing: bool,
 }
 
-// --- ghostty_runtime_config_s (opaque pointer target; Task 3 will flesh this out) ---
-// Full struct is complex (carries multiple callback fn ptrs referencing action/clipboard types).
-// Only used as *const in ghostty_app_new — a ZST opaque placeholder is sufficient here.
+// --- Clipboard enums/structs (referenced by runtime callbacks) ---
+// typedef enum { GHOSTTY_CLIPBOARD_STANDARD, GHOSTTY_CLIPBOARD_SELECTION } ghostty_clipboard_e;
+#[repr(C)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ghostty_clipboard_e {
+    GHOSTTY_CLIPBOARD_STANDARD = 0,
+    GHOSTTY_CLIPBOARD_SELECTION = 1,
+}
+
+// typedef enum { PASTE, OSC_52_READ, OSC_52_WRITE } ghostty_clipboard_request_e;
+#[repr(C)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ghostty_clipboard_request_e {
+    GHOSTTY_CLIPBOARD_REQUEST_PASTE = 0,
+    GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ = 1,
+    GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE = 2,
+}
+
+// typedef struct { const char* mime; const char* data; } ghostty_clipboard_content_s;
+#[repr(C)]
+pub struct ghostty_clipboard_content_s {
+    pub mime: *const c_char,
+    pub data: *const c_char,
+}
+
+// --- ghostty_target_s (passed BY VALUE to action_cb; 16 bytes, verified via clang) ---
+// typedef union { ghostty_surface_t surface; } ghostty_target_u;
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union ghostty_target_u {
+    pub surface: ghostty_surface_t,
+}
+// typedef struct { ghostty_target_tag_e tag; ghostty_target_u target; } ghostty_target_s;
+// tag is a C enum (4 bytes); kept as u32 so the 16-byte layout matches exactly.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_target_s {
+    pub tag: u32,
+    pub target: ghostty_target_u,
+}
+
+// --- ghostty_action_s (passed BY VALUE to action_cb; 32 bytes total, verified via clang) ---
+// The real `action` member is a large tagged union (24 bytes, many variants). Because the
+// whole struct is 32 bytes (>16), the AArch64 / SysV-x86_64 C ABI passes it INDIRECTLY (by
+// hidden pointer), so the exact union contents are irrelevant to a callback that never reads
+// them — only the total size/alignment must match. We model the union as an opaque,
+// correctly-aligned 24-byte blob. Our action_cb is a no-op that ignores it.
+#[repr(C, align(8))]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_u {
+    _bytes: [u8; 24],
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_s {
+    pub tag: u32,
+    pub action: ghostty_action_u,
+}
+
+// --- Runtime callback function-pointer types (vendored header lines 988-1005) ---
+// typedef void (*ghostty_runtime_wakeup_cb)(void*);
+pub type ghostty_runtime_wakeup_cb = Option<unsafe extern "C" fn(*mut c_void)>;
+// typedef bool (*ghostty_runtime_action_cb)(ghostty_app_t, ghostty_target_s, ghostty_action_s);
+pub type ghostty_runtime_action_cb =
+    Option<unsafe extern "C" fn(ghostty_app_t, ghostty_target_s, ghostty_action_s) -> bool>;
+// typedef bool (*ghostty_runtime_read_clipboard_cb)(void*, ghostty_clipboard_e, void*);
+pub type ghostty_runtime_read_clipboard_cb =
+    Option<unsafe extern "C" fn(*mut c_void, ghostty_clipboard_e, *mut c_void) -> bool>;
+// typedef void (*ghostty_runtime_confirm_read_clipboard_cb)(void*, const char*, void*, ghostty_clipboard_request_e);
+pub type ghostty_runtime_confirm_read_clipboard_cb =
+    Option<unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void, ghostty_clipboard_request_e)>;
+// typedef void (*ghostty_runtime_write_clipboard_cb)(void*, ghostty_clipboard_e, const ghostty_clipboard_content_s*, size_t, bool);
+pub type ghostty_runtime_write_clipboard_cb = Option<
+    unsafe extern "C" fn(*mut c_void, ghostty_clipboard_e, *const ghostty_clipboard_content_s, usize, bool),
+>;
+// typedef void (*ghostty_runtime_close_surface_cb)(void*, bool);
+pub type ghostty_runtime_close_surface_cb = Option<unsafe extern "C" fn(*mut c_void, bool)>;
+
+// --- ghostty_runtime_config_s (vendored header lines 1007-1016; 64 bytes, verified via clang) ---
 #[repr(C)]
 pub struct ghostty_runtime_config_s {
-    _opaque: [u8; 0],
+    pub userdata: *mut c_void,
+    pub supports_selection_clipboard: bool,
+    pub wakeup_cb: ghostty_runtime_wakeup_cb,
+    pub action_cb: ghostty_runtime_action_cb,
+    pub read_clipboard_cb: ghostty_runtime_read_clipboard_cb,
+    pub confirm_read_clipboard_cb: ghostty_runtime_confirm_read_clipboard_cb,
+    pub write_clipboard_cb: ghostty_runtime_write_clipboard_cb,
+    pub close_surface_cb: ghostty_runtime_close_surface_cb,
 }
+
+// --- Header-drift guards: assert struct sizes match the vendored C header exactly.
+// These are compile-time and break the build immediately if a future header bump shifts layout.
+const _: () = assert!(std::mem::size_of::<ghostty_surface_config_s>() == 120);
+const _: () = assert!(std::mem::size_of::<ghostty_runtime_config_s>() == 64);
+const _: () = assert!(std::mem::size_of::<ghostty_target_s>() == 16);
+const _: () = assert!(std::mem::size_of::<ghostty_action_s>() == 32);
 
 // --- Published C API (minimal: init/app, surface new/free, set_size, set_content_scale, key, focus) ---
 extern "C" {
     // int ghostty_init(uintptr_t, char**);
     pub fn ghostty_init(argc: usize, argv: *mut *mut c_char) -> c_int;
 
+    // ghostty_config_t ghostty_config_new();
+    pub fn ghostty_config_new() -> ghostty_config_t;
+    // void ghostty_config_load_default_files(ghostty_config_t);
+    pub fn ghostty_config_load_default_files(config: ghostty_config_t);
+    // void ghostty_config_finalize(ghostty_config_t);
+    pub fn ghostty_config_finalize(config: ghostty_config_t);
+    // void ghostty_config_free(ghostty_config_t);
+    pub fn ghostty_config_free(config: ghostty_config_t);
+
     // ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*, ghostty_config_t);
     pub fn ghostty_app_new(
         runtime_config: *const ghostty_runtime_config_s,
         config: ghostty_config_t,
     ) -> ghostty_app_t;
+
+    // void ghostty_app_free(ghostty_app_t);
+    pub fn ghostty_app_free(app: ghostty_app_t);
+
+    // void ghostty_app_tick(ghostty_app_t);
+    pub fn ghostty_app_tick(app: ghostty_app_t);
+
+    // void ghostty_app_set_focus(ghostty_app_t, bool);
+    pub fn ghostty_app_set_focus(app: ghostty_app_t, focused: bool);
 
     // ghostty_surface_config_s ghostty_surface_config_new();
     pub fn ghostty_surface_config_new() -> ghostty_surface_config_s;
