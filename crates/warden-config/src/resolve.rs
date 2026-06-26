@@ -141,12 +141,12 @@ name = "b"
 colour = "#000000"
   [[profile.tab]]
   dir = "/tmp/y"
-  cmd = "amux"
+  cmd = "tmux"
 "##,
         )
         .unwrap();
         assert_eq!(cfg.profiles[0].tabs[0].cmd, "zsh");
-        assert_eq!(cfg.profiles[1].tabs[0].cmd, "amux");
+        assert_eq!(cfg.profiles[1].tabs[0].cmd, "tmux");
 
         let (cfg2, _) = resolve_str(
             r##"

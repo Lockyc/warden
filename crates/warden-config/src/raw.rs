@@ -42,7 +42,7 @@ colour = "#0f8a8a"
 
   [[profile.tab]]
   dir = "~/Developer/locus"
-  cmd = "amux"
+  cmd = "tmux"
   keep_alive = true
 
   [[profile.tab]]
@@ -59,7 +59,7 @@ colour = "#0f8a8a"
         assert_eq!(p.name, "work");
         assert_eq!(p.colour, "#0f8a8a");
         assert_eq!(p.tabs.len(), 2);
-        assert_eq!(p.tabs[0].cmd.as_deref(), Some("amux"));
+        assert_eq!(p.tabs[0].cmd.as_deref(), Some("tmux"));
         assert!(p.tabs[0].keep_alive);
         assert_eq!(p.tabs[1].title.as_deref(), Some("ops"));
         assert!(!p.tabs[1].keep_alive); // serde default
