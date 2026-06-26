@@ -54,7 +54,7 @@ cargo run -p warden-config --bin warden -- validate path/to/config.toml
 ## Layout
 
 - `crates/warden-config/` — the config crate (library + `warden` CLI).
-- `assets/` — icon master (`icon.svg`), app-icon tile (`icon-app.svg`), rendered PNGs, and the macOS `warden.icns`.
+- `assets/` — icon masters (`icon.svg`, `icon-app.svg`), rendered PNGs, the macOS `warden.icns`, and `build-icons.sh` to regenerate the rasters from the SVGs.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 
 ## License
