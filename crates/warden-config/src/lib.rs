@@ -2,6 +2,8 @@
 
 pub mod raw;
 pub mod colour;
+pub mod model;
+pub mod resolve;
 
 #[cfg(test)]
 mod smoke {
