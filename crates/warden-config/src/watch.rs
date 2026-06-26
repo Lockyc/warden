@@ -20,11 +20,12 @@ impl Watcher {
         let want_name = path.file_name().map(|n| n.to_owned());
         let mut inner = notify::recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(event) = res {
-                // Only react to data-modify events (not initial creates) and match by
-                // file name rather than full path for canonicalization-robustness.
-                if event.kind.is_modify()
-                    && event.paths.iter().any(|p| p.file_name() == want_name.as_deref())
-                {
+                // Match by file name rather than full path for canonicalization-robustness:
+                // macOS FSEvents reports canonical /private/var/... paths while callers may
+                // hold /var/... symlink paths, so exact-path equality fails. Fire on any
+                // event for the target file — atomic-save editors (e.g. vim, VSCode) may
+                // rename a temp file over the target, which surfaces as Create, not Modify.
+                if event.paths.iter().any(|p| p.file_name() == want_name.as_deref()) {
                     on_change(load(&target));
                 }
             }
@@ -64,7 +65,19 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         write(&path, "[[profile]]\nname=\"b\"\ncolour=\"#000000\"\n");
 
-        let got = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let got = loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok(v) => {
+                    if v.as_deref().ok() == Some("b") {
+                        break v;
+                    }
+                    // stale early event (e.g. the initial create) — keep draining
+                }
+                Err(_) => panic!("timed out waiting for callback with profile 'b'"),
+            }
+        };
         assert_eq!(got.unwrap(), "b");
     }
 }
