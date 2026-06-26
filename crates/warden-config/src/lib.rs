@@ -1,6 +1,7 @@
 //! warden-config: parse, validate, resolve, and reconcile warden's TOML config.
 
 pub mod raw;
+pub mod colour;
 
 #[cfg(test)]
 mod smoke {
