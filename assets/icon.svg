@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="warden">
+  <title>warden</title>
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17b0a8"/>
+      <stop offset="0.55" stop-color="#0f8a8a"/>
+      <stop offset="1" stop-color="#0a6f74"/>
+    </linearGradient>
+  </defs>
+
+  <!-- shield: warden, the keeper -->
+  <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
+        fill="url(#shield)"/>
+
+  <!-- nested prompt chevrons: a prompt, layered deep -->
+  <g fill="none" stroke="#eafaf7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 186 126 L 270 230 L 186 334" stroke-width="18" opacity="0.26"/>
+    <path d="M 208 152 L 270 230 L 208 308" stroke-width="20" opacity="0.52"/>
+    <path d="M 230 178 L 270 230 L 230 282" stroke-width="26" opacity="1"/>
+  </g>
+  <!-- prompt cursor -->
+  <rect x="296" y="210" width="34" height="40" rx="7" fill="#eafaf7"/>
+</svg>

@@ -1,6 +1,18 @@
+<div align="center">
+
+<img src="assets/icon-1024.png" alt="warden" width="128" height="128">
+
 # warden
 
-A **config-driven terminal multiplexer** — think "curator for terminals." One TOML file defines **profiles** (windows) and the **project tabs** inside them; warden materializes itself from that config and hot-reloads on save. Each profile window has a colour + name banner; each tab is a real terminal opened in a project directory running an optional command. warden is generic — the command a tab runs is up to you (a shell, a TUI, an agent launcher, anything).
+**A curator for your terminals** — profiles, projects, and (mostly) muxers all the way down.
+
+</div>
+
+warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **profiles** (windows) and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each profile window carries a colour + name banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
+
+warden is **generic and content-agnostic** — it knows nothing about any specific tool, so the command a tab runs is whatever you want: a shell, a TUI, a build watcher, an agent launcher. It stands on its own.
+
+It's also built for a flow: I pair each tab with [**agentmux**](https://github.com/lockyc/agentmux) (`amux`), a tmux-based agent launcher — so the full stack reads `libghostty → warden → agentmux → tmux`. A multiplexer for a multiplexer for a multiplexer; it's turtles the rest of the way down.
 
 Targets **macOS**. Linux is a possible future direction, not a commitment; the config crate stays platform-neutral to keep that door open. Not Windows.
 
@@ -42,6 +54,7 @@ cargo run -p warden-config --bin warden -- validate path/to/config.toml
 ## Layout
 
 - `crates/warden-config/` — the config crate (library + `warden` CLI).
+- `assets/` — icon master (`icon.svg`), app-icon tile (`icon-app.svg`), rendered PNGs, and the macOS `warden.icns`.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 
 ## License
