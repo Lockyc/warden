@@ -141,8 +141,10 @@ fn main() {
                 let ns_window = win.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 
                 let tab_specs = specs();
-                // Initial rect; set_hole_rect IPC updates it to the actual hole after chrome lays out.
-                let rect = PixelRect { x: 0.0, y: 0.0, width: 900.0, height: 600.0 };
+                // Initial rect: offset by sidebar width (160 px) so the surface never
+                // overlaps the sidebar — even on the first frame before the JS ResizeObserver
+                // IPC arrives to correct the geometry.
+                let rect = PixelRect { x: 160.0, y: 0.0, width: 740.0, height: 600.0 };
 
                 let mut registry = Registry::new();
                 // Task 5: create only the first tab's surface. Task 6 creates all 3.
