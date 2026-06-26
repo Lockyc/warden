@@ -21,6 +21,10 @@ pub enum ResolveError {
         #[source]
         source: ColourError,
     },
+    #[error("profile at index {index} has an empty name")]
+    EmptyProfileName { index: usize },
+    #[error("profile {profile:?} has a tab with an empty explicit title")]
+    EmptyTabTitle { profile: String },
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
@@ -44,7 +48,10 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     let mut profiles = Vec::with_capacity(raw.profiles.len());
     let mut seen_profiles = HashSet::new();
 
-    for rp in raw.profiles {
+    for (index, rp) in raw.profiles.into_iter().enumerate() {
+        if rp.name.trim().is_empty() {
+            return Err(ResolveError::EmptyProfileName { index });
+        }
         if !seen_profiles.insert(rp.name.clone()) {
             return Err(ResolveError::DuplicateProfile(rp.name));
         }
@@ -71,6 +78,11 @@ fn resolve_profile(
             return Err(ResolveError::EmptyDir { profile: rp.name.clone() });
         }
         let dir = expand_tilde(&rt.dir);
+        if let Some(ref t) = rt.title {
+            if t.trim().is_empty() {
+                return Err(ResolveError::EmptyTabTitle { profile: rp.name.clone() });
+            }
+        }
         let title = rt.title.unwrap_or_else(|| basename(&dir));
         if !seen_titles.insert(title.clone()) {
             return Err(ResolveError::DuplicateTab {
@@ -279,5 +291,51 @@ colour = "#0f8a8a"
         let tab = &cfg.profiles[0].tabs[0];
         assert_eq!(tab.dir, home.join("some/deep/path"));
         assert_eq!(tab.title, "path"); // basename of the expanded dir
+    }
+
+    #[test]
+    fn empty_profile_name_is_error() {
+        let err = resolve_str(
+            r##"
+[[profile]]
+name = "  "
+colour = "#000000"
+"##,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::EmptyProfileName { index: 0 }));
+    }
+
+    #[test]
+    fn empty_explicit_tab_title_is_error() {
+        let err = resolve_str(
+            r##"
+[[profile]]
+name = "work"
+colour = "#000000"
+  [[profile.tab]]
+  title = ""
+  dir = "/tmp/a"
+"##,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::EmptyTabTitle { .. }));
+    }
+
+    #[test]
+    fn tilde_in_icon_expands_to_home() {
+        let (cfg, _warns) = resolve_str(
+            r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+icon = "~/some/icon.png"
+  [[profile.tab]]
+  dir = "/tmp/x"
+"##,
+        )
+        .unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(cfg.profiles[0].icon, Some(home.join("some/icon.png")));
     }
 }
