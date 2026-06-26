@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::colour::Colour;
 use crate::model::{Config, Profile, Tab};
 
@@ -8,13 +10,37 @@ pub struct Reconciliation {
     pub update: Vec<ProfileUpdate>,
 }
 
+/// Describes in-place mutations needed for a profile that stays open across a
+/// config reload.
+///
+/// **What IS detected** (any of these triggers an emit):
+/// - `colour`: the window accent colour changed.
+/// - `icon`: the profile icon changed. Outer `Some` = changed; the inner
+///   `Option<PathBuf>` is the new value, which may be `Some(path)` or `None`
+///   to clear the icon.
+/// - `add_tabs` / `remove_tabs`: tabs were added or removed, matched by
+///   `Tab::key` (the resolved title).
+/// - `tab_order`: the order of kept tabs changed; on an emitted update
+///   `tab_order` always carries the full new ordered key list so the consumer
+///   can reorder the live tab strip without killing sessions.
+///
+/// **What is NOT detected:**
+/// - In-place edits to a kept tab whose title is unchanged. Changing a tab's
+///   `dir`, `cmd`, or `keep_alive` while keeping its `title` the same produces
+///   no op — the tab appears identical to the reconciler. The consumer must
+///   close and reopen the tab to pick up such field-level edits.
+///
+/// **Profile renames are destructive.** A rename appears as `close(old) +
+/// open(new)`, killing and recreating that window's PTYs (including
+/// `keep_alive` tabs). There is no concept of a live retitle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileUpdate {
     pub name: String,
     pub colour: Option<Colour>,
+    pub icon: Option<Option<PathBuf>>,
     pub add_tabs: Vec<Tab>,
     pub remove_tabs: Vec<String>,
-    pub retitle_window: bool,
+    pub tab_order: Vec<String>,
 }
 
 fn find<'a>(profiles: &'a [Profile], name: &str) -> Option<&'a Profile> {
@@ -24,14 +50,20 @@ fn find<'a>(profiles: &'a [Profile], name: &str) -> Option<&'a Profile> {
 /// Diff two configs and return the set of operations needed to bring a running
 /// session from `old` to `new`.
 ///
-/// Detects: profiles opened/closed (matched by `name`), profile colour changes,
-/// and tabs added/removed (matched by `Tab::key`, which is the resolved title).
+/// **What IS detected:**
+/// - Profiles opened/closed, matched by `name`.
+/// - For a kept profile: colour change, icon change, tab add/remove (by
+///   `Tab::key` = resolved title), and tab reorder (via `tab_order`).
 ///
-/// **Does NOT detect in-place edits to a kept tab whose title is unchanged.**
-/// If a tab's `dir`, `cmd`, or `keep_alive` changes but its title stays the
-/// same, no update operation is emitted — the tab appears identical to the
-/// reconciler. Consumers (e.g. Plan 2 hot-reload) must close and reopen a tab
-/// to pick up such field-level edits.
+/// **What is NOT detected:**
+/// - In-place edits to a kept tab whose title is unchanged. If a tab's `dir`,
+///   `cmd`, or `keep_alive` changes but its `title` stays the same, no update
+///   is emitted — the tab appears identical to the reconciler. The consumer
+///   must close and reopen the tab to pick up such field-level edits.
+///
+/// **Profile renames are destructive** — a rename appears as `close(old) +
+/// open(new)`, killing and recreating that window's PTYs (including
+/// `keep_alive` tabs).
 pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
     let mut open = Vec::new();
     let mut close = Vec::new();
@@ -49,6 +81,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
             None => open.push(np.clone()),
             Some(op) => {
                 let colour = (op.colour != np.colour).then_some(np.colour);
+                let icon = (op.icon != np.icon).then(|| np.icon.clone());
                 let old_keys: Vec<&str> = op.tabs.iter().map(|t| t.key.as_str()).collect();
                 let new_keys: Vec<&str> = np.tabs.iter().map(|t| t.key.as_str()).collect();
                 let add_tabs: Vec<Tab> = np
@@ -63,13 +96,26 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     .filter(|t| !new_keys.contains(&t.key.as_str()))
                     .map(|t| t.key.clone())
                     .collect();
-                if colour.is_some() || !add_tabs.is_empty() || !remove_tabs.is_empty() {
+                // order_changed: the kept tabs appear in a different sequence
+                let kept_old: Vec<&str> =
+                    old_keys.iter().copied().filter(|k| new_keys.contains(k)).collect();
+                let kept_new: Vec<&str> =
+                    new_keys.iter().copied().filter(|k| old_keys.contains(k)).collect();
+                let order_changed = kept_old != kept_new;
+                let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
+                if colour.is_some()
+                    || icon.is_some()
+                    || !add_tabs.is_empty()
+                    || !remove_tabs.is_empty()
+                    || order_changed
+                {
                     update.push(ProfileUpdate {
                         name: np.name.clone(),
                         colour,
+                        icon,
                         add_tabs,
                         remove_tabs,
-                        retitle_window: false,
+                        tab_order,
                     });
                 }
             }
@@ -146,5 +192,100 @@ colour = "#0f8a8a"
         assert_eq!(u.add_tabs.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), vec!["ops"]);
         assert_eq!(u.remove_tabs, vec!["locus".to_string()]);
         assert_eq!(u.colour, None);
+    }
+
+    #[test]
+    fn reorder_only_emits_update_with_new_order() {
+        let old = cfg(r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  title = "alpha"
+  dir = "/tmp/alpha"
+  [[profile.tab]]
+  title = "beta"
+  dir = "/tmp/beta"
+"##);
+        let new = cfg(r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  title = "beta"
+  dir = "/tmp/beta"
+  [[profile.tab]]
+  title = "alpha"
+  dir = "/tmp/alpha"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1, "expected exactly one ProfileUpdate for a tab reorder");
+        let u = &r.update[0];
+        assert_eq!(u.tab_order, vec!["beta".to_string(), "alpha".to_string()]);
+        assert!(u.add_tabs.is_empty(), "no tabs added");
+        assert!(u.remove_tabs.is_empty(), "no tabs removed");
+        assert_eq!(u.colour, None, "no colour change");
+        assert_eq!(u.icon, None, "no icon change");
+    }
+
+    #[test]
+    fn icon_change_emits_update() {
+        let old = cfg(r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+icon = "/tmp/old.png"
+  [[profile.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##);
+        let new = cfg(r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+icon = "/tmp/new.png"
+  [[profile.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1, "expected a ProfileUpdate for icon change");
+        let u = &r.update[0];
+        assert_eq!(
+            u.icon,
+            Some(Some(PathBuf::from("/tmp/new.png"))),
+            "icon should carry the new value"
+        );
+        assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
+        assert_eq!(u.colour, None);
+    }
+
+    /// Regression test locking the documented limitation: a kept tab whose
+    /// `title` (and therefore `key`) is unchanged but whose `dir` differs is
+    /// invisible to the reconciler. No update is emitted; the consumer must
+    /// close and reopen the tab to pick up such field-level edits.
+    #[test]
+    fn in_place_tab_field_edit_is_not_detected() {
+        let old = cfg(r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##);
+        let new = cfg(r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  title = "locus"
+  dir = "/tmp/locus-new"
+"##);
+        let r = reconcile(&old, &new);
+        assert!(
+            r.update.is_empty(),
+            "in-place tab field edits (dir change with same title) must not emit an update"
+        );
     }
 }
