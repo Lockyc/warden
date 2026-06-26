@@ -1,8 +1,8 @@
 # warden
 
-A **config-driven, cross-platform terminal multiplexer** — think "curator for terminals." One TOML file defines **profiles** (windows) and the **project tabs** inside them; warden materializes itself from that config and hot-reloads on save. Each profile window has a colour + name banner; each tab is a real terminal opened in a project directory running an optional command. warden is generic — the command a tab runs is up to you (a shell, a TUI, an agent launcher, anything).
+A **config-driven terminal multiplexer** — think "curator for terminals." One TOML file defines **profiles** (windows) and the **project tabs** inside them; warden materializes itself from that config and hot-reloads on save. Each profile window has a colour + name banner; each tab is a real terminal opened in a project directory running an optional command. warden is generic — the command a tab runs is up to you (a shell, a TUI, an agent launcher, anything).
 
-Targets macOS (primary) and Linux.
+Targets **macOS**. Linux is a possible future direction, not a commitment; the config crate stays platform-neutral to keep that door open. Not Windows.
 
 ## Status
 

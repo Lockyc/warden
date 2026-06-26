@@ -2,9 +2,9 @@
 
 ## What warden is
 
-warden is a **config-driven, cross-platform terminal multiplexer** — "curator for terminals." A single TOML file is the source of truth: it defines **profiles** (windows) and the **project tabs** inside them. The app materializes itself from that config and **hot-reloads on save**. Each profile window carries a colour + name banner for at-a-glance identity; each tab is a real terminal opened in a working directory running an optional command. warden is **generic and content-agnostic** — it knows nothing about any specific tool; the command a tab runs is arbitrary (a shell, a TUI, an agent launcher, whatever).
+warden is a **config-driven terminal multiplexer** — "curator for terminals." A single TOML file is the source of truth: it defines **profiles** (windows) and the **project tabs** inside them. The app materializes itself from that config and **hot-reloads on save**. Each profile window carries a colour + name banner for at-a-glance identity; each tab is a real terminal opened in a working directory running an optional command. warden is **generic and content-agnostic** — it knows nothing about any specific tool; the command a tab runs is arbitrary (a shell, a TUI, an agent launcher, whatever).
 
-Target platforms: **macOS (primary) and Linux**. Not Windows.
+Target platform: **macOS**. Linux is a *possible future consideration, not a guarantee* — the `warden-config` crate is kept platform-neutral (pure logic, no macOS-only APIs) so that door stays open, but nothing commits to shipping Linux. Not Windows.
 
 ## Current state — read this before assuming anything exists
 
@@ -14,9 +14,9 @@ Only the **config-core layer** is built: the `warden-config` crate (pure logic, 
 
 ## Intended architecture (where it's going)
 
-- **Tauri** (Rust core + web chrome), one app, cross-platform (macOS + Linux).
+- **Tauri** (Rust core + web chrome), one app, macOS-first. Tauri's cross-platform nature keeps a future Linux port viable, but macOS is the only committed target.
 - **Profiles = separate native windows** (macOS `cmd+\`` cycles them), each with its own colour + name banner. **Tabs = projects** within a window, cycled by a secondary keybinding. A single app/dock-icon by design — per-window identity is carried in-app via the banner, not via separate app bundles.
-- **Terminal surface = embedded libghostty** behind a `TerminalSurface` seam — a small per-OS native shim hosts the surface (NSView on macOS, GTK widget on Linux). A non-libghostty fallback impl (e.g. SwiftTerm-class) can sit behind the same seam. libghostty's embedding C API is officially unstable — **pin it** to a known commit.
+- **Terminal surface = embedded libghostty** behind a `TerminalSurface` seam — a small per-OS native shim hosts the surface (NSView on macOS; a GTK widget would host it on Linux if that port ever happens). A non-libghostty fallback impl (e.g. SwiftTerm-class) can sit behind the same seam. libghostty's embedding C API is officially unstable — **pin it** to a known commit.
 - The `warden-config` crate is the foundation the app consumes (window/tab set, hot-reload reconcile, watcher).
 
 ## Workspace layout
