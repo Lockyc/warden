@@ -12,6 +12,7 @@ use std::sync::Mutex;
 /// `GhosttySurface: Send` (see ghostty.rs module docs). `Mutex<T>: Sync` when
 /// `T: Send`, so `SurfaceHolder: Send + Sync` without additional unsafe impls.
 /// All access must be on the main/UI thread (Tauri commands run there).
+#[cfg(target_os = "macos")]
 struct SurfaceHolder(Mutex<Option<GhosttySurface>>);
 
 #[derive(serde::Deserialize)]
@@ -22,31 +23,30 @@ struct RectArg {
     height: f64,
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn set_hole_rect(
     window: tauri::WebviewWindow,
     state: tauri::State<SurfaceHolder>,
     rect: RectArg,
 ) {
-    #[cfg(target_os = "macos")]
-    {
-        let scale = window.scale_factor().unwrap_or(1.0);
-        // inner_size is in physical pixels; divide by scale to get points.
-        let size = window.inner_size().unwrap();
-        let view_h = size.height as f64 / scale;
-        let view_rect = geometry::web_rect_to_view(
-            WebRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-            view_h,
-            scale,
-        );
-        if let Some(s) = state.0.lock().unwrap().as_ref() {
-            s.set_frame(view_rect);
-        }
+    let scale = window.scale_factor().unwrap_or(1.0);
+    // inner_size is in physical pixels; divide by scale to get points.
+    let size = window.inner_size().unwrap_or(tauri::PhysicalSize::new(900, 600));
+    let view_h = size.height as f64 / scale;
+    let view_rect = geometry::web_rect_to_view(
+        WebRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        view_h,
+        scale,
+    );
+    if let Some(s) = state.0.lock().unwrap().as_ref() {
+        s.set_frame(view_rect);
     }
-    // On non-macOS builds the parameters are unused; suppress the warnings.
-    #[cfg(not(target_os = "macos"))]
-    let _ = (window, state, rect);
 }
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn set_hole_rect(_window: tauri::WebviewWindow, _rect: RectArg) {}
 
 fn main() {
     // libghostty must be initialised once before any app/surface is created.

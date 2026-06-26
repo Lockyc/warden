@@ -22,6 +22,15 @@ pub fn web_rect_to_view(web: WebRect, view_height_pts: f64, _scale: f64) -> Pixe
     }
 }
 
+/// Convert a point-coordinate rect to a backing (framebuffer) pixel size at the
+/// given scale factor. The floor of 1.0 ensures the surface is never zero-sized.
+pub fn backing_size(rect: PixelRect, scale: f64) -> (u32, u32) {
+    (
+        (rect.width * scale).max(1.0) as u32,
+        (rect.height * scale).max(1.0) as u32,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,7 +45,7 @@ mod tests {
         );
         assert_eq!(
             got,
-            PixelRect { x: 10.0, y: 600.0 - 20.0 - 40.0, width: 100.0, height: 40.0 }
+            PixelRect { x: 10.0, y: 540.0, width: 100.0, height: 40.0 }
         );
     }
 
@@ -48,5 +57,25 @@ mod tests {
             1.0,
         );
         assert_eq!(got, PixelRect { x: 0.0, y: 0.0, width: 900.0, height: 600.0 });
+    }
+
+    #[test]
+    fn backing_size_scales_up() {
+        // 100×50 pt at 2× DPI → 200×100 px
+        let rect = PixelRect { x: 0.0, y: 0.0, width: 100.0, height: 50.0 };
+        assert_eq!(backing_size(rect, 2.0), (200, 100));
+    }
+
+    #[test]
+    fn backing_size_identity_at_1x() {
+        let rect = PixelRect { x: 0.0, y: 0.0, width: 300.0, height: 150.0 };
+        assert_eq!(backing_size(rect, 1.0), (300, 150));
+    }
+
+    #[test]
+    fn backing_size_zero_rect_floors_to_one() {
+        // Zero-size rect must not produce a zero backing — libghostty rejects it.
+        let rect = PixelRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+        assert_eq!(backing_size(rect, 2.0), (1, 1));
     }
 }

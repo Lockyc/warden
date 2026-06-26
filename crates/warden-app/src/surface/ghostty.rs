@@ -26,6 +26,7 @@
 
 use super::{PixelRect, SurfaceError, TabSpec, TerminalSurface};
 use crate::ffi;
+use crate::geometry;
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
@@ -328,7 +329,7 @@ impl GhosttySurface {
             SURFACE.store(surface, Ordering::Release);
 
             ffi::ghostty_surface_set_content_scale(surface, scale, scale);
-            let (w, h) = backing_size(rect, scale);
+            let (w, h) = geometry::backing_size(rect, scale);
             ffi::ghostty_surface_set_size(surface, w, h);
 
             // Kick an initial tick in case the first wakeup raced app creation.
@@ -343,14 +344,6 @@ impl GhosttySurface {
     }
 }
 
-/// Backing (framebuffer) pixel size for a point rect at `scale`.
-fn backing_size(rect: PixelRect, scale: f64) -> (u32, u32) {
-    (
-        (rect.width * scale).max(1.0) as u32,
-        (rect.height * scale).max(1.0) as u32,
-    )
-}
-
 impl TerminalSurface for GhosttySurface {
     fn set_frame(&self, rect: PixelRect) {
         unsafe {
@@ -360,7 +353,7 @@ impl TerminalSurface for GhosttySurface {
             );
             self.host_view.setFrame(frame);
             let scale = self.window.backingScaleFactor();
-            let (w, h) = backing_size(rect, scale);
+            let (w, h) = geometry::backing_size(rect, scale);
             ffi::ghostty_surface_set_size(self.surface, w, h);
         }
     }
