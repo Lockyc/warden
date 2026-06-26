@@ -13,9 +13,18 @@ impl Watcher {
     ) -> notify::Result<Watcher> {
         let watch_dir = path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         let target = path.clone();
+        // Capture the file name separately so the closure can match by name rather than full path.
+        // macOS FSEvents reports canonical /private/var/... paths while tempfile (and callers) may
+        // hold /var/... symlink paths, so exact-path equality fails. Since we watch a single
+        // NonRecursive directory, matching by file name is sufficient and canonicalization-robust.
+        let want_name = path.file_name().map(|n| n.to_owned());
         let mut inner = notify::recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(event) = res {
-                if event.paths.iter().any(|p| p == &target) {
+                // Only react to data-modify events (not initial creates) and match by
+                // file name rather than full path for canonicalization-robustness.
+                if event.kind.is_modify()
+                    && event.paths.iter().any(|p| p.file_name() == want_name.as_deref())
+                {
                     on_change(load(&target));
                 }
             }
