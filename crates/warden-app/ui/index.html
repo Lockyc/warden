@@ -23,8 +23,9 @@
         background: rgba(15, 138, 138, 0.10);
       }
       #sidebar-accent {
-        height: 3px;
+        height: 6px;   /* top-of-sidebar profile colour strip */
         flex: none;
+        order: -1;     /* always first even if DOM order shifts */
         /* Fallback colour; JS sets to profile colour */
         background: #0f8a8a;
       }

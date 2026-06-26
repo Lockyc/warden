@@ -147,11 +147,24 @@ fn main() {
                 let rect = PixelRect { x: 160.0, y: 0.0, width: 740.0, height: 600.0 };
 
                 let mut registry = Registry::new();
-                // Task 5: create only the first tab's surface. Task 6 creates all 3.
-                registry.create(ns_window, rect, &tab_specs[0]);
+                // Eager creation: spawn all 3 shell surfaces at startup (all hidden).
+                // They share the one libghostty app handle; switching just shows/hides.
+                for spec in &tab_specs {
+                    registry.create(ns_window, rect, spec);
+                }
                 registry.activate("t0");
 
                 _app.manage(AppState(Mutex::new(registry)));
+
+                // Teardown: free every surface and reap its shell when the window is closed.
+                let handle = _app.handle().clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        if let Some(state) = handle.try_state::<AppState>() {
+                            state.0.lock().unwrap().close_all();
+                        }
+                    }
+                });
             }
             Ok(())
         })
