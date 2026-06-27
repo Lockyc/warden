@@ -7,29 +7,15 @@ mod surface;
 compile_error!("warden-app currently targets macOS only (libghostty surface embed). Linux is a later spike.");
 
 #[cfg(target_os = "macos")]
+mod manager;
+
+#[cfg(target_os = "macos")]
 mod registry;
 
 #[cfg(target_os = "macos")]
-use registry::Registry;
-
-#[cfg(target_os = "macos")]
-use surface::{PixelRect, TabSpec};
+use manager::{InitDto, WindowManager};
 
 use geometry::WebRect;
-use std::sync::Mutex;
-
-/// Holds the surface registry in Tauri-managed state.
-/// `Registry` contains `GhosttySurface: Send` values behind a `Mutex`; all
-/// access must be on the main/UI thread (Tauri commands run there).
-#[cfg(target_os = "macos")]
-struct AppState(Mutex<Registry>);
-
-#[derive(serde::Serialize, Clone)]
-struct TabSpecDto {
-    id: String,
-    title: String,
-    colour: String,
-}
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -39,56 +25,33 @@ struct RectArg {
     height: f64,
 }
 
-/// Hardcoded tab specs for the spike. Task 6 reads these from a config Profile.
+/// All live profile windows, behind a `Mutex`. Each `WindowState` holds a
+/// `Registry` with `GhosttySurface: Send` values; all access is on the
+/// main/UI thread (Tauri commands run there). [seam: manager only]
 #[cfg(target_os = "macos")]
-fn specs() -> Vec<TabSpec> {
-    let home = std::env::var("HOME").unwrap_or("/".into());
-    vec![
-        TabSpec {
-            id: "t0".into(),
-            title: "home".into(),
-            dir: home.into(),
-            cmd: "fish".into(),
-        },
-        TabSpec {
-            id: "t1".into(),
-            title: "tmp".into(),
-            dir: "/tmp".into(),
-            cmd: "bash".into(),
-        },
-        TabSpec {
-            id: "t2".into(),
-            title: "root".into(),
-            dir: "/".into(),
-            cmd: "bash".into(),
-        },
-    ]
-}
+struct ManagerState(std::sync::Mutex<WindowManager>);
 
-/// Return tab descriptors so the web chrome can build the tab bar.
-/// Banner colour is hardcoded for the spike (Plan 2 sources it from Profile.colour).
+/// Return the calling window's banner + tab descriptors, resolved by label.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn init_tabs() -> Vec<TabSpecDto> {
-    specs()
-        .into_iter()
-        .map(|s| TabSpecDto { id: s.id, title: s.title, colour: "#0f8a8a".into() })
-        .collect()
+fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) -> Option<InitDto> {
+    state.0.lock().unwrap().init_dto(window.label())
 }
 
+/// Activate tab `id` within the calling window's registry.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn activate_tab(state: tauri::State<AppState>, id: String) {
-    state.0.lock().unwrap().activate(&id);
+fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
+    let mut m = state.0.lock().unwrap();
+    if let Some(ws) = m.windows.get_mut(window.label()) {
+        ws.registry.activate(&id);
+    }
 }
 
+/// Update the calling window's active-surface frame from a web-coordinate rect.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn set_hole_rect(
-    window: tauri::WebviewWindow,
-    state: tauri::State<AppState>,
-    rect: RectArg,
-) {
+fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, rect: RectArg) {
     // Reject non-finite values before they reach NSView or libghostty.
     if !rect.x.is_finite() || !rect.y.is_finite() || !rect.width.is_finite() || !rect.height.is_finite() {
         return;
@@ -101,13 +64,14 @@ fn set_hole_rect(
 
     let scale = window.scale_factor().unwrap_or(1.0);
     // inner_size is in physical pixels; divide by scale to get points.
-    let size = window.inner_size().expect("main window inner_size");
+    let size = window.inner_size().expect("inner_size");
     let view_h = size.height as f64 / scale;
-    let view_rect = geometry::web_rect_to_view(
-        WebRect { x, y, width, height },
-        view_h,
-    );
-    state.0.lock().unwrap().set_active_frame(view_rect);
+    let view_rect = geometry::web_rect_to_view(WebRect { x, y, width, height }, view_h);
+
+    let mut m = state.0.lock().unwrap();
+    if let Some(ws) = m.windows.get_mut(window.label()) {
+        ws.registry.set_active_frame(view_rect);
+    }
 }
 
 fn main() {
@@ -131,39 +95,19 @@ fn main() {
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![set_hole_rect, init_tabs, activate_tab])
-        .setup(|_app| {
+        .setup(|app| {
             #[cfg(target_os = "macos")]
             {
                 use tauri::Manager;
 
-                let win = _app.get_webview_window("main").expect("main window");
-                let ns_window = win.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
-
-                let tab_specs = specs();
-                // Initial rect: offset by sidebar width (160 px) so the surface never
-                // overlaps the sidebar — even on the first frame before the JS ResizeObserver
-                // IPC arrives to correct the geometry.
-                let rect = PixelRect { x: 160.0, y: 0.0, width: 740.0, height: 600.0 };
-
-                let mut registry = Registry::new(ns_window, rect);
-                // Eager creation: spawn all 3 shell surfaces at startup (all hidden).
-                // They share the one libghostty app handle; switching just shows/hides.
-                for spec in &tab_specs {
-                    registry.add(spec, true);
-                }
-                registry.activate("t0");
-
-                _app.manage(AppState(Mutex::new(registry)));
-
-                // Teardown: free every surface and reap its shell when the window is closed.
-                let handle = _app.handle().clone();
-                win.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Destroyed = event {
-                        if let Some(state) = handle.try_state::<AppState>() {
-                            state.0.lock().unwrap().close_all();
-                        }
-                    }
-                });
+                let handle = app.handle().clone();
+                let mut mgr = WindowManager::new();
+                // Load config; Task 8 adds the diagnostic-window fallback. For this
+                // checkpoint, expect a valid config to exist.
+                let loaded = warden_config::load(&warden_config::config_path())
+                    .expect("load config (Task 8 adds graceful failure)");
+                mgr.materialize(&handle, loaded.config);
+                app.manage(ManagerState(std::sync::Mutex::new(mgr)));
             }
             Ok(())
         })

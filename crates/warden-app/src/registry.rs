@@ -30,7 +30,7 @@ pub struct Registry {
 }
 
 // SAFETY: `ns_window` is a raw `NSWindow *` that is only ever read on the main
-// thread (Tauri commands + setup all run there). The Mutex in AppState enforces
+// thread (Tauri commands + setup all run there). The Mutex in ManagerState enforces
 // exclusive access; nothing in Registry sends the pointer across threads.
 unsafe impl Send for Registry {}
 

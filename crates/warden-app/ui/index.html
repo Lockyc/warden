@@ -22,11 +22,17 @@
         /* Fallback bg; JS overrides with profile-colour tint */
         background: rgba(15, 138, 138, 0.10);
       }
-      #sidebar-accent {
-        height: 6px;   /* top-of-sidebar profile colour strip */
+      #banner {
         flex: none;
-        order: -1;     /* always first even if DOM order shifts */
-        /* Fallback colour; JS sets to profile colour */
+        order: -1;          /* always first even if DOM order shifts */
+        padding: 10px 12px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        /* Fallback colour; JS sets to the profile colour */
         background: #0f8a8a;
       }
       #tab-list {
@@ -63,7 +69,7 @@
   <body>
     <div id="app">
       <aside id="sidebar">
-        <div id="sidebar-accent"></div>
+        <div id="banner"></div>
         <div id="tab-list"></div>
       </aside>
       <div id="terminal-hole"></div>
@@ -88,18 +94,25 @@
       }
 
       async function init() {
-        const tabs = await invoke('init_tabs');
-        profileColour = tabs[0]?.colour ?? '#0f8a8a';
+        // { name, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
+        const dto = await invoke('init_tabs');
+        if (!dto) return;
+        profileColour = dto.colour ?? '#0f8a8a';
 
-        // Apply profile colour identity to the sidebar.
-        document.getElementById('sidebar-accent').style.background = profileColour;
+        // Apply profile identity: banner shows the name on the profile colour;
+        // the sidebar gets a faint tint of the same colour.
+        const banner = document.getElementById('banner');
+        banner.textContent = dto.name;
+        banner.style.background = profileColour;
         document.getElementById('sidebar').style.background = hexToRgba(profileColour, 0.10);
 
         const list = document.getElementById('tab-list');
-        tabs.forEach((t, i) => {
+        dto.tabs.forEach((t, i) => {
           const el = document.createElement('div');
           el.className = 'tab';
-          el.textContent = t.title;
+          // textContent (not innerHTML): config titles never reach the HTML parser.
+          el.textContent = t.title + (t.warn ? '  ⚠' : '');
+          if (t.warn) el.title = 'working directory does not exist';
           el.dataset.id = t.id;
           el.onclick = () => select(t.id);
           list.appendChild(el);
