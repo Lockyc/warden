@@ -31,6 +31,12 @@ struct RectArg {
 #[cfg(target_os = "macos")]
 struct ManagerState(std::sync::Mutex<WindowManager>);
 
+/// Holds the config-file watcher for the app's lifetime. The watcher stops
+/// firing the moment it is dropped, so it must live in managed state rather
+/// than as a local in `setup`. [seam: manager only]
+#[cfg(target_os = "macos")]
+struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
+
 /// Return the calling window's banner + tab descriptors, resolved by label.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -108,6 +114,45 @@ fn main() {
                     .expect("load config (Task 8 adds graceful failure)");
                 mgr.materialize(&handle, loaded.config);
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
+
+                // Hot-reload: watch the config file; on each event reload + diff
+                // against last_good + apply the resulting WindowOps to live
+                // windows. The notify callback runs on a background thread, but
+                // every Tauri/AppKit/registry touch is main-thread only — hop via
+                // run_on_main_thread before doing any of it.
+                let cfg_path = warden_config::config_path();
+                // Watcher::new requires the config's parent dir to already exist.
+                if let Some(parent) = cfg_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let wh = app.handle().clone();
+                let watcher = warden_config::Watcher::new(cfg_path, move |res| {
+                    let wh = wh.clone();
+                    let _ = wh.clone().run_on_main_thread(move || {
+                        use tauri::{Emitter, Manager};
+                        match res {
+                            Ok(loaded) => {
+                                let st = wh.state::<ManagerState>();
+                                let mut m = st.0.lock().unwrap();
+                                let recon =
+                                    warden_config::reconcile(&m.last_good, &loaded.config);
+                                m.apply(&wh, &recon);
+                                // Advance the reconcile baseline ONLY on a valid load.
+                                m.last_good = loaded.config.clone();
+                                // Clear any stale error banner (Task 8 renders it).
+                                let _ = wh.emit("warden:error-clear", ());
+                            }
+                            Err(e) => {
+                                // Keep last_good; surface the error (Task 8 renders it).
+                                let _ = wh.emit("warden:error", e.to_string());
+                            }
+                        }
+                    });
+                });
+                // Keep the watcher alive for the app's lifetime.
+                if let Ok(w) = watcher {
+                    app.manage(WatcherState(w));
+                }
             }
             Ok(())
         })

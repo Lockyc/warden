@@ -88,6 +88,7 @@
     </div>
     <script>
       const { invoke } = window.__TAURI__.core;
+      const { listen } = window.__TAURI__.event;
       let profileColour = '#0f8a8a';
       let active = null;
 
@@ -122,10 +123,11 @@
         invoke('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
       }
 
-      async function init() {
-        // { name, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
-        const dto = await invoke('init_tabs');
-        if (!dto) return;
+      /** Render a window snapshot ({ name, colour, tabs:[{id,title,warn}] }) into
+          the chrome. The single render path shared by init() (first paint) and
+          the warden:refresh listener (hot-reload), so the sidebar is rebuilt the
+          same way whether it's the initial DTO or a pushed reconcile snapshot. */
+      function render(dto) {
         profileColour = dto.colour ?? '#0f8a8a';
 
         // Apply profile identity: banner shows the name on the profile colour;
@@ -137,7 +139,8 @@
         document.getElementById('sidebar').style.background = tintOverBase(profileColour, 0.12);
 
         const list = document.getElementById('tab-list');
-        dto.tabs.forEach((t, i) => {
+        list.innerHTML = '';
+        dto.tabs.forEach((t) => {
           const el = document.createElement('div');
           el.className = 'tab';
           // textContent (not innerHTML): config titles never reach the HTML parser.
@@ -146,14 +149,26 @@
           el.dataset.id = t.id;
           el.onclick = () => select(t.id);
           list.appendChild(el);
-          if (i === 0) active = t.id;
         });
+        // Keep the active tab if it survived; otherwise fall back to the first.
+        if (!dto.tabs.find(t => t.id === active)) active = dto.tabs[0]?.id ?? null;
         paint();
         // Explicit report after sidebar is fully styled and tabs rendered.
         // The ResizeObserver below is the primary anti-overlap guard; this is
-        // belt-and-suspenders for the case where RO fires before init() completes.
+        // belt-and-suspenders for the case where RO fires before render completes.
         reportRect();
       }
+
+      async function init() {
+        // { name, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
+        const dto = await invoke('init_tabs');
+        if (!dto) return;
+        render(dto);
+      }
+
+      // Hot-reload: the manager pushes a fresh snapshot to this window after a
+      // reconcile Update (colour/tab add/remove/reorder) so the sidebar rebuilds.
+      listen('warden:refresh', (e) => render(e.payload));
 
       function paint() {
         document.querySelectorAll('.tab').forEach(el => {
