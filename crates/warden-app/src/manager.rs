@@ -15,6 +15,10 @@ const INITIAL_RECT: PixelRect = PixelRect { x: 160.0, y: 0.0, width: 740.0, heig
 
 #[derive(serde::Serialize, Clone)]
 pub struct InitDto {
+    /// The Tauri window label this snapshot describes. The chrome records it on
+    /// init and uses it to ignore `warden:refresh` events addressed to a sibling
+    /// window — a robust per-window guard independent of emit_to's targeting.
+    pub label: String,
     pub name: String,
     pub colour: String,
     pub tabs: Vec<TabDto>,
@@ -105,6 +109,7 @@ impl WindowManager {
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {
         self.windows.get(label).map(|ws| InitDto {
+            label: label.to_string(),
             name: ws.name.clone(),
             colour: ws.colour.clone(),
             tabs: ws.registry.tab_dtos(),
@@ -180,6 +185,7 @@ impl WindowManager {
                         // this profile's DTO. `emit_to(label, …)` scopes it to the
                         // one window. `label` is the Tauri window label.
                         let dto = InitDto {
+                            label: label.clone(),
                             name: ws.name.clone(),
                             colour: ws.colour.clone(),
                             tabs: ws.registry.tab_dtos(),

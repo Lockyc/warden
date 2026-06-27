@@ -1,6 +1,16 @@
 fn main() {
     tauri_build::build();
 
+    // tauri-build does NOT emit rerun-if-changed for frontendDist ("ui"), and the
+    // assets are embedded by `generate_context!` in main.rs at compile time — so a
+    // frontend-only edit (e.g. index.html) would otherwise never re-embed unless a
+    // Rust file also changed. Force a rebuild on any frontend asset change. A
+    // rerun-if-changed on a not-yet-existing path is harmless (diagnostic.html is
+    // Task 8).
+    println!("cargo:rerun-if-changed=ui");
+    println!("cargo:rerun-if-changed=ui/index.html");
+    println!("cargo:rerun-if-changed=ui/diagnostic.html");
+
     #[cfg(target_os = "macos")]
     {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();

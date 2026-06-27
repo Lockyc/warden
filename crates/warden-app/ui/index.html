@@ -91,6 +91,10 @@
       const { listen } = window.__TAURI__.event;
       let profileColour = '#0f8a8a';
       let active = null;
+      // This window's Tauri label, learned from the init DTO. Used to ignore
+      // warden:refresh events addressed to a sibling window — a robust guard
+      // that does not rely on emit_to's per-webview targeting.
+      let myLabel = null;
 
       /** Opaque dark base the sidebar composites the profile tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
@@ -169,15 +173,22 @@
       }
 
       async function init() {
-        // { name, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
+        // { label, name, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
         const dto = await invoke('init_tabs');
         if (!dto) return;
+        myLabel = dto.label;
         render(dto);
       }
 
       // Hot-reload: the manager pushes a fresh snapshot to this window after a
       // reconcile Update (colour/tab add/remove/reorder) so the sidebar rebuilds.
-      listen('warden:refresh', (e) => render(e.payload));
+      // Filter by label: a refresh addressed to a sibling window must be ignored
+      // here, otherwise this window would relabel itself with another profile's
+      // DTO (corrupting its name/colour/tabs and breaking tab clicks).
+      listen('warden:refresh', (e) => {
+        if (e.payload && e.payload.label && myLabel && e.payload.label !== myLabel) return;
+        render(e.payload);
+      });
 
       function paint() {
         document.querySelectorAll('.tab').forEach(el => {
