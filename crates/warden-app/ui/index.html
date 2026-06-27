@@ -22,9 +22,9 @@
         /* Top inset clears the traffic lights, which now overlay the sidebar's
            top-left (full-size content view title bar). The banner + tabs sit below. */
         padding-top: 28px;
-        /* The sidebar is the window's drag region (the terminal hole + tabs opt
-           out below) so the window can be moved by its left chrome. */
-        -webkit-app-region: drag;
+        /* The window drag region is wired via the `data-tauri-drag-region` HTML
+           attribute on #sidebar/#banner/#tab-list (below) — macOS WKWebView
+           ignores Chromium's `-webkit-app-region`, so that CSS isn't used here. */
         /* Opaque dark base (JS overrides with the profile tint composited over
            this same base). MUST stay opaque: the window is transparent so a hole
            can show the native surface — any alpha here leaks the wallpaper. */
@@ -59,8 +59,6 @@
         font-size: 13px;
         user-select: none;
         transition: background 0.1s, color 0.1s;
-        /* Opt out of the sidebar drag region so tab clicks register. */
-        -webkit-app-region: no-drag;
       }
       .tab:hover:not(.active) {
         background: rgba(255, 255, 255, 0.07);
@@ -78,9 +76,13 @@
   </head>
   <body>
     <div id="app">
-      <aside id="sidebar">
-        <div id="banner"></div>
-        <div id="tab-list"></div>
+      <!-- data-tauri-drag-region: Tauri starts a window drag when the mousedown
+           target itself carries this attribute. The non-interactive sidebar
+           chrome drags; .tab elements (created without it) stay clickable; the
+           terminal-hole (native surface) is excluded. -->
+      <aside id="sidebar" data-tauri-drag-region>
+        <div id="banner" data-tauri-drag-region></div>
+        <div id="tab-list" data-tauri-drag-region></div>
       </aside>
       <div id="terminal-hole"></div>
     </div>
