@@ -145,11 +145,11 @@ fn main() {
                 // IPC arrives to correct the geometry.
                 let rect = PixelRect { x: 160.0, y: 0.0, width: 740.0, height: 600.0 };
 
-                let mut registry = Registry::new();
+                let mut registry = Registry::new(ns_window, rect);
                 // Eager creation: spawn all 3 shell surfaces at startup (all hidden).
                 // They share the one libghostty app handle; switching just shows/hides.
                 for spec in &tab_specs {
-                    registry.create(ns_window, rect, spec);
+                    registry.add(spec, true);
                 }
                 registry.activate("t0");
 
