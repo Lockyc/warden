@@ -80,6 +80,13 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     }
 }
 
+/// Message the diagnostic window displays — read by `diagnostic.html` on load.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn diagnostic_message(state: tauri::State<ManagerState>) -> String {
+    state.0.lock().unwrap().diagnostic_msg.clone()
+}
+
 fn main() {
     // libghostty must be initialised once before any app/surface is created.
     #[cfg(target_os = "macos")]
@@ -100,7 +107,12 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![set_hole_rect, init_tabs, activate_tab])
+        .invoke_handler(tauri::generate_handler![
+            set_hole_rect,
+            init_tabs,
+            activate_tab,
+            diagnostic_message
+        ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -108,11 +120,17 @@ fn main() {
 
                 let handle = app.handle().clone();
                 let mut mgr = WindowManager::new();
-                // Load config; Task 8 adds the diagnostic-window fallback. For this
-                // checkpoint, expect a valid config to exist.
-                let loaded = warden_config::load(&warden_config::config_path())
-                    .expect("load config (Task 8 adds graceful failure)");
-                mgr.materialize(&handle, loaded.config);
+                // Load config; on a missing/invalid/empty config, fall back to a
+                // single diagnostic window instead of materializing profiles.
+                // Recovery happens in the watcher: the first valid load while no
+                // profile window is live materializes + closes the diagnostic.
+                match warden_config::load(&warden_config::config_path()) {
+                    Ok(loaded) if !loaded.config.profiles.is_empty() => {
+                        mgr.materialize(&handle, loaded.config);
+                    }
+                    Ok(_) => mgr.show_diagnostic(&handle, "config has no [[profile]] entries"),
+                    Err(e) => mgr.show_diagnostic(&handle, &e.to_string()),
+                }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
 
                 // Hot-reload: watch the config file; on each event reload + diff
@@ -131,19 +149,36 @@ fn main() {
                     let _ = wh.clone().run_on_main_thread(move || {
                         use tauri::{Emitter, Manager};
                         match res {
-                            Ok(loaded) => {
+                            Ok(loaded) if !loaded.config.profiles.is_empty() => {
                                 let st = wh.state::<ManagerState>();
                                 let mut m = st.0.lock().unwrap();
-                                let recon =
-                                    warden_config::reconcile(&m.last_good, &loaded.config);
-                                m.apply(&wh, &recon);
-                                // Advance the reconcile baseline ONLY on a valid load.
-                                m.last_good = loaded.config.clone();
-                                // Clear any stale error banner (Task 8 renders it).
+                                if m.is_empty() {
+                                    // Recovery: nothing live (launched into the
+                                    // diagnostic window). Materialize from scratch
+                                    // and close the diagnostic, rather than
+                                    // reconciling against an empty last_good.
+                                    m.materialize(&wh, loaded.config.clone());
+                                    m.clear_diagnostic(&wh);
+                                } else {
+                                    let recon =
+                                        warden_config::reconcile(&m.last_good, &loaded.config);
+                                    m.apply(&wh, &recon);
+                                    // Advance the reconcile baseline ONLY on a valid load.
+                                    m.last_good = loaded.config.clone();
+                                }
+                                // Clear any stale error banner.
                                 let _ = wh.emit("warden:error-clear", ());
                             }
+                            Ok(_) => {
+                                // Valid TOML but no profiles: keep live windows up,
+                                // surface the error banner rather than tearing down.
+                                let _ = wh.emit(
+                                    "warden:error",
+                                    "config has no [[profile]] entries".to_string(),
+                                );
+                            }
                             Err(e) => {
-                                // Keep last_good; surface the error (Task 8 renders it).
+                                // Keep last_good; surface the parse error in the banner.
                                 let _ = wh.emit("warden:error", e.to_string());
                             }
                         }

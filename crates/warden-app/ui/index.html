@@ -76,6 +76,12 @@
   </head>
   <body>
     <div id="app">
+      <!-- Hot-reload error banner: hidden until a parse/empty-config event lands.
+           Spans the full window width at the very top, above the sidebar/hole row.
+           OPAQUE (#7a1f1f): the window is transparent, so any alpha here would
+           leak the wallpaper. Populated via textContent (never innerHTML) — the
+           error string is config/parser-sourced and never reaches the HTML parser. -->
+      <div id="error" style="display:none; position:absolute; top:0; left:0; right:0; z-index:10; background:#7a1f1f; color:#ffd; padding:.3rem .6rem; font-size:.85rem;"></div>
       <!-- data-tauri-drag-region: Tauri starts a window drag when the mousedown
            target itself carries this attribute. The non-interactive sidebar
            chrome drags; .tab elements (created without it) stay clickable; the
@@ -188,6 +194,18 @@
       listen('warden:refresh', (e) => {
         if (e.payload && e.payload.label && myLabel && e.payload.label !== myLabel) return;
         render(e.payload);
+      });
+
+      // Hot-reload error banner: a parse error (or empty config) on save keeps the
+      // live windows up and shows the reason here; the next valid load clears it.
+      // textContent (not innerHTML) — the error string never reaches the HTML parser.
+      listen('warden:error', (e) => {
+        const el = document.getElementById('error');
+        el.textContent = '⚠ ' + e.payload;
+        el.style.display = 'block';
+      });
+      listen('warden:error-clear', () => {
+        document.getElementById('error').style.display = 'none';
       });
 
       function paint() {

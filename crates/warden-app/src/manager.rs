@@ -13,6 +13,12 @@ use warden_config::{Config, Reconciliation};
 /// overlaps it before the first JS rect report arrives. (Matches the spike.)
 const INITIAL_RECT: PixelRect = PixelRect { x: 160.0, y: 0.0, width: 740.0, height: 600.0 };
 
+/// The single diagnostic window's Tauri label. Deliberately NOT a profile
+/// label and never inserted into `WindowManager::windows`, so it is invisible
+/// to `is_empty()` and carries no `Destroyed`→last-window-quit handler: closing
+/// it alone never exits the app, and it never counts as a "live" profile set.
+const DIAG_LABEL: &str = "warden-diagnostic";
+
 #[derive(serde::Serialize, Clone)]
 pub struct InitDto {
     /// The Tauri window label this snapshot describes. The chrome records it on
@@ -35,6 +41,9 @@ pub struct WindowManager {
     pub windows: HashMap<String, WindowState>, // key = Tauri label
     pub names: HashMap<String, String>,        // profile name -> label
     pub last_good: Config,
+    /// The message shown by the diagnostic window; fetched by its page via the
+    /// `diagnostic_message` command. Empty when no diagnostic is showing.
+    pub diagnostic_msg: String,
 }
 
 impl WindowManager {
@@ -43,6 +52,35 @@ impl WindowManager {
             windows: HashMap::new(),
             names: HashMap::new(),
             last_good: Config { profiles: Vec::new() },
+            diagnostic_msg: String::new(),
+        }
+    }
+
+    /// Open (or update) the single diagnostic window with `message`. Used at
+    /// launch when the config is missing/invalid/empty, and during hot-reload
+    /// recovery this window is closed by `clear_diagnostic`. Idempotent: if the
+    /// window already exists, only the message is refreshed (the page re-fetches
+    /// it on its own load; an already-open window keeps its stale text, which is
+    /// acceptable since the banner path covers live edits).
+    pub fn show_diagnostic(&mut self, app: &AppHandle, message: &str) {
+        self.diagnostic_msg = message.to_string();
+        if app.get_webview_window(DIAG_LABEL).is_none() {
+            let _ = WebviewWindowBuilder::new(
+                app,
+                DIAG_LABEL,
+                WebviewUrl::App("diagnostic.html".into()),
+            )
+            .title("warden")
+            .inner_size(560.0, 320.0)
+            .build();
+        }
+    }
+
+    /// Close the diagnostic window if it is open (on recovery to a valid config).
+    pub fn clear_diagnostic(&mut self, app: &AppHandle) {
+        self.diagnostic_msg = String::new();
+        if let Some(w) = app.get_webview_window(DIAG_LABEL) {
+            let _ = w.close();
         }
     }
 

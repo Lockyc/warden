@@ -8,9 +8,12 @@ Target platform: **macOS**. Linux is a *possible future consideration, not a gua
 
 ## Current state — read this before assuming anything exists
 
-Only the **config-core layer** is built: the `warden-config` crate (pure logic, no GUI). It parses/validates/resolves the TOML, diffs two configs for hot-reload, loads from disk, watches the file, and ships a `warden validate` CLI.
+Two layers are built:
 
-**The GUI does not exist yet** — no Tauri app, no windows, no libghostty terminal surfaces, no banners/tab-strip. Don't assume an app, a window, or a rendered terminal is present. That's future work (see "Intended architecture").
+- **Config-core** — the `warden-config` crate (pure logic, no GUI): parses/validates/resolves the TOML, diffs two configs for hot-reload, loads from disk, watches the file, ships a `warden validate` CLI.
+- **GUI** — the `warden-app` crate: a config-driven, multi-window **macOS-only** Tauri app. It loads the config at launch and materializes **one native window per profile**, each with its colour + name banner; tabs are embedded libghostty terminal surfaces behind the `TerminalSurface` seam, with `keep_alive` tabs spawned lazily. Chrome is curator-style: a transparent window with an Overlay titlebar (terminal reaches the top, traffic lights over the sidebar), an opaque draggable sidebar (banner + tab list). **Hot-reload** is live (watcher + `reconcile` → per-window open/close/refresh; last-window-quit). A missing/invalid/empty config opens a **diagnostic window**; a parse error on a live save shows an **error banner** in the chrome and keeps last-good windows up; a recovered config materializes and closes the diagnostic.
+
+Still deferred (see `docs/FOLLOWUPS.md`): full keybindings (`cmd+\``/tab-cycle) and ad-hoc tabs (`cmd+T`/`cmd+N`); a real **libghostty source build** (the vendored `libghostty.a` is a throwaway prebuilt; the source build is blocked on Zig 0.15.2 vs the macOS 26 SDK); `TerminalSurface` seam hardening (object-safety, `Drop`-based teardown, platform-opaque window handle, `cfg(macos)` gating); FFI repr hardening; libghostty lifecycle behind the seam; a real CSP + IPC hardening; watcher debounce; per-profile window icon; argv passthrough decision.
 
 ## Intended architecture (where it's going)
 
@@ -35,6 +38,8 @@ watch.rs     Watcher — notify-based parent-dir file watcher; fires load() on c
 bin/warden.rs  `warden validate [path]` CLI
 ```
 
+`crates/warden-app` — the macOS Tauri app that consumes the config crate. Key modules: `plan.rs` (config → `WindowSpec`/`TabPlan`, `reconcile` → `WindowOp`), `manager.rs` (`WindowManager`: materialize windows, apply reconciliations, diagnostic window), `registry.rs` (per-window tab registry over surfaces), `surface/` + `ffi/` (the libghostty embed behind the `TerminalSurface` seam — macOS/objc2), `geometry.rs` (web-rect ↔ NSView-rect). `ui/index.html` is the chrome; `ui/diagnostic.html` the config-error page.
+
 ## Config schema (`~/.config/warden/config.toml`; override with `WARDEN_CONFIG`)
 
 ```toml
@@ -56,9 +61,10 @@ Validation: unique profile name, unique tab title within a profile, non-empty na
 
 ## Build / test / run
 
-- `cargo build` / `cargo test` (workspace).
+- `cargo build` / `cargo test` (workspace). `warden-app` is macOS-only (libghostty embed); it fails to compile elsewhere by design.
 - `cargo run -p warden-config --bin warden -- validate [path]` — validates a config and prints the resolved profile/tab tree + warnings (exit 0 ok / 1 load error / 2 usage).
-- No `justfile` yet — add one when the GUI app lands.
+- `cargo run -p warden-app` — launch the GUI (reads `WARDEN_CONFIG` or `~/.config/warden/config.toml`).
+- No `justfile` yet.
 
 ## Conventions & footguns (things that have bitten us / will bite again)
 
@@ -67,6 +73,7 @@ Validation: unique profile name, unique tab title within a profile, non-empty na
 - **Tab identity is the resolved title** (`Tab::key`). `reconcile` diffs profiles by `name` and tabs by this key. In-place edits to a kept tab's `dir`/`cmd`/`keep_alive` (title unchanged) are **not** detected — the consumer reopens the tab to apply them. A profile **rename** is destructive: it appears as close(old)+open(new), killing and recreating that window's terminals (including `keep_alive` ones).
 - **Generic:** keep tool-specific concepts out of the crate. Example command strings in tests stay neutral. The line between crate and public face: the **crate stays neutral**, but the **README/public face deliberately references [agentmux](https://github.com/lockyc/agentmux) (`amux`)** — a tmux-based agent launcher — as the canonical companion, since pairing warden tabs with it is the author's intended flow (the `libghostty → warden → agentmux → tmux` stack). Do not "degenericise" the README by stripping that link, and do not leak agentmux into the crate to match it.
 - **Keep the migration complete:** this is a young codebase; finish changes in-branch, no transitional fallbacks.
+- **Stale frontend embed:** `tauri-build` (2.6.x) emits no `rerun-if-changed` for `frontendDist`, and the `ui/` assets are embedded at compile time via `generate_context!`. So after a *frontend-only* edit (`index.html`/`diagnostic.html`), `cargo run` silently serves the **stale** HTML until some Rust change forces a recompile. `crates/warden-app/build.rs` emits explicit `cargo:rerun-if-changed=ui/...` lines to defeat this — keep them. If you edit the frontend and the change "doesn't take," suspect a stale embed (touch a `.rs` file or `cargo clean -p warden-app`).
 
 ## Deferred work
 
