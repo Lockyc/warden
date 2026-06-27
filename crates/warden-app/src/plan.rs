@@ -2,8 +2,8 @@
 //! Tauri window-label sanitization. No AppKit, no Tauri — fully unit-tested.
 
 use crate::surface::TabSpec;
-use std::collections::HashSet;
-use warden_config::{Config, Profile};
+use std::collections::{HashMap, HashSet};
+use warden_config::{Config, Profile, Reconciliation};
 
 /// A tab to materialize, plus its spawn policy. `keep_alive` drives lazy-vs-eager
 /// spawn in the registry (spec §3); the surface layer itself never sees it.
@@ -101,6 +101,72 @@ pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
         .collect()
 }
 
+/// One operation to bring the live window set in line with a reloaded config.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowOp {
+    Open(WindowSpec),
+    Close(String), // label
+    Update {
+        label: String,
+        colour: Option<String>,    // new "#rrggbb" if changed
+        add_tabs: Vec<TabPlan>,
+        remove_tabs: Vec<String>,  // tab ids (= Tab::key)
+        order: Vec<String>,        // full new tab id order
+    },
+}
+
+/// Map a reconciliation (by profile name) to window ops (by Tauri label).
+/// New profiles get fresh unique labels avoiding `taken` ∪ labels already
+/// assigned earlier in this same call.
+pub fn reconcile_ops(
+    recon: &Reconciliation,
+    name_to_label: &HashMap<String, String>,
+    taken: &HashSet<String>,
+) -> Vec<WindowOp> {
+    let mut ops = Vec::new();
+    let mut assigned: HashSet<String> = taken.clone();
+
+    for profile in &recon.open {
+        let label = unique_label(&profile.name, &assigned);
+        assigned.insert(label.clone());
+        ops.push(WindowOp::Open(profile_to_spec(profile, label)));
+    }
+
+    for name in &recon.close {
+        if let Some(label) = name_to_label.get(name) {
+            ops.push(WindowOp::Close(label.clone()));
+        }
+    }
+
+    for u in &recon.update {
+        let Some(label) = name_to_label.get(&u.name) else {
+            continue;
+        };
+        let add_tabs = u
+            .add_tabs
+            .iter()
+            .map(|t| TabPlan {
+                spec: TabSpec {
+                    id: t.key.clone(),
+                    title: t.title.clone(),
+                    dir: t.dir.clone(),
+                    cmd: t.cmd.clone(),
+                },
+                keep_alive: t.keep_alive,
+            })
+            .collect();
+        ops.push(WindowOp::Update {
+            label: label.clone(),
+            colour: u.colour.map(|c| c.hex()),
+            add_tabs,
+            remove_tabs: u.remove_tabs.clone(),
+            order: u.tab_order.clone(),
+        });
+    }
+
+    ops
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +235,82 @@ colour = "#0f8a8a"
         assert_eq!(w.tabs[0].keep_alive, true);
         assert_eq!(w.tabs[1].spec.id, "ops");
         assert_eq!(w.tabs[1].keep_alive, false);
+    }
+
+    use warden_config::reconcile;
+
+    fn name_label_map(c: &Config) -> HashMap<String, String> {
+        window_specs(c)
+            .into_iter()
+            .map(|w| (w.name, w.label))
+            .collect()
+    }
+    fn taken(c: &Config) -> HashSet<String> {
+        window_specs(c).into_iter().map(|w| w.label).collect()
+    }
+
+    #[test]
+    fn open_profile_becomes_open_op() {
+        let old = cfg("");
+        let new = cfg(
+            r##"
+[[profile]]
+name = "work"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##,
+        );
+        let r = reconcile(&old, &new);
+        let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            WindowOp::Open(spec) => assert_eq!(spec.name, "work"),
+            other => panic!("expected Open, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closed_profile_becomes_close_op_with_label() {
+        let old = cfg(
+            r##"
+[[profile]]
+name = "work zone"
+colour = "#0f8a8a"
+  [[profile.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##,
+        );
+        let new = cfg("");
+        let r = reconcile(&old, &new);
+        let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
+        assert_eq!(ops, vec![WindowOp::Close("work-zone".to_string())]);
+    }
+
+    #[test]
+    fn colour_change_becomes_update_op_with_hex() {
+        let base = r##"
+[[profile]]
+name = "work"
+colour = "{C}"
+  [[profile.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##;
+        let old = cfg(&base.replace("{C}", "#0f8a8a"));
+        let new = cfg(&base.replace("{C}", "#112233"));
+        let r = reconcile(&old, &new);
+        let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            WindowOp::Update { label, colour, .. } => {
+                assert_eq!(label, "work");
+                assert_eq!(colour.as_deref(), Some("#112233"));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
     }
 
     #[test]
