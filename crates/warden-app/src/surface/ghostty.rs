@@ -28,10 +28,10 @@ use super::{PixelRect, SurfaceError, TabSpec, TerminalSurface};
 use crate::ffi;
 use crate::geometry;
 
+use std::cell::Cell;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::OnceLock;
 
 use objc2::rc::{Allocated, Retained};
@@ -46,13 +46,10 @@ const NS_FLAG_CONTROL: usize = 1 << 18;
 const NS_FLAG_OPTION: usize = 1 << 19;
 const NS_FLAG_COMMAND: usize = 1 << 20;
 
-// --- Process-global state for the single spike surface ---------------------
+// --- Process-global state ---------------------------------------------------
 // The shared ghostty app handle (created once). Stored as usize so the static
 // is trivially Send/Sync; reconstituted to a pointer on read.
 static GHOSTTY_APP: OnceLock<usize> = OnceLock::new();
-// The one live surface, so the host view's keyDown handler can forward keys
-// without threading a pointer through ivars. Single-surface spike only.
-static SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 // --- libdispatch: hop a ghostty_app_tick onto the main GCD queue ------------
 // dispatch_get_main_queue() is a static-inline in C that returns &_dispatch_main_q;
@@ -170,13 +167,15 @@ declare_class!(
     }
 
     impl DeclaredClass for WardenHostView {
-        type Ivars = ();
+        type Ivars = HostIvars;
     }
 
     unsafe impl WardenHostView {
         #[method_id(initWithFrame:)]
         fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Option<Retained<Self>> {
-            let this = this.set_ivars(());
+            let this = this.set_ivars(HostIvars {
+                surface: Cell::new(ptr::null_mut()),
+            });
             unsafe { msg_send_id![super(this), initWithFrame: frame] }
         }
 
@@ -188,23 +187,42 @@ declare_class!(
 
         #[method(keyDown:)]
         fn key_down(&self, event: &NSEvent) {
-            unsafe { forward_key(event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
+            unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
         }
 
         #[method(keyUp:)]
         fn key_up(&self, event: &NSEvent) {
-            unsafe { forward_key(event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
+            unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
         }
     }
 );
+
+/// Per-view state: the surface this view forwards keystrokes to. Set once, right
+/// after the surface is created in `GhosttySurface::new`. Holding it per-view
+/// (rather than in a process global) makes multi-window key routing correct by
+/// construction — AppKit first-responder routing delivers `keyDown:` to the
+/// focused window's view, which forwards to *its own* surface.
+struct HostIvars {
+    surface: Cell<ffi::ghostty_surface_t>,
+}
+
+impl WardenHostView {
+    fn set_surface(&self, surface: ffi::ghostty_surface_t) {
+        self.ivars().surface.set(surface);
+    }
+}
 
 /// Translate an AppKit key event into `ghostty_input_key_s` and forward it.
 /// Minimal translation: `text` (from `characters`) carries printable input,
 /// `keycode` is the macOS virtual keycode, `unshifted_codepoint` from
 /// `charactersIgnoringModifiers`. Full IME / NSTextInputClient handling (dead
 /// keys, marked text) is out of scope for the spike.
-unsafe fn forward_key(event: &NSEvent, action: ffi::ghostty_input_action_e) {
-    let surface = SURFACE.load(Ordering::Acquire);
+unsafe fn forward_key(
+    view: &WardenHostView,
+    event: &NSEvent,
+    action: ffi::ghostty_input_action_e,
+) {
+    let surface = view.ivars().surface.get();
     if surface.is_null() {
         return;
     }
@@ -327,14 +345,14 @@ impl GhosttySurface {
                 host_view.removeFromSuperview();
                 return Err(SurfaceError::SurfaceCreateFailed);
             }
-            // NOTE: do NOT set the SURFACE key-routing global here. `focus()` is the
-            // sole writer — routing follows the focused surface. Storing on creation
-            // would steal key routing to an unfocused surface when a tab is created
-            // after activation (e.g. a dynamic "new tab"), re-introducing a routing bug.
-
             ffi::ghostty_surface_set_content_scale(surface, scale, scale);
             let (w, h) = geometry::backing_size(rect, scale);
             ffi::ghostty_surface_set_size(surface, w, h);
+
+            // The view forwards keystrokes to this surface for its whole life.
+            // Per-view ownership => first-responder routing is correct across
+            // windows by construction, no shared global to disambiguate.
+            host_view.set_surface(surface);
 
             // Kick an initial tick in case the first wakeup raced app creation.
             dispatch_async_f(main_queue(), app as *mut c_void, tick_trampoline);
@@ -374,8 +392,6 @@ impl TerminalSurface for GhosttySurface {
         // &WardenHostView coerces to &NSResponder via the NSView deref chain.
         let responder: &NSResponder = &self.host_view;
         self.window.makeFirstResponder(Some(responder));
-        // Track which surface is focused so keyDown: forwards to the active tab.
-        SURFACE.store(self.surface, Ordering::Release);
         unsafe {
             ffi::ghostty_surface_set_focus(self.surface, true);
             ffi::ghostty_app_set_focus(shared_app(), true);
@@ -384,14 +400,8 @@ impl TerminalSurface for GhosttySurface {
 
     fn close(self) {
         unsafe {
-            // Only null the global if it still points at this surface —
-            // closing a non-active surface must not blank the active one.
-            let _ = SURFACE.compare_exchange(
-                self.surface,
-                ptr::null_mut(),
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            );
+            // The host view is dropped with this struct, so its surface ivar
+            // (a dangling pointer after the free) is never read again.
             ffi::ghostty_surface_free(self.surface);
             self.host_view.removeFromSuperview();
         }
