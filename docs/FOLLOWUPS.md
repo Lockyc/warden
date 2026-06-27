@@ -6,8 +6,7 @@ Known, intentionally-deferred work. Each item is a conscious deferral, not an ov
 
 These are trivial, zero-retrofit additions the consumer makes the moment it needs them; deferred from the config-core crate per YAGNI.
 
-- **Re-export `Colour`, `watch::Watcher`, and `resolve::ResolveError` at the crate root** (`crates/warden-config/src/lib.rs`). Today a consumer reaching `Profile.colour`, constructing a `Watcher`, or matching on `LoadError::Resolve(ResolveError)` must reach into submodules. Add `pub use` lines when Plan 2 imports them.
-- **Add `serde::Serialize` (and likely `Deserialize`) to the model types** (`Config`, `Profile`, `Tab`, `Warning`, `Colour`). Tauri IPC `#[command]` return types must be `Serialize` to cross to the web chrome. `serde` is already a dependency — add the `derive`/`serialize` feature and the derives when the IPC layer lands, rather than maintaining parallel DTOs. Tied to Plan 2's IPC-vs-DTO design, so deferred until that choice is made.
+- **Add `serde` derives to the model types** (`Config`, `Profile`, `Tab`, `Warning`, `Colour`) — only if a future slice chooses IPC-direct model types over the app's own DTOs. Plan 2's first slice deliberately maps `Profile`/`Tab` → app DTOs (web contract decoupled from the model), so this stays deferred. Tauri IPC `#[command]` return types must be `Serialize` to cross to the web chrome. `serde` is already a dependency — add the `derive`/`serialize` feature and the derives when the IPC layer lands, rather than maintaining parallel DTOs.
 
 ## Watcher robustness (deferred to the consumer)
 
