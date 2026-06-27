@@ -326,7 +326,10 @@ impl GhosttySurface {
                 host_view.removeFromSuperview();
                 return Err(SurfaceError::SurfaceCreateFailed);
             }
-            SURFACE.store(surface, Ordering::Release);
+            // NOTE: do NOT set the SURFACE key-routing global here. `focus()` is the
+            // sole writer — routing follows the focused surface. Storing on creation
+            // would steal key routing to an unfocused surface when a tab is created
+            // after activation (e.g. a dynamic "new tab"), re-introducing a routing bug.
 
             ffi::ghostty_surface_set_content_scale(surface, scale, scale);
             let (w, h) = geometry::backing_size(rect, scale);
