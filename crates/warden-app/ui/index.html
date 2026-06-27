@@ -19,6 +19,12 @@
         flex: none;
         display: flex;
         flex-direction: column;
+        /* Top inset clears the traffic lights, which now overlay the sidebar's
+           top-left (full-size content view title bar). The banner + tabs sit below. */
+        padding-top: 28px;
+        /* The sidebar is the window's drag region (the terminal hole + tabs opt
+           out below) so the window can be moved by its left chrome. */
+        -webkit-app-region: drag;
         /* Opaque dark base (JS overrides with the profile tint composited over
            this same base). MUST stay opaque: the window is transparent so a hole
            can show the native surface — any alpha here leaks the wallpaper. */
@@ -53,6 +59,8 @@
         font-size: 13px;
         user-select: none;
         transition: background 0.1s, color 0.1s;
+        /* Opt out of the sidebar drag region so tab clicks register. */
+        -webkit-app-region: no-drag;
       }
       .tab:hover:not(.active) {
         background: rgba(255, 255, 255, 0.07);

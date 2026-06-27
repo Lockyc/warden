@@ -49,6 +49,14 @@ impl WindowManager {
                 .title(&spec.name)
                 .inner_size(900.0, 600.0)
                 .transparent(true)
+                // Full-size content view (Overlay): the WKWebView + native surface
+                // span the WHOLE window, including under the title bar, so the
+                // terminal reaches the very top (curator-style). The title bar
+                // becomes a transparent overlay; traffic lights stay visible over
+                // the sidebar's top-left. `hidden_title` drops the title text so
+                // only the in-app banner names the profile.
+                .hidden_title(true)
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .build()
                 .expect("build profile window");
 
