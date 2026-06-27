@@ -2,6 +2,9 @@ mod ffi;
 mod geometry;
 mod surface;
 
+#[cfg(not(target_os = "macos"))]
+compile_error!("warden-app currently targets macOS only (libghostty surface embed). Linux is a later spike.");
+
 #[cfg(target_os = "macos")]
 mod registry;
 
@@ -72,21 +75,11 @@ fn init_tabs() -> Vec<TabSpecDto> {
         .collect()
 }
 
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn init_tabs() -> Vec<TabSpecDto> {
-    vec![]
-}
-
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn activate_tab(state: tauri::State<AppState>, id: String) {
     state.0.lock().unwrap().activate(&id);
 }
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn activate_tab(_id: String) {}
 
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -95,21 +88,26 @@ fn set_hole_rect(
     state: tauri::State<AppState>,
     rect: RectArg,
 ) {
+    // Reject non-finite values before they reach NSView or libghostty.
+    if !rect.x.is_finite() || !rect.y.is_finite() || !rect.width.is_finite() || !rect.height.is_finite() {
+        return;
+    }
+    // Clamp to sane bounds: huge values saturate u32 in ghostty_surface_set_size.
+    let x = rect.x.clamp(-100_000.0, 100_000.0);
+    let y = rect.y.clamp(-100_000.0, 100_000.0);
+    let width = rect.width.clamp(0.0, 100_000.0);
+    let height = rect.height.clamp(0.0, 100_000.0);
+
     let scale = window.scale_factor().unwrap_or(1.0);
     // inner_size is in physical pixels; divide by scale to get points.
-    let size = window.inner_size().unwrap_or(tauri::PhysicalSize::new(900, 600));
+    let size = window.inner_size().expect("main window inner_size");
     let view_h = size.height as f64 / scale;
     let view_rect = geometry::web_rect_to_view(
-        WebRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        WebRect { x, y, width, height },
         view_h,
-        scale,
     );
     state.0.lock().unwrap().set_active_frame(view_rect);
 }
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn set_hole_rect(_window: tauri::WebviewWindow, _rect: RectArg) {}
 
 fn main() {
     // libghostty must be initialised once before any app/surface is created.

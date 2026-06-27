@@ -132,13 +132,14 @@ unsafe extern "C" fn close_surface_cb(_userdata: *mut c_void, _process_alive: bo
 /// Build the ghostty app exactly once. Returns 0 on failure.
 unsafe fn create_app() -> usize {
     let config = ffi::ghostty_config_new();
-    if !config.is_null() {
-        // Load the user's ghostty config (if any) then finalize, matching the
-        // reference's Config(at:) sequence. ghostty_app_new takes ownership of
-        // the config, so we deliberately do not free it.
-        ffi::ghostty_config_load_default_files(config);
-        ffi::ghostty_config_finalize(config);
+    if config.is_null() {
+        return 0;
     }
+    // Load the user's ghostty config (if any) then finalize, matching the
+    // reference's Config(at:) sequence. ghostty_app_new takes ownership of
+    // the config, so we deliberately do not free it.
+    ffi::ghostty_config_load_default_files(config);
+    ffi::ghostty_config_finalize(config);
 
     let runtime = ffi::ghostty_runtime_config_s {
         userdata: ptr::null_mut(),

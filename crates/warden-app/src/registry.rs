@@ -24,7 +24,11 @@ impl Registry {
 
     /// Hide all surfaces, then show + focus the one matching `id`.
     /// Applies `last_rect` to the target before showing so geometry is correct.
+    /// If no surface has `id`, does nothing (does not hide others, does not update `active`).
     pub fn activate(&mut self, id: &str) {
+        if !self.surfaces.iter().any(|(sid, _)| sid == id) {
+            return;
+        }
         for (sid, s) in &self.surfaces {
             if sid == id {
                 if let Some(r) = self.last_rect {

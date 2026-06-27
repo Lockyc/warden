@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
 pub mod ghostty;
 
 #[derive(Debug, Clone, PartialEq)]
