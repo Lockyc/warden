@@ -182,7 +182,7 @@ colour = "#111111"
   title = "t1"
   dir = "/tmp/t1"
 [[profile]]
-name = "a/b"
+name = "a-b"
 colour = "#222222"
   [[profile.tab]]
   title = "t2"
@@ -190,9 +190,9 @@ colour = "#222222"
 "##,
         );
         let specs = window_specs(&c);
-        // "a b" -> "a-b"; "a/b" sanitizes to "a/b" (slash allowed) — no collision here,
-        // so assert both labels are distinct and non-empty.
-        assert_ne!(specs[0].label, specs[1].label);
-        assert!(!specs[0].label.is_empty() && !specs[1].label.is_empty());
+        // Both "a b" and "a-b" sanitize to "a-b" — the second collides and gets
+        // the "-2" suffix via unique_label.
+        assert_eq!(specs[0].label, "a-b");
+        assert_eq!(specs[1].label, "a-b-2");
     }
 }
