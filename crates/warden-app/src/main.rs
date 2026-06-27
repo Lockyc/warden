@@ -149,9 +149,15 @@ fn main() {
                         }
                     });
                 });
-                // Keep the watcher alive for the app's lifetime.
-                if let Ok(w) = watcher {
-                    app.manage(WatcherState(w));
+                // Keep the watcher alive for the app's lifetime. Log a failure so a
+                // dead watcher (no hot-reload) is distinguishable from a working one.
+                match watcher {
+                    Ok(w) => {
+                        app.manage(WatcherState(w));
+                    }
+                    Err(e) => {
+                        eprintln!("warden: failed to start config watcher (no hot-reload): {e}");
+                    }
                 }
             }
             Ok(())

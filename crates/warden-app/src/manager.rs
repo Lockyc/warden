@@ -149,6 +149,12 @@ impl WindowManager {
                 WindowOp::Close(label) => {
                     if let Some(mut ws) = self.windows.remove(&label) {
                         ws.registry.close_all();
+                        // Safe to hold the ManagerState mutex across close(): the
+                        // per-window Destroyed handler re-locks this same
+                        // non-reentrant Mutex, but tao delivers WindowEvent::Destroyed
+                        // asynchronously on a later event-loop turn (not synchronously
+                        // inside close()), so there is no same-thread re-entrant
+                        // deadlock. The handler then no-ops (state already removed).
                         let _ = ws.window.close();
                         self.names.retain(|_, l| l != &label);
                     }
@@ -166,12 +172,19 @@ impl WindowManager {
                         }
                         ws.registry.reorder(&order);
                         // Push the new snapshot so the chrome rebuilds the sidebar.
+                        // Target THIS window by label: `Emitter::emit` (on a window
+                        // OR the app handle) is a global broadcast in Tauri 2.11.3 —
+                        // it delegates to the shared app manager regardless of the
+                        // receiver — so emitting on `ws.window` would fire every
+                        // sibling window's listener and corrupt their sidebars with
+                        // this profile's DTO. `emit_to(label, …)` scopes it to the
+                        // one window. `label` is the Tauri window label.
                         let dto = InitDto {
                             name: ws.name.clone(),
                             colour: ws.colour.clone(),
                             tabs: ws.registry.tab_dtos(),
                         };
-                        let _ = ws.window.emit("warden:refresh", dto);
+                        let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
                     }
                 }
             }
