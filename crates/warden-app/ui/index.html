@@ -248,9 +248,10 @@
       }
       let windowColour = '#0f8a8a';
       let active = null;
-      // This window's Tauri label, learned from the init DTO. Used to ignore
-      // warden:refresh events addressed to a sibling window — a secondary guard
-      // on top of emit_to's per-webview targeting (see the refresh listener).
+      // This window's Tauri label, learned from the init DTO. Required to ignore
+      // per-window events addressed to a sibling window: emit_to does NOT reliably
+      // target one webview with the global listen (verified — an unguarded chord
+      // fired in every window), so refresh + the menu tab-nav events filter on it.
       let myLabel = null;
       // Tab ids with an unread notification/bell badge. A Set (not just DOM state) so
       // a warden:refresh re-render restores the badges instead of dropping them.
