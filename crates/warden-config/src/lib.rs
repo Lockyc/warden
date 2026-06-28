@@ -10,7 +10,7 @@ pub mod watch;
 
 pub use colour::Colour;
 pub use load::{config_path, load, LoadError, Loaded};
-pub use model::{Config, Tab, Warning, Window};
+pub use model::{Config, Tab, TabDigitKeys, Warning, Window};
 pub use reconcile::{reconcile, Reconciliation, WindowUpdate};
 pub use resolve::ResolveError;
 pub use watch::Watcher;

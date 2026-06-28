@@ -7,6 +7,22 @@ pub struct Config {
     /// When true, warden rewrites the config file formatted on each clean
     /// hot-reload. Default false. Whole-file concern — no per-window cascade.
     pub format_on_save: bool,
+    /// What ⌘1/⌘2 do in the app menu. Whole-app concern — no per-window cascade.
+    pub tab_digit_keys: TabDigitKeys,
+}
+
+/// Behaviour of the ⌘1/⌘2 menu accelerators (a whole-app keybinding mode).
+///
+/// - `Jump` (default, standard macOS convention): ⌘1–⌘9 jump straight to the
+///   tab at that 1-based position.
+/// - `Cycle`: ⌘1 = next tab, ⌘2 = previous tab (aliasing ⌘⇧] / ⌘⇧[), which
+///   reclaims the digit-1/2 chords, so direct jumps shift to ⌘3–⌘9 (positions
+///   1–2 then have no jump chord).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabDigitKeys {
+    #[default]
+    Jump,
+    Cycle,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -69,6 +69,83 @@ impl ManagerState {
 #[cfg(target_os = "macos")]
 struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 
+/// Build and install the app menu. The digit chords depend on `mode`:
+/// - `Jump` (default): ⌘1–⌘9 jump straight to that 1-based tab position.
+/// - `Cycle`: ⌘1 = next tab, ⌘2 = previous (distinct items firing the same
+///   cycle-tab event — a menu item carries one accelerator), reclaiming the
+///   digit-1/2 chords, so jumps shift to ⌘3–⌘9 (positions 1–2 lose their chord).
+///
+/// The on_menu_event handler is mode-agnostic — it keys on item IDs, and the
+/// IDs simply differ per mode. `set_menu` replaces the app-global menu wholesale,
+/// so a hot-reload that flips the mode just rebuilds (see the watcher).
+#[cfg(target_os = "macos")]
+fn build_app_menu(app: &tauri::AppHandle, mode: warden_config::TabDigitKeys) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+    use warden_config::TabDigitKeys;
+
+    let close_window = MenuItemBuilder::with_id(MENU_WINDOW_CLOSE, "Close Window")
+        .accelerator("Shift+Cmd+KeyW")
+        .build(app)?;
+    let app_menu = SubmenuBuilder::new(app, "warden")
+        .minimize()
+        .item(&close_window)
+        .separator()
+        .quit()
+        .build()?;
+
+    let prev = MenuItemBuilder::with_id(MENU_TAB_PREV, "Previous Tab")
+        .accelerator("Shift+Cmd+BracketLeft")
+        .build(app)?;
+    let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
+        .accelerator("Shift+Cmd+BracketRight")
+        .build(app)?;
+    let close_tab = MenuItemBuilder::with_id(MENU_TAB_CLOSE, "Close Tab")
+        .accelerator("Cmd+KeyW")
+        .build(app)?;
+
+    let mut tab_menu = SubmenuBuilder::new(app, "Tab").item(&prev).item(&next);
+
+    // Cycle mode only: ⌘1/⌘2 as next/prev aliases. Kept alive past the `if` so the
+    // builder's `&` items outlive the chained `.item()` calls below.
+    let cycle_items = if mode == TabDigitKeys::Cycle {
+        let next_digit = MenuItemBuilder::with_id(MENU_TAB_NEXT_DIGIT, "Next Tab (⌘1)")
+            .accelerator("Cmd+Digit1")
+            .build(app)?;
+        let prev_digit = MenuItemBuilder::with_id(MENU_TAB_PREV_DIGIT, "Previous Tab (⌘2)")
+            .accelerator("Cmd+Digit2")
+            .build(app)?;
+        Some((next_digit, prev_digit))
+    } else {
+        None
+    };
+    if let Some((next_digit, prev_digit)) = &cycle_items {
+        tab_menu = tab_menu.item(next_digit).item(prev_digit);
+    }
+
+    tab_menu = tab_menu.separator().item(&close_tab).separator();
+
+    // Jump-to-position. Jump mode: ⌘1–⌘9. Cycle mode: ⌘3–⌘9 (⌘1/⌘2 taken above).
+    let first = if mode == TabDigitKeys::Cycle { 3 } else { 1 };
+    let jumps = (first..=9)
+        .map(|i| {
+            MenuItemBuilder::with_id(format!("{MENU_TAB_JUMP_PREFIX}{i}"), format!("Tab {i}"))
+                .accelerator(format!("Cmd+Digit{i}"))
+                .build(app)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for j in &jumps {
+        tab_menu = tab_menu.item(j);
+    }
+    let tab_menu = tab_menu.build()?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&app_menu)
+        .item(&tab_menu)
+        .build()?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 /// Return the calling window's banner + tab descriptors, resolved by label.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -292,72 +369,18 @@ fn main() {
                 // macOS menu. Windows are built at runtime with no NSMenu, so without this the
                 // standard shortcuts are dead and there's nowhere to surface tab navigation.
                 // Predefined items (Minimize/Quit) self-handle; custom items fire the Builder's
-                // on_menu_event. Tab chords ⌘⇧[/⌘⇧] (prev/next) and ⌘1–⌘9 (jump) are macOS-
-                // standard and checked app-wide before any view, so they never collide with the
-                // terminal. ⌘W unloads the active *tab* and ⌘⇧W closes the *window* — the Safari/
+                // on_menu_event. Tab chords ⌘⇧[/⌘⇧] (prev/next) and the digit chords (⌘1–9
+                // jump, or ⌘1/⌘2 cycle + ⌘3–9 jump under `tab_digit_keys = "cycle"`) are
+                // macOS-standard and checked app-wide before any view, so they never collide
+                // with the terminal. ⌘W unloads the active *tab* and ⌘⇧W closes the *window* — the Safari/
                 // Chrome convention (close-tab vs close-window), NOT the predefined ⌘W=close-window.
+                // The ⌘1/⌘2 chords depend on the config's `tab_digit_keys` mode
+                // (read from last_good, set by the load above; default Jump for the
+                // diagnostic-at-launch case). build_app_menu rebuilds wholesale, so a
+                // hot-reload that flips the mode just calls it again (see the watcher).
                 {
-                    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-                    let close_window = MenuItemBuilder::with_id(MENU_WINDOW_CLOSE, "Close Window")
-                        .accelerator("Shift+Cmd+KeyW")
-                        .build(app)?;
-                    let app_menu = SubmenuBuilder::new(app, "warden")
-                        .minimize()
-                        .item(&close_window)
-                        .separator()
-                        .quit()
-                        .build()?;
-
-                    let prev = MenuItemBuilder::with_id(MENU_TAB_PREV, "Previous Tab")
-                        .accelerator("Shift+Cmd+BracketLeft")
-                        .build(app)?;
-                    let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
-                        .accelerator("Shift+Cmd+BracketRight")
-                        .build(app)?;
-                    // ⌘1 / ⌘2 are additional Next / Previous accelerators. A menu item carries
-                    // one accelerator, so these are distinct items that fire the same cycle-tab
-                    // event; claiming the digit-1/2 chords means jumps below start at ⌘3.
-                    let next_digit =
-                        MenuItemBuilder::with_id(MENU_TAB_NEXT_DIGIT, "Next Tab (⌘1)")
-                            .accelerator("Cmd+Digit1")
-                            .build(app)?;
-                    let prev_digit =
-                        MenuItemBuilder::with_id(MENU_TAB_PREV_DIGIT, "Previous Tab (⌘2)")
-                            .accelerator("Cmd+Digit2")
-                            .build(app)?;
-                    let close_tab = MenuItemBuilder::with_id(MENU_TAB_CLOSE, "Close Tab")
-                        .accelerator("Cmd+KeyW")
-                        .build(app)?;
-                    let mut tab_menu = SubmenuBuilder::new(app, "Tab")
-                        .item(&prev)
-                        .item(&next)
-                        .item(&next_digit)
-                        .item(&prev_digit)
-                        .separator()
-                        .item(&close_tab)
-                        .separator();
-                    // ⌘3–⌘9 jump straight to the tab at that position (no-op past the last tab).
-                    // ⌘1/⌘2 are taken by Next/Previous above, so positions 1–2 have no jump chord.
-                    let jumps = (3..=9)
-                        .map(|i| {
-                            MenuItemBuilder::with_id(
-                                format!("{MENU_TAB_JUMP_PREFIX}{i}"),
-                                format!("Tab {i}"),
-                            )
-                            .accelerator(format!("Cmd+Digit{i}"))
-                            .build(app)
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    for j in &jumps {
-                        tab_menu = tab_menu.item(j);
-                    }
-                    let tab_menu = tab_menu.build()?;
-
-                    let menu = MenuBuilder::new(app)
-                        .item(&app_menu)
-                        .item(&tab_menu)
-                        .build()?;
-                    app.set_menu(menu)?;
+                    let mode = app.state::<ManagerState>().lock().last_good.tab_digit_keys;
+                    build_app_menu(app.handle(), mode)?;
                 }
 
                 // Hot-reload: watch the config file; on each event reload + diff
@@ -379,6 +402,10 @@ fn main() {
                             Ok(loaded) if !loaded.config.windows.is_empty() => {
                                 let st = wh.state::<ManagerState>();
                                 let mut m = st.lock();
+                                // The app menu is global, not part of window reconcile;
+                                // rebuild it only when the digit-keys mode actually flips.
+                                let old_mode = m.last_good.tab_digit_keys;
+                                let new_mode = loaded.config.tab_digit_keys;
                                 if m.is_empty() {
                                     // Recovery: nothing live (launched into the
                                     // diagnostic window). Materialize from scratch
@@ -392,6 +419,10 @@ fn main() {
                                     m.apply(&wh, &recon);
                                     // Advance the reconcile baseline ONLY on a valid load.
                                     m.last_good = loaded.config.clone();
+                                }
+                                drop(m);
+                                if old_mode != new_mode {
+                                    let _ = build_app_menu(&wh, new_mode);
                                 }
                                 // Clear any stale error banner.
                                 let _ = wh.emit("warden:error-clear", ());

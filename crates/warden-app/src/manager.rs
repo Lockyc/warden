@@ -59,6 +59,7 @@ impl WindowManager {
             last_good: Config {
                 windows: Vec::new(),
                 format_on_save: false,
+                tab_digit_keys: warden_config::TabDigitKeys::default(),
             },
             diagnostic_msg: String::new(),
         }
