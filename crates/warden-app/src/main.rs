@@ -26,6 +26,11 @@ use geometry::WebRect;
 // Direct-jump items use the prefix `tab_jump_<n>` (1-based position).
 const MENU_TAB_PREV: &str = "tab_prev";
 const MENU_TAB_NEXT: &str = "tab_next";
+// ⌘1 / ⌘2 alias Next / Previous Tab. They live alongside ⌘⇧] / ⌘⇧[ and, by claiming
+// the digit-1/2 chords, deliberately remove the digit-1/2 *jumps* — direct jumps start
+// at ⌘3 (positions 1 and 2 have no direct chord under this layout).
+const MENU_TAB_NEXT_DIGIT: &str = "tab_next_digit";
+const MENU_TAB_PREV_DIGIT: &str = "tab_prev_digit";
 const MENU_TAB_CLOSE: &str = "tab_close";
 const MENU_TAB_JUMP_PREFIX: &str = "tab_jump_";
 const MENU_WINDOW_CLOSE: &str = "window_close";
@@ -216,13 +221,13 @@ fn main() {
             };
             let label = win.label().to_string();
             let id = event.id().as_ref();
-            if id == MENU_TAB_PREV {
+            if id == MENU_TAB_PREV || id == MENU_TAB_PREV_DIGIT {
                 let _ = app.emit_to(
                     label.as_str(),
                     "warden:cycle-tab",
                     serde_json::json!({ "label": label, "dir": -1 }),
                 );
-            } else if id == MENU_TAB_NEXT {
+            } else if id == MENU_TAB_NEXT || id == MENU_TAB_NEXT_DIGIT {
                 let _ = app.emit_to(
                     label.as_str(),
                     "warden:cycle-tab",
@@ -309,17 +314,31 @@ fn main() {
                     let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
                         .accelerator("Shift+Cmd+BracketRight")
                         .build(app)?;
+                    // ⌘1 / ⌘2 are additional Next / Previous accelerators. A menu item carries
+                    // one accelerator, so these are distinct items that fire the same cycle-tab
+                    // event; claiming the digit-1/2 chords means jumps below start at ⌘3.
+                    let next_digit =
+                        MenuItemBuilder::with_id(MENU_TAB_NEXT_DIGIT, "Next Tab (⌘1)")
+                            .accelerator("Cmd+Digit1")
+                            .build(app)?;
+                    let prev_digit =
+                        MenuItemBuilder::with_id(MENU_TAB_PREV_DIGIT, "Previous Tab (⌘2)")
+                            .accelerator("Cmd+Digit2")
+                            .build(app)?;
                     let close_tab = MenuItemBuilder::with_id(MENU_TAB_CLOSE, "Close Tab")
                         .accelerator("Cmd+KeyW")
                         .build(app)?;
                     let mut tab_menu = SubmenuBuilder::new(app, "Tab")
                         .item(&prev)
                         .item(&next)
+                        .item(&next_digit)
+                        .item(&prev_digit)
                         .separator()
                         .item(&close_tab)
                         .separator();
-                    // ⌘1–⌘9 jump straight to the tab at that position (no-op past the last tab).
-                    let jumps = (1..=9)
+                    // ⌘3–⌘9 jump straight to the tab at that position (no-op past the last tab).
+                    // ⌘1/⌘2 are taken by Next/Previous above, so positions 1–2 have no jump chord.
+                    let jumps = (3..=9)
                         .map(|i| {
                             MenuItemBuilder::with_id(
                                 format!("{MENU_TAB_JUMP_PREFIX}{i}"),
