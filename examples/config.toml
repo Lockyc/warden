@@ -1,7 +1,7 @@
 # Example warden config. `just run` loads THIS file (via WARDEN_CONFIG) so iterating on the
 # app never touches your real ~/.config/warden/config.toml.
 #
-# A [[window]] is a window (colour + name banner). A [[window.tab]] is a terminal opened in
+# A [[window]] is a window (colour + title banner). A [[window.tab]] is a terminal opened in
 # `dir` running a `shell`; a tab's optional `cmd` is auto-run *inside* that shell (typed in, not
 # exec'd — so a shell function like agentmux's `amux` works and you drop back to a live shell when
 # it exits). `load_on_open` spawns the tab at launch and keeps it running for background work; other
@@ -17,8 +17,10 @@
 shell = "fish -l"                     # global default shell for every tab
 
 [[window]]                            # a window
-name   = "work"
+title  = "work"
 colour = "#0f8a8a"
+width  = 1800                         # optional; default 1500 — wider for the main work window
+height = 1100                         # optional; default 1000
 cmd    = "echo 'in work'"             # default startup for this window's tabs (each can override)
 
   # Point these at your own project dirs. The demo paths all exist on a stock macOS so
@@ -29,30 +31,30 @@ cmd    = "echo 'in work'"             # default startup for this window's tabs (
   dir   = "~/Library"                 # inherits the window's cmd
 
   [[window.tab]]
-  title      = "logs"
-  dir        = "/var/log"
-  cmd        = ""                      # opt out: bare shell, no startup command
-  load_on_open = true                  # spawns at launch + stays live for background work
+  title        = "logs"
+  dir          = "/var/log"
+  cmd          = ""                   # opt out: bare shell, no startup command
+  load_on_open = true                 # spawns at launch + stays live for background work
 
 [[window]]
-name   = "play"
-colour = "#b5651d"
+title = "play"
+# colour omitted → falls back to warden's neutral default
 
   [[window.tab]]
   title = "scratch"
   dir   = "/tmp"
-  shell = "zsh"                        # per-tab shell override
+  shell = "zsh"                       # per-tab shell override
 
 [[window]]
-name   = "grouped"                     # demonstrates [[window.group]] sidebar sectioning
+title  = "grouped"                    # demonstrates [[window.group]] sidebar sectioning
 colour = "#5b6ee1"
 
-  [[window.tab]]                        # loose tab → renders first, no header
+  [[window.tab]]                      # loose tab → renders first, no header
   title = "home"
   dir   = "~/Library"
 
   [[window.group]]
-  name = "system"                       # a labelled section + its tabs below
+  name = "system"                     # a labelled section + its tabs below
     [[window.group.tab]]
     title = "etc"
     dir   = "/etc"
