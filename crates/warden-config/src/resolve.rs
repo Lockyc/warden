@@ -69,7 +69,12 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
         if !seen_profiles.insert(rp.name.clone()) {
             return Err(ResolveError::DuplicateProfile(rp.name.clone()));
         }
-        profiles.push(resolve_profile(rp, global_shell, global_cmd, &mut warnings)?);
+        profiles.push(resolve_profile(
+            rp,
+            global_shell,
+            global_cmd,
+            &mut warnings,
+        )?);
     }
     Ok((Config { profiles }, warnings))
 }
@@ -90,12 +95,16 @@ fn resolve_profile(
     let mut seen_titles = HashSet::new();
     for rt in &rp.tabs {
         if rt.dir.trim().is_empty() {
-            return Err(ResolveError::EmptyDir { profile: rp.name.clone() });
+            return Err(ResolveError::EmptyDir {
+                profile: rp.name.clone(),
+            });
         }
         let dir = expand_tilde(&rt.dir);
         if let Some(ref t) = rt.title {
             if t.trim().is_empty() {
-                return Err(ResolveError::EmptyTabTitle { profile: rp.name.clone() });
+                return Err(ResolveError::EmptyTabTitle {
+                    profile: rp.name.clone(),
+                });
             }
         }
         let title = rt.title.clone().unwrap_or_else(|| basename(&dir));
@@ -303,7 +312,10 @@ colour = "#000000"
         .unwrap_err();
         assert_eq!(
             err,
-            ResolveError::DuplicateTab { profile: "work".into(), title: "same".into() }
+            ResolveError::DuplicateTab {
+                profile: "work".into(),
+                title: "same".into()
+            }
         );
     }
 
@@ -319,7 +331,12 @@ colour = "#000000"
 "##,
         )
         .unwrap_err();
-        assert_eq!(err, ResolveError::EmptyDir { profile: "work".into() });
+        assert_eq!(
+            err,
+            ResolveError::EmptyDir {
+                profile: "work".into()
+            }
+        );
     }
 
     #[test]

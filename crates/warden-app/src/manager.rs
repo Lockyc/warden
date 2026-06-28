@@ -11,7 +11,12 @@ use warden_config::{Config, Reconciliation};
 
 /// Initial surface rect: offset by the 160px sidebar so the surface never
 /// overlaps it before the first JS rect report arrives. (Matches the spike.)
-const INITIAL_RECT: PixelRect = PixelRect { x: 160.0, y: 0.0, width: 740.0, height: 600.0 };
+const INITIAL_RECT: PixelRect = PixelRect {
+    x: 160.0,
+    y: 0.0,
+    width: 740.0,
+    height: 600.0,
+};
 
 /// The single diagnostic window's Tauri label. Deliberately NOT a profile
 /// label and never inserted into `WindowManager::windows`, so it is invisible
@@ -51,7 +56,9 @@ impl WindowManager {
         WindowManager {
             windows: HashMap::new(),
             names: HashMap::new(),
-            last_good: Config { profiles: Vec::new() },
+            last_good: Config {
+                profiles: Vec::new(),
+            },
             diagnostic_msg: String::new(),
         }
     }
@@ -132,7 +139,12 @@ impl WindowManager {
             }
         });
 
-        WindowState { window, registry, name: spec.name.clone(), colour: spec.colour.clone() }
+        WindowState {
+            window,
+            registry,
+            name: spec.name.clone(),
+            colour: spec.colour.clone(),
+        }
     }
 
     /// Materialize every profile as a window. Sets `last_good = config`.
@@ -202,7 +214,13 @@ impl WindowManager {
                         self.names.retain(|_, l| l != &label);
                     }
                 }
-                WindowOp::Update { label, colour, add_tabs, remove_tabs, order } => {
+                WindowOp::Update {
+                    label,
+                    colour,
+                    add_tabs,
+                    remove_tabs,
+                    order,
+                } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
                         if let Some(c) = colour {
                             ws.colour = c;

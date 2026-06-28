@@ -62,12 +62,22 @@ mod tests {
 
     #[test]
     fn parses_six_digit() {
-        assert_eq!(Colour::parse("#0F8A8A").unwrap(), Colour { r: 15, g: 138, b: 138 });
+        assert_eq!(
+            Colour::parse("#0F8A8A").unwrap(),
+            Colour {
+                r: 15,
+                g: 138,
+                b: 138
+            }
+        );
     }
 
     #[test]
     fn parses_three_digit_shorthand() {
-        assert_eq!(Colour::parse("#0a0").unwrap(), Colour { r: 0, g: 170, b: 0 });
+        assert_eq!(
+            Colour::parse("#0a0").unwrap(),
+            Colour { r: 0, g: 170, b: 0 }
+        );
     }
 
     #[test]
@@ -77,32 +87,53 @@ mod tests {
 
     #[test]
     fn rejects_missing_hash() {
-        assert_eq!(Colour::parse("0f8a8a"), Err(ColourError::NoHash("0f8a8a".into())));
+        assert_eq!(
+            Colour::parse("0f8a8a"),
+            Err(ColourError::NoHash("0f8a8a".into()))
+        );
     }
 
     #[test]
     fn rejects_bad_length() {
-        assert!(matches!(Colour::parse("#ff"), Err(ColourError::BadLength(_))));
+        assert!(matches!(
+            Colour::parse("#ff"),
+            Err(ColourError::BadLength(_))
+        ));
     }
 
     #[test]
     fn rejects_non_hex() {
-        assert!(matches!(Colour::parse("#gggggg"), Err(ColourError::BadDigit(_))));
+        assert!(matches!(
+            Colour::parse("#gggggg"),
+            Err(ColourError::BadDigit(_))
+        ));
     }
 
     #[test]
     fn rejects_non_ascii_without_panic() {
-        assert!(matches!(Colour::parse("#中中"), Err(ColourError::BadDigit(_))));
+        assert!(matches!(
+            Colour::parse("#中中"),
+            Err(ColourError::BadDigit(_))
+        ));
     }
 
     #[test]
     fn parses_three_digit_uppercase() {
-        assert_eq!(Colour::parse("#0A0").unwrap(), Colour { r: 0, g: 170, b: 0 });
+        assert_eq!(
+            Colour::parse("#0A0").unwrap(),
+            Colour { r: 0, g: 170, b: 0 }
+        );
     }
 
     #[test]
     fn rejects_plus_prefixed_hex() {
-        assert!(matches!(Colour::parse("#+a0000"), Err(ColourError::BadDigit(_))));
-        assert!(matches!(Colour::parse("#0000 0"), Err(ColourError::BadDigit(_))));
+        assert!(matches!(
+            Colour::parse("#+a0000"),
+            Err(ColourError::BadDigit(_))
+        ));
+        assert!(matches!(
+            Colour::parse("#0000 0"),
+            Err(ColourError::BadDigit(_))
+        ));
     }
 }

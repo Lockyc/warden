@@ -8,13 +8,21 @@ fn main() {
             let path = args.get(2).map(PathBuf::from).unwrap_or_else(config_path);
             match load(&path) {
                 Ok(loaded) => {
-                    println!("ok: {} ({} profile(s))", path.display(), loaded.config.profiles.len());
+                    println!(
+                        "ok: {} ({} profile(s))",
+                        path.display(),
+                        loaded.config.profiles.len()
+                    );
                     for p in &loaded.config.profiles {
                         println!("  profile {:?} {}", p.name, p.colour.hex());
                         for t in &p.tabs {
                             println!(
                                 "    tab {:?} dir={} shell={:?} startup={:?} keep_alive={}",
-                                t.title, t.dir.display(), t.shell, t.startup, t.keep_alive
+                                t.title,
+                                t.dir.display(),
+                                t.shell,
+                                t.startup,
+                                t.keep_alive
                             );
                         }
                     }

@@ -1,4 +1,4 @@
-use crate::load::{load, Loaded, LoadError};
+use crate::load::{load, LoadError, Loaded};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
 use std::path::PathBuf;
 
@@ -27,7 +27,10 @@ impl Watcher {
         path: PathBuf,
         on_change: impl Fn(Result<Loaded, LoadError>) + Send + 'static,
     ) -> notify::Result<Watcher> {
-        let watch_dir = path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        let watch_dir = path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
         let target = path.clone();
         // Capture the file name separately so the closure can match by name rather than full path.
         // macOS FSEvents reports canonical /private/var/... paths while tempfile (and callers) may
@@ -41,7 +44,11 @@ impl Watcher {
                 // hold /var/... symlink paths, so exact-path equality fails. Fire on any
                 // event for the target file — atomic-save editors (e.g. vim, VSCode) may
                 // rename a temp file over the target, which surfaces as Create, not Modify.
-                if event.paths.iter().any(|p| p.file_name() == want_name.as_deref()) {
+                if event
+                    .paths
+                    .iter()
+                    .any(|p| p.file_name() == want_name.as_deref())
+                {
                     on_change(load(&target));
                 }
             }

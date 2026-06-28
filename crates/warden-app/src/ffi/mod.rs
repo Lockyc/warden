@@ -234,11 +234,18 @@ pub type ghostty_runtime_action_cb =
 pub type ghostty_runtime_read_clipboard_cb =
     Option<unsafe extern "C" fn(*mut c_void, ghostty_clipboard_e, *mut c_void) -> bool>;
 // typedef void (*ghostty_runtime_confirm_read_clipboard_cb)(void*, const char*, void*, ghostty_clipboard_request_e);
-pub type ghostty_runtime_confirm_read_clipboard_cb =
-    Option<unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void, ghostty_clipboard_request_e)>;
+pub type ghostty_runtime_confirm_read_clipboard_cb = Option<
+    unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void, ghostty_clipboard_request_e),
+>;
 // typedef void (*ghostty_runtime_write_clipboard_cb)(void*, ghostty_clipboard_e, const ghostty_clipboard_content_s*, size_t, bool);
 pub type ghostty_runtime_write_clipboard_cb = Option<
-    unsafe extern "C" fn(*mut c_void, ghostty_clipboard_e, *const ghostty_clipboard_content_s, usize, bool),
+    unsafe extern "C" fn(
+        *mut c_void,
+        ghostty_clipboard_e,
+        *const ghostty_clipboard_content_s,
+        usize,
+        bool,
+    ),
 >;
 // typedef void (*ghostty_runtime_close_surface_cb)(void*, bool);
 pub type ghostty_runtime_close_surface_cb = Option<unsafe extern "C" fn(*mut c_void, bool)>;

@@ -144,7 +144,8 @@ unsafe extern "C" fn write_clipboard_cb(
     len: usize,
     _confirm: bool,
 ) {
-    if loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD || content.is_null() || len == 0 {
+    if loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD || content.is_null() || len == 0
+    {
         return;
     }
     // Take the first entry that carries valid UTF-8 text (usually the text/plain mime).
@@ -386,7 +387,11 @@ unsafe fn forward_scroll(view: &WardenHostView, event: &NSEvent) {
         return;
     }
     forward_mouse_pos(view, event);
-    let mods: ffi::ghostty_input_scroll_mods_t = if event.hasPreciseScrollingDeltas() { 1 } else { 0 };
+    let mods: ffi::ghostty_input_scroll_mods_t = if event.hasPreciseScrollingDeltas() {
+        1
+    } else {
+        0
+    };
     ffi::ghostty_surface_mouse_scroll(
         surface,
         event.scrollingDeltaX(),
@@ -464,8 +469,8 @@ impl GhosttySurface {
             return Err(SurfaceError::AppCreateFailed);
         }
         // AppKit view creation + all surface methods are main-thread only.
-        let mtm = MainThreadMarker::new()
-            .expect("GhosttySurface::new must be called on the main thread");
+        let mtm =
+            MainThreadMarker::new().expect("GhosttySurface::new must be called on the main thread");
 
         unsafe {
             let window_ref: &NSWindow = &*(ns_window as *const NSWindow);

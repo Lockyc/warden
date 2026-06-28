@@ -97,10 +97,16 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     .map(|t| t.key.clone())
                     .collect();
                 // order_changed: the kept tabs appear in a different sequence
-                let kept_old: Vec<&str> =
-                    old_keys.iter().copied().filter(|k| new_keys.contains(k)).collect();
-                let kept_new: Vec<&str> =
-                    new_keys.iter().copied().filter(|k| old_keys.contains(k)).collect();
+                let kept_old: Vec<&str> = old_keys
+                    .iter()
+                    .copied()
+                    .filter(|k| new_keys.contains(k))
+                    .collect();
+                let kept_new: Vec<&str> = new_keys
+                    .iter()
+                    .copied()
+                    .filter(|k| old_keys.contains(k))
+                    .collect();
                 let order_changed = kept_old != kept_new;
                 let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
                 if colour.is_some()
@@ -122,7 +128,11 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
         }
     }
 
-    Reconciliation { open, close, update }
+    Reconciliation {
+        open,
+        close,
+        update,
+    }
 }
 
 #[cfg(test)]
@@ -172,7 +182,14 @@ colour = "#0f8a8a"
         let new = cfg(&BASE.replace("#0f8a8a", "#112233"));
         let r = reconcile(&cfg(BASE), &new);
         assert_eq!(r.update.len(), 1);
-        assert_eq!(r.update[0].colour, Some(Colour { r: 0x11, g: 0x22, b: 0x33 }));
+        assert_eq!(
+            r.update[0].colour,
+            Some(Colour {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            })
+        );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
     }
 
@@ -189,7 +206,13 @@ colour = "#0f8a8a"
         let r = reconcile(&cfg(BASE), &new);
         assert_eq!(r.update.len(), 1);
         let u = &r.update[0];
-        assert_eq!(u.add_tabs.iter().map(|t| t.key.as_str()).collect::<Vec<_>>(), vec!["ops"]);
+        assert_eq!(
+            u.add_tabs
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ops"]
+        );
         assert_eq!(u.remove_tabs, vec!["locus".to_string()]);
         assert_eq!(u.colour, None);
     }
@@ -219,7 +242,11 @@ colour = "#0f8a8a"
   dir = "/tmp/alpha"
 "##);
         let r = reconcile(&old, &new);
-        assert_eq!(r.update.len(), 1, "expected exactly one ProfileUpdate for a tab reorder");
+        assert_eq!(
+            r.update.len(),
+            1,
+            "expected exactly one ProfileUpdate for a tab reorder"
+        );
         let u = &r.update[0];
         assert_eq!(u.tab_order, vec!["beta".to_string(), "alpha".to_string()]);
         assert!(u.add_tabs.is_empty(), "no tabs added");
@@ -249,7 +276,11 @@ icon = "/tmp/new.png"
   dir = "/tmp/locus"
 "##);
         let r = reconcile(&old, &new);
-        assert_eq!(r.update.len(), 1, "expected a ProfileUpdate for icon change");
+        assert_eq!(
+            r.update.len(),
+            1,
+            "expected a ProfileUpdate for icon change"
+        );
         let u = &r.update[0];
         assert_eq!(
             u.icon,

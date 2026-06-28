@@ -109,10 +109,10 @@ pub enum WindowOp {
     Close(String), // label
     Update {
         label: String,
-        colour: Option<String>,    // new "#rrggbb" if changed
+        colour: Option<String>, // new "#rrggbb" if changed
         add_tabs: Vec<TabPlan>,
-        remove_tabs: Vec<String>,  // tab ids (= Tab::key)
-        order: Vec<String>,        // full new tab id order
+        remove_tabs: Vec<String>, // tab ids (= Tab::key)
+        order: Vec<String>,       // full new tab id order
     },
 }
 
@@ -211,8 +211,7 @@ mod tests {
 
     #[test]
     fn window_specs_maps_profile_and_tabs() {
-        let c = cfg(
-            r##"
+        let c = cfg(r##"
 [[profile]]
 name = "work"
 colour = "#0f8a8a"
@@ -223,8 +222,7 @@ colour = "#0f8a8a"
   [[profile.tab]]
   title = "ops"
   dir = "/tmp/ops"
-"##,
-        );
+"##);
         let specs = window_specs(&c);
         assert_eq!(specs.len(), 1);
         let w = &specs[0];
@@ -254,16 +252,14 @@ colour = "#0f8a8a"
     #[test]
     fn open_profile_becomes_open_op() {
         let old = cfg("");
-        let new = cfg(
-            r##"
+        let new = cfg(r##"
 [[profile]]
 name = "work"
 colour = "#0f8a8a"
   [[profile.tab]]
   title = "locus"
   dir = "/tmp/locus"
-"##,
-        );
+"##);
         let r = reconcile(&old, &new);
         let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
         assert_eq!(ops.len(), 1);
@@ -275,16 +271,14 @@ colour = "#0f8a8a"
 
     #[test]
     fn closed_profile_becomes_close_op_with_label() {
-        let old = cfg(
-            r##"
+        let old = cfg(r##"
 [[profile]]
 name = "work zone"
 colour = "#0f8a8a"
   [[profile.tab]]
   title = "locus"
   dir = "/tmp/locus"
-"##,
-        );
+"##);
         let new = cfg("");
         let r = reconcile(&old, &new);
         let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
@@ -317,8 +311,7 @@ colour = "{C}"
 
     #[test]
     fn window_specs_dedupes_labels_for_colliding_sanitized_names() {
-        let c = cfg(
-            r##"
+        let c = cfg(r##"
 [[profile]]
 name = "a b"
 colour = "#111111"
@@ -331,8 +324,7 @@ colour = "#222222"
   [[profile.tab]]
   title = "t2"
   dir = "/tmp/t2"
-"##,
-        );
+"##);
         let specs = window_specs(&c);
         // Both "a b" and "a-b" sanitize to "a-b" — the second collides and gets
         // the "-2" suffix via unique_label.

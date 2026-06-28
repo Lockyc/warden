@@ -4,7 +4,9 @@ mod plan;
 mod surface;
 
 #[cfg(not(target_os = "macos"))]
-compile_error!("warden-app currently targets macOS only (libghostty surface embed). Linux is a later spike.");
+compile_error!(
+    "warden-app currently targets macOS only (libghostty surface embed). Linux is a later spike."
+);
 
 #[cfg(target_os = "macos")]
 mod manager;
@@ -65,7 +67,11 @@ fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
 #[tauri::command]
 fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, rect: RectArg) {
     // Reject non-finite values before they reach NSView or libghostty.
-    if !rect.x.is_finite() || !rect.y.is_finite() || !rect.width.is_finite() || !rect.height.is_finite() {
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+    {
         return;
     }
     // Clamp to sane bounds: huge values saturate u32 in ghostty_surface_set_size.
@@ -78,7 +84,15 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     // inner_size is in physical pixels; divide by scale to get points.
     let size = window.inner_size().expect("inner_size");
     let view_h = size.height as f64 / scale;
-    let view_rect = geometry::web_rect_to_view(WebRect { x, y, width, height }, view_h);
+    let view_rect = geometry::web_rect_to_view(
+        WebRect {
+            x,
+            y,
+            width,
+            height,
+        },
+        view_h,
+    );
 
     let mut m = state.0.lock().unwrap();
     if let Some(ws) = m.windows.get_mut(window.label()) {
@@ -203,13 +217,19 @@ fn main() {
                     let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
                         .accelerator("Shift+Cmd+BracketRight")
                         .build(app)?;
-                    let mut tab_menu = SubmenuBuilder::new(app, "Tab").item(&prev).item(&next).separator();
+                    let mut tab_menu = SubmenuBuilder::new(app, "Tab")
+                        .item(&prev)
+                        .item(&next)
+                        .separator();
                     // ⌘1–⌘9 jump straight to the tab at that position (no-op past the last tab).
                     let jumps = (1..=9)
                         .map(|i| {
-                            MenuItemBuilder::with_id(format!("{MENU_TAB_JUMP_PREFIX}{i}"), format!("Tab {i}"))
-                                .accelerator(format!("Cmd+Digit{i}"))
-                                .build(app)
+                            MenuItemBuilder::with_id(
+                                format!("{MENU_TAB_JUMP_PREFIX}{i}"),
+                                format!("Tab {i}"),
+                            )
+                            .accelerator(format!("Cmd+Digit{i}"))
+                            .build(app)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     for j in &jumps {
@@ -217,7 +237,10 @@ fn main() {
                     }
                     let tab_menu = tab_menu.build()?;
 
-                    let menu = MenuBuilder::new(app).item(&app_menu).item(&tab_menu).build()?;
+                    let menu = MenuBuilder::new(app)
+                        .item(&app_menu)
+                        .item(&tab_menu)
+                        .build()?;
                     app.set_menu(menu)?;
                 }
 
@@ -300,6 +323,9 @@ mod tests {
         std::env::set_var("TMUX_PANE", "%43");
         scrub_inherited_tmux_env();
         assert!(std::env::var_os("TMUX").is_none(), "TMUX must be scrubbed");
-        assert!(std::env::var_os("TMUX_PANE").is_none(), "TMUX_PANE must be scrubbed");
+        assert!(
+            std::env::var_os("TMUX_PANE").is_none(),
+            "TMUX_PANE must be scrubbed"
+        );
     }
 }

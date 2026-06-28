@@ -38,41 +38,79 @@ mod tests {
     fn flips_y_origin() {
         // A 100×40 web rect at top-left (10, 20) in a 600pt-tall view.
         let got = web_rect_to_view(
-            WebRect { x: 10.0, y: 20.0, width: 100.0, height: 40.0 },
+            WebRect {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 40.0,
+            },
             600.0,
         );
         assert_eq!(
             got,
-            PixelRect { x: 10.0, y: 540.0, width: 100.0, height: 40.0 }
+            PixelRect {
+                x: 10.0,
+                y: 540.0,
+                width: 100.0,
+                height: 40.0
+            }
         );
     }
 
     #[test]
     fn full_height_rect_lands_at_origin() {
         let got = web_rect_to_view(
-            WebRect { x: 0.0, y: 0.0, width: 900.0, height: 600.0 },
+            WebRect {
+                x: 0.0,
+                y: 0.0,
+                width: 900.0,
+                height: 600.0,
+            },
             600.0,
         );
-        assert_eq!(got, PixelRect { x: 0.0, y: 0.0, width: 900.0, height: 600.0 });
+        assert_eq!(
+            got,
+            PixelRect {
+                x: 0.0,
+                y: 0.0,
+                width: 900.0,
+                height: 600.0
+            }
+        );
     }
 
     #[test]
     fn backing_size_scales_up() {
         // 100×50 pt at 2× DPI → 200×100 px
-        let rect = PixelRect { x: 0.0, y: 0.0, width: 100.0, height: 50.0 };
+        let rect = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+        };
         assert_eq!(backing_size(rect, 2.0), (200, 100));
     }
 
     #[test]
     fn backing_size_identity_at_1x() {
-        let rect = PixelRect { x: 0.0, y: 0.0, width: 300.0, height: 150.0 };
+        let rect = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 300.0,
+            height: 150.0,
+        };
         assert_eq!(backing_size(rect, 1.0), (300, 150));
     }
 
     #[test]
     fn backing_size_zero_rect_floors_to_one() {
         // Zero-size rect must not produce a zero backing — libghostty rejects it.
-        let rect = PixelRect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+        let rect = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
         assert_eq!(backing_size(rect, 2.0), (1, 1));
     }
 }

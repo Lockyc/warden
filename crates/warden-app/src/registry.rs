@@ -36,7 +36,12 @@ unsafe impl Send for Registry {}
 
 impl Registry {
     pub fn new(ns_window: *mut c_void, initial_rect: PixelRect) -> Self {
-        Registry { ns_window, tabs: Vec::new(), active: None, last_rect: initial_rect }
+        Registry {
+            ns_window,
+            tabs: Vec::new(),
+            active: None,
+            last_rect: initial_rect,
+        }
     }
 
     /// Add a tab. `keep_alive=true` spawns now (eager); `false` declares it
@@ -44,14 +49,19 @@ impl Registry {
     pub fn add(&mut self, spec: &TabSpec, keep_alive: bool) {
         let warn = !spec.dir.exists();
         let slot = if keep_alive {
-            let s = GhosttySurface::new(self.ns_window, self.last_rect, spec)
-                .expect("surface create");
+            let s =
+                GhosttySurface::new(self.ns_window, self.last_rect, spec).expect("surface create");
             s.hide();
             TabSlot::Spawned(s)
         } else {
             TabSlot::Declared(spec.clone())
         };
-        self.tabs.push(TabEntry { id: spec.id.clone(), title: spec.title.clone(), warn, slot });
+        self.tabs.push(TabEntry {
+            id: spec.id.clone(),
+            title: spec.title.clone(),
+            warn,
+            slot,
+        });
     }
 
     #[cfg(test)]
@@ -64,15 +74,19 @@ impl Registry {
     pub fn tab_dtos(&self) -> Vec<TabDto> {
         self.tabs
             .iter()
-            .map(|t| TabDto { id: t.id.clone(), title: t.title.clone(), warn: t.warn })
+            .map(|t| TabDto {
+                id: t.id.clone(),
+                title: t.title.clone(),
+                warn: t.warn,
+            })
             .collect()
     }
 
     /// Ensure the entry at `idx` is spawned (lazy materialization).
     fn ensure_spawned(&mut self, idx: usize) {
         if let TabSlot::Declared(spec) = &self.tabs[idx].slot {
-            let s = GhosttySurface::new(self.ns_window, self.last_rect, spec)
-                .expect("surface create");
+            let s =
+                GhosttySurface::new(self.ns_window, self.last_rect, spec).expect("surface create");
             self.tabs[idx].slot = TabSlot::Spawned(s);
         }
     }
@@ -127,9 +141,8 @@ impl Registry {
     /// Reorder entries to match `order` (by id). Ids not in `order` keep their
     /// relative order, appended after the ordered ones.
     pub fn reorder(&mut self, order: &[String]) {
-        self.tabs.sort_by_key(|t| {
-            order.iter().position(|o| o == &t.id).unwrap_or(usize::MAX)
-        });
+        self.tabs
+            .sort_by_key(|t| order.iter().position(|o| o == &t.id).unwrap_or(usize::MAX));
     }
 
     /// Destroy all surfaces (called on window close / app exit).
@@ -150,7 +163,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn rect() -> PixelRect {
-        PixelRect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 }
+        PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        }
     }
     fn spec(id: &str, dir: &str) -> TabSpec {
         TabSpec {
