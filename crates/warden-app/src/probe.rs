@@ -75,8 +75,8 @@ mod tests {
 
     #[test]
     fn substitute_leaves_unknown_text_verbatim() {
-        let out = substitute("has-session -t =proj", &PathBuf::from("/tmp"), "proj");
-        assert_eq!(out, "has-session -t =proj");
+        let out = substitute("check-session --name proj", &PathBuf::from("/tmp"), "proj");
+        assert_eq!(out, "check-session --name proj");
     }
 
     #[test]
