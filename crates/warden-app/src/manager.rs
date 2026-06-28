@@ -44,7 +44,7 @@ pub struct WindowState {
 
 pub struct WindowManager {
     pub windows: HashMap<String, WindowState>, // key = Tauri label
-    pub names: HashMap<String, String>,        // window name -> label
+    pub names: HashMap<String, String>,        // window title -> label
     pub last_good: Config,
     /// The message shown by the diagnostic window; fetched by its page via the
     /// `diagnostic_message` command. Empty when no diagnostic is showing.
@@ -97,7 +97,7 @@ impl WindowManager {
         let window =
             WebviewWindowBuilder::new(app, &spec.label, WebviewUrl::App("index.html".into()))
                 .title(&spec.title)
-                .inner_size(900.0, 600.0)
+                .inner_size(spec.width, spec.height)
                 .transparent(true)
                 // Full-size content view (Overlay): the WKWebView + native surface
                 // span the WHOLE window, including under the title bar, so the

@@ -19,6 +19,8 @@ pub struct WindowSpec {
     pub label: String,  // sanitized, unique — the Tauri window label
     pub title: String,  // window title, verbatim — banner + window title
     pub colour: String, // "#rrggbb" from Colour::hex()
+    pub width: f64,     // inner width in logical pixels
+    pub height: f64,    // inner height in logical pixels
     pub tabs: Vec<TabPlan>,
 }
 
@@ -85,6 +87,8 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         label,
         title: p.title.clone(),
         colour: p.colour.hex(),
+        width: p.width as f64,
+        height: p.height as f64,
         tabs,
     }
 }

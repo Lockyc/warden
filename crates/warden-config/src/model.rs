@@ -10,6 +10,8 @@ pub struct Config {
 pub struct Window {
     pub title: String,
     pub colour: Colour,
+    pub width: u32,
+    pub height: u32,
     pub tabs: Vec<Tab>,
 }
 

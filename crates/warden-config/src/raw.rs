@@ -14,6 +14,8 @@ pub struct RawConfig {
 pub struct RawWindow {
     pub title: String,
     pub colour: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub shell: Option<String>,
     pub cmd: Option<String>,
     // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,

@@ -13,6 +13,12 @@ pub const DEFAULT_SHELL: &str = "fish -l";
 /// still renders identity without an accent. (curator parity: omit → neutral.)
 pub const DEFAULT_COLOUR: Colour = Colour { r: 0x6b, g: 0x72, b: 0x80 };
 
+/// Default window width when `width` is omitted. Matches curator's default.
+pub const DEFAULT_WIDTH: u32 = 1500;
+
+/// Default window height when `height` is omitted. Matches curator's default.
+pub const DEFAULT_HEIGHT: u32 = 1000;
+
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
 /// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
@@ -46,6 +52,8 @@ pub enum ResolveError {
     EmptyGroupName { window: String },
     #[error("window {window:?} has duplicate group: {group:?}")]
     DuplicateGroup { window: String, group: String },
+    #[error("window {window:?} has invalid size {width}x{height} (must be > 0)")]
+    InvalidWindowSize { window: String, width: u32, height: u32 },
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
@@ -95,6 +103,11 @@ fn resolve_window(
             source,
         })?,
     };
+    let width = rp.width.unwrap_or(DEFAULT_WIDTH);
+    let height = rp.height.unwrap_or(DEFAULT_HEIGHT);
+    if width == 0 || height == 0 {
+        return Err(ResolveError::InvalidWindowSize { window: rp.title.clone(), width, height });
+    }
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
@@ -146,6 +159,8 @@ fn resolve_window(
     Ok(Window {
         title: rp.title.clone(),
         colour,
+        width,
+        height,
         tabs,
     })
 }
@@ -690,6 +705,43 @@ title = "work"
   dir = "/tmp"
 "##).unwrap()).unwrap().0;
         assert_eq!(cfg.windows[0].colour, super::DEFAULT_COLOUR);
+    }
+
+    #[test]
+    fn window_size_defaults_to_1500x1000() {
+        let cfg = resolve(parse(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp"
+"##).unwrap()).unwrap().0;
+        assert_eq!((cfg.windows[0].width, cfg.windows[0].height), (1500, 1000));
+    }
+
+    #[test]
+    fn explicit_window_size_is_used() {
+        let cfg = resolve(parse(r##"
+[[window]]
+title = "work"
+width = 1200
+height = 800
+  [[window.tab]]
+  dir = "/tmp"
+"##).unwrap()).unwrap().0;
+        assert_eq!((cfg.windows[0].width, cfg.windows[0].height), (1200, 800));
+    }
+
+    #[test]
+    fn zero_window_size_errors() {
+        let err = resolve(parse(r##"
+[[window]]
+title = "work"
+width = 0
+height = 800
+  [[window.tab]]
+  dir = "/tmp"
+"##).unwrap()).unwrap_err();
+        assert!(matches!(err, ResolveError::InvalidWindowSize { .. }));
     }
 
     #[test]
