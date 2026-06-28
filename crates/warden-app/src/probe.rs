@@ -4,7 +4,7 @@
 
 use crate::ManagerState;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Substitute the per-tab tokens into a probe command. `{dir}` → working
@@ -16,12 +16,16 @@ pub fn substitute(probe: &str, dir: &Path, title: &str) -> String {
 }
 
 /// Run `cmd` via `sh -c` with cwd = `dir`. `true` iff it exits 0 (session
-/// present). A non-zero exit OR a spawn failure → `false`.
+/// present). A non-zero exit OR a spawn failure → `false`. stdout/stderr are
+/// discarded — this runs every `probe_interval` seconds in the background, so a
+/// chatty probe (or one whose stderr isn't redirected) must not spam warden.
 pub fn run_probe(cmd: &str, dir: &Path) -> bool {
     Command::new("sh")
         .arg("-c")
         .arg(cmd)
         .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

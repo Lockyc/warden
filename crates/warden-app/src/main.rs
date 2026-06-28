@@ -374,6 +374,11 @@ fn main() {
                 {
                     use std::sync::atomic::Ordering;
                     use std::time::Duration;
+                    // Wait in ≤3s slices, bailing the moment the interval changes, so a
+                    // hot-reload that shortens a long cadence (e.g. 60→5) or toggles the
+                    // timer on/off is picked up within a few seconds — not after the old
+                    // sleep elapses. This is what makes the cadence genuinely live.
+                    const SLICE: u64 = 3;
                     let st = handle.state::<ManagerState>();
                     let interval = st.lock().probe_interval.clone();
                     let app_poll = handle.clone();
@@ -381,10 +386,14 @@ fn main() {
                         let secs = interval.load(Ordering::Relaxed);
                         if secs > 0 {
                             probe::run_pass(&app_poll, None);
-                            std::thread::sleep(Duration::from_secs(secs));
-                        } else {
-                            // Idle tick: stay responsive to a hot-reload that re-enables the timer.
-                            std::thread::sleep(Duration::from_secs(3));
+                        }
+                        // secs == 0 → idle; still slice-sleep so re-enabling is responsive.
+                        let target = if secs > 0 { secs } else { SLICE };
+                        let mut slept = 0;
+                        while slept < target && interval.load(Ordering::Relaxed) == secs {
+                            let chunk = std::cmp::min(SLICE, target - slept);
+                            std::thread::sleep(Duration::from_secs(chunk));
+                            slept += chunk;
                         }
                     });
                 }
@@ -449,6 +458,9 @@ fn main() {
                                     // Advance the reconcile baseline ONLY on a valid load.
                                     m.last_good = loaded.config.clone();
                                 }
+                                // Apply the (possibly changed) probe cadence while we still
+                                // hold the lock, then release it before any lock-free work.
+                                m.set_probe_interval(loaded.config.probe_interval);
                                 drop(m);
                                 // Opt-in tidy: rewrite the file formatted. Diff-guarded in
                                 // format_file, so warden's own write doesn't loop the watcher.
@@ -462,9 +474,8 @@ fn main() {
                                 }
                                 // Clear any stale error banner.
                                 let _ = wh.emit("warden:error-clear", ());
-                                // Apply the (possibly changed) probe cadence and refresh dots now.
-                                m.set_probe_interval(loaded.config.probe_interval);
-                                drop(m);
+                                // Refresh the session dots now that cadence/config may have changed
+                                // (lock already released, so the spawned pass can lock freely).
                                 probe::spawn_pass(wh.clone(), None);
                             }
                             Ok(_) => {
