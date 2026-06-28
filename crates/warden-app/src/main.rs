@@ -352,8 +352,11 @@ fn main() {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let wh = app.handle().clone();
+                // The formatter's copy of the path (cfg_path is moved into the watcher).
+                let fmt_path = cfg_path.clone();
                 let watcher = warden_config::Watcher::new(cfg_path, move |res| {
                     let wh = wh.clone();
+                    let fmt_path = fmt_path.clone();
                     let _ = wh.clone().run_on_main_thread(move || {
                         use tauri::{Emitter, Manager};
                         match res {
@@ -373,6 +376,12 @@ fn main() {
                                     m.apply(&wh, &recon);
                                     // Advance the reconcile baseline ONLY on a valid load.
                                     m.last_good = loaded.config.clone();
+                                }
+                                // Opt-in tidy: rewrite the file formatted. Diff-guarded in
+                                // format_file, so warden's own write doesn't loop the watcher.
+                                // Only runs on a clean parse (this branch).
+                                if loaded.config.format_on_save {
+                                    let _ = warden_config::format_file(&fmt_path);
                                 }
                                 // Clear any stale error banner.
                                 let _ = wh.emit("warden:error-clear", ());
