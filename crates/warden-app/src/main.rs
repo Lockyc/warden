@@ -19,11 +19,13 @@ use manager::{InitDto, WindowManager};
 
 use geometry::WebRect;
 
-// Menu-item IDs for the Tab submenu, matched in the Builder's on_menu_event handler.
+// Menu-item IDs, matched in the Builder's on_menu_event handler.
 // Direct-jump items use the prefix `tab_jump_<n>` (1-based position).
 const MENU_TAB_PREV: &str = "tab_prev";
 const MENU_TAB_NEXT: &str = "tab_next";
+const MENU_TAB_CLOSE: &str = "tab_close";
 const MENU_TAB_JUMP_PREFIX: &str = "tab_jump_";
+const MENU_WINDOW_CLOSE: &str = "window_close";
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -60,6 +62,22 @@ fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     if let Some(ws) = m.windows.get_mut(window.label()) {
         ws.registry.activate(&id);
     }
+}
+
+/// Kill tab `id`'s terminal (surface + PTY) in the calling window; it goes cold and
+/// respawns fresh on next focus. Returns the id of the tab that became active if the
+/// killed one was visible (so the chrome moves its highlight there), else `None`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn unload_tab(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+) -> Option<String> {
+    let mut m = state.0.lock().unwrap();
+    m.windows
+        .get_mut(window.label())
+        .and_then(|ws| ws.registry.unload(&id))
 }
 
 /// Update the calling window's active-surface frame from a web-coordinate rect.
@@ -145,24 +163,33 @@ fn main() {
     }
 
     tauri::Builder::default()
-        // Tab navigation menu items (⌘⇧[/⌘⇧], ⌘1–⌘9). Route to the focused window's chrome,
-        // which owns the tab list + select(); emit_to targets that one window so siblings don't
-        // also switch. Unknown IDs (e.g. predefined Quit/Close) are ignored.
+        // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
+        // route through its chrome, which owns the tab list + select()/unload; emit_to targets
+        // that one window so siblings don't also act. Close Window (⌘⇧W) closes it directly.
+        // Unknown IDs (e.g. predefined Quit/Minimize, which self-handle) are ignored.
         .on_menu_event(|app, event| {
             use tauri::{Emitter, Manager};
-            let Some(label) = app
+            let Some(win) = app
                 .webview_windows()
                 .into_values()
                 .find(|w| w.is_focused().unwrap_or(false))
-                .map(|w| w.label().to_string())
             else {
                 return;
             };
+            let label = win.label().to_string();
             let id = event.id().as_ref();
             if id == MENU_TAB_PREV {
                 let _ = app.emit_to(label.as_str(), "warden:cycle-tab", -1i32);
             } else if id == MENU_TAB_NEXT {
                 let _ = app.emit_to(label.as_str(), "warden:cycle-tab", 1i32);
+            } else if id == MENU_TAB_CLOSE {
+                // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
+                // it does NOT close the window. The chrome owns "which tab is active" + the
+                // dot/highlight repaint, so it drives the unload_tab command on this event.
+                let _ = app.emit_to(label.as_str(), "warden:unload-tab", ());
+            } else if id == MENU_WINDOW_CLOSE {
+                // ⌘⇧W closes the whole profile window (Destroyed → reap surfaces, last-window-quit).
+                let _ = win.close();
             } else if let Some(n) = id
                 .strip_prefix(MENU_TAB_JUMP_PREFIX)
                 .and_then(|s| s.parse::<u32>().ok())
@@ -174,6 +201,7 @@ fn main() {
             set_hole_rect,
             init_tabs,
             activate_tab,
+            unload_tab,
             diagnostic_message
         ])
         .setup(|app| {
@@ -197,17 +225,20 @@ fn main() {
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
 
                 // macOS menu. Windows are built at runtime with no NSMenu, so without this the
-                // standard window shortcuts (⌘Q/⌘W/⌘M) are dead and there's nowhere to surface
-                // tab navigation. The app submenu's predefined items self-handle; the Tab
-                // submenu's custom items fire the Builder's on_menu_event. ⌘⇧[/⌘⇧] (previous/
-                // next) and ⌘1–⌘9 (jump to position) are the macOS-standard tab chords — checked
-                // app-wide before any view, so they work regardless of focus and never collide
-                // with ⌘+arrow text navigation inside the terminal.
+                // standard shortcuts are dead and there's nowhere to surface tab navigation.
+                // Predefined items (Minimize/Quit) self-handle; custom items fire the Builder's
+                // on_menu_event. Tab chords ⌘⇧[/⌘⇧] (prev/next) and ⌘1–⌘9 (jump) are macOS-
+                // standard and checked app-wide before any view, so they never collide with the
+                // terminal. ⌘W unloads the active *tab* and ⌘⇧W closes the *window* — the Safari/
+                // Chrome convention (close-tab vs close-window), NOT the predefined ⌘W=close-window.
                 {
                     use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+                    let close_window = MenuItemBuilder::with_id(MENU_WINDOW_CLOSE, "Close Window")
+                        .accelerator("Shift+Cmd+KeyW")
+                        .build(app)?;
                     let app_menu = SubmenuBuilder::new(app, "warden")
                         .minimize()
-                        .close_window()
+                        .item(&close_window)
                         .separator()
                         .quit()
                         .build()?;
@@ -218,9 +249,14 @@ fn main() {
                     let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
                         .accelerator("Shift+Cmd+BracketRight")
                         .build(app)?;
+                    let close_tab = MenuItemBuilder::with_id(MENU_TAB_CLOSE, "Close Tab")
+                        .accelerator("Cmd+KeyW")
+                        .build(app)?;
                     let mut tab_menu = SubmenuBuilder::new(app, "Tab")
                         .item(&prev)
                         .item(&next)
+                        .separator()
+                        .item(&close_tab)
                         .separator();
                     // ⌘1–⌘9 jump straight to the tab at that position (no-op past the last tab).
                     let jumps = (1..=9)

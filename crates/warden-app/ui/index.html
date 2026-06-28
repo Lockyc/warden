@@ -118,6 +118,51 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      /* Live/cold indicator + unload control at the row's trailing edge (curator's
+         loaded-dot idiom). The visual dot is a 7px ::before centred in a 16px box
+         (a comfortable hover/click target). A filled green dot = the terminal
+         surface is live (keep_alive, or focused once); a hollow ring = cold (never
+         opened, or unloaded — spawns fresh on next focus). Hovering a LIVE dot
+         swaps it for a red ✕: clicking kills that terminal (surface + PTY). Cold
+         dots are inert — nothing to kill. NB warden's unload genuinely ends the
+         session (a fresh shell respawns on focus); it is not curator's cheap
+         webview reload, hence it only acts on live tabs. */
+      .tab-dot {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+      }
+      .tab-dot.cold::before {
+        content: '';
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        box-sizing: border-box;
+        border: 1px solid rgba(238, 238, 238, 0.3);
+      }
+      .tab-dot.live {
+        cursor: pointer;
+      }
+      .tab-dot.live::before {
+        content: '';
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #3fb950;
+      }
+      .tab-dot.live:hover::before {
+        display: none;
+      }
+      .tab-dot.live:hover::after {
+        content: '✕';
+        color: #f85149;
+        font-size: 11px;
+        font-weight: 700;
+      }
       #terminal-hole {
         flex: 1;
         background: transparent;
@@ -168,6 +213,13 @@
         let h = 0;
         for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
         return 'hsl(' + (h % 360) + ', 45%, 45%)';
+      }
+
+      /** Set a tab dot's live/cold class + tooltip from one source of truth, so the
+          unload affordance and hover ✕ only appear on live tabs. */
+      function setDotLive(dot, live) {
+        dot.className = 'tab-dot ' + (live ? 'live' : 'cold');
+        dot.title = live ? 'Kill this terminal (respawns on next focus)' : '';
       }
 
       /** Parse a #rrggbb hex colour into an rgba(...) string. */
@@ -234,6 +286,20 @@
           // textContent (not innerHTML): config titles never reach the HTML parser.
           title.textContent = t.title + (t.warn ? '  ⚠' : '');
           el.appendChild(title);
+
+          // Live/cold dot that doubles as the unload control. Filled if the surface
+          // is already spawned (keep_alive, or focused earlier this session), a
+          // hollow ring if cold. paint() upgrades the active row to live (active ⟹
+          // spawned). One handler per dot, gated on the live class at click time, so
+          // it still fires for a dot paint() flipped live after this render.
+          const dot = document.createElement('span');
+          setDotLive(dot, t.spawned);
+          dot.addEventListener('click', (e) => {
+            if (!dot.classList.contains('live')) return; // cold: nothing to kill
+            e.stopPropagation();                          // don't also select the row
+            unloadTab(t.id);
+          });
+          el.appendChild(dot);
 
           if (t.warn) el.title = 'working directory does not exist';
           list.appendChild(el);
@@ -313,11 +379,23 @@
         if (n >= 1 && n <= ids.length) select(ids[n - 1]);
       });
 
+      // ⌘W unloads the active tab (the menu emits this; same action as clicking a live dot).
+      listen('warden:unload-tab', () => {
+        if (active) unloadTab(active);
+      });
+
       function paint() {
         document.querySelectorAll('.tab').forEach(el => {
           const isActive = el.dataset.id === active;
           el.classList.toggle('active', isActive);
           el.style.background = isActive ? hexToRgba(profileColour, 0.28) : '';
+          // The active tab always has a live surface (activate spawns it), so its
+          // dot is live even if the last DTO snapshot was captured while it was
+          // still cold (e.g. a lazy tab activated by select() or render()).
+          if (isActive) {
+            const dot = el.querySelector('.tab-dot');
+            if (dot) setDotLive(dot, true);
+          }
         });
       }
 
@@ -327,6 +405,20 @@
         // Report rect before activating — layout is stable at this point.
         reportRect();
         await invoke('activate_tab', { id });
+      }
+
+      /** Kill a tab's terminal (surface + PTY). The tab goes cold; clicking it again
+          respawns a fresh shell (the normal lazy-spawn path). If the killed tab was
+          visible, the native layer activates a neighbour and returns its id so the
+          highlight follows; killing the last remaining tab leaves a blank hole. */
+      async function unloadTab(id) {
+        const newActive = await invoke('unload_tab', { id });
+        const killed = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"] .tab-dot');
+        if (killed) setDotLive(killed, false);
+        if (newActive) active = newActive;
+        else if (active === id) active = null;
+        paint();      // move highlight to the neighbour; re-mark its dot live
+        reportRect(); // neighbour surface (or blank) geometry
       }
 
       // ResizeObserver: fires after the flex layout is calculated (including the

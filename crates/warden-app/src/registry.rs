@@ -6,19 +6,24 @@ use std::os::raw::c_void;
 pub struct TabDto {
     pub id: String,
     pub title: String,
-    pub warn: bool, // dir missing at materialize time
+    pub warn: bool,    // dir missing at materialize time
+    pub spawned: bool, // surface is live (keep_alive or already focused) vs cold/declared
 }
 
-/// A tab is either live (has a surface) or declared (spawns on first focus).
+/// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
+/// The `TabSpec` lives on `TabEntry`, not in the slot, so a cold tab always retains
+/// what it needs to (re)spawn — `unload` returns a live tab to `Cold` without
+/// losing its spec.
 enum TabSlot {
     Spawned(GhosttySurface),
-    Declared(TabSpec),
+    Cold,
 }
 
 struct TabEntry {
     id: String,
     title: String,
     warn: bool,
+    spec: TabSpec,
     slot: TabSlot,
 }
 
@@ -54,12 +59,13 @@ impl Registry {
             s.hide();
             TabSlot::Spawned(s)
         } else {
-            TabSlot::Declared(spec.clone())
+            TabSlot::Cold
         };
         self.tabs.push(TabEntry {
             id: spec.id.clone(),
             title: spec.title.clone(),
             warn,
+            spec: spec.clone(),
             slot,
         });
     }
@@ -78,17 +84,50 @@ impl Registry {
                 id: t.id.clone(),
                 title: t.title.clone(),
                 warn: t.warn,
+                spawned: matches!(t.slot, TabSlot::Spawned(_)),
             })
             .collect()
     }
 
-    /// Ensure the entry at `idx` is spawned (lazy materialization).
+    /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
+    /// never-opened or previously unloaded — spawns a fresh surface from its spec.
     fn ensure_spawned(&mut self, idx: usize) {
-        if let TabSlot::Declared(spec) = &self.tabs[idx].slot {
-            let s =
-                GhosttySurface::new(self.ns_window, self.last_rect, spec).expect("surface create");
+        if let TabSlot::Cold = self.tabs[idx].slot {
+            let s = GhosttySurface::new(self.ns_window, self.last_rect, &self.tabs[idx].spec)
+                .expect("surface create");
             self.tabs[idx].slot = TabSlot::Spawned(s);
         }
+    }
+
+    /// The id of the tab to make visible when the one at `idx` is killed: prefer the
+    /// next tab, else the previous, else `None` (it was the only tab). Index-based,
+    /// since `unload` leaves the killed entry in place (now cold).
+    fn neighbor_id(&self, idx: usize) -> Option<String> {
+        self.tabs
+            .get(idx + 1)
+            .or_else(|| idx.checked_sub(1).and_then(|p| self.tabs.get(p)))
+            .map(|t| t.id.clone())
+    }
+
+    /// Kill tab `id`'s surface + PTY, returning it to cold (it respawns a fresh
+    /// shell on next focus, exactly like a never-opened tab). No-op if the tab is
+    /// unknown or already cold. If the killed tab was active, activate a neighbor so
+    /// the hole never goes blank, and return that neighbor's id for the chrome to
+    /// move its highlight to; otherwise return `None`.
+    pub fn unload(&mut self, id: &str) -> Option<String> {
+        let idx = self.tabs.iter().position(|t| t.id == id)?;
+        match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Cold) {
+            TabSlot::Spawned(s) => s.close(),
+            TabSlot::Cold => return None, // nothing live to kill
+        }
+        if self.active.as_deref() == Some(id) {
+            self.active = None;
+            if let Some(next) = self.neighbor_id(idx) {
+                self.activate(&next);
+                return Some(next);
+            }
+        }
+        None
     }
 
     /// Show + focus the tab `id` (spawning it first if declared); hide all others.
@@ -190,6 +229,8 @@ mod tests {
         let dtos = r.tab_dtos();
         assert_eq!(dtos.len(), 1);
         assert_eq!(dtos[0].id, "t0");
+        // A declared tab is cold: the live-dot flag is false until it spawns.
+        assert!(!dtos[0].spawned, "declared tab must report spawned = false");
     }
 
     #[test]
@@ -217,5 +258,45 @@ mod tests {
         r.reorder(&["b".to_string(), "a".to_string()]);
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
+    }
+
+    #[test]
+    fn unload_of_cold_tab_is_noop() {
+        // A declared (never-spawned) tab has no surface to kill: unload reports no
+        // active change and the tab stays put and cold.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("t0", "/tmp"), false);
+        assert_eq!(r.unload("t0"), None);
+        assert!(!r.is_spawned("t0"));
+        assert_eq!(r.tab_dtos().len(), 1);
+    }
+
+    #[test]
+    fn unload_of_unknown_tab_is_noop() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("t0", "/tmp"), false);
+        assert_eq!(r.unload("nope"), None);
+        assert_eq!(r.tab_dtos().len(), 1);
+    }
+
+    #[test]
+    fn neighbor_prefers_next_then_previous() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp"), false);
+        r.add(&spec("b", "/tmp"), false);
+        r.add(&spec("c", "/tmp"), false);
+        // Middle tab → the next one.
+        assert_eq!(r.neighbor_id(1).as_deref(), Some("c"));
+        // Last tab → fall back to the previous one.
+        assert_eq!(r.neighbor_id(2).as_deref(), Some("b"));
+        // First tab → the next one.
+        assert_eq!(r.neighbor_id(0).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn neighbor_of_lone_tab_is_none() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("only", "/tmp"), false);
+        assert_eq!(r.neighbor_id(0), None);
     }
 }
