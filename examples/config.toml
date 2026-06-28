@@ -14,54 +14,55 @@
 # renders as a labelled section in the sidebar. Loose [[window.tab]]s (no group) render first, in a
 # headerless section. Groups are presentation only — they add no cascade level. See the last window.
 
-shell = "fish -l"                     # global default shell for every tab
+shell          = "fish -l" # global default shell for every tab
+format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
 
-[[window]]                            # a window
-name   = "work"
-colour = "#0f8a8a"
-cmd    = "echo 'in work'"             # default startup for this window's tabs (each can override)
+[[window]] # a window
+  name   = "work"
+  colour = "#0f8a8a"
+  cmd    = "echo 'in work'" # default startup for this window's tabs (each can override)
 
   # Point these at your own project dirs. The demo paths all exist on a stock macOS so
   # `just validate` stays warning-free. NOTE: tilde expansion only handles `~/…` — a bare
   # `~` is left literal and warns; write `~/Library`, not `~`.
   [[window.tab]]
-  title = "library"
-  dir   = "~/Library"                 # inherits the window's cmd
+    title = "library"
+    dir   = "~/Library" # inherits the window's cmd
 
   [[window.tab]]
-  title      = "logs"
-  dir        = "/var/log"
-  cmd        = ""                      # opt out: bare shell, no startup command
-  keep_alive = true                    # spawns at launch + stays live for background work
+    title      = "logs"
+    dir        = "/var/log"
+    cmd        = ""         # opt out: bare shell, no startup command
+    keep_alive = true       # spawns at launch + stays live for background work
 
 [[window]]
-name   = "play"
-colour = "#b5651d"
+  name   = "play"
+  colour = "#b5651d"
 
   [[window.tab]]
-  title = "scratch"
-  dir   = "/tmp"
-  shell = "zsh"                        # per-tab shell override
-
-[[window]]
-name   = "grouped"                     # demonstrates [[window.group]] sidebar sectioning
-colour = "#5b6ee1"
-
-  [[window.tab]]                        # loose tab → renders first, no header
-  title = "home"
-  dir   = "~/Library"
-
-  [[window.group]]
-  name = "system"                       # a labelled section + its tabs below
-    [[window.group.tab]]
-    title = "etc"
-    dir   = "/etc"
-    [[window.group.tab]]
-    title = "syslog"
-    dir   = "/var/log"
-
-  [[window.group]]
-  name = "scratch space"
-    [[window.group.tab]]
-    title = "tmpdir"
+    title = "scratch"
     dir   = "/tmp"
+    shell = "zsh"     # per-tab shell override
+
+[[window]]
+  name   = "grouped" # demonstrates [[window.group]] sidebar sectioning
+  colour = "#5b6ee1"
+
+  [[window.tab]] # loose tab → renders first, no header
+    title = "home"
+    dir   = "~/Library"
+
+  [[window.group]]
+    name = "system" # a labelled section + its tabs below
+    [[window.group.tab]]
+      title = "etc"
+      dir   = "/etc"
+    [[window.group.tab]]
+      title = "syslog"
+      dir   = "/var/log"
+
+  [[window.group]]
+    name = "scratch space"
+    [[window.group.tab]]
+      title = "tmpdir"
+      dir   = "/tmp"
