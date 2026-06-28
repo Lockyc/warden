@@ -38,6 +38,14 @@ fmt:
 clippy:
     cargo clippy --workspace -- -D warnings
 
+# Full pre-merge gate: format check (non-mutating), clippy, tests. Run before
+# committing/merging — nothing runs this automatically (no hook, no CI yet).
+[group("check")]
+gate:
+    cargo fmt --all --check
+    cargo clippy --workspace -- -D warnings
+    cargo test --workspace
+
 # Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)
 [group("dist")]
 build:
