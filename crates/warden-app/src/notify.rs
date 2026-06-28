@@ -19,14 +19,17 @@ pub fn init(app: AppHandle) {
     crate::surface::set_surface_event_sink(move |event| handle(&app, event));
 }
 
-/// Runs on the main thread (the sink is invoked from `action_cb`, itself dispatched on the main
-/// runloop), so locking `ManagerState` and touching Tauri/AppKit here is safe.
+/// Runs on the main thread (the sink is invoked from `action_cb`, which only ever fires from a
+/// `ghostty_app_tick` that is *async-dispatched* onto the main queue — never synchronously from a
+/// surface method). So this never nests inside a command that already holds `ManagerState`: the
+/// command's main-queue task runs to completion (and drops its guard) before this tick task runs.
+/// Locking `ManagerState` and touching Tauri/AppKit here is therefore safe and deadlock-free.
+/// Uses `ManagerState::lock` (not a bare `unwrap`) so a poisoned mutex recovers instead of
+/// crashing the notification path — matching every command handler.
 fn handle(app: &AppHandle, event: SurfaceEvent) {
     let located = app
         .state::<ManagerState>()
-        .0
         .lock()
-        .unwrap()
         .locate_surface(event.surface_id);
     let Some((label, tab, visible)) = located else {
         return; // surface not found (e.g. just unloaded) — drop the signal

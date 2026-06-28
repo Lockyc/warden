@@ -287,6 +287,11 @@
         const prevActive = active;
         profileColour = dto.colour ?? '#0f8a8a';
 
+        // Drop badges for tabs that no longer exist (removed/renamed by a hot-reload), so a
+        // future tab that reuses the id doesn't inherit a stale unread dot.
+        const ids = new Set(dto.tabs.map(t => t.id));
+        badges.forEach(id => { if (!ids.has(id)) badges.delete(id); });
+
         // Apply profile identity: banner shows the name on the profile colour;
         // the sidebar gets a faint tint of the same colour.
         const banner = document.getElementById('banner');
