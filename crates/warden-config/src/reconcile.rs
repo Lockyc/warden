@@ -311,6 +311,61 @@ icon = "/tmp/new.png"
         assert_eq!(u.colour, None);
     }
 
+    #[test]
+    fn icon_added_emits_update_with_some_some() {
+        // None → Some: an icon appearing must emit `icon: Some(Some(path))` so the
+        // consumer sets the window's proxy icon (the addition half of the icon diff,
+        // the complement of icon_change_emits_update).
+        let new = cfg(r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+icon = "/tmp/new.png"
+  [[window.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##);
+        let r = reconcile(&cfg(BASE), &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].icon, Some(Some(PathBuf::from("/tmp/new.png"))));
+    }
+
+    #[test]
+    fn icon_removed_emits_update_with_some_none() {
+        // Some → None: removing the icon must emit `icon: Some(None)` — the documented
+        // "clear the icon" signal — not `None` (which means "unchanged"). Without this
+        // a removed icon would silently linger on the live window.
+        let old = cfg(r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+icon = "/tmp/old.png"
+  [[window.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+"##);
+        let r = reconcile(&old, &cfg(BASE));
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(
+            r.update[0].icon,
+            Some(None),
+            "removal must signal clear, not unchanged"
+        );
+    }
+
+    #[test]
+    fn window_rename_is_destructive_close_plus_open() {
+        // Windows are diffed by name, so a rename is not an update — it's close(old)
+        // + open(new), which destroys and recreates that window's terminals (incl.
+        // keep_alive ones). Pins the documented destructive-rename behaviour.
+        let new = cfg(&BASE.replace(r#"name = "work""#, r#"name = "play""#));
+        let r = reconcile(&cfg(BASE), &new);
+        assert_eq!(r.close, vec!["work".to_string()]);
+        assert_eq!(r.open.len(), 1);
+        assert_eq!(r.open[0].name, "play");
+        assert!(r.update.is_empty(), "a rename is never an in-place update");
+    }
+
     /// Regression test locking the documented limitation: a kept tab whose
     /// `title` (and therefore `key`) is unchanged but whose `dir` differs is
     /// invisible to the reconciler. No update is emitted; the consumer must

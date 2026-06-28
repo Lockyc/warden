@@ -8,6 +8,8 @@
 # Outputs (committed, but reproducible from the above):
 #   icon-1024.png, icon-512.png, favicon-32.png, warden.icns
 #   crates/warden-app/icons/icon.icns  — the same .icns where the Tauri bundle consumes it
+#   crates/warden-app/icons/icon.png   — the runtime default window icon Tauri's
+#                                        generate_context! embeds (fixed convention path)
 #
 # Deps (macOS):  rsvg-convert  (brew install librsvg)
 #                iconutil      (ships with macOS)
@@ -46,6 +48,14 @@ EOF
 for sz in 16 32 64 128 256 512 1024; do
   rsvg-convert -w "$sz" -h "$sz" "$WRAP" -o "$ICON/_$sz.png"
 done
+
+# Runtime default window icon. Tauri's generate_context! embeds icons/icon.png at a
+# FIXED convention path (distinct from the bundle .icns listed in tauri.conf.json), so
+# the build fails without it. Render it from the same safe-area-margined tile as the
+# .icns — warden-branded and reproducible, not the stale Tauri scaffold placeholder.
+mkdir -p ../crates/warden-app/icons
+rsvg-convert -w 512 -h 512 "$WRAP" -o ../crates/warden-app/icons/icon.png
+
 rm -f "$WRAP"
 cp "$ICON/_16.png"   "$ICON/icon_16x16.png"
 cp "$ICON/_32.png"   "$ICON/icon_16x16@2x.png"
@@ -66,4 +76,4 @@ APP_ICONS=../crates/warden-app/icons
 mkdir -p "$APP_ICONS"
 cp warden.icns "$APP_ICONS/icon.icns"
 
-echo "regenerated: icon-1024.png icon-512.png favicon-32.png warden.icns crates/warden-app/icons/icon.icns"
+echo "regenerated: icon-1024.png icon-512.png favicon-32.png warden.icns crates/warden-app/icons/icon.icns crates/warden-app/icons/icon.png"

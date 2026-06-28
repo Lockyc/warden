@@ -46,11 +46,13 @@ struct ManagerState(std::sync::Mutex<WindowManager>);
 
 #[cfg(target_os = "macos")]
 impl ManagerState {
-    /// Lock the manager, recovering from a poisoned mutex. A command panic (e.g. a
-    /// surface that fails to spawn) leaves the manager *consistent* — the failing
-    /// mutation aborts before it touches state — so recovering the guard keeps every
-    /// other command and the watcher reconcile alive instead of cascading one panic
-    /// into permanently-dead IPC.
+    /// Lock the manager, recovering from a poisoned mutex. A single-step command panic
+    /// (e.g. a surface that fails to spawn) leaves the manager *consistent* — the failing
+    /// mutation aborts before it touches state. A panic partway through a multi-step op
+    /// (`apply`/`materialize`) can leave partial state, but recovering the guard still
+    /// keeps every subsequent command and the watcher reconcile alive instead of
+    /// cascading one panic into permanently-dead IPC — the panic sources here are
+    /// near-fatal AppKit/libghostty failures, so partial reconcile is the lesser evil.
     fn lock(&self) -> std::sync::MutexGuard<'_, WindowManager> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -114,8 +116,12 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     let height = rect.height.clamp(0.0, 100_000.0);
 
     let scale = window.scale_factor().unwrap_or(1.0);
-    // inner_size is in physical pixels; divide by scale to get points.
-    let size = window.inner_size().expect("inner_size");
+    // inner_size is in physical pixels; divide by scale to get points. A rect report
+    // can race window teardown (the window's gone but a queued JS call still fires),
+    // so bail rather than panic — consistent with the scale_factor fallback above.
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
     let view_h = size.height as f64 / scale;
     let view_rect = geometry::web_rect_to_view(
         WebRect {

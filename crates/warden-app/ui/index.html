@@ -237,11 +237,20 @@
     <script>
       const { invoke } = window.__TAURI__.core;
       const { listen } = window.__TAURI__.event;
+      // Fire-and-forget IPC: an unhandled invoke() rejection surfaces as an
+      // uncaught promise rejection that can silently wedge the chrome. Calls whose
+      // return value matters (init_tabs, unload_tab) handle errors inline; the rest
+      // route through here so a transient IPC failure just logs.
+      function invokeSafe(cmd, args) {
+        return invoke(cmd, args).catch(err => {
+          console.error('warden: IPC ' + cmd + ' failed', err);
+        });
+      }
       let windowColour = '#0f8a8a';
       let active = null;
       // This window's Tauri label, learned from the init DTO. Used to ignore
-      // warden:refresh events addressed to a sibling window — a robust guard
-      // that does not rely on emit_to's per-webview targeting.
+      // warden:refresh events addressed to a sibling window — a secondary guard
+      // on top of emit_to's per-webview targeting (see the refresh listener).
       let myLabel = null;
       // Tab ids with an unread notification/bell badge. A Set (not just DOM state) so
       // a warden:refresh re-render restores the badges instead of dropping them.
@@ -334,7 +343,7 @@
       /** Report the terminal-hole's current CSS rect to the native layer. */
       function reportRect() {
         const r = document.getElementById('terminal-hole').getBoundingClientRect();
-        invoke('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
+        invokeSafe('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
       }
 
       /** Render a window snapshot ({ name, colour, tabs:[{id,title,warn,spawned,group}] }) into
@@ -432,13 +441,24 @@
         // Unchanged active (e.g. a colour-only refresh) must NOT re-activate, so the
         // user's current tab is preserved.
         if (active && active !== prevActive) {
-          invoke('activate_tab', { id: active });
+          invokeSafe('activate_tab', { id: active });
         }
       }
 
       async function init() {
         // { label, name, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
-        const dto = await invoke('init_tabs');
+        let dto;
+        try {
+          dto = await invoke('init_tabs');
+        } catch (err) {
+          // Without the DTO the chrome can't render at all — surface the failure in
+          // the error banner instead of leaving a silent blank window.
+          console.error('warden: init_tabs failed', err);
+          const el = document.getElementById('error');
+          el.textContent = '⚠ failed to load window: ' + err;
+          el.style.display = 'block';
+          return;
+        }
         if (!dto) return;
         myLabel = dto.label;
         // Restore the persisted per-window sidebar width BEFORE first paint, so the
@@ -450,12 +470,15 @@
 
       // Hot-reload: the manager pushes a fresh snapshot to this window after a
       // reconcile Update (colour/tab add/remove/reorder) so the sidebar rebuilds.
-      // Filter by label: a refresh addressed to a sibling window must be ignored
-      // here, otherwise this window would relabel itself with another window's
-      // DTO (corrupting its name/colour/tabs and breaking tab clicks).
+      // Render only a well-formed snapshot addressed to this window: drop a payload
+      // with no `tabs` array (render() would throw on `.map`), and drop one whose
+      // label names a sibling — otherwise this window would relabel itself with
+      // another window's DTO (corrupting its name/colour/tabs and breaking clicks).
       listen('warden:refresh', (e) => {
-        if (e.payload && e.payload.label && myLabel && e.payload.label !== myLabel) return;
-        render(e.payload);
+        const p = e.payload;
+        if (!p || !Array.isArray(p.tabs)) return;
+        if (myLabel && p.label && p.label !== myLabel) return;
+        render(p);
       });
 
       // Hot-reload error banner: a parse error (or empty config) on save keeps the
@@ -545,7 +568,7 @@
         paint();
         // Report rect before activating — layout is stable at this point.
         reportRect();
-        await invoke('activate_tab', { id });
+        await invokeSafe('activate_tab', { id });
       }
 
       /** Kill a tab's terminal (surface + PTY). The tab goes cold; clicking it again
@@ -553,7 +576,15 @@
           visible, the native layer activates a neighbour and returns its id so the
           highlight follows; killing the last remaining tab leaves a blank hole. */
       async function unloadTab(id) {
-        const newActive = await invoke('unload_tab', { id });
+        let newActive;
+        try {
+          newActive = await invoke('unload_tab', { id });
+        } catch (err) {
+          // The kill failed: PTY state is unknown, so leave the row as-is (still
+          // marked live) rather than lying about a terminal we didn't actually kill.
+          console.error('warden: unload_tab failed', err);
+          return;
+        }
         const killed = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"] .tab-dot');
         if (killed) setDotLive(killed, false);
         if (newActive) { active = newActive; setBadge(newActive, false); } // now visible → clear its badge

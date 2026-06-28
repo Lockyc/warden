@@ -342,6 +342,30 @@ shell = "zsh"
     }
 
     #[test]
+    fn window_level_empty_opts_out_of_global() {
+        // The opt-out (`= ""` resets to None) must fire at the *window* level too, not
+        // just the tab level: a window `shell`/`cmd = ""` opts the whole window out of
+        // the global value rather than inheriting it. A tab under it that sets neither
+        // then sees DEFAULT_SHELL / no startup, not the global "fish"/"global-cmd".
+        let (cfg, _) = resolve_str(
+            r##"
+shell = "fish"
+cmd = "global-cmd"
+[[window]]
+name = "bare"
+colour = "#000000"
+shell = ""
+cmd = ""
+  [[window.tab]]
+  dir = "/tmp/a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].shell, DEFAULT_SHELL);
+        assert_eq!(cfg.windows[0].tabs[0].startup, None);
+    }
+
+    #[test]
     fn nonexistent_dir_is_warning_not_error() {
         let (cfg, warns) = resolve_str(
             r##"
@@ -396,6 +420,33 @@ colour = "#000000"
             ResolveError::DuplicateTab {
                 window: "work".into(),
                 title: "same".into()
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_title_via_basename_collision_is_error() {
+        // Two tabs in different dirs but the same basename and no explicit title both
+        // default to that basename → DuplicateTab. Surprising-but-correct: titles are
+        // unique window-wide and the default title is the dir basename. Pins it so the
+        // default-title rule can't silently start tolerating collisions.
+        let err = resolve_str(
+            r##"
+[[window]]
+name = "work"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/a/locus"
+  [[window.tab]]
+  dir = "/b/locus"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateTab {
+                window: "work".into(),
+                title: "locus".into()
             }
         );
     }
