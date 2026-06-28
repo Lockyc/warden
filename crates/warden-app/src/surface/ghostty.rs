@@ -32,15 +32,18 @@ use std::cell::Cell;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use objc2::rc::{Allocated, Retained};
+use objc2::runtime::AnyObject;
 use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSApplication, NSEvent, NSPasteboard, NSPasteboardTypeString, NSResponder, NSView, NSWindow,
+    NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSEvent,
+    NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSResponder,
+    NSView, NSWindow,
 };
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
 // --- AppKit modifier-flag bit masks (stable AppKit ABI values) ---
 const NS_FLAG_CAPS: usize = 1 << 16;
@@ -142,8 +145,16 @@ unsafe extern "C" fn action_cb(
 /// hang context on. Cleared on `close()` so a freed surface is never completed against (UAF).
 static FOCUSED_SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
+/// Monotonic counter for temp image-paste filenames (see `clipboard_image_to_temp_path`).
+static PASTE_IMAGE_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Paste: libghostty asks for clipboard data (e.g. on ⌘V); read the macOS general pasteboard and
 /// hand it back via `complete_clipboard_request`. Runs on the main thread (from a `ghostty_app_tick`).
+///
+/// Text wins. If the clipboard is image-only (a screenshot, a copied image — no text), spill it to
+/// a temp PNG and paste that *path* instead — Claude Code (and friends) pick up a pasted image off
+/// bracketed paste exactly the way drag-and-drop delivers a file path. The image bytes never transit
+/// the PTY; the consuming program reads the file itself. This is what makes ⌘V-a-screenshot work.
 unsafe extern "C" fn read_clipboard_cb(
     _userdata: *mut c_void,
     _loc: ffi::ghostty_clipboard_e,
@@ -153,15 +164,40 @@ unsafe extern "C" fn read_clipboard_cb(
     if surface.is_null() {
         return false;
     }
-    let text = NSPasteboard::generalPasteboard()
+    let pb = NSPasteboard::generalPasteboard();
+    let payload = pb
         .stringForType(NSPasteboardTypeString)
         .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| clipboard_image_to_temp_path(&pb))
         .unwrap_or_default();
-    let Ok(c_text) = CString::new(text) else {
+    let Ok(c_text) = CString::new(payload) else {
         return false; // clipboard contained an interior NUL — refuse rather than truncate
     };
     ffi::ghostty_surface_complete_clipboard_request(surface, c_text.as_ptr(), state, true);
     true
+}
+
+/// If the general pasteboard carries raster image data (and no text), write it to a temp PNG and
+/// return that path; `None` when there's no image. PNG is emitted unconditionally — consumers match
+/// on image *extensions*, and macOS screenshots land on the clipboard as TIFF, so a TIFF-only
+/// clipboard is transcoded first. Files accrete in the temp dir for the session; the OS reaps them.
+unsafe fn clipboard_image_to_temp_path(pb: &NSPasteboard) -> Option<String> {
+    let png: Retained<NSData> = match pb.dataForType(NSPasteboardTypePNG) {
+        Some(d) => d,
+        None => {
+            let tiff = pb.dataForType(NSPasteboardTypeTIFF)?;
+            let rep = NSBitmapImageRep::imageRepWithData(&tiff)?;
+            let props: Retained<NSDictionary<NSBitmapImageRepPropertyKey, AnyObject>> =
+                NSDictionary::new();
+            rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)?
+        }
+    };
+    let n = PASTE_IMAGE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut path = std::env::temp_dir();
+    path.push(format!("warden-paste-{}-{}.png", std::process::id(), n));
+    std::fs::write(&path, png.bytes()).ok()?;
+    Some(path.to_str()?.to_owned())
 }
 unsafe extern "C" fn confirm_read_clipboard_cb(
     _userdata: *mut c_void,
