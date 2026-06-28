@@ -151,6 +151,37 @@ fn main() {
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
 
+                // Minimal macOS app menu. Windows are built at runtime with no NSMenu, so the
+                // standard window shortcuts (⌘Q/⌘W/⌘M) are dead without this. The predefined
+                // items carry their own accelerators + actions, so there's nothing to handle.
+                {
+                    use tauri::menu::{MenuBuilder, SubmenuBuilder};
+                    let app_menu = SubmenuBuilder::new(app, "warden")
+                        .quit()
+                        .close_window()
+                        .minimize()
+                        .build()?;
+                    let menu = MenuBuilder::new(app).item(&app_menu).build()?;
+                    app.set_menu(menu)?;
+                }
+
+                // Tab-cycle hotkeys (⌘+arrows). The focused terminal view captures the keys and
+                // calls back here (the seam stays Tauri-free); we forward the direction to the
+                // focused window's chrome, which moves the active tab via its existing select()
+                // path. emit_to targets that one window so siblings don't also cycle.
+                let cycle_handle = app.handle().clone();
+                crate::surface::ghostty::set_tab_cycle_handler(Box::new(move |dir| {
+                    use tauri::{Emitter, Manager};
+                    let focused = cycle_handle
+                        .webview_windows()
+                        .into_values()
+                        .find(|w| w.is_focused().unwrap_or(false))
+                        .map(|w| w.label().to_string());
+                    if let Some(label) = focused {
+                        let _ = cycle_handle.emit_to(label.as_str(), "warden:cycle-tab", dir);
+                    }
+                }));
+
                 // Hot-reload: watch the config file; on each event reload + diff
                 // against last_good + apply the resulting WindowOps to live
                 // windows. The notify callback runs on a background thread, but

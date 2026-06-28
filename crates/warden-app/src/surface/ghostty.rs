@@ -106,6 +106,39 @@ unsafe extern "C" fn action_cb(
 /// hang context on. Cleared on `close()` so a freed surface is never completed against (UAF).
 static FOCUSED_SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
+/// Tab-cycle hook. The focused terminal view captures ⌘+arrow and asks the chrome to switch tabs
+/// through this callback, so the seam stays ignorant of Tauri (it holds only a `Fn(i32)`, never a
+/// Tauri type). Argument is a direction: -1 = previous tab, +1 = next. Registered once by the
+/// Tauri layer at setup via `set_tab_cycle_handler`. [seam boundary]
+static TAB_CYCLE: OnceLock<Box<dyn Fn(i32) + Send + Sync>> = OnceLock::new();
+
+/// Register the tab-cycle handler (called once from the Tauri layer at setup).
+pub fn set_tab_cycle_handler(f: Box<dyn Fn(i32) + Send + Sync>) {
+    let _ = TAB_CYCLE.set(f);
+}
+
+// macOS virtual keycodes for the arrow keys (Carbon `kVK_*`), stable across keyboards.
+const KEYCODE_LEFT: u16 = 123;
+const KEYCODE_RIGHT: u16 = 124;
+const KEYCODE_DOWN: u16 = 125;
+const KEYCODE_UP: u16 = 126;
+
+/// Map a ⌘+arrow event to a tab-cycle direction (-1 previous / +1 next), or `None` if it isn't one.
+/// ⌘ must be the only primary modifier: ⌃/⌥+arrow are terminal word-motion / Meta combos and must
+/// pass through to libghostty untouched, and a plain arrow obviously must too.
+fn tab_cycle_direction(event: &NSEvent) -> Option<i32> {
+    // SAFETY: read-only NSEvent accessors, mirroring `mods_from_event`/`forward_key`.
+    let flags = unsafe { event.modifierFlags() }.0;
+    if flags & NS_FLAG_COMMAND == 0 || flags & (NS_FLAG_CONTROL | NS_FLAG_OPTION) != 0 {
+        return None;
+    }
+    match unsafe { event.keyCode() } {
+        KEYCODE_LEFT | KEYCODE_UP => Some(-1),
+        KEYCODE_RIGHT | KEYCODE_DOWN => Some(1),
+        _ => None,
+    }
+}
+
 /// Paste: libghostty asks for clipboard data (e.g. on ⌘V); read the macOS general pasteboard and
 /// hand it back via `complete_clipboard_request`. Runs on the main thread (from a `ghostty_app_tick`).
 unsafe extern "C" fn read_clipboard_cb(
@@ -243,6 +276,15 @@ declare_class!(
             let surface = self.ivars().surface.get();
             if surface.is_null() || surface != FOCUSED_SURFACE.load(Ordering::Acquire) {
                 return objc2::runtime::Bool::NO;
+            }
+            // Tab-cycle hotkeys: ⌘←/⌘↑ = previous tab, ⌘→/⌘↓ = next. Handled here (⌘-key-downs
+            // arrive via performKeyEquivalent, not keyDown) and swallowed so the terminal never
+            // sees them. The hook routes to the chrome; the seam stays Tauri-free.
+            if let Some(dir) = tab_cycle_direction(event) {
+                if let Some(handler) = TAB_CYCLE.get() {
+                    handler(dir);
+                    return objc2::runtime::Bool::YES;
+                }
             }
             let consumed =
                 unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };

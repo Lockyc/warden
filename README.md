@@ -21,9 +21,9 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 **Working on macOS.** Public project, currently a private repo until it's ready for release. Two layers are built:
 
 - **Config-core** — the `warden-config` crate (parse / validate / resolve / diff / load / watch) plus a `warden validate` CLI.
-- **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens one window per profile from the config (colour + name banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`keep_alive` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up.
+- **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens one window per profile from the config (colour + name banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`keep_alive` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs with **⌘←/⌘↑** (previous) and **⌘→/⌘↓** (next); ⌘Q/⌘W/⌘M come from a minimal app menu.
 
-Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): full keybindings + ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
+Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle profile windows, ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
 
 ## Config
 

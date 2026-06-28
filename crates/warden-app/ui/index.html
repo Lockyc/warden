@@ -51,6 +51,11 @@
            this same base). MUST stay opaque: the window is transparent so a hole
            can show the native surface — any alpha here leaks the wallpaper. */
         background: #15191e;
+        /* The sidebar is chrome, not content — banner name and tab rows must not
+           be text-selectable (dragging across the chrome should never start a
+           selection). The terminal-hole is a native surface, unaffected by this. */
+        user-select: none;
+        -webkit-user-select: none;
       }
       #banner {
         flex: none;
@@ -284,6 +289,21 @@
         document.getElementById('error').style.display = 'none';
         // #app grows back; resize the surface to reclaim the reclaimed strip.
         reportRect();
+      });
+
+      // Tab-cycle hotkeys (⌘←/⌘↑ prev, ⌘→/⌘↓ next): the native layer captures the keys on the
+      // focused terminal and emits a direction (-1/+1) to THIS window only (emit_to), so no label
+      // filter is needed. Read the rendered tab order from the DOM, step with wraparound, reuse
+      // select() (same path as a click → activate_tab + highlight).
+      listen('warden:cycle-tab', (e) => {
+        const ids = [...document.querySelectorAll('.tab')].map(el => el.dataset.id);
+        if (ids.length < 2) return;
+        const dir = e.payload < 0 ? -1 : 1;
+        const cur = ids.indexOf(active);
+        // Unknown active: step in from the end opposite the direction of travel.
+        const base = cur === -1 ? (dir > 0 ? -1 : 0) : cur;
+        const next = (base + dir + ids.length) % ids.length;
+        select(ids[next]);
       });
 
       function paint() {
