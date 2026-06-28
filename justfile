@@ -38,6 +38,18 @@ fmt:
 clippy:
     cargo clippy --workspace -- -D warnings
 
-# No `build`/`deploy` recipes yet: packaging is deferred. The Tauri bundle is inactive
-# (`bundle.active = false`) and no tauri-cli is wired, so there is no .app/.dmg to install.
-# Add them alongside enabling bundling — see docs/FOLLOWUPS.md (release packaging).
+# Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)
+[group("dist")]
+build:
+    cd crates/warden-app && cargo tauri build
+
+# Build a release .app, install/replace it in /Applications (strips quarantine), then relaunch.
+# Unsigned local build — no notarization; Gatekeeper is satisfied via the quarantine strip.
+[group("dist")]
+deploy: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash scripts/install-app.sh "target/release/bundle/macos/warden.app"
+    echo "→ launching"
+    open "/Applications/warden.app"
+    echo "✓ warden updated in /Applications"

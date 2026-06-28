@@ -55,7 +55,11 @@ just validate     # validate the demo config (pass a path to validate another)
 just test         # workspace tests
 just fmt          # format
 just clippy       # lint (warnings as errors)
+just build        # build the release warden.app (needs: cargo install tauri-cli --version ^2)
+just deploy       # build, install to /Applications (unsigned), and relaunch
 ```
+
+`just deploy` produces a **non-notarized** local build (code-signed with your Apple Development identity if you have one, else unsigned) and strips the Gatekeeper quarantine xattr so it runs; it is not notarized for distribution to other machines.
 
 Or with cargo directly:
 

@@ -7,6 +7,7 @@
 #
 # Outputs (committed, but reproducible from the above):
 #   icon-1024.png, icon-512.png, favicon-32.png, warden.icns
+#   crates/warden-app/icons/icon.icns  — the same .icns where the Tauri bundle consumes it
 #
 # Deps (macOS):  rsvg-convert  (brew install librsvg)
 #                iconutil      (ships with macOS)
@@ -43,4 +44,9 @@ rm "$ICON"/_*.png
 iconutil -c icns "$ICON" -o warden.icns
 rm -rf "$ICON"
 
-echo "regenerated: icon-1024.png icon-512.png favicon-32.png warden.icns"
+# Publish the .icns where the Tauri bundle consumes it (path relative to the app's tauri.conf.json).
+APP_ICONS=../crates/warden-app/icons
+mkdir -p "$APP_ICONS"
+cp warden.icns "$APP_ICONS/icon.icns"
+
+echo "regenerated: icon-1024.png icon-512.png favicon-32.png warden.icns crates/warden-app/icons/icon.icns"

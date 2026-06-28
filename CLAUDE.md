@@ -64,7 +64,8 @@ Validation: unique profile name, unique tab title within a profile, non-empty na
 - `cargo build` / `cargo test` (workspace). `warden-app` is macOS-only (libghostty embed); it fails to compile elsewhere by design.
 - `cargo run -p warden-config --bin warden -- validate [path]` — validates a config and prints the resolved profile/tab tree + warnings (exit 0 ok / 1 load error / 2 usage).
 - `cargo run -p warden-app` — launch the GUI (reads `WARDEN_CONFIG` or `~/.config/warden/config.toml`).
-- **`justfile`** wraps the common flows: `just run` (launches the app against `examples/config.toml` via `WARDEN_CONFIG`, so iterating never touches your real config), `just validate [path]`, `just test`, `just check`, `just fmt`, `just clippy`; bare `just` lists them. No `build`/`deploy` recipes yet — packaging is deferred (see `docs/FOLLOWUPS.md`).
+- **`justfile`** wraps the common flows: `just run` (launches the app against `examples/config.toml` via `WARDEN_CONFIG`, so iterating never touches your real config), `just validate [path]`, `just test`, `just check`, `just fmt`, `just clippy`; bare `just` lists them.
+- **Packaging:** `just build` produces the release `warden.app` (needs the Tauri CLI — `cargo install tauri-cli --version ^2`); `just deploy` installs it to `/Applications` and relaunches. The build is **not notarized** (Tauri code-signs it with your local Apple Development identity if one is in the keychain, else leaves it unsigned); `scripts/install-app.sh` strips the Gatekeeper quarantine xattr so the local copy runs either way. Distributing to *other* machines would need Developer ID signing + notarization (deferred, see `docs/FOLLOWUPS.md`). The bundle icon is `crates/warden-app/icons/icon.icns`, produced from the SVG masters by `assets/build-icons.sh`.
 
 ## Conventions & footguns (things that have bitten us / will bite again)
 
