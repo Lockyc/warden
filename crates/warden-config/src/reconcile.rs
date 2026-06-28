@@ -1,21 +1,21 @@
 use std::path::PathBuf;
 
 use crate::colour::Colour;
-use crate::model::{Config, Profile, Tab};
+use crate::model::{Config, Tab, Window};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reconciliation {
-    pub open: Vec<Profile>,
+    pub open: Vec<Window>,
     pub close: Vec<String>,
-    pub update: Vec<ProfileUpdate>,
+    pub update: Vec<WindowUpdate>,
 }
 
-/// Describes in-place mutations needed for a profile that stays open across a
+/// Describes in-place mutations needed for a window that stays open across a
 /// config reload.
 ///
 /// **What IS detected** (any of these triggers an emit):
 /// - `colour`: the window accent colour changed.
-/// - `icon`: the profile icon changed. Outer `Some` = changed; the inner
+/// - `icon`: the window icon changed. Outer `Some` = changed; the inner
 ///   `Option<PathBuf>` is the new value, which may be `Some(path)` or `None`
 ///   to clear the icon.
 /// - `add_tabs` / `remove_tabs`: tabs were added or removed, matched by
@@ -30,11 +30,11 @@ pub struct Reconciliation {
 ///   no op — the tab appears identical to the reconciler. The consumer must
 ///   close and reopen the tab to pick up such field-level edits.
 ///
-/// **Profile renames are destructive.** A rename appears as `close(old) +
+/// **Window renames are destructive.** A rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
 /// `keep_alive` tabs). There is no concept of a live retitle.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ProfileUpdate {
+pub struct WindowUpdate {
     pub name: String,
     pub colour: Option<Colour>,
     pub icon: Option<Option<PathBuf>>,
@@ -43,16 +43,16 @@ pub struct ProfileUpdate {
     pub tab_order: Vec<String>,
 }
 
-fn find<'a>(profiles: &'a [Profile], name: &str) -> Option<&'a Profile> {
-    profiles.iter().find(|p| p.name == name)
+fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
+    windows.iter().find(|p| p.name == name)
 }
 
 /// Diff two configs and return the set of operations needed to bring a running
 /// session from `old` to `new`.
 ///
 /// **What IS detected:**
-/// - Profiles opened/closed, matched by `name`.
-/// - For a kept profile: colour change, icon change, tab add/remove (by
+/// - Windows opened/closed, matched by `name`.
+/// - For a kept window: colour change, icon change, tab add/remove (by
 ///   `Tab::key` = resolved title), and tab reorder (via `tab_order`).
 ///
 /// **What is NOT detected:**
@@ -61,7 +61,7 @@ fn find<'a>(profiles: &'a [Profile], name: &str) -> Option<&'a Profile> {
 ///   is emitted — the tab appears identical to the reconciler. The consumer
 ///   must close and reopen the tab to pick up such field-level edits.
 ///
-/// **Profile renames are destructive** — a rename appears as `close(old) +
+/// **Window renames are destructive** — a rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
 /// `keep_alive` tabs).
 pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
@@ -70,14 +70,14 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
     let mut update = Vec::new();
 
     // closed: in old, not in new
-    for op in &old.profiles {
-        if find(&new.profiles, &op.name).is_none() {
+    for op in &old.windows {
+        if find(&new.windows, &op.name).is_none() {
             close.push(op.name.clone());
         }
     }
 
-    for np in &new.profiles {
-        match find(&old.profiles, &np.name) {
+    for np in &new.windows {
+        match find(&old.windows, &np.name) {
             None => open.push(np.clone()),
             Some(op) => {
                 let colour = (op.colour != np.colour).then_some(np.colour);
@@ -115,7 +115,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     || !remove_tabs.is_empty()
                     || order_changed
                 {
-                    update.push(ProfileUpdate {
+                    update.push(WindowUpdate {
                         name: np.name.clone(),
                         colour,
                         icon,
@@ -146,16 +146,16 @@ mod tests {
     }
 
     const BASE: &str = r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
 "##;
 
     #[test]
-    fn added_profile_goes_to_open() {
+    fn added_window_goes_to_open() {
         let old = cfg("");
         let new = cfg(BASE);
         let r = reconcile(&old, &new);
@@ -165,7 +165,7 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn removed_profile_goes_to_close() {
+    fn removed_window_goes_to_close() {
         let r = reconcile(&cfg(BASE), &cfg(""));
         assert_eq!(r.close, vec!["work".to_string()]);
         assert!(r.open.is_empty() && r.update.is_empty());
@@ -194,12 +194,12 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn added_and_removed_tabs_within_kept_profile() {
+    fn added_and_removed_tabs_within_kept_window() {
         let new = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "ops"
   dir = "/tmp/ops"
 "##);
@@ -220,24 +220,24 @@ colour = "#0f8a8a"
     #[test]
     fn reorder_only_emits_update_with_new_order() {
         let old = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "alpha"
   dir = "/tmp/alpha"
-  [[profile.tab]]
+  [[window.tab]]
   title = "beta"
   dir = "/tmp/beta"
 "##);
         let new = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "beta"
   dir = "/tmp/beta"
-  [[profile.tab]]
+  [[window.tab]]
   title = "alpha"
   dir = "/tmp/alpha"
 "##);
@@ -245,7 +245,7 @@ colour = "#0f8a8a"
         assert_eq!(
             r.update.len(),
             1,
-            "expected exactly one ProfileUpdate for a tab reorder"
+            "expected exactly one WindowUpdate for a tab reorder"
         );
         let u = &r.update[0];
         assert_eq!(u.tab_order, vec!["beta".to_string(), "alpha".to_string()]);
@@ -258,29 +258,25 @@ colour = "#0f8a8a"
     #[test]
     fn icon_change_emits_update() {
         let old = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
 icon = "/tmp/old.png"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
 "##);
         let new = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
 icon = "/tmp/new.png"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
 "##);
         let r = reconcile(&old, &new);
-        assert_eq!(
-            r.update.len(),
-            1,
-            "expected a ProfileUpdate for icon change"
-        );
+        assert_eq!(r.update.len(), 1, "expected a WindowUpdate for icon change");
         let u = &r.update[0];
         assert_eq!(
             u.icon,
@@ -298,18 +294,18 @@ icon = "/tmp/new.png"
     #[test]
     fn in_place_tab_field_edit_is_not_detected() {
         let old = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
 "##);
         let new = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus-new"
 "##);

@@ -3,11 +3,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
-    pub profiles: Vec<Profile>,
+    pub windows: Vec<Window>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Profile {
+pub struct Window {
     pub name: String,
     pub colour: Colour,
     pub icon: Option<PathBuf>,
@@ -31,6 +31,6 @@ pub struct Tab {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Warning {
-    pub profile: String,
+    pub window: String,
     pub message: String,
 }

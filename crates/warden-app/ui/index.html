@@ -47,7 +47,7 @@
         /* The window drag region is wired via the `data-tauri-drag-region` HTML
            attribute on #sidebar/#banner/#tab-list (below) — macOS WKWebView
            ignores Chromium's `-webkit-app-region`, so that CSS isn't used here. */
-        /* Opaque dark base (JS overrides with the profile tint composited over
+        /* Opaque dark base (JS overrides with the window tint composited over
            this same base). MUST stay opaque: the window is transparent so a hole
            can show the native surface — any alpha here leaks the wallpaper. */
         background: #15191e;
@@ -67,7 +67,7 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        /* Fallback colour; JS sets to the profile colour */
+        /* Fallback colour; JS sets to the window colour */
         background: #0f8a8a;
       }
       #tab-list {
@@ -203,7 +203,7 @@
     <script>
       const { invoke } = window.__TAURI__.core;
       const { listen } = window.__TAURI__.event;
-      let profileColour = '#0f8a8a';
+      let windowColour = '#0f8a8a';
       let active = null;
       // This window's Tauri label, learned from the init DTO. Used to ignore
       // warden:refresh events addressed to a sibling window — a robust guard
@@ -213,7 +213,7 @@
       // a warden:refresh re-render restores the badges instead of dropping them.
       const badges = new Set();
 
-      /** Opaque dark base the sidebar composites the profile tint over. Must
+      /** Opaque dark base the sidebar composites the window tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
       const SIDEBAR_BASE = [21, 25, 30]; // #15191e
 
@@ -285,20 +285,20 @@
           same way whether it's the initial DTO or a pushed reconcile snapshot. */
       function render(dto) {
         const prevActive = active;
-        profileColour = dto.colour ?? '#0f8a8a';
+        windowColour = dto.colour ?? '#0f8a8a';
 
         // Drop badges for tabs that no longer exist (removed/renamed by a hot-reload), so a
         // future tab that reuses the id doesn't inherit a stale unread dot.
         const ids = new Set(dto.tabs.map(t => t.id));
         badges.forEach(id => { if (!ids.has(id)) badges.delete(id); });
 
-        // Apply profile identity: banner shows the name on the profile colour;
+        // Apply window identity: banner shows the name on the window colour;
         // the sidebar gets a faint tint of the same colour.
         const banner = document.getElementById('banner');
         banner.textContent = dto.name;
-        banner.style.background = profileColour;
+        banner.style.background = windowColour;
         // Opaque tint composited over the dark base (no alpha — see tintOverBase).
-        document.getElementById('sidebar').style.background = tintOverBase(profileColour, 0.12);
+        document.getElementById('sidebar').style.background = tintOverBase(windowColour, 0.12);
 
         const list = document.getElementById('tab-list');
         list.innerHTML = '';
@@ -375,7 +375,7 @@
       // Hot-reload: the manager pushes a fresh snapshot to this window after a
       // reconcile Update (colour/tab add/remove/reorder) so the sidebar rebuilds.
       // Filter by label: a refresh addressed to a sibling window must be ignored
-      // here, otherwise this window would relabel itself with another profile's
+      // here, otherwise this window would relabel itself with another window's
       // DTO (corrupting its name/colour/tabs and breaking tab clicks).
       listen('warden:refresh', (e) => {
         if (e.payload && e.payload.label && myLabel && e.payload.label !== myLabel) return;
@@ -443,7 +443,7 @@
         document.querySelectorAll('.tab').forEach(el => {
           const isActive = el.dataset.id === active;
           el.classList.toggle('active', isActive);
-          el.style.background = isActive ? hexToRgba(profileColour, 0.28) : '';
+          el.style.background = isActive ? hexToRgba(windowColour, 0.28) : '';
           // The active tab always has a live surface (activate spawns it), so its
           // dot is live even if the last DTO snapshot was captured while it was
           // still cold (e.g. a lazy tab activated by select() or render()).

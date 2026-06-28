@@ -38,7 +38,7 @@ struct RectArg {
     height: f64,
 }
 
-/// All live profile windows, behind a `Mutex`. Each `WindowState` holds a
+/// All live window windows, behind a `Mutex`. Each `WindowState` holds a
 /// `Registry` with `GhosttySurface: Send` values; all access is on the
 /// main/UI thread (Tauri commands run there). [seam: manager only]
 #[cfg(target_os = "macos")]
@@ -205,7 +205,7 @@ fn main() {
                 // dot/highlight repaint, so it drives the unload_tab command on this event.
                 let _ = app.emit_to(label.as_str(), "warden:unload-tab", ());
             } else if id == MENU_WINDOW_CLOSE {
-                // ⌘⇧W closes the whole profile window (Destroyed → reap surfaces, last-window-quit).
+                // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, last-window-quit).
                 let _ = win.close();
             } else if let Some(n) = id
                 .strip_prefix(MENU_TAB_JUMP_PREFIX)
@@ -229,14 +229,14 @@ fn main() {
                 let handle = app.handle().clone();
                 let mut mgr = WindowManager::new();
                 // Load config; on a missing/invalid/empty config, fall back to a
-                // single diagnostic window instead of materializing profiles.
+                // single diagnostic window instead of materializing windows.
                 // Recovery happens in the watcher: the first valid load while no
-                // profile window is live materializes + closes the diagnostic.
+                // window window is live materializes + closes the diagnostic.
                 match warden_config::load(&warden_config::config_path()) {
-                    Ok(loaded) if !loaded.config.profiles.is_empty() => {
+                    Ok(loaded) if !loaded.config.windows.is_empty() => {
                         mgr.materialize(&handle, loaded.config);
                     }
-                    Ok(_) => mgr.show_diagnostic(&handle, "config has no [[profile]] entries"),
+                    Ok(_) => mgr.show_diagnostic(&handle, "config has no [[window]] entries"),
                     Err(e) => mgr.show_diagnostic(&handle, &e.to_string()),
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
@@ -320,7 +320,7 @@ fn main() {
                     let _ = wh.clone().run_on_main_thread(move || {
                         use tauri::{Emitter, Manager};
                         match res {
-                            Ok(loaded) if !loaded.config.profiles.is_empty() => {
+                            Ok(loaded) if !loaded.config.windows.is_empty() => {
                                 let st = wh.state::<ManagerState>();
                                 let mut m = st.lock();
                                 if m.is_empty() {
@@ -341,11 +341,11 @@ fn main() {
                                 let _ = wh.emit("warden:error-clear", ());
                             }
                             Ok(_) => {
-                                // Valid TOML but no profiles: keep live windows up,
+                                // Valid TOML but no windows: keep live windows up,
                                 // surface the error banner rather than tearing down.
                                 let _ = wh.emit(
                                     "warden:error",
-                                    "config has no [[profile]] entries".to_string(),
+                                    "config has no [[window]] entries".to_string(),
                                 );
                             }
                             Err(e) => {

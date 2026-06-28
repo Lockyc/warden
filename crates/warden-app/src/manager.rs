@@ -1,4 +1,4 @@
-//! Owns the live profile windows. Materializes them from config and (Task 7)
+//! Owns the live window windows. Materializes them from config and (Task 7)
 //! applies reconciliations. Impure (Tauri + AppKit) — verified at checkpoints.
 
 use crate::plan::{reconcile_ops, window_specs, WindowOp, WindowSpec};
@@ -18,10 +18,10 @@ const INITIAL_RECT: PixelRect = PixelRect {
     height: 600.0,
 };
 
-/// The single diagnostic window's Tauri label. Deliberately NOT a profile
+/// The single diagnostic window's Tauri label. Deliberately NOT a window
 /// label and never inserted into `WindowManager::windows`, so it is invisible
 /// to `is_empty()` and carries no `Destroyed`→last-window-quit handler: closing
-/// it alone never exits the app, and it never counts as a "live" profile set.
+/// it alone never exits the app, and it never counts as a "live" window set.
 const DIAG_LABEL: &str = "warden-diagnostic";
 
 #[derive(serde::Serialize, Clone)]
@@ -44,7 +44,7 @@ pub struct WindowState {
 
 pub struct WindowManager {
     pub windows: HashMap<String, WindowState>, // key = Tauri label
-    pub names: HashMap<String, String>,        // profile name -> label
+    pub names: HashMap<String, String>,        // window name -> label
     pub last_good: Config,
     /// The message shown by the diagnostic window; fetched by its page via the
     /// `diagnostic_message` command. Empty when no diagnostic is showing.
@@ -57,7 +57,7 @@ impl WindowManager {
             windows: HashMap::new(),
             names: HashMap::new(),
             last_good: Config {
-                profiles: Vec::new(),
+                windows: Vec::new(),
             },
             diagnostic_msg: String::new(),
         }
@@ -104,11 +104,11 @@ impl WindowManager {
                 // terminal reaches the very top (curator-style). The title bar
                 // becomes a transparent overlay; traffic lights stay visible over
                 // the sidebar's top-left. `hidden_title` drops the title text so
-                // only the in-app banner names the profile.
+                // only the in-app banner names the window.
                 .hidden_title(true)
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .build()
-                .expect("build profile window");
+                .expect("build window window");
 
         let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 
@@ -121,7 +121,7 @@ impl WindowManager {
         }
 
         // On manual close (or any destroy), drop the window's state and reap its
-        // surfaces; quit when the last profile window goes away. Idempotent with
+        // surfaces; quit when the last window window goes away. Idempotent with
         // `apply`'s `WindowOp::Close` (which removes the state before closing the
         // window): `HashMap::remove` returns `None` the second time and
         // `close_all` drains, so there is no double-free.
@@ -147,7 +147,7 @@ impl WindowManager {
         }
     }
 
-    /// Materialize every profile as a window. Sets `last_good = config`.
+    /// Materialize every window as a window. Sets `last_good = config`.
     pub fn materialize(&mut self, app: &AppHandle, config: Config) {
         for spec in window_specs(&config) {
             let state = self.build_window(app, &spec);
@@ -179,7 +179,7 @@ impl WindowManager {
     }
 
     /// Labels currently in use — the seed `unique_label` must avoid when
-    /// assigning a fresh label to a newly-opened profile during reconcile.
+    /// assigning a fresh label to a newly-opened window during reconcile.
     fn taken_labels(&self) -> HashSet<String> {
         self.windows.keys().cloned().collect()
     }
@@ -235,7 +235,7 @@ impl WindowManager {
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
                         // An icon-only config change reaches here as an otherwise-empty
-                        // Update: per-profile window icon isn't applied yet (deferred),
+                        // Update: per-window window icon isn't applied yet (deferred),
                         // and `order` still carries the unchanged tab sequence. Skip it
                         // so an icon edit doesn't churn a full sidebar rebuild for zero
                         // visible change.
@@ -264,7 +264,7 @@ impl WindowManager {
                         // it delegates to the shared app manager regardless of the
                         // receiver — so emitting on `ws.window` would fire every
                         // sibling window's listener and corrupt their sidebars with
-                        // this profile's DTO. `emit_to(label, …)` scopes it to the
+                        // this window's DTO. `emit_to(label, …)` scopes it to the
                         // one window. `label` is the Tauri window label.
                         let dto = InitDto {
                             label: label.clone(),

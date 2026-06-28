@@ -79,17 +79,17 @@ mod tests {
     fn fires_callback_on_save() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        write(&path, "[[profile]]\nname=\"a\"\ncolour=\"#000000\"\n");
+        write(&path, "[[window]]\nname=\"a\"\ncolour=\"#000000\"\n");
 
         let (tx, rx) = mpsc::channel();
         let _w = Watcher::new(path.clone(), move |res| {
-            let _ = tx.send(res.map(|l| l.config.profiles[0].name.clone()));
+            let _ = tx.send(res.map(|l| l.config.windows[0].name.clone()));
         })
         .unwrap();
 
         // Give the watcher a moment to register, then modify.
         std::thread::sleep(Duration::from_millis(200));
-        write(&path, "[[profile]]\nname=\"b\"\ncolour=\"#000000\"\n");
+        write(&path, "[[window]]\nname=\"b\"\ncolour=\"#000000\"\n");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let got = loop {
@@ -101,7 +101,7 @@ mod tests {
                     }
                     // stale early event (e.g. the initial create) — keep draining
                 }
-                Err(_) => panic!("timed out waiting for callback with profile 'b'"),
+                Err(_) => panic!("timed out waiting for callback with window 'b'"),
             }
         };
         assert_eq!(got.unwrap(), "b");

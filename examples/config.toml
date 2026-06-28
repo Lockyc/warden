@@ -1,18 +1,18 @@
 # Example warden config. `just run` loads THIS file (via WARDEN_CONFIG) so iterating on the
 # app never touches your real ~/.config/warden/config.toml.
 #
-# A [[profile]] is a window (colour + name banner). A [[profile.tab]] is a terminal opened in
+# A [[window]] is a window (colour + name banner). A [[window.tab]] is a terminal opened in
 # `dir` running a `shell`; a tab's optional `cmd` is auto-run *inside* that shell (typed in, not
 # exec'd — so a shell function like agentmux's `amux` works and you drop back to a live shell when
 # it exits). `keep_alive` spawns the tab at launch and keeps it running for background work; other
 # tabs spawn lazily on first focus.
 #
-# `shell` and `cmd` CASCADE: set them globally, per-profile, or per-tab — the nearest level wins.
+# `shell` and `cmd` CASCADE: set them globally, per-window, or per-tab — the nearest level wins.
 # A missing value inherits from above; `cmd = ""` opts a level out of an inherited command.
 
 shell = "fish -l"                     # global default shell for every tab
 
-[[profile]]                            # a window
+[[window]]                            # a window
 name   = "work"
 colour = "#0f8a8a"
 cmd    = "echo 'in work'"             # default startup for this window's tabs (each can override)
@@ -20,21 +20,21 @@ cmd    = "echo 'in work'"             # default startup for this window's tabs (
   # Point these at your own project dirs. The demo paths all exist on a stock macOS so
   # `just validate` stays warning-free. NOTE: tilde expansion only handles `~/…` — a bare
   # `~` is left literal and warns; write `~/Library`, not `~`.
-  [[profile.tab]]
+  [[window.tab]]
   title = "library"
-  dir   = "~/Library"                 # inherits the profile's cmd
+  dir   = "~/Library"                 # inherits the window's cmd
 
-  [[profile.tab]]
+  [[window.tab]]
   title      = "logs"
   dir        = "/var/log"
   cmd        = ""                      # opt out: bare shell, no startup command
   keep_alive = true                    # spawns at launch + stays live for background work
 
-[[profile]]
+[[window]]
 name   = "play"
 colour = "#b5651d"
 
-  [[profile.tab]]
+  [[window.tab]]
   title = "scratch"
   dir   = "/tmp"
   shell = "zsh"                        # per-tab shell override

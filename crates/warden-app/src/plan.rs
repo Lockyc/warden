@@ -3,7 +3,7 @@
 
 use crate::surface::TabSpec;
 use std::collections::{HashMap, HashSet};
-use warden_config::{Config, Profile, Reconciliation};
+use warden_config::{Config, Reconciliation, Window};
 
 /// A tab to materialize, plus its spawn policy. `keep_alive` drives lazy-vs-eager
 /// spawn in the registry (spec §3); the surface layer itself never sees it.
@@ -13,17 +13,17 @@ pub struct TabPlan {
     pub keep_alive: bool,
 }
 
-/// Everything needed to build one profile window.
+/// Everything needed to build one window window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
     pub label: String,  // sanitized, unique — the Tauri window label
-    pub name: String,   // profile name, verbatim — banner + window title
+    pub name: String,   // window name, verbatim — banner + window title
     pub colour: String, // "#rrggbb" from Colour::hex()
     pub tabs: Vec<TabPlan>,
 }
 
-/// Map an arbitrary profile name to the Tauri label charset `[A-Za-z0-9-/:_]`.
-/// Disallowed chars → '-'; leading/trailing '-' trimmed; empty → "profile".
+/// Map an arbitrary window name to the Tauri label charset `[A-Za-z0-9-/:_]`.
+/// Disallowed chars → '-'; leading/trailing '-' trimmed; empty → "window".
 pub fn sanitize_label(name: &str) -> String {
     let mut s: String = name
         .chars()
@@ -42,7 +42,7 @@ pub fn sanitize_label(name: &str) -> String {
         s.pop();
     }
     if s.is_empty() {
-        s = "profile".to_string();
+        s = "window".to_string();
     }
     s
 }
@@ -63,9 +63,9 @@ pub fn unique_label(name: &str, taken: &HashSet<String>) -> String {
     }
 }
 
-/// Build a `WindowSpec` for one profile under an already-chosen `label`.
+/// Build a `WindowSpec` for one window under an already-chosen `label`.
 /// Tab id = `Tab::key` (the resolved title — the reconcile identity).
-pub fn profile_to_spec(p: &Profile, label: String) -> WindowSpec {
+pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
     let tabs = p
         .tabs
         .iter()
@@ -88,16 +88,16 @@ pub fn profile_to_spec(p: &Profile, label: String) -> WindowSpec {
     }
 }
 
-/// Map a whole config to window specs, assigning unique labels in profile order.
+/// Map a whole config to window specs, assigning unique labels in window order.
 pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
     let mut taken = HashSet::new();
     config
-        .profiles
+        .windows
         .iter()
         .map(|p| {
             let label = unique_label(&p.name, &taken);
             taken.insert(label.clone());
-            profile_to_spec(p, label)
+            window_to_spec(p, label)
         })
         .collect()
 }
@@ -116,8 +116,8 @@ pub enum WindowOp {
     },
 }
 
-/// Map a reconciliation (by profile name) to window ops (by Tauri label).
-/// New profiles get fresh unique labels avoiding `taken` ∪ labels already
+/// Map a reconciliation (by window name) to window ops (by Tauri label).
+/// New windows get fresh unique labels avoiding `taken` ∪ labels already
 /// assigned earlier in this same call.
 pub fn reconcile_ops(
     recon: &Reconciliation,
@@ -127,10 +127,10 @@ pub fn reconcile_ops(
     let mut ops = Vec::new();
     let mut assigned: HashSet<String> = taken.clone();
 
-    for profile in &recon.open {
-        let label = unique_label(&profile.name, &assigned);
+    for window in &recon.open {
+        let label = unique_label(&window.name, &assigned);
         assigned.insert(label.clone());
-        ops.push(WindowOp::Open(profile_to_spec(profile, label)));
+        ops.push(WindowOp::Open(window_to_spec(window, label)));
     }
 
     for name in &recon.close {
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(sanitize_label("work stuff"), "work-stuff");
         assert_eq!(sanitize_label("café ☕"), "caf");
         assert_eq!(sanitize_label("--x--"), "x");
-        assert_eq!(sanitize_label("☕☕"), "profile");
+        assert_eq!(sanitize_label("☕☕"), "window");
     }
 
     #[test]
@@ -210,16 +210,16 @@ mod tests {
     }
 
     #[test]
-    fn window_specs_maps_profile_and_tabs() {
+    fn window_specs_maps_window_and_tabs() {
         let c = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
   keep_alive = true
-  [[profile.tab]]
+  [[window.tab]]
   title = "ops"
   dir = "/tmp/ops"
 "##);
@@ -250,13 +250,13 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn open_profile_becomes_open_op() {
+    fn open_window_becomes_open_op() {
         let old = cfg("");
         let new = cfg(r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
 "##);
@@ -270,12 +270,12 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn closed_profile_becomes_close_op_with_label() {
+    fn closed_window_becomes_close_op_with_label() {
         let old = cfg(r##"
-[[profile]]
+[[window]]
 name = "work zone"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
 "##);
@@ -288,10 +288,10 @@ colour = "#0f8a8a"
     #[test]
     fn colour_change_becomes_update_op_with_hex() {
         let base = r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "{C}"
-  [[profile.tab]]
+  [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
 "##;
@@ -312,16 +312,16 @@ colour = "{C}"
     #[test]
     fn window_specs_dedupes_labels_for_colliding_sanitized_names() {
         let c = cfg(r##"
-[[profile]]
+[[window]]
 name = "a b"
 colour = "#111111"
-  [[profile.tab]]
+  [[window.tab]]
   title = "t1"
   dir = "/tmp/t1"
-[[profile]]
+[[window]]
 name = "a-b"
 colour = "#222222"
-  [[profile.tab]]
+  [[window.tab]]
   title = "t2"
   dir = "/tmp/t2"
 "##);

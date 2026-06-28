@@ -53,15 +53,15 @@ mod tests {
     fn loads_valid_file() {
         let (_d, path) = write_cfg(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/tmp/locus"
 "##,
         );
         let loaded = load(&path).unwrap();
-        assert_eq!(loaded.config.profiles[0].name, "work");
+        assert_eq!(loaded.config.windows[0].name, "work");
     }
 
     #[test]
@@ -78,7 +78,7 @@ colour = "#0f8a8a"
 
     #[test]
     fn invalid_colour_is_resolve_error() {
-        let (_d, path) = write_cfg("[[profile]]\nname=\"x\"\ncolour=\"nope\"\n");
+        let (_d, path) = write_cfg("[[window]]\nname=\"x\"\ncolour=\"nope\"\n");
         assert!(matches!(load(&path).unwrap_err(), LoadError::Resolve(_)));
     }
 

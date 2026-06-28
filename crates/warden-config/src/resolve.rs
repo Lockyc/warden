@@ -1,6 +1,6 @@
 use crate::colour::{Colour, ColourError};
-use crate::model::{Config, Profile, Tab, Warning};
-use crate::raw::{RawConfig, RawProfile};
+use crate::model::{Config, Tab, Warning, Window};
+use crate::raw::{RawConfig, RawWindow};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -9,35 +9,35 @@ use thiserror::Error;
 /// cascaded `shell`; a tab's cascaded `cmd`, if any, is auto-run *inside* it.
 pub const DEFAULT_SHELL: &str = "fish -l";
 
-/// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > profile >
+/// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
 /// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
 fn cascade<'a>(
     tab: Option<&'a str>,
-    profile: Option<&'a str>,
+    window: Option<&'a str>,
     global: Option<&'a str>,
 ) -> Option<&'a str> {
-    tab.or(profile).or(global).filter(|s| !s.trim().is_empty())
+    tab.or(window).or(global).filter(|s| !s.trim().is_empty())
 }
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ResolveError {
-    #[error("duplicate profile name: {0:?}")]
-    DuplicateProfile(String),
-    #[error("profile {profile:?} has duplicate tab title: {title:?}")]
-    DuplicateTab { profile: String, title: String },
-    #[error("profile {profile:?} has a tab with an empty dir")]
-    EmptyDir { profile: String },
-    #[error("profile {profile:?} has invalid colour")]
+    #[error("duplicate window name: {0:?}")]
+    DuplicateWindow(String),
+    #[error("window {window:?} has duplicate tab title: {title:?}")]
+    DuplicateTab { window: String, title: String },
+    #[error("window {window:?} has a tab with an empty dir")]
+    EmptyDir { window: String },
+    #[error("window {window:?} has invalid colour")]
     BadColour {
-        profile: String,
+        window: String,
         #[source]
         source: ColourError,
     },
-    #[error("profile at index {index} has an empty name")]
-    EmptyProfileName { index: usize },
-    #[error("profile {profile:?} has a tab with an empty explicit title")]
-    EmptyTabTitle { profile: String },
+    #[error("window at index {index} has an empty name")]
+    EmptyWindowName { index: usize },
+    #[error("window {window:?} has a tab with an empty explicit title")]
+    EmptyTabTitle { window: String },
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
@@ -59,34 +59,29 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     let global_shell = raw.shell.as_deref();
     let global_cmd = raw.cmd.as_deref();
     let mut warnings = Vec::new();
-    let mut profiles = Vec::with_capacity(raw.profiles.len());
-    let mut seen_profiles = HashSet::new();
+    let mut windows = Vec::with_capacity(raw.windows.len());
+    let mut seen_windows = HashSet::new();
 
-    for (index, rp) in raw.profiles.iter().enumerate() {
+    for (index, rp) in raw.windows.iter().enumerate() {
         if rp.name.trim().is_empty() {
-            return Err(ResolveError::EmptyProfileName { index });
+            return Err(ResolveError::EmptyWindowName { index });
         }
-        if !seen_profiles.insert(rp.name.clone()) {
-            return Err(ResolveError::DuplicateProfile(rp.name.clone()));
+        if !seen_windows.insert(rp.name.clone()) {
+            return Err(ResolveError::DuplicateWindow(rp.name.clone()));
         }
-        profiles.push(resolve_profile(
-            rp,
-            global_shell,
-            global_cmd,
-            &mut warnings,
-        )?);
+        windows.push(resolve_window(rp, global_shell, global_cmd, &mut warnings)?);
     }
-    Ok((Config { profiles }, warnings))
+    Ok((Config { windows }, warnings))
 }
 
-fn resolve_profile(
-    rp: &RawProfile,
+fn resolve_window(
+    rp: &RawWindow,
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
     warnings: &mut Vec<Warning>,
-) -> Result<Profile, ResolveError> {
+) -> Result<Window, ResolveError> {
     let colour = Colour::parse(&rp.colour).map_err(|source| ResolveError::BadColour {
-        profile: rp.name.clone(),
+        window: rp.name.clone(),
         source,
     })?;
     let icon = rp.icon.as_deref().map(expand_tilde);
@@ -96,31 +91,31 @@ fn resolve_profile(
     for rt in &rp.tabs {
         if rt.dir.trim().is_empty() {
             return Err(ResolveError::EmptyDir {
-                profile: rp.name.clone(),
+                window: rp.name.clone(),
             });
         }
         let dir = expand_tilde(&rt.dir);
         if let Some(ref t) = rt.title {
             if t.trim().is_empty() {
                 return Err(ResolveError::EmptyTabTitle {
-                    profile: rp.name.clone(),
+                    window: rp.name.clone(),
                 });
             }
         }
         let title = rt.title.clone().unwrap_or_else(|| basename(&dir));
         if !seen_titles.insert(title.clone()) {
             return Err(ResolveError::DuplicateTab {
-                profile: rp.name.clone(),
+                window: rp.name.clone(),
                 title,
             });
         }
         if !dir.exists() {
             warnings.push(Warning {
-                profile: rp.name.clone(),
+                window: rp.name.clone(),
                 message: format!("dir does not exist: {}", dir.display()),
             });
         }
-        // `shell` and `cmd` cascade tab → profile → global (nearest set level wins); `shell`
+        // `shell` and `cmd` cascade tab → window → global (nearest set level wins); `shell`
         // falls back to the built-in when unset everywhere, `cmd` is a startup command run
         // *inside* the shell (None = bare shell; `cmd = ""` at any level opts out of inheritance).
         let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), global_shell)
@@ -137,7 +132,7 @@ fn resolve_profile(
         });
     }
 
-    Ok(Profile {
+    Ok(Window {
         name: rp.name.clone(),
         colour,
         icon,
@@ -158,16 +153,16 @@ mod tests {
     fn title_defaults_to_dir_basename() {
         let (cfg, _) = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/tmp/locus"
 "##,
         )
         .unwrap();
-        assert_eq!(cfg.profiles[0].tabs[0].title, "locus");
-        assert_eq!(cfg.profiles[0].tabs[0].key, "locus");
+        assert_eq!(cfg.windows[0].tabs[0].title, "locus");
+        assert_eq!(cfg.windows[0].tabs[0].key, "locus");
     }
 
     #[test]
@@ -175,15 +170,15 @@ colour = "#0f8a8a"
         let (cfg, _) = resolve_str(
             r##"
 shell = "zsh"
-[[profile]]
+[[window]]
 name = "a"
 colour = "#000000"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/tmp/x"
-[[profile]]
+[[window]]
 name = "b"
 colour = "#000000"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/tmp/y"
   cmd = "tmux"
 "##,
@@ -191,25 +186,25 @@ colour = "#000000"
         .unwrap();
         // Every tab runs the cascaded shell (here the global `shell`); a tab's `cmd` is its
         // startup command, run *inside* that shell rather than replacing it.
-        assert_eq!(cfg.profiles[0].tabs[0].shell, "zsh");
-        assert_eq!(cfg.profiles[0].tabs[0].startup, None);
-        assert_eq!(cfg.profiles[1].tabs[0].shell, "zsh");
-        assert_eq!(cfg.profiles[1].tabs[0].startup.as_deref(), Some("tmux"));
+        assert_eq!(cfg.windows[0].tabs[0].shell, "zsh");
+        assert_eq!(cfg.windows[0].tabs[0].startup, None);
+        assert_eq!(cfg.windows[1].tabs[0].shell, "zsh");
+        assert_eq!(cfg.windows[1].tabs[0].startup.as_deref(), Some("tmux"));
 
         // shell unset everywhere → built-in shell; empty cmd → no startup command.
         let (cfg2, _) = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "a"
 colour = "#000000"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/tmp/x"
   cmd = "   "
 "##,
         )
         .unwrap();
-        assert_eq!(cfg2.profiles[0].tabs[0].shell, DEFAULT_SHELL);
-        assert_eq!(cfg2.profiles[0].tabs[0].startup, None);
+        assert_eq!(cfg2.windows[0].tabs[0].shell, DEFAULT_SHELL);
+        assert_eq!(cfg2.windows[0].tabs[0].startup, None);
     }
 
     #[test]
@@ -218,44 +213,44 @@ colour = "#000000"
             r##"
 shell = "fish"
 cmd = "global-cmd"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#000000"
 shell = "zsh"
 cmd = "amux"
-  [[profile.tab]]
+  [[window.tab]]
   title = "inherits"
   dir = "/tmp/a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "overrides"
   dir = "/tmp/b"
   shell = "bash"
   cmd = "vim"
-  [[profile.tab]]
+  [[window.tab]]
   title = "opts-out"
   dir = "/tmp/c"
   cmd = ""
-[[profile]]
+[[window]]
 name = "plain"
 colour = "#000000"
-  [[profile.tab]]
+  [[window.tab]]
   title = "from-global"
   dir = "/tmp/d"
 "##,
         )
         .unwrap();
-        let work = &cfg.profiles[0].tabs;
-        // No tab-level value → inherit the profile's shell + cmd.
+        let work = &cfg.windows[0].tabs;
+        // No tab-level value → inherit the window's shell + cmd.
         assert_eq!(work[0].shell, "zsh");
         assert_eq!(work[0].startup.as_deref(), Some("amux"));
-        // Tab-level values win over the profile's.
+        // Tab-level values win over the window's.
         assert_eq!(work[1].shell, "bash");
         assert_eq!(work[1].startup.as_deref(), Some("vim"));
         // `cmd = ""` opts out of the inherited command (bare shell), but shell still cascades.
         assert_eq!(work[2].shell, "zsh");
         assert_eq!(work[2].startup, None);
-        // A profile that sets neither inherits the global shell + cmd.
-        let plain = &cfg.profiles[1].tabs[0];
+        // A window that sets neither inherits the global shell + cmd.
+        let plain = &cfg.windows[1].tabs[0];
         assert_eq!(plain.shell, "fish");
         assert_eq!(plain.startup.as_deref(), Some("global-cmd"));
     }
@@ -263,71 +258,71 @@ colour = "#000000"
     #[test]
     fn empty_shell_opts_out_to_default_not_inherited() {
         // `shell = ""` is *set* (empty), so — exactly like `cmd = ""` — it opts the
-        // tab out of inheriting the profile's shell rather than falling through to it.
+        // tab out of inheriting the window's shell rather than falling through to it.
         // With nothing left in the cascade it resets to DEFAULT_SHELL, NOT "zsh".
         // Locks the asymmetric-looking semantics so a future "empty inherits" change
         // can't slip through (the `cmd = ""` case already has this guard).
         let (cfg, _) = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#000000"
 shell = "zsh"
-  [[profile.tab]]
+  [[window.tab]]
   title = "opts-out"
   dir = "/tmp/a"
   shell = ""
 "##,
         )
         .unwrap();
-        assert_eq!(cfg.profiles[0].tabs[0].shell, DEFAULT_SHELL);
+        assert_eq!(cfg.windows[0].tabs[0].shell, DEFAULT_SHELL);
     }
 
     #[test]
     fn nonexistent_dir_is_warning_not_error() {
         let (cfg, warns) = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/no/such/path/zzz"
 "##,
         )
         .unwrap();
-        assert_eq!(cfg.profiles[0].tabs.len(), 1);
+        assert_eq!(cfg.windows[0].tabs.len(), 1);
         assert_eq!(warns.len(), 1);
-        assert_eq!(warns[0].profile, "work");
+        assert_eq!(warns[0].window, "work");
         assert!(warns[0].message.contains("does not exist"));
     }
 
     #[test]
-    fn duplicate_profile_is_error() {
+    fn duplicate_window_is_error() {
         let err = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "dup"
 colour = "#000000"
-[[profile]]
+[[window]]
 name = "dup"
 colour = "#000000"
 "##,
         )
         .unwrap_err();
-        assert_eq!(err, ResolveError::DuplicateProfile("dup".into()));
+        assert_eq!(err, ResolveError::DuplicateWindow("dup".into()));
     }
 
     #[test]
     fn duplicate_tab_title_is_error() {
         let err = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#000000"
-  [[profile.tab]]
+  [[window.tab]]
   title = "same"
   dir = "/tmp/a"
-  [[profile.tab]]
+  [[window.tab]]
   title = "same"
   dir = "/tmp/b"
 "##,
@@ -336,7 +331,7 @@ colour = "#000000"
         assert_eq!(
             err,
             ResolveError::DuplicateTab {
-                profile: "work".into(),
+                window: "work".into(),
                 title: "same".into()
             }
         );
@@ -346,10 +341,10 @@ colour = "#000000"
     fn empty_dir_is_error() {
         let err = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#000000"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "   "
 "##,
         )
@@ -357,7 +352,7 @@ colour = "#000000"
         assert_eq!(
             err,
             ResolveError::EmptyDir {
-                profile: "work".into()
+                window: "work".into()
             }
         );
     }
@@ -366,7 +361,7 @@ colour = "#000000"
     fn bad_colour_is_error() {
         let err = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "teal"
 "##,
@@ -379,15 +374,15 @@ colour = "teal"
     fn root_dir_without_title_gets_nonempty_title() {
         let (cfg, _warns) = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/"
 "##,
         )
         .unwrap();
-        let tab = &cfg.profiles[0].tabs[0];
+        let tab = &cfg.windows[0].tabs[0];
         assert_eq!(tab.title, "/");
         assert_eq!(tab.key, "/");
         assert!(!tab.title.is_empty());
@@ -397,41 +392,41 @@ colour = "#0f8a8a"
     fn tilde_in_dir_expands_to_home() {
         let (cfg, _warns) = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "~/some/deep/path"
 "##,
         )
         .unwrap();
         let home = dirs::home_dir().unwrap();
-        let tab = &cfg.profiles[0].tabs[0];
+        let tab = &cfg.windows[0].tabs[0];
         assert_eq!(tab.dir, home.join("some/deep/path"));
         assert_eq!(tab.title, "path"); // basename of the expanded dir
     }
 
     #[test]
-    fn empty_profile_name_is_error() {
+    fn empty_window_name_is_error() {
         let err = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "  "
 colour = "#000000"
 "##,
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::EmptyProfileName { index: 0 }));
+        assert!(matches!(err, ResolveError::EmptyWindowName { index: 0 }));
     }
 
     #[test]
     fn empty_explicit_tab_title_is_error() {
         let err = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#000000"
-  [[profile.tab]]
+  [[window.tab]]
   title = ""
   dir = "/tmp/a"
 "##,
@@ -444,16 +439,16 @@ colour = "#000000"
     fn tilde_in_icon_expands_to_home() {
         let (cfg, _warns) = resolve_str(
             r##"
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
 icon = "~/some/icon.png"
-  [[profile.tab]]
+  [[window.tab]]
   dir = "/tmp/x"
 "##,
         )
         .unwrap();
         let home = dirs::home_dir().unwrap();
-        assert_eq!(cfg.profiles[0].icon, Some(home.join("some/icon.png")));
+        assert_eq!(cfg.windows[0].icon, Some(home.join("some/icon.png")));
     }
 }

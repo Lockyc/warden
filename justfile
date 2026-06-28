@@ -13,7 +13,7 @@ default:
 run:
     WARDEN_CONFIG="{{justfile_directory()}}/examples/config.toml" cargo run -p warden-app
 
-# Validate a config and print the resolved profile/tab tree + warnings (defaults to the demo).
+# Validate a config and print the resolved window/tab tree + warnings (defaults to the demo).
 [group("dev")]
 validate path="examples/config.toml":
     cargo run -p warden-config --bin warden -- validate "{{path}}"

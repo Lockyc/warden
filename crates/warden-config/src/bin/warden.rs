@@ -9,12 +9,12 @@ fn main() {
             match load(&path) {
                 Ok(loaded) => {
                     println!(
-                        "ok: {} ({} profile(s))",
+                        "ok: {} ({} window(s))",
                         path.display(),
-                        loaded.config.profiles.len()
+                        loaded.config.windows.len()
                     );
-                    for p in &loaded.config.profiles {
-                        println!("  profile {:?} {}", p.name, p.colour.hex());
+                    for p in &loaded.config.windows {
+                        println!("  window {:?} {}", p.name, p.colour.hex());
                         for t in &p.tabs {
                             println!(
                                 "    tab {:?} dir={} shell={:?} startup={:?} keep_alive={}",
@@ -27,7 +27,7 @@ fn main() {
                         }
                     }
                     for w in &loaded.warnings {
-                        eprintln!("warning [{}]: {}", w.profile, w.message);
+                        eprintln!("warning [{}]: {}", w.window, w.message);
                     }
                 }
                 Err(e) => {

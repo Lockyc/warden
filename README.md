@@ -4,11 +4,11 @@
 
 # warden
 
-**A curator for your terminals** — profiles, projects, and (mostly) muxers all the way down.
+**A curator for your terminals** — windows, projects, and (mostly) muxers all the way down.
 
 </div>
 
-warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **profiles** (windows) and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each profile window carries a colour + name banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
+warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **windows** and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each window carries a colour + name banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
 
 warden is **generic and content-agnostic** — it knows nothing about any specific tool, so the command a tab runs is whatever you want: a shell, a TUI, a build watcher, an agent launcher. It stands on its own.
 
@@ -21,9 +21,9 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 **Working on macOS.** Public project, currently a private repo until it's ready for release. Two layers are built:
 
 - **Config-core** — the `warden-config` crate (parse / validate / resolve / diff / load / watch) plus a `warden validate` CLI.
-- **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens one window per profile from the config (colour + name banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`keep_alive` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs from the **Tab** menu — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) or **⌘1–⌘9** jump to a position; **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
+- **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens a window for each `[[window]]` in the config (colour + name banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`keep_alive` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs from the **Tab** menu — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) or **⌘1–⌘9** jump to a position; **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
 
-Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle profile windows, ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
+Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle windows, ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
 
 ## Config
 
@@ -32,23 +32,23 @@ Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle profi
 ```toml
 shell = "fish -l"            # global default shell every tab spawns
 
-[[profile]]                  # a window
+[[window]]                   # a native macOS window
 name   = "work"
 colour = "#0f8a8a"
 cmd    = "amux"              # this window's default startup command (each tab can override)
 
-  [[profile.tab]]            # a project terminal
+  [[window.tab]]             # a project terminal
   title      = "myproject"   # optional; defaults to the dir basename
   dir        = "~/code/myproject"
   keep_alive = true          # optional; spawn at launch and keep running
 
-  [[profile.tab]]
+  [[window.tab]]
   title = "notes"
   dir   = "~/notes"
   cmd   = ""                 # opt out: just a bare shell here
 ```
 
-A profile is a window (its own colour + name banner); its tabs are project terminals. Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-profile, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `keep_alive` tabs start at launch and keep running in the background.
+A window has its own colour + name banner; its tabs are project terminals. Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `keep_alive` tabs start at launch and keep running in the background.
 
 ## Build & use
 
@@ -76,9 +76,9 @@ cargo run -p warden-config --bin warden -- validate    # validate ~/.config/ward
 cargo run -p warden-config --bin warden -- validate path/to/config.toml
 ```
 
-`warden-app` materializes one window per profile and hot-reloads on save; edit the config while it's running to watch windows and tabs appear, disappear, and recolour live.
+`warden-app` materializes a window for each `[[window]]` and hot-reloads on save; edit the config while it's running to watch windows and tabs appear, disappear, and recolour live.
 
-`warden validate` prints the resolved profiles/tabs and any warnings; exit code 0 (ok), 1 (load/parse/validation error), 2 (usage).
+`warden validate` prints the resolved windows/tabs and any warnings; exit code 0 (ok), 1 (load/parse/validation error), 2 (usage).
 
 ## Layout
 

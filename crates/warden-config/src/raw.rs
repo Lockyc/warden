@@ -1,17 +1,17 @@
 use serde::Deserialize;
 
-// `shell` and `cmd` cascade global → profile → tab (nearest set level wins; see resolve.rs).
+// `shell` and `cmd` cascade global → window → tab (nearest set level wins; see resolve.rs).
 // Both are optional at every level — a missing field inherits, an empty `cmd = ""` opts out.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RawConfig {
     pub shell: Option<String>,
     pub cmd: Option<String>,
-    #[serde(default, rename = "profile")]
-    pub profiles: Vec<RawProfile>,
+    #[serde(default, rename = "window")]
+    pub windows: Vec<RawWindow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct RawProfile {
+pub struct RawWindow {
     pub name: String,
     pub colour: String,
     pub icon: Option<String>,
@@ -43,18 +43,18 @@ mod tests {
 shell = "fish -l"
 cmd = "amux"
 
-[[profile]]
+[[window]]
 name = "work"
 colour = "#0f8a8a"
 shell = "zsh"
 cmd = "tmux"
 
-  [[profile.tab]]
+  [[window.tab]]
   dir = "~/Developer/locus"
   cmd = "tmux"
   keep_alive = true
 
-  [[profile.tab]]
+  [[window.tab]]
   title = "ops"
   dir = "~/Developer/api"
 "##;
@@ -64,8 +64,8 @@ cmd = "tmux"
         let cfg = parse(SAMPLE).unwrap();
         assert_eq!(cfg.shell.as_deref(), Some("fish -l"));
         assert_eq!(cfg.cmd.as_deref(), Some("amux"));
-        assert_eq!(cfg.profiles.len(), 1);
-        let p = &cfg.profiles[0];
+        assert_eq!(cfg.windows.len(), 1);
+        let p = &cfg.windows[0];
         assert_eq!(p.name, "work");
         assert_eq!(p.colour, "#0f8a8a");
         assert_eq!(p.shell.as_deref(), Some("zsh"));
@@ -79,9 +79,9 @@ cmd = "tmux"
     }
 
     #[test]
-    fn empty_config_has_no_profiles() {
+    fn empty_config_has_no_windows() {
         let cfg = parse("").unwrap();
-        assert!(cfg.profiles.is_empty());
+        assert!(cfg.windows.is_empty());
         assert!(cfg.shell.is_none());
         assert!(cfg.cmd.is_none());
     }
