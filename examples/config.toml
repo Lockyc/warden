@@ -4,7 +4,7 @@
 # A [[window]] is a window (colour + name banner). A [[window.tab]] is a terminal opened in
 # `dir` running a `shell`; a tab's optional `cmd` is auto-run *inside* that shell (typed in, not
 # exec'd — so a shell function like agentmux's `amux` works and you drop back to a live shell when
-# it exits). `keep_alive` spawns the tab at launch and keeps it running for background work; other
+# it exits). `load_on_open` spawns the tab at launch and keeps it running for background work; other
 # tabs spawn lazily on first focus.
 #
 # `shell` and `cmd` CASCADE: set them globally, per-window, or per-tab — the nearest level wins.
@@ -32,7 +32,7 @@ cmd    = "echo 'in work'"             # default startup for this window's tabs (
   title      = "logs"
   dir        = "/var/log"
   cmd        = ""                      # opt out: bare shell, no startup command
-  keep_alive = true                    # spawns at launch + stays live for background work
+  load_on_open = true                  # spawns at launch + stays live for background work
 
 [[window]]
 name   = "play"

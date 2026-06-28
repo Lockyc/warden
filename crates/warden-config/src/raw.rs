@@ -41,7 +41,7 @@ pub struct RawTab {
     pub shell: Option<String>,
     pub cmd: Option<String>,
     #[serde(default)]
-    pub keep_alive: bool,
+    pub load_on_open: bool,
 }
 
 pub fn parse(toml_str: &str) -> Result<RawConfig, toml::de::Error> {
@@ -65,7 +65,7 @@ cmd = "tmux"
   [[window.tab]]
   dir = "~/Developer/locus"
   cmd = "tmux"
-  keep_alive = true
+  load_on_open = true
 
   [[window.tab]]
   title = "ops"
@@ -85,10 +85,10 @@ cmd = "tmux"
         assert_eq!(p.cmd.as_deref(), Some("tmux"));
         assert_eq!(p.tabs.len(), 2);
         assert_eq!(p.tabs[0].cmd.as_deref(), Some("tmux"));
-        assert!(p.tabs[0].keep_alive);
+        assert!(p.tabs[0].load_on_open);
         assert_eq!(p.tabs[1].title.as_deref(), Some("ops"));
         assert!(p.tabs[1].cmd.is_none()); // inherits via cascade
-        assert!(!p.tabs[1].keep_alive); // serde default
+        assert!(!p.tabs[1].load_on_open); // serde default
     }
 
     #[test]

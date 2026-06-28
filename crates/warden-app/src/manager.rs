@@ -124,7 +124,7 @@ impl WindowManager {
 
         let mut registry = Registry::new(ns_window, INITIAL_RECT);
         for t in &spec.tabs {
-            registry.add(&t.spec, t.keep_alive);
+            registry.add(&t.spec, t.load_on_open);
         }
         if let Some(first) = spec.tabs.first() {
             registry.activate(&first.spec.id);
@@ -266,7 +266,7 @@ impl WindowManager {
                             ws.registry.remove(id);
                         }
                         for tp in &add_tabs {
-                            ws.registry.add(&tp.spec, tp.keep_alive);
+                            ws.registry.add(&tp.spec, tp.load_on_open);
                         }
                         // Re-section kept tabs whose group changed (presentation only —
                         // no respawn), before reorder + the DTO push below.

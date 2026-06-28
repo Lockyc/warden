@@ -5,12 +5,12 @@ use crate::surface::TabSpec;
 use std::collections::{HashMap, HashSet};
 use warden_config::{Config, Reconciliation, Window};
 
-/// A tab to materialize, plus its spawn policy. `keep_alive` drives lazy-vs-eager
+/// A tab to materialize, plus its spawn policy. `load_on_open` drives lazy-vs-eager
 /// spawn in the registry (spec §3); the surface layer itself never sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabPlan {
     pub spec: TabSpec,
-    pub keep_alive: bool,
+    pub load_on_open: bool,
 }
 
 /// Everything needed to build one window window.
@@ -78,7 +78,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
                 startup: t.startup.clone(),
                 group: t.group.clone(),
             },
-            keep_alive: t.keep_alive,
+            load_on_open: t.load_on_open,
         })
         .collect();
     WindowSpec {
@@ -159,7 +159,7 @@ pub fn reconcile_ops(
                     startup: t.startup.clone(),
                     group: t.group.clone(),
                 },
-                keep_alive: t.keep_alive,
+                load_on_open: t.load_on_open,
             })
             .collect();
         ops.push(WindowOp::Update {
@@ -224,7 +224,7 @@ colour = "#0f8a8a"
   [[window.tab]]
   title = "locus"
   dir = "/tmp/locus"
-  keep_alive = true
+  load_on_open = true
   [[window.tab]]
   title = "ops"
   dir = "/tmp/ops"
@@ -238,9 +238,9 @@ colour = "#0f8a8a"
         assert_eq!(w.tabs.len(), 2);
         assert_eq!(w.tabs[0].spec.id, "locus");
         assert_eq!(w.tabs[0].spec.title, "locus");
-        assert!(w.tabs[0].keep_alive);
+        assert!(w.tabs[0].load_on_open);
         assert_eq!(w.tabs[1].spec.id, "ops");
-        assert!(!w.tabs[1].keep_alive);
+        assert!(!w.tabs[1].load_on_open);
     }
 
     use warden_config::reconcile;

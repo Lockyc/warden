@@ -26,7 +26,7 @@ pub struct Reconciliation {
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. Changing a tab's
-///   `dir`, `cmd`, or `keep_alive` while keeping its `title` the same produces
+///   `dir`, `cmd`, or `load_on_open` while keeping its `title` the same produces
 ///   no op — the tab appears identical to the reconciler. The consumer must
 ///   close and reopen the tab to pick up such field-level edits. (`group` is the
 ///   deliberate exception — it IS detected, via `set_groups`, because it's
@@ -34,7 +34,7 @@ pub struct Reconciliation {
 ///
 /// **Window renames are destructive.** A rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
-/// `keep_alive` tabs). There is no concept of a live retitle.
+/// `load_on_open` tabs). There is no concept of a live retitle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowUpdate {
     pub title: String,
@@ -59,13 +59,13 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. If a tab's `dir`,
-///   `cmd`, or `keep_alive` changes but its `title` stays the same, no update
+///   `cmd`, or `load_on_open` changes but its `title` stays the same, no update
 ///   is emitted — the tab appears identical to the reconciler. The consumer
 ///   must close and reopen the tab to pick up such field-level edits.
 ///
 /// **Window renames are destructive** — a rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
-/// `keep_alive` tabs).
+/// `load_on_open` tabs).
 pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
     let mut open = Vec::new();
     let mut close = Vec::new();
@@ -273,7 +273,7 @@ colour = "#0f8a8a"
     fn window_rename_is_destructive_close_plus_open() {
         // Windows are diffed by name, so a rename is not an update — it's close(old)
         // + open(new), which destroys and recreates that window's terminals (incl.
-        // keep_alive ones). Pins the documented destructive-rename behaviour.
+        // load_on_open ones). Pins the documented destructive-rename behaviour.
         let new = cfg(&BASE.replace(r#"title = "work""#, r#"title = "play""#));
         let r = reconcile(&cfg(BASE), &new);
         assert_eq!(r.close, vec!["work".to_string()]);

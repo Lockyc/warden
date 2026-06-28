@@ -152,7 +152,7 @@
       /* Live/cold indicator + unload control at the row's trailing edge (curator's
          loaded-dot idiom). The visual dot is a 7px ::before centred in a 16px box
          (a comfortable hover/click target). A filled green dot = the terminal
-         surface is live (keep_alive, or focused once); a hollow ring = cold (never
+         surface is live (load_on_open, or focused once); a hollow ring = cold (never
          opened, or unloaded — spawns fresh on next focus). Hovering a LIVE dot
          swaps it for a red ✕: clicking kills that terminal (surface + PTY). Cold
          dots are inert — nothing to kill. NB warden's unload genuinely ends the
@@ -413,7 +413,7 @@
           }
 
           // Live/cold dot that doubles as the unload control. Filled if the surface
-          // is already spawned (keep_alive, or focused earlier this session), a
+          // is already spawned (load_on_open, or focused earlier this session), a
           // hollow ring if cold. paint() upgrades the active row to live (active ⟹
           // spawned). One handler per dot, gated on the live class at click time, so
           // it still fires for a dot paint() flipped live after this render.

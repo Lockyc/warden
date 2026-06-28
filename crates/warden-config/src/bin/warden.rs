@@ -22,12 +22,12 @@ fn main() {
                                 .map(|g| format!(" group={g:?}"))
                                 .unwrap_or_default();
                             println!(
-                                "    tab {:?} dir={} shell={:?} startup={:?} keep_alive={}{}",
+                                "    tab {:?} dir={} shell={:?} startup={:?} load_on_open={}{}",
                                 t.title,
                                 t.dir.display(),
                                 t.shell,
                                 t.startup,
-                                t.keep_alive,
+                                t.load_on_open,
                                 group
                             );
                         }

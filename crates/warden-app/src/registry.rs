@@ -7,7 +7,7 @@ pub struct TabDto {
     pub id: String,
     pub title: String,
     pub warn: bool,            // dir missing at materialize time
-    pub spawned: bool,         // surface is live (keep_alive or already focused) vs cold/declared
+    pub spawned: bool,         // surface is live (load_on_open or already focused) vs cold/declared
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
 }
 
@@ -50,11 +50,11 @@ impl Registry {
         }
     }
 
-    /// Add a tab. `keep_alive=true` spawns now (eager); `false` declares it
+    /// Add a tab. `load_on_open=true` spawns now (eager); `false` declares it
     /// (lazy — spawns on first `activate`). [spec §3]
-    pub fn add(&mut self, spec: &TabSpec, keep_alive: bool) {
+    pub fn add(&mut self, spec: &TabSpec, load_on_open: bool) {
         let warn = !spec.dir.exists();
-        let slot = if keep_alive {
+        let slot = if load_on_open {
             let s =
                 GhosttySurface::new(self.ns_window, self.last_rect, spec).expect("surface create");
             s.hide();
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn declared_tab_is_not_spawned() {
-        // ns_window is never dereferenced for a declared (keep_alive=false) tab.
+        // ns_window is never dereferenced for a declared (load_on_open=false) tab.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("t0", "/tmp"), false);
         assert!(!r.is_spawned("t0"));

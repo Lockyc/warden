@@ -202,7 +202,7 @@ fn resolve_tab(
         dir,
         shell,
         startup,
-        keep_alive: rt.keep_alive,
+        load_on_open: rt.load_on_open,
         group,
     })
 }

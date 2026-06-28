@@ -25,7 +25,7 @@ pub struct Tab {
     /// shell. It is *typed into* the interactive shell — not exec'd directly — so a shell
     /// function like `amux` works and the shell stays live after the command exits.
     pub startup: Option<String>,
-    pub keep_alive: bool,
+    pub load_on_open: bool,
     /// The name of the `[[window.group]]` this tab belongs to, or `None` for a loose
     /// (ungrouped) tab. Purely presentational — the chrome sections the sidebar by it;
     /// it carries no behaviour and is not part of `key` (identity stays the title).
