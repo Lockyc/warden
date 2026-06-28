@@ -206,9 +206,10 @@ fn main() {
                 {
                     use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
                     let app_menu = SubmenuBuilder::new(app, "warden")
-                        .quit()
-                        .close_window()
                         .minimize()
+                        .close_window()
+                        .separator()
+                        .quit()
                         .build()?;
 
                     let prev = MenuItemBuilder::with_id(MENU_TAB_PREV, "Previous Tab")
