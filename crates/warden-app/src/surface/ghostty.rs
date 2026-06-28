@@ -110,9 +110,11 @@ unsafe extern "C" fn action_cb(
     } else if let Some(dn) = action.desktop_notification() {
         // Copy the borrowed C strings out now — libghostty frees them when this call returns.
         let read = |p: *const c_char| {
-            (!p.is_null())
-                .then(|| CStr::from_ptr(p).to_string_lossy().into_owned())
-                .unwrap_or_default()
+            if p.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(p).to_string_lossy().into_owned()
+            }
         };
         Some(SurfaceSignal::Notification {
             title: read(dn.title),

@@ -248,10 +248,14 @@ impl ghostty_action_s {
     /// SAFETY of the cast: the tag guarantees the union holds this variant, and the 16-byte
     /// struct is a prefix of the 8-aligned 24-byte union, so the read is in-bounds and aligned.
     pub fn desktop_notification(&self) -> Option<&ghostty_action_desktop_notification_s> {
-        (self.tag == GHOSTTY_ACTION_DESKTOP_NOTIFICATION).then(|| unsafe {
-            &*(&self.action as *const ghostty_action_u
-                as *const ghostty_action_desktop_notification_s)
-        })
+        if self.tag == GHOSTTY_ACTION_DESKTOP_NOTIFICATION {
+            Some(unsafe {
+                &*(&self.action as *const ghostty_action_u
+                    as *const ghostty_action_desktop_notification_s)
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -261,8 +265,12 @@ pub const GHOSTTY_TARGET_SURFACE: u32 = 1;
 impl ghostty_target_s {
     /// The surface this action targets, or `None` for app-level targets (no tab to route to).
     pub fn surface(&self) -> Option<ghostty_surface_t> {
-        // SAFETY: the union holds a surface pointer exactly when the tag is SURFACE.
-        (self.tag == GHOSTTY_TARGET_SURFACE).then(|| unsafe { self.target.surface })
+        if self.tag == GHOSTTY_TARGET_SURFACE {
+            // SAFETY: the union holds a surface pointer exactly when the tag is SURFACE.
+            Some(unsafe { self.target.surface })
+        } else {
+            None
+        }
     }
 }
 

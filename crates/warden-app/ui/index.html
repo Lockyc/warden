@@ -466,7 +466,7 @@
         const newActive = await invoke('unload_tab', { id });
         const killed = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"] .tab-dot');
         if (killed) setDotLive(killed, false);
-        if (newActive) active = newActive;
+        if (newActive) { active = newActive; setBadge(newActive, false); } // now visible → clear its badge
         else if (active === id) active = null;
         paint();      // move highlight to the neighbour; re-mark its dot live
         reportRect(); // neighbour surface (or blank) geometry

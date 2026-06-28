@@ -2,10 +2,9 @@
 //!
 //! The surface seam (`surface::set_surface_event_sink`) hands us a seam-neutral `SurfaceEvent`
 //! whenever libghostty reports `RING_BELL` or a `DESKTOP_NOTIFICATION` (OSC 9 / OSC 777). We map
-//! the surface back to its (window, tab) via the `WindowManager`, then:
-//!   - badge the tab in that window's chrome (`warden:notify`), and
-//!   - for a desktop notification, raise a macOS banner —
-//! but only when the tab is **not** already visible (focused window + active tab): if you're
+//! the surface back to its (window, tab) via the `WindowManager`, then badge the tab in that
+//! window's chrome (`warden:notify`) and — for a desktop notification — raise a macOS banner. Both
+//! happen only when the tab is **not** already visible (focused window + active tab): if you're
 //! looking at it, there's nothing to notify. This is what replaces agentmux's direct `osascript`
 //! call — the signal now flows through the terminal and lands on the right tab.
 
