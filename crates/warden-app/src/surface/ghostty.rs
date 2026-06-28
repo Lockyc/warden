@@ -212,6 +212,16 @@ impl WardenHostView {
     }
 }
 
+/// True when `s` is genuinely-typed printable text — the only case we forward as the key
+/// event's `text` to libghostty. macOS `characters` for a Ctrl/Cmd combo is the C0 control
+/// char (Ctrl-F → "\u{06}"); handing *that* to libghostty as `text` makes it emit a Kitty
+/// `CSI…u` sequence (e.g. `^[[6;5u`) instead of the bare control byte (`^F`) that legacy apps —
+/// tmux, less, vim — read as the keypress. Ghostty's own macOS app omits `text` for these and
+/// lets the key encoder derive the byte from key + mods.
+fn is_printable_text(s: &str) -> bool {
+    !s.is_empty() && !s.chars().any(|c| c.is_control())
+}
+
 /// Translate an AppKit key event into `ghostty_input_key_s` and forward it.
 /// Minimal translation: `text` (from `characters`) carries printable input,
 /// `keycode` is the macOS virtual keycode, `unshifted_codepoint` from
@@ -245,9 +255,12 @@ unsafe fn forward_key(
         mods |= ffi::GHOSTTY_MODS_CAPS;
     }
 
-    // `characters` is the resolved text for this keypress (already shaped by mods).
+    // Only forward `text` for genuinely-typed *printable* input (see `is_printable_text`).
     let text = event.characters().map(|s| s.to_string());
-    let c_text = text.as_deref().and_then(|s| CString::new(s).ok());
+    let c_text = text
+        .as_deref()
+        .filter(|s| is_printable_text(s))
+        .and_then(|s| CString::new(s).ok());
     let text_ptr = c_text.as_ref().map_or(ptr::null(), |c| c.as_ptr());
 
     let unshifted = event
@@ -405,5 +418,24 @@ impl TerminalSurface for GhosttySurface {
             ffi::ghostty_surface_free(self.surface);
             self.host_view.removeFromSuperview();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_printable_text;
+
+    #[test]
+    fn printable_text_excludes_control_chars() {
+        // Genuinely-typed text is forwarded as `text`.
+        assert!(is_printable_text("a"));
+        assert!(is_printable_text("é"));
+        assert!(is_printable_text("hello"));
+        // Ctrl-combos arrive as C0 control chars — must NOT be forwarded as text, or
+        // libghostty emits Kitty `CSI…u` sequences instead of the bare control byte.
+        assert!(!is_printable_text("\u{06}")); // Ctrl-F
+        assert!(!is_printable_text("\u{03}")); // Ctrl-C
+        assert!(!is_printable_text("\u{1b}")); // Esc
+        assert!(!is_printable_text("")); // no text at all
     }
 }
