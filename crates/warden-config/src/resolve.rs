@@ -5,9 +5,20 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// The shell spawned in a tab when `default_cmd` is unset. Each tab runs this (or the
-/// configured `default_cmd`); a tab's own `cmd`, if any, is auto-run *inside* it.
-pub const DEFAULT_CMD: &str = "fish -l";
+/// The shell spawned in a tab when no `shell` is set at any level. Each tab runs the
+/// cascaded `shell`; a tab's cascaded `cmd`, if any, is auto-run *inside* it.
+pub const DEFAULT_SHELL: &str = "fish -l";
+
+/// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > profile >
+/// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
+/// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
+fn cascade<'a>(
+    tab: Option<&'a str>,
+    profile: Option<&'a str>,
+    global: Option<&'a str>,
+) -> Option<&'a str> {
+    tab.or(profile).or(global).filter(|s| !s.trim().is_empty())
+}
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ResolveError {
@@ -45,26 +56,28 @@ fn basename(p: &Path) -> String {
 }
 
 pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
-    let default_cmd = raw.default_cmd.unwrap_or_else(|| DEFAULT_CMD.to_string());
+    let global_shell = raw.shell.as_deref();
+    let global_cmd = raw.cmd.as_deref();
     let mut warnings = Vec::new();
     let mut profiles = Vec::with_capacity(raw.profiles.len());
     let mut seen_profiles = HashSet::new();
 
-    for (index, rp) in raw.profiles.into_iter().enumerate() {
+    for (index, rp) in raw.profiles.iter().enumerate() {
         if rp.name.trim().is_empty() {
             return Err(ResolveError::EmptyProfileName { index });
         }
         if !seen_profiles.insert(rp.name.clone()) {
-            return Err(ResolveError::DuplicateProfile(rp.name));
+            return Err(ResolveError::DuplicateProfile(rp.name.clone()));
         }
-        profiles.push(resolve_profile(rp, &default_cmd, &mut warnings)?);
+        profiles.push(resolve_profile(rp, global_shell, global_cmd, &mut warnings)?);
     }
     Ok((Config { profiles }, warnings))
 }
 
 fn resolve_profile(
-    rp: RawProfile,
-    default_cmd: &str,
+    rp: &RawProfile,
+    global_shell: Option<&str>,
+    global_cmd: Option<&str>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Profile, ResolveError> {
     let colour = Colour::parse(&rp.colour).map_err(|source| ResolveError::BadColour {
@@ -75,7 +88,7 @@ fn resolve_profile(
 
     let mut tabs = Vec::with_capacity(rp.tabs.len());
     let mut seen_titles = HashSet::new();
-    for rt in rp.tabs {
+    for rt in &rp.tabs {
         if rt.dir.trim().is_empty() {
             return Err(ResolveError::EmptyDir { profile: rp.name.clone() });
         }
@@ -85,7 +98,7 @@ fn resolve_profile(
                 return Err(ResolveError::EmptyTabTitle { profile: rp.name.clone() });
             }
         }
-        let title = rt.title.unwrap_or_else(|| basename(&dir));
+        let title = rt.title.clone().unwrap_or_else(|| basename(&dir));
         if !seen_titles.insert(title.clone()) {
             return Err(ResolveError::DuplicateTab {
                 profile: rp.name.clone(),
@@ -98,22 +111,25 @@ fn resolve_profile(
                 message: format!("dir does not exist: {}", dir.display()),
             });
         }
-        // `cmd` is no longer the program to exec — it's an optional startup command
-        // auto-run inside the shell. The shell itself is always `default_cmd`. An empty
-        // `cmd` means "no startup command", same as omitting it.
-        let startup = rt.cmd.filter(|c| !c.trim().is_empty());
+        // `shell` and `cmd` cascade tab → profile → global (nearest set level wins); `shell`
+        // falls back to the built-in when unset everywhere, `cmd` is a startup command run
+        // *inside* the shell (None = bare shell; `cmd = ""` at any level opts out of inheritance).
+        let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), global_shell)
+            .unwrap_or(DEFAULT_SHELL)
+            .to_string();
+        let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
         tabs.push(Tab {
             key: title.clone(),
             title,
             dir,
-            shell: default_cmd.to_string(),
+            shell,
             startup,
             keep_alive: rt.keep_alive,
         });
     }
 
     Ok(Profile {
-        name: rp.name,
+        name: rp.name.clone(),
         colour,
         icon,
         tabs,
@@ -146,10 +162,10 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn shell_is_default_cmd_and_cmd_becomes_startup() {
+    fn global_shell_applies_and_cmd_becomes_startup() {
         let (cfg, _) = resolve_str(
             r##"
-default_cmd = "zsh"
+shell = "zsh"
 [[profile]]
 name = "a"
 colour = "#000000"
@@ -164,14 +180,14 @@ colour = "#000000"
 "##,
         )
         .unwrap();
-        // Every tab runs the shell (default_cmd); a tab's `cmd` is its startup command,
-        // run *inside* that shell rather than replacing it.
+        // Every tab runs the cascaded shell (here the global `shell`); a tab's `cmd` is its
+        // startup command, run *inside* that shell rather than replacing it.
         assert_eq!(cfg.profiles[0].tabs[0].shell, "zsh");
         assert_eq!(cfg.profiles[0].tabs[0].startup, None);
         assert_eq!(cfg.profiles[1].tabs[0].shell, "zsh");
         assert_eq!(cfg.profiles[1].tabs[0].startup.as_deref(), Some("tmux"));
 
-        // default_cmd unset → built-in shell; empty cmd → no startup command.
+        // shell unset everywhere → built-in shell; empty cmd → no startup command.
         let (cfg2, _) = resolve_str(
             r##"
 [[profile]]
@@ -183,8 +199,56 @@ colour = "#000000"
 "##,
         )
         .unwrap();
-        assert_eq!(cfg2.profiles[0].tabs[0].shell, DEFAULT_CMD);
+        assert_eq!(cfg2.profiles[0].tabs[0].shell, DEFAULT_SHELL);
         assert_eq!(cfg2.profiles[0].tabs[0].startup, None);
+    }
+
+    #[test]
+    fn shell_and_cmd_cascade_with_nearest_level_winning() {
+        let (cfg, _) = resolve_str(
+            r##"
+shell = "fish"
+cmd = "global-cmd"
+[[profile]]
+name = "work"
+colour = "#000000"
+shell = "zsh"
+cmd = "amux"
+  [[profile.tab]]
+  title = "inherits"
+  dir = "/tmp/a"
+  [[profile.tab]]
+  title = "overrides"
+  dir = "/tmp/b"
+  shell = "bash"
+  cmd = "vim"
+  [[profile.tab]]
+  title = "opts-out"
+  dir = "/tmp/c"
+  cmd = ""
+[[profile]]
+name = "plain"
+colour = "#000000"
+  [[profile.tab]]
+  title = "from-global"
+  dir = "/tmp/d"
+"##,
+        )
+        .unwrap();
+        let work = &cfg.profiles[0].tabs;
+        // No tab-level value → inherit the profile's shell + cmd.
+        assert_eq!(work[0].shell, "zsh");
+        assert_eq!(work[0].startup.as_deref(), Some("amux"));
+        // Tab-level values win over the profile's.
+        assert_eq!(work[1].shell, "bash");
+        assert_eq!(work[1].startup.as_deref(), Some("vim"));
+        // `cmd = ""` opts out of the inherited command (bare shell), but shell still cascades.
+        assert_eq!(work[2].shell, "zsh");
+        assert_eq!(work[2].startup, None);
+        // A profile that sets neither inherits the global shell + cmd.
+        let plain = &cfg.profiles[1].tabs[0];
+        assert_eq!(plain.shell, "fish");
+        assert_eq!(plain.startup.as_deref(), Some("global-cmd"));
     }
 
     #[test]

@@ -43,21 +43,27 @@ bin/warden.rs  `warden validate [path]` CLI
 ## Config schema (`~/.config/warden/config.toml`; override with `WARDEN_CONFIG`)
 
 ```toml
-default_cmd = "fish -l"               # optional; the shell every tab spawns (default "fish -l")
+shell = "fish -l"                      # optional; global default shell every tab spawns (default "fish -l")
+cmd   = "amux"                         # optional; global default startup command run inside the shell
 
 [[profile]]                            # = a window
 name   = "work"                        # required, unique, non-empty; banner + window title
 colour = "#0f8a8a"                     # required; #rgb or #rrggbb
 icon   = "~/…/work.png"                # optional; window proxy icon (macOS)
+shell  = "zsh"                         # optional; per-profile shell override
+cmd    = "amux"                        # optional; per-profile startup override
 
   [[profile.tab]]                      # = a project terminal
   title      = "locus"                 # optional; default = basename(dir); must be non-empty & unique within the profile
   dir        = "~/Developer/…/locus"   # required
-  cmd        = "amux"                  # optional; startup command auto-run *inside* the shell (not a replacement for it)
+  shell      = "bash"                  # optional; per-tab shell override
+  cmd        = "amux"                  # optional; per-tab startup override ("" = opt out → bare shell)
   keep_alive = true                    # optional; default false (spawn at launch + keep running for background work)
 ```
 
-**`cmd` runs inside the shell, it doesn't replace it.** Every tab spawns `default_cmd` (an interactive shell under the PTY); a tab's `cmd`, if set, is delivered as libghostty `initial_input` — i.e. *typed into* that shell (newline-terminated) rather than exec'd directly. This is deliberate and load-bearing: `amux` is a shell **function**, not an executable, so execing it directly fails — only an interactive shell resolves it. As a bonus the shell stays live after the command exits (detaching from `amux`/tmux drops you to a prompt, not a dead pane). In the resolved model this is `Tab.shell` (= `default_cmd`) + `Tab.startup: Option<String>` (the `cmd`; empty/absent → `None`). Do **not** "fix" this back to passing `cmd` as libghostty's `command`/exec target.
+**`shell` and `cmd` cascade global → profile → tab; the nearest set level wins.** A missing value at a level inherits from above; `shell` falls back to the built-in `"fish -l"` if unset everywhere; `cmd` is `None` (bare shell) if unset everywhere. An explicitly-empty `cmd = ""` counts as *set* and resets to `None`, so it opts a level out of an inherited command instead of inheriting it (see `cascade()` in `resolve.rs`). `shell` is treated the same (empty = unset). Resolution collapses the cascade into the flat `Tab.shell: String` + `Tab.startup: Option<String>` — the app never sees the levels.
+
+**`cmd` runs inside the shell, it doesn't replace it.** Every tab spawns its resolved `shell` (an interactive shell under the PTY); the resolved `cmd`, if any, is delivered as libghostty `initial_input` — i.e. *typed into* that shell (newline-terminated) rather than exec'd directly. This is deliberate and load-bearing: `amux` is a shell **function**, not an executable, so execing it directly fails — only an interactive shell resolves it. As a bonus the shell stays live after the command exits (detaching from `amux`/tmux drops you to a prompt, not a dead pane). Do **not** "fix" this back to passing `cmd` as libghostty's `command`/exec target.
 
 Validation: unique profile name, unique tab title within a profile, non-empty name/dir/explicit-title, valid colour → **errors**; a `dir` that doesn't exist → **warning** (tab still created). Invalid config must be reported, never panic.
 
