@@ -17,7 +17,7 @@ pub struct TabPlan {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
     pub label: String,  // sanitized, unique — the Tauri window label
-    pub name: String,   // window name, verbatim — banner + window title
+    pub title: String,  // window title, verbatim — banner + window title
     pub colour: String, // "#rrggbb" from Colour::hex()
     pub tabs: Vec<TabPlan>,
 }
@@ -83,7 +83,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         .collect();
     WindowSpec {
         label,
-        name: p.name.clone(),
+        title: p.title.clone(),
         colour: p.colour.hex(),
         tabs,
     }
@@ -96,7 +96,7 @@ pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
         .windows
         .iter()
         .map(|p| {
-            let label = unique_label(&p.name, &taken);
+            let label = unique_label(&p.title, &taken);
             taken.insert(label.clone());
             window_to_spec(p, label)
         })
@@ -132,7 +132,7 @@ pub fn reconcile_ops(
     let mut assigned: HashSet<String> = taken.clone();
 
     for window in &recon.open {
-        let label = unique_label(&window.name, &assigned);
+        let label = unique_label(&window.title, &assigned);
         assigned.insert(label.clone());
         ops.push(WindowOp::Open(window_to_spec(window, label)));
     }
@@ -144,7 +144,7 @@ pub fn reconcile_ops(
     }
 
     for u in &recon.update {
-        let Some(label) = name_to_label.get(&u.name) else {
+        let Some(label) = name_to_label.get(&u.title) else {
             continue;
         };
         let add_tabs = u
@@ -219,7 +219,7 @@ mod tests {
     fn window_specs_maps_window_and_tabs() {
         let c = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "locus"
@@ -233,7 +233,7 @@ colour = "#0f8a8a"
         assert_eq!(specs.len(), 1);
         let w = &specs[0];
         assert_eq!(w.label, "work");
-        assert_eq!(w.name, "work");
+        assert_eq!(w.title, "work");
         assert_eq!(w.colour, "#0f8a8a");
         assert_eq!(w.tabs.len(), 2);
         assert_eq!(w.tabs[0].spec.id, "locus");
@@ -248,7 +248,7 @@ colour = "#0f8a8a"
     fn name_label_map(c: &Config) -> HashMap<String, String> {
         window_specs(c)
             .into_iter()
-            .map(|w| (w.name, w.label))
+            .map(|w| (w.title, w.label))
             .collect()
     }
     fn taken(c: &Config) -> HashSet<String> {
@@ -260,7 +260,7 @@ colour = "#0f8a8a"
         let old = cfg("");
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "locus"
@@ -270,7 +270,7 @@ colour = "#0f8a8a"
         let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            WindowOp::Open(spec) => assert_eq!(spec.name, "work"),
+            WindowOp::Open(spec) => assert_eq!(spec.title, "work"),
             other => panic!("expected Open, got {other:?}"),
         }
     }
@@ -279,7 +279,7 @@ colour = "#0f8a8a"
     fn closed_window_becomes_close_op_with_label() {
         let old = cfg(r##"
 [[window]]
-name = "work zone"
+title = "work zone"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "locus"
@@ -295,7 +295,7 @@ colour = "#0f8a8a"
     fn colour_change_becomes_update_op_with_hex() {
         let base = r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "{C}"
   [[window.tab]]
   title = "locus"
@@ -319,13 +319,13 @@ colour = "{C}"
     fn window_specs_dedupes_labels_for_colliding_sanitized_names() {
         let c = cfg(r##"
 [[window]]
-name = "a b"
+title = "a b"
 colour = "#111111"
   [[window.tab]]
   title = "t1"
   dir = "/tmp/t1"
 [[window]]
-name = "a-b"
+title = "a-b"
 colour = "#222222"
   [[window.tab]]
   title = "t2"

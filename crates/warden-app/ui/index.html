@@ -347,7 +347,7 @@
         invokeSafe('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
       }
 
-      /** Render a window snapshot ({ name, colour, tabs:[{id,title,warn,spawned,group}] }) into
+      /** Render a window snapshot ({ title, colour, tabs:[{id,title,warn,spawned,group}] }) into
           the chrome. The single render path shared by init() (first paint) and
           the warden:refresh listener (hot-reload), so the sidebar is rebuilt the
           same way whether it's the initial DTO or a pushed reconcile snapshot. */
@@ -363,7 +363,7 @@
         // Apply window identity: banner shows the name on the window colour;
         // the sidebar gets a faint tint of the same colour.
         const banner = document.getElementById('banner');
-        banner.textContent = dto.name;
+        banner.textContent = dto.title;
         banner.style.background = windowColour;
         // Opaque tint composited over the dark base (no alpha — see tintOverBase).
         document.getElementById('sidebar').style.background = tintOverBase(windowColour, 0.12);
@@ -447,7 +447,7 @@
       }
 
       async function init() {
-        // { label, name, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
+        // { label, title, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
         let dto;
         try {
           dto = await invoke('init_tabs');

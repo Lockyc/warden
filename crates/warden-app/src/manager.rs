@@ -30,7 +30,7 @@ pub struct InitDto {
     /// init and uses it to ignore `warden:refresh` events addressed to a sibling
     /// window — a robust per-window guard independent of emit_to's targeting.
     pub label: String,
-    pub name: String,
+    pub title: String,
     pub colour: String,
     pub tabs: Vec<TabDto>,
 }
@@ -38,7 +38,7 @@ pub struct InitDto {
 pub struct WindowState {
     pub window: WebviewWindow,
     pub registry: Registry,
-    pub name: String,
+    pub title: String,
     pub colour: String,
 }
 
@@ -96,7 +96,7 @@ impl WindowManager {
     pub fn build_window(&self, app: &AppHandle, spec: &WindowSpec) -> WindowState {
         let window =
             WebviewWindowBuilder::new(app, &spec.label, WebviewUrl::App("index.html".into()))
-                .title(&spec.name)
+                .title(&spec.title)
                 .inner_size(900.0, 600.0)
                 .transparent(true)
                 // Full-size content view (Overlay): the WKWebView + native surface
@@ -152,7 +152,7 @@ impl WindowManager {
         WindowState {
             window,
             registry,
-            name: spec.name.clone(),
+            title: spec.title.clone(),
             colour: spec.colour.clone(),
         }
     }
@@ -161,7 +161,7 @@ impl WindowManager {
     pub fn materialize(&mut self, app: &AppHandle, config: Config) {
         for spec in window_specs(&config) {
             let state = self.build_window(app, &spec);
-            self.names.insert(spec.name.clone(), spec.label.clone());
+            self.names.insert(spec.title.clone(), spec.label.clone());
             self.windows.insert(spec.label.clone(), state);
         }
         self.last_good = config;
@@ -170,7 +170,7 @@ impl WindowManager {
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {
         self.windows.get(label).map(|ws| InitDto {
             label: label.to_string(),
-            name: ws.name.clone(),
+            title: ws.title.clone(),
             colour: ws.colour.clone(),
             tabs: ws.registry.tab_dtos(),
         })
@@ -220,7 +220,7 @@ impl WindowManager {
             match op {
                 WindowOp::Open(spec) => {
                     let state = self.build_window(app, &spec);
-                    self.names.insert(spec.name.clone(), spec.label.clone());
+                    self.names.insert(spec.title.clone(), spec.label.clone());
                     self.windows.insert(spec.label.clone(), state);
                 }
                 WindowOp::Close(label) => {
@@ -286,7 +286,7 @@ impl WindowManager {
                         // one window. `label` is the Tauri window label.
                         let dto = InitDto {
                             label: label.clone(),
-                            name: ws.name.clone(),
+                            title: ws.title.clone(),
                             colour: ws.colour.clone(),
                             tabs: ws.registry.tab_dtos(),
                         };
