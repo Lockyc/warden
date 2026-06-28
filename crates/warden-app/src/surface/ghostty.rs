@@ -384,6 +384,26 @@ declare_class!(
         fn scroll_wheel(&self, event: &NSEvent) {
             unsafe { forward_scroll(self, event) };
         }
+
+        // Fired by AppKit when the view's backing properties change — specifically when the window
+        // moves to a screen with a *different* backingScaleFactor (laptop Retina 2× ↔ external 1×).
+        // Re-push content scale + size so libghostty's cell metrics track the new DPI; without this
+        // the surface keeps the creation-time scale and the terminal stops filling the window (and
+        // a later resize scales the grid proportionally instead of reflowing). A plain window *move*
+        // between same-scale displays doesn't fire this, which is correct — nothing to update.
+        #[method(viewDidChangeBackingProperties)]
+        fn view_did_change_backing_properties(&self) {
+            let surface = self.ivars().surface.get();
+            if surface.is_null() {
+                return;
+            }
+            let Some(window) = self.window() else { return };
+            let scale = window.backingScaleFactor();
+            let frame = self.frame();
+            unsafe {
+                apply_surface_geometry(surface, frame.size.width, frame.size.height, scale);
+            }
+        }
     }
 );
 
@@ -530,6 +550,32 @@ unsafe fn forward_key(
     ffi::ghostty_surface_key(surface, key)
 }
 
+/// Push libghostty the surface's content scale (DPI) and backing pixel size *together*, both
+/// derived from the same `scale`. libghostty computes cell metrics from the content scale and
+/// sizes its framebuffer from the pixel size, so the two must never drift: a stale content scale
+/// against a fresh pixel size makes the grid fill only a fraction of the buffer (the "terminal
+/// doesn't fill the window / resizes proportionally after moving to another monitor" bug). Called
+/// on creation, on every frame report, and on `viewDidChangeBackingProperties` (a display/scale
+/// change) so a backing-scale change always re-pushes both.
+unsafe fn apply_surface_geometry(
+    surface: ffi::ghostty_surface_t,
+    width_pts: f64,
+    height_pts: f64,
+    scale: f64,
+) {
+    ffi::ghostty_surface_set_content_scale(surface, scale, scale);
+    let (w, h) = geometry::backing_size(
+        PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: width_pts,
+            height: height_pts,
+        },
+        scale,
+    );
+    ffi::ghostty_surface_set_size(surface, w, h);
+}
+
 // --- GhosttySurface ---------------------------------------------------------
 pub struct GhosttySurface {
     host_view: Retained<WardenHostView>,
@@ -628,9 +674,7 @@ impl GhosttySurface {
                 host_view.removeFromSuperview();
                 return Err(SurfaceError::SurfaceCreateFailed);
             }
-            ffi::ghostty_surface_set_content_scale(surface, scale, scale);
-            let (w, h) = geometry::backing_size(rect, scale);
-            ffi::ghostty_surface_set_size(surface, w, h);
+            apply_surface_geometry(surface, rect.width, rect.height, scale);
 
             // The view forwards keystrokes to this surface for its whole life.
             // Per-view ownership => first-responder routing is correct across
@@ -658,8 +702,7 @@ impl TerminalSurface for GhosttySurface {
             );
             self.host_view.setFrame(frame);
             let scale = self.window.backingScaleFactor();
-            let (w, h) = geometry::backing_size(rect, scale);
-            ffi::ghostty_surface_set_size(self.surface, w, h);
+            apply_surface_geometry(self.surface, rect.width, rect.height, scale);
         }
     }
 
