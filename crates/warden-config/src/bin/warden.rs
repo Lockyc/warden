@@ -13,8 +13,8 @@ fn main() {
                         println!("  profile {:?} {}", p.name, p.colour.hex());
                         for t in &p.tabs {
                             println!(
-                                "    tab {:?} dir={} cmd={:?} keep_alive={}",
-                                t.title, t.dir.display(), t.cmd, t.keep_alive
+                                "    tab {:?} dir={} shell={:?} startup={:?} keep_alive={}",
+                                t.title, t.dir.display(), t.shell, t.startup, t.keep_alive
                             );
                         }
                     }

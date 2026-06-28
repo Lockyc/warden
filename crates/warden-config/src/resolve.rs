@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+/// The shell spawned in a tab when `default_cmd` is unset. Each tab runs this (or the
+/// configured `default_cmd`); a tab's own `cmd`, if any, is auto-run *inside* it.
 pub const DEFAULT_CMD: &str = "fish -l";
 
 #[derive(Debug, Error, PartialEq)]
@@ -96,11 +98,16 @@ fn resolve_profile(
                 message: format!("dir does not exist: {}", dir.display()),
             });
         }
+        // `cmd` is no longer the program to exec — it's an optional startup command
+        // auto-run inside the shell. The shell itself is always `default_cmd`. An empty
+        // `cmd` means "no startup command", same as omitting it.
+        let startup = rt.cmd.filter(|c| !c.trim().is_empty());
         tabs.push(Tab {
             key: title.clone(),
             title,
             dir,
-            cmd: rt.cmd.unwrap_or_else(|| default_cmd.to_string()),
+            shell: default_cmd.to_string(),
+            startup,
             keep_alive: rt.keep_alive,
         });
     }
@@ -139,7 +146,7 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn cmd_falls_back_to_default_cmd_then_builtin() {
+    fn shell_is_default_cmd_and_cmd_becomes_startup() {
         let (cfg, _) = resolve_str(
             r##"
 default_cmd = "zsh"
@@ -157,9 +164,14 @@ colour = "#000000"
 "##,
         )
         .unwrap();
-        assert_eq!(cfg.profiles[0].tabs[0].cmd, "zsh");
-        assert_eq!(cfg.profiles[1].tabs[0].cmd, "tmux");
+        // Every tab runs the shell (default_cmd); a tab's `cmd` is its startup command,
+        // run *inside* that shell rather than replacing it.
+        assert_eq!(cfg.profiles[0].tabs[0].shell, "zsh");
+        assert_eq!(cfg.profiles[0].tabs[0].startup, None);
+        assert_eq!(cfg.profiles[1].tabs[0].shell, "zsh");
+        assert_eq!(cfg.profiles[1].tabs[0].startup.as_deref(), Some("tmux"));
 
+        // default_cmd unset → built-in shell; empty cmd → no startup command.
         let (cfg2, _) = resolve_str(
             r##"
 [[profile]]
@@ -167,10 +179,12 @@ name = "a"
 colour = "#000000"
   [[profile.tab]]
   dir = "/tmp/x"
+  cmd = "   "
 "##,
         )
         .unwrap();
-        assert_eq!(cfg2.profiles[0].tabs[0].cmd, DEFAULT_CMD);
+        assert_eq!(cfg2.profiles[0].tabs[0].shell, DEFAULT_CMD);
+        assert_eq!(cfg2.profiles[0].tabs[0].startup, None);
     }
 
     #[test]

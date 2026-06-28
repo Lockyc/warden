@@ -30,7 +30,7 @@ Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): full keybindings + ad-h
 `~/.config/warden/config.toml` (override with `WARDEN_CONFIG`):
 
 ```toml
-default_cmd = "fish -l"
+default_cmd = "fish -l"      # the shell every tab spawns
 
 [[profile]]                  # a window
 name   = "work"
@@ -39,11 +39,11 @@ colour = "#0f8a8a"
   [[profile.tab]]            # a project terminal
   title      = "myproject"   # optional; defaults to the dir basename
   dir        = "~/code/myproject"
-  cmd        = "tmux"        # optional; defaults to default_cmd
+  cmd        = "amux"        # optional; auto-run inside the shell on open
   keep_alive = true          # optional; spawn at launch and keep running
 ```
 
-A profile is a window (its own colour + name banner); its tabs are project terminals. `keep_alive` tabs start at launch and keep running in the background.
+A profile is a window (its own colour + name banner); its tabs are project terminals. Each tab opens the `default_cmd` shell; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). `keep_alive` tabs start at launch and keep running in the background.
 
 ## Build & use
 

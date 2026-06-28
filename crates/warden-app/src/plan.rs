@@ -74,7 +74,8 @@ pub fn profile_to_spec(p: &Profile, label: String) -> WindowSpec {
                 id: t.key.clone(),
                 title: t.title.clone(),
                 dir: t.dir.clone(),
-                cmd: t.cmd.clone(),
+                shell: t.shell.clone(),
+                startup: t.startup.clone(),
             },
             keep_alive: t.keep_alive,
         })
@@ -150,7 +151,8 @@ pub fn reconcile_ops(
                     id: t.key.clone(),
                     title: t.title.clone(),
                     dir: t.dir.clone(),
-                    cmd: t.cmd.clone(),
+                    shell: t.shell.clone(),
+                    startup: t.startup.clone(),
                 },
                 keep_alive: t.keep_alive,
             })

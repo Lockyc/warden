@@ -153,7 +153,13 @@ mod tests {
         PixelRect { x: 0.0, y: 0.0, width: 100.0, height: 100.0 }
     }
     fn spec(id: &str, dir: &str) -> TabSpec {
-        TabSpec { id: id.into(), title: id.into(), dir: PathBuf::from(dir), cmd: "fish".into() }
+        TabSpec {
+            id: id.into(),
+            title: id.into(),
+            dir: PathBuf::from(dir),
+            shell: "fish".into(),
+            startup: None,
+        }
     }
 
     #[test]

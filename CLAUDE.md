@@ -43,7 +43,7 @@ bin/warden.rs  `warden validate [path]` CLI
 ## Config schema (`~/.config/warden/config.toml`; override with `WARDEN_CONFIG`)
 
 ```toml
-default_cmd = "fish -l"               # optional; tabs with no cmd use this
+default_cmd = "fish -l"               # optional; the shell every tab spawns (default "fish -l")
 
 [[profile]]                            # = a window
 name   = "work"                        # required, unique, non-empty; banner + window title
@@ -53,9 +53,11 @@ icon   = "~/…/work.png"                # optional; window proxy icon (macOS)
   [[profile.tab]]                      # = a project terminal
   title      = "locus"                 # optional; default = basename(dir); must be non-empty & unique within the profile
   dir        = "~/Developer/…/locus"   # required
-  cmd        = "amux"                  # optional; default = default_cmd → "fish -l"
+  cmd        = "amux"                  # optional; startup command auto-run *inside* the shell (not a replacement for it)
   keep_alive = true                    # optional; default false (spawn at launch + keep running for background work)
 ```
+
+**`cmd` runs inside the shell, it doesn't replace it.** Every tab spawns `default_cmd` (an interactive shell under the PTY); a tab's `cmd`, if set, is delivered as libghostty `initial_input` — i.e. *typed into* that shell (newline-terminated) rather than exec'd directly. This is deliberate and load-bearing: `amux` is a shell **function**, not an executable, so execing it directly fails — only an interactive shell resolves it. As a bonus the shell stays live after the command exits (detaching from `amux`/tmux drops you to a prompt, not a dead pane). In the resolved model this is `Tab.shell` (= `default_cmd`) + `Tab.startup: Option<String>` (the `cmd`; empty/absent → `None`). Do **not** "fix" this back to passing `cmd` as libghostty's `command`/exec target.
 
 Validation: unique profile name, unique tab title within a profile, non-empty name/dir/explicit-title, valid colour → **errors**; a `dir` that doesn't exist → **warning** (tab still created). Invalid config must be reported, never panic.
 

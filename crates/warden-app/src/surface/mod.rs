@@ -13,7 +13,11 @@ pub struct TabSpec {
     pub id: String,
     pub title: String,
     pub dir: PathBuf,
-    pub cmd: String,
+    /// The shell to exec (an interactive shell under the PTY, e.g. `"fish -l"`).
+    pub shell: String,
+    /// Optional command auto-run inside the shell on spawn (delivered as libghostty
+    /// `initial_input` — typed into the shell, not exec'd). `None` = bare shell.
+    pub startup: Option<String>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

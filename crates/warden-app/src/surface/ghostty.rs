@@ -492,7 +492,7 @@ impl GhosttySurface {
             // Topmost subview => above the WKWebView (which is added by wry first).
             content_view.addSubview(&host_view);
 
-            // Build the surface config from defaults, then override platform/dir/cmd.
+            // Build the surface config from defaults, then override platform/dir/shell/startup.
             let mut cfg = ffi::ghostty_surface_config_new();
             cfg.userdata = ptr::null_mut();
             cfg.platform_tag = ffi::ghostty_platform_e::GHOSTTY_PLATFORM_MACOS;
@@ -507,10 +507,24 @@ impl GhosttySurface {
             // Keep CStrings alive across ghostty_surface_new (it copies them).
             let c_dir = CString::new(spec.dir.to_string_lossy().into_owned())
                 .map_err(|_| SurfaceError::SurfaceCreateFailed)?;
-            let c_cmd =
-                CString::new(spec.cmd.clone()).map_err(|_| SurfaceError::SurfaceCreateFailed)?;
+            let c_shell =
+                CString::new(spec.shell.clone()).map_err(|_| SurfaceError::SurfaceCreateFailed)?;
             cfg.working_directory = c_dir.as_ptr();
-            cfg.command = c_cmd.as_ptr();
+            cfg.command = c_shell.as_ptr();
+
+            // A tab's startup command is NOT exec'd — it's typed into the interactive shell
+            // (newline-terminated so it runs). This is what makes a shell *function* like
+            // `amux` resolve and leaves a live shell once the command exits. The CString must
+            // outlive ghostty_surface_new (it copies the bytes), so it's bound in this scope.
+            let c_startup = spec
+                .startup
+                .as_ref()
+                .map(|s| CString::new(format!("{s}\n")))
+                .transpose()
+                .map_err(|_| SurfaceError::SurfaceCreateFailed)?;
+            if let Some(c) = &c_startup {
+                cfg.initial_input = c.as_ptr();
+            }
 
             let surface = ffi::ghostty_surface_new(app, &cfg);
             if surface.is_null() {

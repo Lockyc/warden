@@ -2,10 +2,12 @@
 # app never touches your real ~/.config/warden/config.toml.
 #
 # A [[profile]] is a window (colour + name banner). A [[profile.tab]] is a terminal opened in
-# `dir`, running `cmd` (or `default_cmd` when a tab sets none). `keep_alive` spawns the tab at
-# launch and keeps it running for background work; other tabs spawn lazily on first focus.
+# `dir` running the `default_cmd` shell; a tab's optional `cmd` is auto-run *inside* that shell
+# (typed in, not exec'd — so a shell function like agentmux's `amux` works and you drop back to a
+# live shell when it exits). `keep_alive` spawns the tab at launch and keeps it running for
+# background work; other tabs spawn lazily on first focus.
 
-default_cmd = "fish -l"               # tabs with no cmd use this
+default_cmd = "fish -l"               # the shell every tab spawns
 
 [[profile]]                            # a window
 name   = "work"
@@ -21,6 +23,7 @@ colour = "#0f8a8a"
   [[profile.tab]]
   title      = "logs"
   dir        = "/var/log"
+  cmd        = "echo 'auto-run on open'" # optional; auto-run inside the shell when the tab spawns
   keep_alive = true                    # spawns at launch + stays live for background work
 
 [[profile]]
