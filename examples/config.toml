@@ -20,6 +20,12 @@ format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in
 # "cycle" = ⌘1 next tab / ⌘2 previous tab (like ⌘⇧] / ⌘⇧[); jumps then start at ⌘3.
 tab_digit_keys = "cycle"
 
+# Optional: a per-tab "session exists" indicator. warden runs this command for each tab
+# (cwd = the tab's dir) on a timer and lights a cyan dot when it exits 0. Generic — any
+# check works. The amux/tmux case (point probe at the agentmux session socket):
+# probe = 'tmux -L "$AGENTMUX_AGENT_SOCKET" has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
+# probe_interval = 5   # seconds; 0 = check only on window focus / hot-reload
+
 [[window]] # a window
   name   = "work"
   colour = "#0f8a8a"
@@ -31,6 +37,7 @@ tab_digit_keys = "cycle"
   [[window.tab]]
     title = "library"
     dir   = "~/Library" # inherits the window's cmd
+    probe = 'test -d .git' # lights a cyan dot when the dir is a git repo
 
   [[window.tab]]
     title      = "logs"

@@ -24,6 +24,14 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 - **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens a window for each `[[window]]` in the config (colour + name banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`keep_alive` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour, re-section groups — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs from the **Tab** menu — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to instead make **⌘1** / **⌘2** cycle next/prev (jumps then shift to **⌘3–⌘9**). **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
 - **Tab-row affordances** — each sidebar tab shows a letter/colour tile and a **live/cold dot**: filled when the terminal is spawned, hollow when cold. Hovering a live dot reveals a ✕ that **unloads** the tab — kills the terminal and PTY; it goes cold and respawns a fresh shell on next focus. Tabs also **surface notifications**: when a background tab rings the bell or emits a desktop-notification escape (OSC 9 / OSC 777), warden badges its row with an amber dot, and a desktop notification additionally raises a macOS banner; the badge clears on focus. This is the channel [agentmux](https://github.com/lockyc/agentmux)'s Claude hooks feed instead of shelling out to `osascript`.
 
+Each probe-enabled tab also carries a **session-presence dot** (cyan): warden runs a configured `probe` command per tab and lights the dot when it exits 0 — independent of whether warden's own terminal surface is loaded. Pairing with [agentmux](https://github.com/lockyc/agentmux), set:
+
+```toml
+probe = 'tmux -L "$AGENTMUX_AGENT_SOCKET" has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
+```
+
+so a tab shows whether its amux session is alive. `probe_interval` controls the cadence (`0` = check on focus/hot-reload only).
+
 Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle windows, ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
 
 ## Config
