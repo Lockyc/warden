@@ -36,8 +36,8 @@ use std::sync::OnceLock;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_app_kit::{NSEvent, NSResponder, NSView, NSWindow};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2_app_kit::{NSEvent, NSPasteboard, NSPasteboardTypeString, NSResponder, NSView, NSWindow};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 // --- AppKit modifier-flag bit masks (stable AppKit ABI values) ---
 const NS_FLAG_CAPS: usize = 1 << 16;
@@ -113,13 +113,31 @@ unsafe extern "C" fn confirm_read_clipboard_cb(
     _request: ffi::ghostty_clipboard_request_e,
 ) {
 }
+/// Copy: libghostty hands us the selected text (e.g. on ⌘C or copy-on-select); write it to the
+/// macOS general pasteboard. macOS has no primary-selection clipboard, so we ignore SELECTION
+/// writes. Runs on the main thread (called from a `ghostty_app_tick`).
 unsafe extern "C" fn write_clipboard_cb(
     _userdata: *mut c_void,
-    _loc: ffi::ghostty_clipboard_e,
-    _content: *const ffi::ghostty_clipboard_content_s,
-    _len: usize,
+    loc: ffi::ghostty_clipboard_e,
+    content: *const ffi::ghostty_clipboard_content_s,
+    len: usize,
     _confirm: bool,
 ) {
+    if loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD || content.is_null() || len == 0 {
+        return;
+    }
+    // Take the first entry that carries valid UTF-8 text (usually the text/plain mime).
+    let entries = std::slice::from_raw_parts(content, len);
+    let Some(text) = entries.iter().find_map(|e| {
+        (!e.data.is_null())
+            .then(|| std::ffi::CStr::from_ptr(e.data).to_str().ok())
+            .flatten()
+    }) else {
+        return;
+    };
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+    pb.setString_forType(&NSString::from_str(text), NSPasteboardTypeString);
 }
 /// Surface requested close (e.g. shell exited). The spike keeps the window;
 /// teardown is `GhosttySurface::close`. No-op here.
