@@ -74,7 +74,10 @@
         overflow-y: auto;
       }
       .tab {
-        padding: 7px 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
         border-radius: 5px;
         cursor: pointer;
         color: rgba(238, 238, 238, 0.65);
@@ -89,6 +92,26 @@
       .tab.active {
         color: #fff;
         font-weight: 600;
+      }
+      /* Per-tab letter/colour tile (initial + title-hashed colour) — pure
+         presentation for at-a-glance scanning; ported from curator's chrome. */
+      .tab-icon {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 600;
+        color: #fff;
+      }
+      .tab-title {
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       #terminal-hole {
         flex: 1;
@@ -129,6 +152,18 @@
       /** Opaque dark base the sidebar composites the profile tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
       const SIDEBAR_BASE = [21, 25, 30]; // #15191e
+
+      /** First alphanumeric of a title, uppercased — the letter on the tab tile. */
+      function tileInitial(s) {
+        const m = (s || '').match(/[a-z0-9]/i);
+        return m ? m[0].toUpperCase() : '•';
+      }
+      /** Deterministic tile colour hashed from the title (stable per project). */
+      function tileColour(seed) {
+        let h = 0;
+        for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+        return 'hsl(' + (h % 360) + ', 45%, 45%)';
+      }
 
       /** Parse a #rrggbb hex colour into an rgba(...) string. */
       function hexToRgba(hex, alpha) {
@@ -178,11 +213,24 @@
         dto.tabs.forEach((t) => {
           const el = document.createElement('div');
           el.className = 'tab';
-          // textContent (not innerHTML): config titles never reach the HTML parser.
-          el.textContent = t.title + (t.warn ? '  ⚠' : '');
-          if (t.warn) el.title = 'working directory does not exist';
           el.dataset.id = t.id;
           el.onclick = () => select(t.id);
+
+          // Letter/colour tile derived from the title (no new data) — at-a-glance
+          // scanning. Mirrors curator's per-row favicon tile.
+          const icon = document.createElement('span');
+          icon.className = 'tab-icon';
+          icon.textContent = tileInitial(t.title);
+          icon.style.background = tileColour(t.title);
+          el.appendChild(icon);
+
+          const title = document.createElement('span');
+          title.className = 'tab-title';
+          // textContent (not innerHTML): config titles never reach the HTML parser.
+          title.textContent = t.title + (t.warn ? '  ⚠' : '');
+          el.appendChild(title);
+
+          if (t.warn) el.title = 'working directory does not exist';
           list.appendChild(el);
         });
         // Keep the active tab if it survived; otherwise fall back to the first.
