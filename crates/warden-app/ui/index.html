@@ -618,14 +618,21 @@
         let startX = 0, startW = 0, dragging = false;
         function onMove(e) {
           if (!dragging) return;
+          // The terminal is a native NSView composited ABOVE the webview, so a mouseup
+          // released over it never reaches us and the drag would stick (resizing with no
+          // button held until the next clean click). If a move arrives with no button
+          // pressed, the release was swallowed — end the drag now. This is the guaranteed
+          // un-stick; the blur handler below ends it proactively when focus leaves first.
+          if (e.buttons === 0) { endDrag(); return; }
           applyWidth(startW + (e.clientX - startX));
           reportRect();
         }
-        function onUp() {
+        function endDrag() {
           if (!dragging) return;
           dragging = false;
           window.removeEventListener('mousemove', onMove);
-          window.removeEventListener('mouseup', onUp);
+          window.removeEventListener('mouseup', endDrag);
+          window.removeEventListener('blur', endDrag);
           document.body.style.cursor = '';
           persistWidth(parseInt(sidebar.style.width, 10));
         }
@@ -637,7 +644,10 @@
           startW = sidebar.getBoundingClientRect().width;
           document.body.style.cursor = 'col-resize';
           window.addEventListener('mousemove', onMove);
-          window.addEventListener('mouseup', onUp);
+          window.addEventListener('mouseup', endDrag);
+          // Releasing over the native terminal view hands it first responder and blurs
+          // the webview — end the drag then too (also covers ⌘-tab away mid-drag).
+          window.addEventListener('blur', endDrag);
         });
         handle.addEventListener('dblclick', (e) => {
           e.preventDefault();

@@ -142,7 +142,9 @@ unsafe extern "C" fn action_cb(
 /// app-level — it carries no surface — so we track the currently-focused surface here and answer
 /// the request against it. This is the one piece of process-global surface state (keys route via
 /// the per-view ivar instead); it exists only because the clipboard callback has no surface to
-/// hang context on. Cleared on `close()` so a freed surface is never completed against (UAF).
+/// hang context on. Written by `focus()` (tab activate) and refreshed in `performKeyEquivalent:`
+/// (so focus that arrives by clicking another window — never through activate — still retargets
+/// paste). Cleared on `close()` so a freed surface is never completed against (UAF).
 static FOCUSED_SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// Monotonic counter for temp image-paste filenames (see `clipboard_image_to_temp_path`).
@@ -327,8 +329,30 @@ declare_class!(
             }
 
             let surface = self.ivars().surface.get();
-            if surface.is_null() || surface != FOCUSED_SURFACE.load(Ordering::Acquire) {
+            // Disambiguate sibling tab views: the hidden views in this window ALSO receive
+            // performKeyEquivalent:, but exactly one host view per window is unhidden — the
+            // active tab (show()/hide() enforce this). Gate on visibility, NOT a match against
+            // FOCUSED_SURFACE: only the key window's hierarchy receives this event, so the lone
+            // unhidden view here is the focused surface globally — even when focus arrived by a
+            // click that never ran activate() (clicking another window's terminal or sidebar).
+            // Keying the gate on activate()-set state was the bug: ⌘C/⌘V went dead in a window
+            // focused by click until a tab row was clicked.
+            // SAFETY: performKeyEquivalent: is delivered on the main thread.
+            if surface.is_null() || unsafe { self.isHidden() } {
                 return objc2::runtime::Bool::NO;
+            }
+            // This chord proves THIS surface is the focused one. Make it the global paste/focus
+            // target so the ⌘V being processed now lands here (libghostty's read_clipboard_cb is
+            // app-level and reads FOCUSED_SURFACE), and hand libghostty focus over from whatever
+            // surface held it — only on a real change, to avoid resetting cursor blink each press.
+            let prev = FOCUSED_SURFACE.swap(surface, Ordering::AcqRel);
+            if prev != surface {
+                unsafe {
+                    if !prev.is_null() {
+                        ffi::ghostty_surface_set_focus(prev, false);
+                    }
+                    ffi::ghostty_surface_set_focus(surface, true);
+                }
             }
             let consumed =
                 unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
