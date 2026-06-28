@@ -37,7 +37,8 @@ tab_digit_keys = "cycle"
   [[window.tab]]
     title = "library"
     dir   = "~/Library" # inherits the window's cmd
-    probe = 'test -d .git' # lights a cyan dot when the dir is a git repo
+    probe = 'test -d "$HOME"' # demo probe: always exits 0 → FILLED cyan dot. Use a real
+    # check in practice (e.g. `test -d .git`, or the amux has-session line at the top).
 
   [[window.tab]]
     title      = "logs"
