@@ -339,4 +339,14 @@ extern "C" {
         dy: f64,
         mods: ghostty_input_scroll_mods_t,
     );
+
+    // void ghostty_surface_complete_clipboard_request(ghostty_surface_t, const char*, void*, bool);
+    // Hands clipboard data back to libghostty in response to a read_clipboard_cb; `state` is the
+    // opaque request token from that callback, `confirmed` skips the unsafe-paste confirmation.
+    pub fn ghostty_surface_complete_clipboard_request(
+        surface: ghostty_surface_t,
+        data: *const c_char,
+        state: *mut c_void,
+        confirmed: bool,
+    );
 }

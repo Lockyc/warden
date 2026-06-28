@@ -32,6 +32,7 @@ use std::cell::Cell;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::OnceLock;
 
 use objc2::rc::{Allocated, Retained};
@@ -98,13 +99,33 @@ unsafe extern "C" fn action_cb(
     false
 }
 
-/// No clipboard integration in the spike: report "no data available".
+/// The surface that should receive clipboard reads (paste). libghostty's `read_clipboard_cb` is
+/// app-level — it carries no surface — so we track the currently-focused surface here and answer
+/// the request against it. This is the one piece of process-global surface state (keys route via
+/// the per-view ivar instead); it exists only because the clipboard callback has no surface to
+/// hang context on. Cleared on `close()` so a freed surface is never completed against (UAF).
+static FOCUSED_SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+/// Paste: libghostty asks for clipboard data (e.g. on ⌘V); read the macOS general pasteboard and
+/// hand it back via `complete_clipboard_request`. Runs on the main thread (from a `ghostty_app_tick`).
 unsafe extern "C" fn read_clipboard_cb(
     _userdata: *mut c_void,
     _loc: ffi::ghostty_clipboard_e,
-    _state: *mut c_void,
+    state: *mut c_void,
 ) -> bool {
-    false
+    let surface = FOCUSED_SURFACE.load(Ordering::Acquire);
+    if surface.is_null() {
+        return false;
+    }
+    let text = NSPasteboard::generalPasteboard()
+        .stringForType(NSPasteboardTypeString)
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let Ok(c_text) = CString::new(text) else {
+        return false; // clipboard contained an interior NUL — refuse rather than truncate
+    };
+    ffi::ghostty_surface_complete_clipboard_request(surface, c_text.as_ptr(), state, true);
+    true
 }
 unsafe extern "C" fn confirm_read_clipboard_cb(
     _userdata: *mut c_void,
@@ -211,6 +232,21 @@ declare_class!(
         #[method(keyUp:)]
         fn key_up(&self, event: &NSEvent) {
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
+        }
+
+        // ⌘-combo key-DOWN events are delivered via performKeyEquivalent:, NOT keyDown:, so
+        // without this the terminal never sees ⌘V/⌘C/etc. Forward to libghostty only when this
+        // is the focused surface, and return whether libghostty consumed it as a binding
+        // (paste/copy/…) — if not, return false so AppKit still handles ⌘Q/⌘W/⌘` and friends.
+        #[method(performKeyEquivalent:)]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> objc2::runtime::Bool {
+            let surface = self.ivars().surface.get();
+            if surface.is_null() || surface != FOCUSED_SURFACE.load(Ordering::Acquire) {
+                return objc2::runtime::Bool::NO;
+            }
+            let consumed =
+                unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
+            objc2::runtime::Bool::new(consumed)
         }
 
         // --- Mouse: forward button/drag/scroll so terminal mouse modes (tmux pane select,
@@ -364,14 +400,16 @@ unsafe fn forward_scroll(view: &WardenHostView, event: &NSEvent) {
 /// `keycode` is the macOS virtual keycode, `unshifted_codepoint` from
 /// `charactersIgnoringModifiers`. Full IME / NSTextInputClient handling (dead
 /// keys, marked text) is out of scope for the spike.
+/// Returns whether libghostty consumed the event (e.g. as a keybinding like paste/copy) — used by
+/// `performKeyEquivalent:` to decide whether to swallow a ⌘-combo or let AppKit route it.
 unsafe fn forward_key(
     view: &WardenHostView,
     event: &NSEvent,
     action: ffi::ghostty_input_action_e,
-) {
+) -> bool {
     let surface = view.ivars().surface.get();
     if surface.is_null() {
-        return;
+        return false;
     }
 
     let mods = mods_from_event(event);
@@ -399,7 +437,7 @@ unsafe fn forward_key(
         composing: false,
     };
     // `c_text` stays alive until the end of this fn, covering the call.
-    ffi::ghostty_surface_key(surface, key);
+    ffi::ghostty_surface_key(surface, key)
 }
 
 // --- GhosttySurface ---------------------------------------------------------
@@ -526,6 +564,8 @@ impl TerminalSurface for GhosttySurface {
         // &WardenHostView coerces to &NSResponder via the NSView deref chain.
         let responder: &NSResponder = &self.host_view;
         self.window.makeFirstResponder(Some(responder));
+        // This surface is now the clipboard-read (paste) target.
+        FOCUSED_SURFACE.store(self.surface, Ordering::Release);
         unsafe {
             ffi::ghostty_surface_set_focus(self.surface, true);
             ffi::ghostty_app_set_focus(shared_app(), true);
@@ -533,6 +573,14 @@ impl TerminalSurface for GhosttySurface {
     }
 
     fn close(self) {
+        // Stop targeting this surface for paste before freeing it (avoid completing a request
+        // against a dangling pointer); only clear if it's the one currently focused.
+        let _ = FOCUSED_SURFACE.compare_exchange(
+            self.surface,
+            ptr::null_mut(),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        );
         unsafe {
             // The host view is dropped with this struct, so its surface ivar
             // (a dangling pointer after the free) is never read again.
