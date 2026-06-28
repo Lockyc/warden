@@ -181,9 +181,11 @@ fn main() {
         // macOS banners for terminal desktop-notifications (OSC 9/777), shown by notify.rs.
         .plugin(tauri_plugin_notification::init())
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
-        // route through its chrome, which owns the tab list + select()/unload; emit_to targets
-        // that one window so siblings don't also act. Close Window (⌘⇧W) closes it directly.
-        // Unknown IDs (e.g. predefined Quit/Minimize, which self-handle) are ignored.
+        // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
+        // reliable per-window target here (it leaks to siblings — the same reason warden:refresh
+        // carries a label, see manager.rs), so every payload carries the focused window's `label`
+        // and the chrome ignores events not addressed to it. Close Window (⌘⇧W) closes it
+        // directly. Unknown IDs (e.g. predefined Quit/Minimize, which self-handle) are ignored.
         .on_menu_event(|app, event| {
             use tauri::{Emitter, Manager};
             let Some(win) = app
@@ -196,14 +198,26 @@ fn main() {
             let label = win.label().to_string();
             let id = event.id().as_ref();
             if id == MENU_TAB_PREV {
-                let _ = app.emit_to(label.as_str(), "warden:cycle-tab", -1i32);
+                let _ = app.emit_to(
+                    label.as_str(),
+                    "warden:cycle-tab",
+                    serde_json::json!({ "label": label, "dir": -1 }),
+                );
             } else if id == MENU_TAB_NEXT {
-                let _ = app.emit_to(label.as_str(), "warden:cycle-tab", 1i32);
+                let _ = app.emit_to(
+                    label.as_str(),
+                    "warden:cycle-tab",
+                    serde_json::json!({ "label": label, "dir": 1 }),
+                );
             } else if id == MENU_TAB_CLOSE {
                 // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
                 // it does NOT close the window. The chrome owns "which tab is active" + the
                 // dot/highlight repaint, so it drives the unload_tab command on this event.
-                let _ = app.emit_to(label.as_str(), "warden:unload-tab", ());
+                let _ = app.emit_to(
+                    label.as_str(),
+                    "warden:unload-tab",
+                    serde_json::json!({ "label": label }),
+                );
             } else if id == MENU_WINDOW_CLOSE {
                 // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, last-window-quit).
                 let _ = win.close();
@@ -211,7 +225,11 @@ fn main() {
                 .strip_prefix(MENU_TAB_JUMP_PREFIX)
                 .and_then(|s| s.parse::<u32>().ok())
             {
-                let _ = app.emit_to(label.as_str(), "warden:select-tab", n);
+                let _ = app.emit_to(
+                    label.as_str(),
+                    "warden:select-tab",
+                    serde_json::json!({ "label": label, "n": n }),
+                );
             }
         })
         .invoke_handler(tauri::generate_handler![

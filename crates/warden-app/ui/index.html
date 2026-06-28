@@ -476,18 +476,25 @@
         reportRect();
       });
 
-      // Tab navigation (⌘⇧[ prev, ⌘⇧] next): the app menu emits a direction (-1/+1) to THIS
-      // window only (emit_to), so no label filter is needed. Cycle ONLY through LOADED (live)
-      // tabs — landing on a cold tab would spawn it, which navigation must never do. A row is
-      // live iff its dot carries the `live` class (the same signal the unload click gates on);
-      // the active tab is always live, so it anchors the position. Step with wraparound and
-      // reuse select() (same path as a click → activate_tab + highlight).
+      // True iff this menu event is addressed to THIS window. emit_to does NOT reliably
+      // target a single webview here (it leaks to siblings — the same reason warden:refresh
+      // filters by label), so the menu stamps the focused window's label into every payload
+      // and we drop anything meant for a sibling. Without this, BOTH windows act on a chord.
+      const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
+
+      // Tab navigation (⌘⇧[ prev, ⌘⇧] next): the menu emits a direction (-1/+1) addressed to
+      // this window. Cycle ONLY through LOADED (live) tabs — landing on a cold tab would spawn
+      // it, which navigation must never do. A row is live iff its dot carries the `live` class
+      // (the same signal the unload click gates on); the active tab is always live, so it
+      // anchors the position. Step with wraparound and reuse select() (same path as a click →
+      // activate_tab + highlight).
       listen('warden:cycle-tab', (e) => {
+        if (!forMe(e)) return;
         const ids = [...document.querySelectorAll('.tab')]
           .filter(el => el.querySelector('.tab-dot.live'))
           .map(el => el.dataset.id);
         if (ids.length < 2) return; // 0 or 1 live tab — nowhere to cycle to
-        const dir = e.payload < 0 ? -1 : 1;
+        const dir = e.payload.dir < 0 ? -1 : 1;
         const cur = ids.indexOf(active);
         // Unknown active: step in from the end opposite the direction of travel.
         const base = cur === -1 ? (dir > 0 ? -1 : 0) : cur;
@@ -498,13 +505,15 @@
       // Direct jump (⌘1–⌘9): the menu emits a 1-based position. Select the tab at that index;
       // a position past the last tab is a no-op (e.g. ⌘7 with only 4 tabs).
       listen('warden:select-tab', (e) => {
+        if (!forMe(e)) return;
         const ids = [...document.querySelectorAll('.tab')].map(el => el.dataset.id);
-        const n = e.payload;
+        const n = e.payload.n;
         if (n >= 1 && n <= ids.length) select(ids[n - 1]);
       });
 
       // ⌘W unloads the active tab (the menu emits this; same action as clicking a live dot).
-      listen('warden:unload-tab', () => {
+      listen('warden:unload-tab', (e) => {
+        if (!forMe(e)) return;
         if (active) unloadTab(active);
       });
 
