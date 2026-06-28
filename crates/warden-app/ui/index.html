@@ -39,6 +39,7 @@
       #sidebar {
         width: 160px;
         flex: none;
+        position: relative;  /* containing block for the resize handle */
         display: flex;
         flex-direction: column;
         /* Top inset clears the traffic lights, which now overlay the sidebar's
@@ -56,6 +57,20 @@
            selection). The terminal-hole is a native surface, unaffected by this. */
         user-select: none;
         -webkit-user-select: none;
+      }
+      /* Drag-to-resize handle on the sidebar's right edge. A thin strip that is
+         invisible until hover — the col-resize cursor is the affordance (matching
+         macOS sidebars). Deliberately WITHOUT data-tauri-drag-region so a
+         mousedown resizes instead of starting a window drag; spans full height,
+         including the traffic-light inset (those are top-LEFT, so no conflict). */
+      #sidebar-resize {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 5px;
+        height: 100%;
+        cursor: col-resize;
+        z-index: 5;
       }
       #banner {
         flex: none;
@@ -213,6 +228,9 @@
       <aside id="sidebar" data-tauri-drag-region>
         <div id="banner" data-tauri-drag-region></div>
         <div id="tab-list" data-tauri-drag-region></div>
+        <!-- Resize handle: NO data-tauri-drag-region, so a mousedown here resizes
+             the sidebar instead of starting a window drag (see #sidebar-resize). -->
+        <div id="sidebar-resize"></div>
       </aside>
       <div id="terminal-hole"></div>
     </div>
@@ -232,6 +250,30 @@
       /** Opaque dark base the sidebar composites the window tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
       const SIDEBAR_BASE = [21, 25, 30]; // #15191e
+
+      /** Sidebar width: default (matches the CSS) and lower bound. The upper bound
+          is computed against the live window width so a narrow window can't have its
+          terminal squeezed away (see clampWidth). */
+      const SIDEBAR_DEFAULT_WIDTH = 160;
+      const SIDEBAR_MIN_WIDTH = 120;
+
+      /** Clamp a desired sidebar width into [min, min(400, 40% of window)]. */
+      function clampWidth(w) {
+        const max = Math.min(400, window.innerWidth * 0.4);
+        return Math.max(SIDEBAR_MIN_WIDTH, Math.min(w, max));
+      }
+      /** Apply a sidebar width (clamped) to the layout. */
+      function applyWidth(w) {
+        document.getElementById('sidebar').style.width = clampWidth(w) + 'px';
+      }
+      /** Per-window localStorage key for the persisted sidebar width. */
+      function widthKey() {
+        return 'warden:sidebar-width:' + myLabel;
+      }
+      /** Persist the current sidebar width (per window). No-op until myLabel is known. */
+      function persistWidth(w) {
+        if (myLabel) localStorage.setItem(widthKey(), String(Math.round(w)));
+      }
 
       /** First alphanumeric of a title, uppercased — the letter on the tab tile. */
       function tileInitial(s) {
@@ -399,6 +441,10 @@
         const dto = await invoke('init_tabs');
         if (!dto) return;
         myLabel = dto.label;
+        // Restore the persisted per-window sidebar width BEFORE first paint, so the
+        // sidebar doesn't visibly jump from the 160px CSS default to the stored width.
+        const stored = parseInt(localStorage.getItem(widthKey()), 10);
+        if (Number.isFinite(stored)) applyWidth(stored);
         render(dto);
       }
 
@@ -514,8 +560,55 @@
       const ro = new ResizeObserver(() => reportRect());
       ro.observe(document.getElementById('terminal-hole'));
 
-      window.addEventListener('resize', reportRect);
-      window.addEventListener('load', init);
+      // Re-clamp on window resize (a window shrunk below the current sidebar width
+      // must pull the sidebar back in), then report the surface rect.
+      window.addEventListener('resize', () => {
+        const cur = parseInt(getComputedStyle(document.getElementById('sidebar')).width, 10);
+        if (Number.isFinite(cur)) applyWidth(cur);
+        reportRect();
+      });
+
+      /** Wire the right-edge handle to resize the sidebar. Width is applied live
+          during the drag (the ResizeObserver above follows the hole, and we report
+          directly too so the native surface stays tight to the cursor); the final
+          width is persisted on mouseup. Double-click resets to the default. */
+      function initResize() {
+        const sidebar = document.getElementById('sidebar');
+        const handle = document.getElementById('sidebar-resize');
+        let startX = 0, startW = 0, dragging = false;
+        function onMove(e) {
+          if (!dragging) return;
+          applyWidth(startW + (e.clientX - startX));
+          reportRect();
+        }
+        function onUp() {
+          if (!dragging) return;
+          dragging = false;
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          document.body.style.cursor = '';
+          persistWidth(parseInt(sidebar.style.width, 10));
+        }
+        handle.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();   // never let a resize-drag bubble to data-tauri-drag-region
+          dragging = true;
+          startX = e.clientX;
+          startW = sidebar.getBoundingClientRect().width;
+          document.body.style.cursor = 'col-resize';
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        });
+        handle.addEventListener('dblclick', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          applyWidth(SIDEBAR_DEFAULT_WIDTH);
+          reportRect();
+          persistWidth(SIDEBAR_DEFAULT_WIDTH);
+        });
+      }
+
+      window.addEventListener('load', () => { initResize(); init(); });
     </script>
   </body>
 </html>
