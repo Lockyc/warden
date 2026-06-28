@@ -232,19 +232,22 @@ impl WindowManager {
                     add_tabs,
                     remove_tabs,
                     order,
+                    set_groups,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
                         // An icon-only config change reaches here as an otherwise-empty
                         // Update: per-window window icon isn't applied yet (deferred),
                         // and `order` still carries the unchanged tab sequence. Skip it
                         // so an icon edit doesn't churn a full sidebar rebuild for zero
-                        // visible change.
+                        // visible change. A group change always carries `set_groups`, so
+                        // it is never mistaken for a no-op.
                         let current_order: Vec<String> =
                             ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
                         if colour.is_none()
                             && add_tabs.is_empty()
                             && remove_tabs.is_empty()
                             && order == current_order
+                            && set_groups.is_empty()
                         {
                             continue;
                         }
@@ -256,6 +259,11 @@ impl WindowManager {
                         }
                         for tp in &add_tabs {
                             ws.registry.add(&tp.spec, tp.keep_alive);
+                        }
+                        // Re-section kept tabs whose group changed (presentation only —
+                        // no respawn), before reorder + the DTO push below.
+                        for (id, group) in &set_groups {
+                            ws.registry.set_group(id, group.clone());
                         }
                         ws.registry.reorder(&order);
                         // Push the new snapshot so the chrome rebuilds the sidebar.

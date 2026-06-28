@@ -46,9 +46,15 @@ cmd    = "amux"              # this window's default startup command (each tab c
   title = "notes"
   dir   = "~/notes"
   cmd   = ""                 # opt out: just a bare shell here
+
+  [[window.group]]           # optional: a labelled sidebar section
+  name = "services"
+    [[window.group.tab]]     # same fields as [[window.tab]]
+    title = "api"
+    dir   = "~/code/api"
 ```
 
-A window has its own colour + name banner; its tabs are project terminals. Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `keep_alive` tabs start at launch and keep running in the background.
+A window has its own colour + name banner; its tabs are project terminals. Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `keep_alive` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar.
 
 ## Build & use
 

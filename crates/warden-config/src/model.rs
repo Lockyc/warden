@@ -27,6 +27,10 @@ pub struct Tab {
     /// function like `amux` works and the shell stays live after the command exits.
     pub startup: Option<String>,
     pub keep_alive: bool,
+    /// The name of the `[[window.group]]` this tab belongs to, or `None` for a loose
+    /// (ungrouped) tab. Purely presentational — the chrome sections the sidebar by it;
+    /// it carries no behaviour and is not part of `key` (identity stays the title).
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

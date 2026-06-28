@@ -6,8 +6,9 @@ use std::os::raw::c_void;
 pub struct TabDto {
     pub id: String,
     pub title: String,
-    pub warn: bool,    // dir missing at materialize time
-    pub spawned: bool, // surface is live (keep_alive or already focused) vs cold/declared
+    pub warn: bool,            // dir missing at materialize time
+    pub spawned: bool,         // surface is live (keep_alive or already focused) vs cold/declared
+    pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
 }
 
 /// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
@@ -85,8 +86,18 @@ impl Registry {
                 title: t.title.clone(),
                 warn: t.warn,
                 spawned: matches!(t.slot, TabSlot::Spawned(_)),
+                group: t.spec.group.clone(),
             })
             .collect()
+    }
+
+    /// Reassign a tab's group (presentation only — does not touch its surface/PTY).
+    /// Used by a hot-reload `set_groups` so regrouping or a group rename re-sections
+    /// the sidebar without killing the terminal. No-op if `id` is unknown.
+    pub fn set_group(&mut self, id: &str, group: Option<String>) {
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
+            t.spec.group = group;
+        }
     }
 
     /// The id of the tab owning the spawned surface with handle `surface_id`
@@ -245,6 +256,7 @@ mod tests {
             dir: PathBuf::from(dir),
             shell: "fish".into(),
             startup: None,
+            group: None,
         }
     }
 
@@ -287,6 +299,19 @@ mod tests {
         r.reorder(&["b".to_string(), "a".to_string()]);
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
+    }
+
+    #[test]
+    fn set_group_updates_dto_without_touching_surface() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("t0", "/tmp"), false);
+        assert_eq!(r.tab_dtos()[0].group, None);
+        r.set_group("t0", Some("backend".into()));
+        assert_eq!(r.tab_dtos()[0].group.as_deref(), Some("backend"));
+        // Cold tab stays cold — regrouping never spawns.
+        assert!(!r.is_spawned("t0"));
+        // Unknown id is a no-op (doesn't panic).
+        r.set_group("nope", Some("x".into()));
     }
 
     #[test]

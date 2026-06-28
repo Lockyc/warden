@@ -9,6 +9,10 @@
 #
 # `shell` and `cmd` CASCADE: set them globally, per-window, or per-tab — the nearest level wins.
 # A missing value inherits from above; `cmd = ""` opts a level out of an inherited command.
+#
+# Tabs can be grouped: a [[window.group]] (with a `name`) holds its own [[window.group.tab]]s and
+# renders as a labelled section in the sidebar. Loose [[window.tab]]s (no group) render first, in a
+# headerless section. Groups are presentation only — they add no cascade level. See the last window.
 
 shell = "fish -l"                     # global default shell for every tab
 
@@ -38,3 +42,26 @@ colour = "#b5651d"
   title = "scratch"
   dir   = "/tmp"
   shell = "zsh"                        # per-tab shell override
+
+[[window]]
+name   = "grouped"                     # demonstrates [[window.group]] sidebar sectioning
+colour = "#5b6ee1"
+
+  [[window.tab]]                        # loose tab → renders first, no header
+  title = "home"
+  dir   = "~/Library"
+
+  [[window.group]]
+  name = "system"                       # a labelled section + its tabs below
+    [[window.group.tab]]
+    title = "etc"
+    dir   = "/etc"
+    [[window.group.tab]]
+    title = "syslog"
+    dir   = "/var/log"
+
+  [[window.group]]
+  name = "scratch space"
+    [[window.group.tab]]
+    title = "tmpdir"
+    dir   = "/tmp"

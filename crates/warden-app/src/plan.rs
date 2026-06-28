@@ -76,6 +76,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
                 dir: t.dir.clone(),
                 shell: t.shell.clone(),
                 startup: t.startup.clone(),
+                group: t.group.clone(),
             },
             keep_alive: t.keep_alive,
         })
@@ -113,6 +114,9 @@ pub enum WindowOp {
         add_tabs: Vec<TabPlan>,
         remove_tabs: Vec<String>, // tab ids (= Tab::key)
         order: Vec<String>,       // full new tab id order
+        // (tab id, new group) for kept tabs whose [[window.group]] changed —
+        // re-sections the sidebar without respawning. None = back to loose.
+        set_groups: Vec<(String, Option<String>)>,
     },
 }
 
@@ -153,6 +157,7 @@ pub fn reconcile_ops(
                     dir: t.dir.clone(),
                     shell: t.shell.clone(),
                     startup: t.startup.clone(),
+                    group: t.group.clone(),
                 },
                 keep_alive: t.keep_alive,
             })
@@ -163,6 +168,7 @@ pub fn reconcile_ops(
             add_tabs,
             remove_tabs: u.remove_tabs.clone(),
             order: u.tab_order.clone(),
+            set_groups: u.set_groups.clone(),
         });
     }
 
@@ -232,9 +238,9 @@ colour = "#0f8a8a"
         assert_eq!(w.tabs.len(), 2);
         assert_eq!(w.tabs[0].spec.id, "locus");
         assert_eq!(w.tabs[0].spec.title, "locus");
-        assert_eq!(w.tabs[0].keep_alive, true);
+        assert!(w.tabs[0].keep_alive);
         assert_eq!(w.tabs[1].spec.id, "ops");
-        assert_eq!(w.tabs[1].keep_alive, false);
+        assert!(!w.tabs[1].keep_alive);
     }
 
     use warden_config::reconcile;

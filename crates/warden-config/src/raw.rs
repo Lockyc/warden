@@ -17,6 +17,20 @@ pub struct RawWindow {
     pub icon: Option<String>,
     pub shell: Option<String>,
     pub cmd: Option<String>,
+    // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,
+    // rendered in a headerless section before any named groups.
+    #[serde(default, rename = "tab")]
+    pub tabs: Vec<RawTab>,
+    // Named groups (`[[window.group]]`), each holding its own `[[window.group.tab]]`s.
+    // Resolution flattens loose tabs + each group's tabs into one ordered `Tab` list,
+    // tagging every tab with its group (loose = `None`); see resolve.rs.
+    #[serde(default, rename = "group")]
+    pub groups: Vec<RawGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RawGroup {
+    pub name: String,
     #[serde(default, rename = "tab")]
     pub tabs: Vec<RawTab>,
 }
@@ -84,5 +98,41 @@ cmd = "tmux"
         assert!(cfg.windows.is_empty());
         assert!(cfg.shell.is_none());
         assert!(cfg.cmd.is_none());
+    }
+
+    #[test]
+    fn parses_loose_tabs_and_groups_in_order() {
+        let cfg = parse(
+            r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+
+  [[window.tab]]
+  dir = "~/notes"
+
+  [[window.group]]
+  name = "frontend"
+    [[window.group.tab]]
+    dir = "~/dev/web"
+    [[window.group.tab]]
+    dir = "~/dev/design"
+
+  [[window.group]]
+  name = "backend"
+    [[window.group.tab]]
+    dir = "~/dev/api"
+"##,
+        )
+        .unwrap();
+        let w = &cfg.windows[0];
+        // Loose tabs and group blocks are independent TOML arrays.
+        assert_eq!(w.tabs.len(), 1);
+        assert_eq!(w.tabs[0].dir, "~/notes");
+        assert_eq!(w.groups.len(), 2);
+        assert_eq!(w.groups[0].name, "frontend");
+        assert_eq!(w.groups[0].tabs.len(), 2);
+        assert_eq!(w.groups[1].name, "backend");
+        assert_eq!(w.groups[1].tabs[0].dir, "~/dev/api");
     }
 }

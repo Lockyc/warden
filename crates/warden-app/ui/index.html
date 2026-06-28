@@ -78,6 +78,22 @@
         gap: 2px;
         overflow-y: auto;
       }
+      /* Group section header (curator's grouped-tab idiom): a muted uppercase label
+         above each [[window.group]]'s rows. Loose (ungrouped) tabs render first with
+         no header. Deliberately NOT a .tab — so ⌘1–9 / cycle, which select `.tab`
+         rows, skip headers and keep mapping to visual tab position. */
+      .group-header {
+        flex: none;
+        padding: 12px 8px 3px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(238, 238, 238, 0.4);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .tab {
         display: flex;
         align-items: center;
@@ -279,7 +295,7 @@
         invoke('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
       }
 
-      /** Render a window snapshot ({ name, colour, tabs:[{id,title,warn}] }) into
+      /** Render a window snapshot ({ name, colour, tabs:[{id,title,warn,spawned,group}] }) into
           the chrome. The single render path shared by init() (first paint) and
           the warden:refresh listener (hot-reload), so the sidebar is rebuilt the
           same way whether it's the initial DTO or a pushed reconcile snapshot. */
@@ -302,7 +318,21 @@
 
         const list = document.getElementById('tab-list');
         list.innerHTML = '';
+        // Section the flat tab list by group. The DTO is already ordered loose-first
+        // then groups-contiguous (resolve guarantees it), so a header is emitted each
+        // time we enter a new named group; loose (group == null) tabs get no header.
+        let lastGroup;
         dto.tabs.forEach((t) => {
+          const g = t.group ?? null;
+          if (g !== lastGroup && g !== null) {
+            const h = document.createElement('div');
+            h.className = 'group-header';
+            // textContent (not innerHTML): config group names never reach the HTML parser.
+            h.textContent = g;
+            list.appendChild(h);
+          }
+          lastGroup = g;
+
           const el = document.createElement('div');
           el.className = 'tab';
           el.dataset.id = t.id;

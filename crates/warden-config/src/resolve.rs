@@ -38,6 +38,10 @@ pub enum ResolveError {
     EmptyWindowName { index: usize },
     #[error("window {window:?} has a tab with an empty explicit title")]
     EmptyTabTitle { window: String },
+    #[error("window {window:?} has a group with an empty name")]
+    EmptyGroupName { window: String },
+    #[error("window {window:?} has duplicate group: {group:?}")]
+    DuplicateGroup { window: String, group: String },
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
@@ -86,50 +90,52 @@ fn resolve_window(
     })?;
     let icon = rp.icon.as_deref().map(expand_tilde);
 
-    let mut tabs = Vec::with_capacity(rp.tabs.len());
+    // Flatten loose tabs + each group's tabs into one ordered list: loose first
+    // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
+    // within a group keeping file order. Groups add no cascade level — they're
+    // presentation only — so every tab resolves identically (tab → window → global)
+    // and just carries its group name. Title uniqueness is window-wide (shared
+    // `seen_titles` across loose + grouped tabs), matching `Tab::key`.
+    let total: usize = rp.tabs.len() + rp.groups.iter().map(|g| g.tabs.len()).sum::<usize>();
+    let mut tabs = Vec::with_capacity(total);
     let mut seen_titles = HashSet::new();
+
     for rt in &rp.tabs {
-        if rt.dir.trim().is_empty() {
-            return Err(ResolveError::EmptyDir {
+        tabs.push(resolve_tab(
+            rt,
+            None,
+            rp,
+            global_shell,
+            global_cmd,
+            &mut seen_titles,
+            warnings,
+        )?);
+    }
+
+    let mut seen_groups = HashSet::new();
+    for g in &rp.groups {
+        if g.name.trim().is_empty() {
+            return Err(ResolveError::EmptyGroupName {
                 window: rp.name.clone(),
             });
         }
-        let dir = expand_tilde(&rt.dir);
-        if let Some(ref t) = rt.title {
-            if t.trim().is_empty() {
-                return Err(ResolveError::EmptyTabTitle {
-                    window: rp.name.clone(),
-                });
-            }
-        }
-        let title = rt.title.clone().unwrap_or_else(|| basename(&dir));
-        if !seen_titles.insert(title.clone()) {
-            return Err(ResolveError::DuplicateTab {
+        if !seen_groups.insert(g.name.clone()) {
+            return Err(ResolveError::DuplicateGroup {
                 window: rp.name.clone(),
-                title,
+                group: g.name.clone(),
             });
         }
-        if !dir.exists() {
-            warnings.push(Warning {
-                window: rp.name.clone(),
-                message: format!("dir does not exist: {}", dir.display()),
-            });
+        for rt in &g.tabs {
+            tabs.push(resolve_tab(
+                rt,
+                Some(g.name.clone()),
+                rp,
+                global_shell,
+                global_cmd,
+                &mut seen_titles,
+                warnings,
+            )?);
         }
-        // `shell` and `cmd` cascade tab → window → global (nearest set level wins); `shell`
-        // falls back to the built-in when unset everywhere, `cmd` is a startup command run
-        // *inside* the shell (None = bare shell; `cmd = ""` at any level opts out of inheritance).
-        let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), global_shell)
-            .unwrap_or(DEFAULT_SHELL)
-            .to_string();
-        let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
-        tabs.push(Tab {
-            key: title.clone(),
-            title,
-            dir,
-            shell,
-            startup,
-            keep_alive: rt.keep_alive,
-        });
     }
 
     Ok(Window {
@@ -137,6 +143,63 @@ fn resolve_window(
         colour,
         icon,
         tabs,
+    })
+}
+
+/// Resolve one raw tab into a `Tab`, tagged with `group` (`None` = loose/ungrouped).
+/// Shared by the loose-tab and grouped-tab passes so both validate and cascade
+/// identically; `seen_titles` is threaded in to enforce window-wide title uniqueness.
+#[allow(clippy::too_many_arguments)]
+fn resolve_tab(
+    rt: &crate::raw::RawTab,
+    group: Option<String>,
+    rp: &RawWindow,
+    global_shell: Option<&str>,
+    global_cmd: Option<&str>,
+    seen_titles: &mut HashSet<String>,
+    warnings: &mut Vec<Warning>,
+) -> Result<Tab, ResolveError> {
+    if rt.dir.trim().is_empty() {
+        return Err(ResolveError::EmptyDir {
+            window: rp.name.clone(),
+        });
+    }
+    let dir = expand_tilde(&rt.dir);
+    if let Some(ref t) = rt.title {
+        if t.trim().is_empty() {
+            return Err(ResolveError::EmptyTabTitle {
+                window: rp.name.clone(),
+            });
+        }
+    }
+    let title = rt.title.clone().unwrap_or_else(|| basename(&dir));
+    if !seen_titles.insert(title.clone()) {
+        return Err(ResolveError::DuplicateTab {
+            window: rp.name.clone(),
+            title,
+        });
+    }
+    if !dir.exists() {
+        warnings.push(Warning {
+            window: rp.name.clone(),
+            message: format!("dir does not exist: {}", dir.display()),
+        });
+    }
+    // `shell` and `cmd` cascade tab → window → global (nearest set level wins); `shell`
+    // falls back to the built-in when unset everywhere, `cmd` is a startup command run
+    // *inside* the shell (None = bare shell; `cmd = ""` at any level opts out of inheritance).
+    let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), global_shell)
+        .unwrap_or(DEFAULT_SHELL)
+        .to_string();
+    let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
+    Ok(Tab {
+        key: title.clone(),
+        title,
+        dir,
+        shell,
+        startup,
+        keep_alive: rt.keep_alive,
+        group,
     })
 }
 
@@ -433,6 +496,134 @@ colour = "#000000"
         )
         .unwrap_err();
         assert!(matches!(err, ResolveError::EmptyTabTitle { .. }));
+    }
+
+    #[test]
+    fn loose_then_grouped_tabs_flatten_in_order_with_group_tags() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "notes"
+  dir = "/tmp/notes"
+  [[window.group]]
+  name = "frontend"
+    [[window.group.tab]]
+    title = "web"
+    dir = "/tmp/web"
+  [[window.group]]
+  name = "backend"
+    [[window.group.tab]]
+    title = "api"
+    dir = "/tmp/api"
+"##,
+        )
+        .unwrap();
+        let tabs = &cfg.windows[0].tabs;
+        // Flat order: loose first, then groups in file order.
+        let order: Vec<(&str, Option<&str>)> = tabs
+            .iter()
+            .map(|t| (t.title.as_str(), t.group.as_deref()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("notes", None),
+                ("web", Some("frontend")),
+                ("api", Some("backend")),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_group_name_is_error() {
+        let err = resolve_str(
+            r##"
+[[window]]
+name = "work"
+colour = "#000000"
+  [[window.group]]
+  name = "  "
+    [[window.group.tab]]
+    dir = "/tmp/a"
+"##,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ResolveError::EmptyGroupName { .. }));
+    }
+
+    #[test]
+    fn duplicate_group_name_is_error() {
+        let err = resolve_str(
+            r##"
+[[window]]
+name = "work"
+colour = "#000000"
+  [[window.group]]
+  name = "dup"
+    [[window.group.tab]]
+    title = "a"
+    dir = "/tmp/a"
+  [[window.group]]
+  name = "dup"
+    [[window.group.tab]]
+    title = "b"
+    dir = "/tmp/b"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateGroup {
+                window: "work".into(),
+                group: "dup".into()
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_title_across_loose_and_group_is_error() {
+        // Title uniqueness is window-wide: a loose tab and a grouped tab can't share a title.
+        let err = resolve_str(
+            r##"
+[[window]]
+name = "work"
+colour = "#000000"
+  [[window.tab]]
+  title = "same"
+  dir = "/tmp/a"
+  [[window.group]]
+  name = "g"
+    [[window.group.tab]]
+    title = "same"
+    dir = "/tmp/b"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateTab {
+                window: "work".into(),
+                title: "same".into()
+            }
+        );
+    }
+
+    #[test]
+    fn loose_tab_has_no_group() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  dir = "/tmp/locus"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].group, None);
     }
 
     #[test]

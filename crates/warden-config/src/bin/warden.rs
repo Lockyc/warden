@@ -16,13 +16,19 @@ fn main() {
                     for p in &loaded.config.windows {
                         println!("  window {:?} {}", p.name, p.colour.hex());
                         for t in &p.tabs {
+                            let group = t
+                                .group
+                                .as_deref()
+                                .map(|g| format!(" group={g:?}"))
+                                .unwrap_or_default();
                             println!(
-                                "    tab {:?} dir={} shell={:?} startup={:?} keep_alive={}",
+                                "    tab {:?} dir={} shell={:?} startup={:?} keep_alive={}{}",
                                 t.title,
                                 t.dir.display(),
                                 t.shell,
                                 t.startup,
-                                t.keep_alive
+                                t.keep_alive,
+                                group
                             );
                         }
                     }

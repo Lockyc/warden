@@ -54,6 +54,10 @@ pub struct TabSpec {
     /// Optional command auto-run inside the shell on spawn (delivered as libghostty
     /// `initial_input` — typed into the shell, not exec'd). `None` = bare shell.
     pub startup: Option<String>,
+    /// The `[[window.group]]` this tab belongs to, or `None` for a loose tab. Carried
+    /// only so the registry can pass it to the chrome DTO for sidebar sectioning; the
+    /// surface layer itself never reads it.
+    pub group: Option<String>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

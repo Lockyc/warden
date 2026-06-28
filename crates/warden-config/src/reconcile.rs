@@ -23,12 +23,19 @@ pub struct Reconciliation {
 /// - `tab_order`: the order of kept tabs changed; on an emitted update
 ///   `tab_order` always carries the full new ordered key list so the consumer
 ///   can reorder the live tab strip without killing sessions.
+/// - `set_groups`: a kept tab's `group` (its `[[window.group]]` membership)
+///   changed — including a pure group rename, where order and keys are
+///   identical. Each entry is `(key, new_group)`; the consumer re-sections the
+///   sidebar **without** respawning (grouping is presentation only). Empty when
+///   no kept tab's group changed.
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. Changing a tab's
 ///   `dir`, `cmd`, or `keep_alive` while keeping its `title` the same produces
 ///   no op — the tab appears identical to the reconciler. The consumer must
-///   close and reopen the tab to pick up such field-level edits.
+///   close and reopen the tab to pick up such field-level edits. (`group` is the
+///   deliberate exception — it IS detected, via `set_groups`, because it's
+///   presentational and must not cost the tab its PTY.)
 ///
 /// **Window renames are destructive.** A rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
@@ -41,6 +48,7 @@ pub struct WindowUpdate {
     pub add_tabs: Vec<Tab>,
     pub remove_tabs: Vec<String>,
     pub tab_order: Vec<String>,
+    pub set_groups: Vec<(String, Option<String>)>,
 }
 
 fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
@@ -109,11 +117,26 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     .collect();
                 let order_changed = kept_old != kept_new;
                 let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
+                // Group reassignment of kept tabs (matched by key). Carries the new
+                // group so the consumer re-sections without respawning — a pure group
+                // rename, where keys/order are unchanged, is detected here too.
+                let set_groups: Vec<(String, Option<String>)> = np
+                    .tabs
+                    .iter()
+                    .filter_map(|nt| {
+                        op.tabs
+                            .iter()
+                            .find(|ot| ot.key == nt.key)
+                            .filter(|ot| ot.group != nt.group)
+                            .map(|_| (nt.key.clone(), nt.group.clone()))
+                    })
+                    .collect();
                 if colour.is_some()
                     || icon.is_some()
                     || !add_tabs.is_empty()
                     || !remove_tabs.is_empty()
                     || order_changed
+                    || !set_groups.is_empty()
                 {
                     update.push(WindowUpdate {
                         name: np.name.clone(),
@@ -122,6 +145,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                         add_tabs,
                         remove_tabs,
                         tab_order,
+                        set_groups,
                     });
                 }
             }
@@ -314,5 +338,88 @@ colour = "#0f8a8a"
             r.update.is_empty(),
             "in-place tab field edits (dir change with same title) must not emit an update"
         );
+    }
+
+    #[test]
+    fn pure_group_rename_emits_update_with_set_groups_only() {
+        // Same tab, same key, same order — only the group name changed. Must emit an
+        // update carrying set_groups (and nothing else) so the sidebar re-sections
+        // without respawning the PTY.
+        let old = cfg(r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+  [[window.group]]
+  name = "old-name"
+    [[window.group.tab]]
+    title = "api"
+    dir = "/tmp/api"
+"##);
+        let new = cfg(r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+  [[window.group]]
+  name = "new-name"
+    [[window.group.tab]]
+    title = "api"
+    dir = "/tmp/api"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1, "a pure group rename must emit an update");
+        let u = &r.update[0];
+        assert_eq!(
+            u.set_groups,
+            vec![("api".to_string(), Some("new-name".to_string()))]
+        );
+        assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
+        assert_eq!(u.colour, None);
+        assert_eq!(u.icon, None);
+    }
+
+    #[test]
+    fn moving_loose_tab_into_group_sets_its_group() {
+        // A loose tab gains a group. set_groups carries the new membership (here the
+        // flat order is unchanged, so the change is detected purely via set_groups).
+        let old = cfg(r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "api"
+  dir = "/tmp/api"
+"##);
+        let new = cfg(r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+  [[window.group]]
+  name = "backend"
+    [[window.group.tab]]
+    title = "api"
+    dir = "/tmp/api"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(
+            r.update[0].set_groups,
+            vec![("api".to_string(), Some("backend".to_string()))]
+        );
+    }
+
+    #[test]
+    fn unchanged_groups_emit_no_update() {
+        let same = r##"
+[[window]]
+name = "work"
+colour = "#0f8a8a"
+  [[window.group]]
+  name = "g"
+    [[window.group.tab]]
+    title = "api"
+    dir = "/tmp/api"
+"##;
+        let r = reconcile(&cfg(same), &cfg(same));
+        assert!(r.update.is_empty(), "identical grouped config is a no-op");
     }
 }
