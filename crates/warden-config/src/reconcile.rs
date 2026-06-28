@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::colour::Colour;
 use crate::model::{Config, Tab, Window};
 
@@ -15,9 +13,6 @@ pub struct Reconciliation {
 ///
 /// **What IS detected** (any of these triggers an emit):
 /// - `colour`: the window accent colour changed.
-/// - `icon`: the window icon changed. Outer `Some` = changed; the inner
-///   `Option<PathBuf>` is the new value, which may be `Some(path)` or `None`
-///   to clear the icon.
 /// - `add_tabs` / `remove_tabs`: tabs were added or removed, matched by
 ///   `Tab::key` (the resolved title).
 /// - `tab_order`: the order of kept tabs changed; on an emitted update
@@ -44,7 +39,6 @@ pub struct Reconciliation {
 pub struct WindowUpdate {
     pub title: String,
     pub colour: Option<Colour>,
-    pub icon: Option<Option<PathBuf>>,
     pub add_tabs: Vec<Tab>,
     pub remove_tabs: Vec<String>,
     pub tab_order: Vec<String>,
@@ -59,8 +53,8 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 /// session from `old` to `new`.
 ///
 /// **What IS detected:**
-/// - Windows opened/closed, matched by `name`.
-/// - For a kept window: colour change, icon change, tab add/remove (by
+/// - Windows opened/closed, matched by `title`.
+/// - For a kept window: colour change, tab add/remove (by
 ///   `Tab::key` = resolved title), and tab reorder (via `tab_order`).
 ///
 /// **What is NOT detected:**
@@ -89,7 +83,6 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
             None => open.push(np.clone()),
             Some(op) => {
                 let colour = (op.colour != np.colour).then_some(np.colour);
-                let icon = (op.icon != np.icon).then(|| np.icon.clone());
                 let old_keys: Vec<&str> = op.tabs.iter().map(|t| t.key.as_str()).collect();
                 let new_keys: Vec<&str> = np.tabs.iter().map(|t| t.key.as_str()).collect();
                 let add_tabs: Vec<Tab> = np
@@ -132,7 +125,6 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     })
                     .collect();
                 if colour.is_some()
-                    || icon.is_some()
                     || !add_tabs.is_empty()
                     || !remove_tabs.is_empty()
                     || order_changed
@@ -141,7 +133,6 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     update.push(WindowUpdate {
                         title: np.title.clone(),
                         colour,
-                        icon,
                         add_tabs,
                         remove_tabs,
                         tab_order,
@@ -276,81 +267,6 @@ colour = "#0f8a8a"
         assert!(u.add_tabs.is_empty(), "no tabs added");
         assert!(u.remove_tabs.is_empty(), "no tabs removed");
         assert_eq!(u.colour, None, "no colour change");
-        assert_eq!(u.icon, None, "no icon change");
-    }
-
-    #[test]
-    fn icon_change_emits_update() {
-        let old = cfg(r##"
-[[window]]
-title = "work"
-colour = "#0f8a8a"
-icon = "/tmp/old.png"
-  [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
-"##);
-        let new = cfg(r##"
-[[window]]
-title = "work"
-colour = "#0f8a8a"
-icon = "/tmp/new.png"
-  [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
-"##);
-        let r = reconcile(&old, &new);
-        assert_eq!(r.update.len(), 1, "expected a WindowUpdate for icon change");
-        let u = &r.update[0];
-        assert_eq!(
-            u.icon,
-            Some(Some(PathBuf::from("/tmp/new.png"))),
-            "icon should carry the new value"
-        );
-        assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
-        assert_eq!(u.colour, None);
-    }
-
-    #[test]
-    fn icon_added_emits_update_with_some_some() {
-        // None → Some: an icon appearing must emit `icon: Some(Some(path))` so the
-        // consumer sets the window's proxy icon (the addition half of the icon diff,
-        // the complement of icon_change_emits_update).
-        let new = cfg(r##"
-[[window]]
-title = "work"
-colour = "#0f8a8a"
-icon = "/tmp/new.png"
-  [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
-"##);
-        let r = reconcile(&cfg(BASE), &new);
-        assert_eq!(r.update.len(), 1);
-        assert_eq!(r.update[0].icon, Some(Some(PathBuf::from("/tmp/new.png"))));
-    }
-
-    #[test]
-    fn icon_removed_emits_update_with_some_none() {
-        // Some → None: removing the icon must emit `icon: Some(None)` — the documented
-        // "clear the icon" signal — not `None` (which means "unchanged"). Without this
-        // a removed icon would silently linger on the live window.
-        let old = cfg(r##"
-[[window]]
-title = "work"
-colour = "#0f8a8a"
-icon = "/tmp/old.png"
-  [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
-"##);
-        let r = reconcile(&old, &cfg(BASE));
-        assert_eq!(r.update.len(), 1);
-        assert_eq!(
-            r.update[0].icon,
-            Some(None),
-            "removal must signal clear, not unchanged"
-        );
     }
 
     #[test]
@@ -429,7 +345,6 @@ colour = "#0f8a8a"
         );
         assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
         assert_eq!(u.colour, None);
-        assert_eq!(u.icon, None);
     }
 
     #[test]

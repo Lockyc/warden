@@ -245,12 +245,10 @@ impl WindowManager {
                     set_groups,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
-                        // An icon-only config change reaches here as an otherwise-empty
-                        // Update: per-window window icon isn't applied yet (deferred),
-                        // and `order` still carries the unchanged tab sequence. Skip it
-                        // so an icon edit doesn't churn a full sidebar rebuild for zero
-                        // visible change. A group change always carries `set_groups`, so
-                        // it is never mistaken for a no-op.
+                        // Skip no-op updates (e.g. a config save that changes nothing
+                        // visible). `order` still carries the unchanged tab sequence; a
+                        // group change always carries `set_groups`, so it is never
+                        // mistaken for a no-op.
                         let current_order: Vec<String> =
                             ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
                         if colour.is_none()

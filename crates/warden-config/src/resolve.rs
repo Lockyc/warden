@@ -95,8 +95,6 @@ fn resolve_window(
             source,
         })?,
     };
-    let icon = rp.icon.as_deref().map(expand_tilde);
-
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
@@ -148,7 +146,6 @@ fn resolve_window(
     Ok(Window {
         title: rp.title.clone(),
         colour,
-        icon,
         tabs,
     })
 }
@@ -682,23 +679,6 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert_eq!(cfg.windows[0].tabs[0].group, None);
-    }
-
-    #[test]
-    fn tilde_in_icon_expands_to_home() {
-        let (cfg, _warns) = resolve_str(
-            r##"
-[[window]]
-title = "work"
-colour = "#0f8a8a"
-icon = "~/some/icon.png"
-  [[window.tab]]
-  dir = "/tmp/x"
-"##,
-        )
-        .unwrap();
-        let home = dirs::home_dir().unwrap();
-        assert_eq!(cfg.windows[0].icon, Some(home.join("some/icon.png")));
     }
 
     #[test]

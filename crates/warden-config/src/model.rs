@@ -10,7 +10,6 @@ pub struct Config {
 pub struct Window {
     pub title: String,
     pub colour: Colour,
-    pub icon: Option<PathBuf>,
     pub tabs: Vec<Tab>,
 }
 
