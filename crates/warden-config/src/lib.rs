@@ -1,6 +1,7 @@
 //! warden-config: parse, validate, resolve, and reconcile warden's TOML config.
 
 pub mod colour;
+pub mod fmt;
 pub mod load;
 pub mod model;
 pub mod raw;
@@ -9,6 +10,7 @@ pub mod resolve;
 pub mod watch;
 
 pub use colour::Colour;
+pub use fmt::{format_file, format_str};
 pub use load::{config_path, load, LoadError, Loaded};
 pub use model::{Config, Tab, Warning, Window};
 pub use reconcile::{reconcile, Reconciliation, WindowUpdate};
