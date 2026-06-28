@@ -60,6 +60,7 @@ impl WindowManager {
                 windows: Vec::new(),
                 format_on_save: false,
                 tab_digit_keys: warden_config::TabDigitKeys::default(),
+                probe_interval: 5,
             },
             diagnostic_msg: String::new(),
         }

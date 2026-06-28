@@ -6,6 +6,10 @@ use serde::Deserialize;
 pub struct RawConfig {
     pub shell: Option<String>,
     pub cmd: Option<String>,
+    pub probe: Option<String>,
+    /// Seconds between background session-probe passes (global only). `None` →
+    /// default 5; `Some(0)` → focus/refresh-only (no timer). See resolve.rs.
+    pub probe_interval: Option<u64>,
     // When true, warden rewrites this config file formatted on each clean hot-reload
     // (see fmt.rs). Optional; a missing field resolves to false.
     pub format_on_save: Option<bool>,
@@ -23,6 +27,7 @@ pub struct RawWindow {
     pub icon: Option<String>,
     pub shell: Option<String>,
     pub cmd: Option<String>,
+    pub probe: Option<String>,
     // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,
     // rendered in a headerless section before any named groups.
     #[serde(default, rename = "tab")]
@@ -47,6 +52,7 @@ pub struct RawTab {
     pub dir: String,
     pub shell: Option<String>,
     pub cmd: Option<String>,
+    pub probe: Option<String>,
     #[serde(default)]
     pub keep_alive: bool,
 }

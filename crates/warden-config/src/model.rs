@@ -9,6 +9,9 @@ pub struct Config {
     pub format_on_save: bool,
     /// What ⌘1/⌘2 do in the app menu. Whole-app concern — no per-window cascade.
     pub tab_digit_keys: TabDigitKeys,
+    /// Seconds between background session-probe passes. 0 = focus/refresh-only.
+    /// Default 5. Global concern — no per-window cascade.
+    pub probe_interval: u64,
 }
 
 /// Behaviour of the ⌘1/⌘2 menu accelerators (a whole-app keybinding mode).
@@ -50,6 +53,10 @@ pub struct Tab {
     /// (ungrouped) tab. Purely presentational — the chrome sections the sidebar by it;
     /// it carries no behaviour and is not part of `key` (identity stays the title).
     pub group: Option<String>,
+    /// Optional session-presence probe command for this tab (cascaded
+    /// tab→window→global). `None` = no probe (the tab shows no session dot).
+    /// Opaque to the crate — the app runs it and reads its exit code.
+    pub probe: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

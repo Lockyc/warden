@@ -75,6 +75,7 @@ fn basename(p: &Path) -> String {
 pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     let global_shell = raw.shell.as_deref();
     let global_cmd = raw.cmd.as_deref();
+    let global_probe = raw.probe.as_deref();
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
     let mut seen_windows = HashSet::new();
@@ -87,13 +88,14 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
         if !seen_windows.insert(rp.name.clone()) {
             return Err(ResolveError::DuplicateWindow(rp.name.clone()));
         }
-        windows.push(resolve_window(rp, global_shell, global_cmd, &mut warnings)?);
+        windows.push(resolve_window(rp, global_shell, global_cmd, global_probe, &mut warnings)?);
     }
     Ok((
         Config {
             windows,
             format_on_save: raw.format_on_save.unwrap_or(false),
             tab_digit_keys,
+            probe_interval: raw.probe_interval.unwrap_or(5),
         },
         warnings,
     ))
@@ -103,6 +105,7 @@ fn resolve_window(
     rp: &RawWindow,
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
+    global_probe: Option<&str>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
     let colour = Colour::parse(&rp.colour).map_err(|source| ResolveError::BadColour {
@@ -128,6 +131,7 @@ fn resolve_window(
             rp,
             global_shell,
             global_cmd,
+            global_probe,
             &mut seen_titles,
             warnings,
         )?);
@@ -153,6 +157,7 @@ fn resolve_window(
                 rp,
                 global_shell,
                 global_cmd,
+                global_probe,
                 &mut seen_titles,
                 warnings,
             )?);
@@ -177,6 +182,7 @@ fn resolve_tab(
     rp: &RawWindow,
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
+    global_probe: Option<&str>,
     seen_titles: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
@@ -213,6 +219,7 @@ fn resolve_tab(
         .unwrap_or(DEFAULT_SHELL)
         .to_string();
     let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
+    let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
     Ok(Tab {
         key: title.clone(),
         title,
@@ -221,6 +228,7 @@ fn resolve_tab(
         startup,
         keep_alive: rt.keep_alive,
         group,
+        probe,
     })
 }
 
@@ -764,6 +772,81 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert_eq!(cfg.windows[0].tabs[0].group, None);
+    }
+
+    #[test]
+    fn probe_cascades_with_nearest_level_winning() {
+        let (cfg, _) = resolve_str(
+            r##"
+probe = "global-probe"
+[[window]]
+name = "work"
+colour = "#000000"
+probe = "win-probe"
+  [[window.tab]]
+  title = "inherits"
+  dir = "/tmp/a"
+  [[window.tab]]
+  title = "overrides"
+  dir = "/tmp/b"
+  probe = "tab-probe"
+  [[window.tab]]
+  title = "opts-out"
+  dir = "/tmp/c"
+  probe = ""
+[[window]]
+name = "plain"
+colour = "#000000"
+  [[window.tab]]
+  title = "from-global"
+  dir = "/tmp/d"
+"##,
+        )
+        .unwrap();
+        let work = &cfg.windows[0].tabs;
+        assert_eq!(work[0].probe.as_deref(), Some("win-probe")); // inherit window
+        assert_eq!(work[1].probe.as_deref(), Some("tab-probe")); // tab wins
+        assert_eq!(work[2].probe, None); // `probe = ""` opts out
+        assert_eq!(cfg.windows[1].tabs[0].probe.as_deref(), Some("global-probe"));
+    }
+
+    #[test]
+    fn probe_unset_everywhere_is_none() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+name = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].probe, None);
+    }
+
+    #[test]
+    fn probe_interval_defaults_to_5_and_parses() {
+        let (def, _) = resolve_str(
+            r##"
+[[window]]
+name = "w"
+colour = "#000000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(def.probe_interval, 5);
+
+        let (set, _) = resolve_str(
+            r##"
+probe_interval = 0
+[[window]]
+name = "w"
+colour = "#000000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(set.probe_interval, 0);
     }
 
     #[test]
