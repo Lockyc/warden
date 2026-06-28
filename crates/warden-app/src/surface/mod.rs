@@ -41,14 +41,12 @@ pub enum SurfaceError {
     AppCreateFailed,
     /// `ghostty_surface_new` returned null.
     SurfaceCreateFailed,
-    SpawnFailed(std::io::Error),
 }
 impl std::fmt::Display for SurfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SurfaceError::AppCreateFailed => write!(f, "libghostty app creation failed"),
             SurfaceError::SurfaceCreateFailed => write!(f, "libghostty surface creation failed"),
-            SurfaceError::SpawnFailed(e) => write!(f, "spawning shell: {e}"),
         }
     }
 }

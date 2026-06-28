@@ -54,6 +54,7 @@ impl Registry {
         self.tabs.push(TabEntry { id: spec.id.clone(), title: spec.title.clone(), warn, slot });
     }
 
+    #[cfg(test)]
     pub fn is_spawned(&self, id: &str) -> bool {
         self.tabs
             .iter()
