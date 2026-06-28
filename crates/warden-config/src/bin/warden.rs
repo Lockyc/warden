@@ -52,14 +52,20 @@ fn main() {
                 }
             }
             let path = path.unwrap_or_else(config_path);
+            let original = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            // Refuse to "format" a non-TOML file: taplo error-recovers and would
+            // return it unchanged, falsely reporting success.
+            if let Err(e) = warden_config::raw::parse(&original) {
+                eprintln!("error: {} is not valid TOML: {e}", path.display());
+                std::process::exit(1);
+            }
             if check {
-                let original = match std::fs::read_to_string(&path) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    }
-                };
                 if format_str(&original) != original {
                     eprintln!("would reformat: {}", path.display());
                     std::process::exit(1);
