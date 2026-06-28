@@ -11,13 +11,15 @@ use taplo::formatter::{format, Options};
 /// hand-formatted look of `examples/config.toml`: nested-table indentation,
 /// aligned `=` and trailing comments, authored key order preserved.
 pub fn format_str(input: &str) -> String {
-    let mut o = Options::default();
-    o.indent_tables = true;
-    o.indent_entries = true;
-    o.align_entries = true;
-    o.align_comments = true;
-    o.reorder_keys = false;
-    o.column_width = 100;
+    let o = Options {
+        indent_tables: true,
+        indent_entries: true,
+        align_entries: true,
+        align_comments: true,
+        reorder_keys: false,
+        column_width: 100,
+        ..Options::default()
+    };
     format(input, o)
 }
 
