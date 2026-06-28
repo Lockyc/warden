@@ -75,7 +75,13 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
         }
         windows.push(resolve_window(rp, global_shell, global_cmd, &mut warnings)?);
     }
-    Ok((Config { windows }, warnings))
+    Ok((
+        Config {
+            windows,
+            format_on_save: raw.format_on_save.unwrap_or(false),
+        },
+        warnings,
+    ))
 }
 
 fn resolve_window(
@@ -210,6 +216,33 @@ mod tests {
 
     fn resolve_str(s: &str) -> Result<(Config, Vec<Warning>), ResolveError> {
         resolve(parse(s).unwrap())
+    }
+
+    #[test]
+    fn format_on_save_defaults_false() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+name = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.format_on_save);
+    }
+
+    #[test]
+    fn format_on_save_parses_true() {
+        let (cfg, _) = resolve_str(
+            r##"
+format_on_save = true
+[[window]]
+name = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.format_on_save);
     }
 
     #[test]

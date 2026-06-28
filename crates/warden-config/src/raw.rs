@@ -6,6 +6,9 @@ use serde::Deserialize;
 pub struct RawConfig {
     pub shell: Option<String>,
     pub cmd: Option<String>,
+    // When true, warden rewrites this config file formatted on each clean hot-reload
+    // (see fmt.rs). Optional; a missing field resolves to false.
+    pub format_on_save: Option<bool>,
     #[serde(default, rename = "window")]
     pub windows: Vec<RawWindow>,
 }

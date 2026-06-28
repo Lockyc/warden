@@ -58,6 +58,7 @@ impl WindowManager {
             names: HashMap::new(),
             last_good: Config {
                 windows: Vec::new(),
+                format_on_save: false,
             },
             diagnostic_msg: String::new(),
         }

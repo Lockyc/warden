@@ -4,6 +4,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub windows: Vec<Window>,
+    /// When true, warden rewrites the config file formatted on each clean
+    /// hot-reload. Default false. Whole-file concern — no per-window cascade.
+    pub format_on_save: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
