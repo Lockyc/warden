@@ -47,6 +47,18 @@ A profile is a window (its own colour + name banner); its tabs are project termi
 
 ## Build & use
 
+With [`just`](https://github.com/casey/just) (run `just` to list recipes):
+
+```sh
+just run          # launch the app against examples/config.toml (never touches your real config)
+just validate     # validate the demo config (pass a path to validate another)
+just test         # workspace tests
+just fmt          # format
+just clippy       # lint (warnings as errors)
+```
+
+Or with cargo directly:
+
 ```sh
 cargo build
 cargo test

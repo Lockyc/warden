@@ -64,7 +64,7 @@ Validation: unique profile name, unique tab title within a profile, non-empty na
 - `cargo build` / `cargo test` (workspace). `warden-app` is macOS-only (libghostty embed); it fails to compile elsewhere by design.
 - `cargo run -p warden-config --bin warden -- validate [path]` — validates a config and prints the resolved profile/tab tree + warnings (exit 0 ok / 1 load error / 2 usage).
 - `cargo run -p warden-app` — launch the GUI (reads `WARDEN_CONFIG` or `~/.config/warden/config.toml`).
-- No `justfile` yet.
+- **`justfile`** wraps the common flows: `just run` (launches the app against `examples/config.toml` via `WARDEN_CONFIG`, so iterating never touches your real config), `just validate [path]`, `just test`, `just check`, `just fmt`, `just clippy`; bare `just` lists them. No `build`/`deploy` recipes yet — packaging is deferred (see `docs/FOLLOWUPS.md`).
 
 ## Conventions & footguns (things that have bitten us / will bite again)
 

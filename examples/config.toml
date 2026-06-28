@@ -1,0 +1,32 @@
+# Example warden config. `just run` loads THIS file (via WARDEN_CONFIG) so iterating on the
+# app never touches your real ~/.config/warden/config.toml.
+#
+# A [[profile]] is a window (colour + name banner). A [[profile.tab]] is a terminal opened in
+# `dir`, running `cmd` (or `default_cmd` when a tab sets none). `keep_alive` spawns the tab at
+# launch and keeps it running for background work; other tabs spawn lazily on first focus.
+
+default_cmd = "fish -l"               # tabs with no cmd use this
+
+[[profile]]                            # a window
+name   = "work"
+colour = "#0f8a8a"
+
+  # Point these at your own project dirs. The demo paths all exist on a stock macOS so
+  # `just validate` stays warning-free. NOTE: tilde expansion only handles `~/…` — a bare
+  # `~` is left literal and warns; write `~/Library`, not `~`.
+  [[profile.tab]]
+  title = "library"
+  dir   = "~/Library"
+
+  [[profile.tab]]
+  title      = "logs"
+  dir        = "/var/log"
+  keep_alive = true                    # spawns at launch + stays live for background work
+
+[[profile]]
+name   = "play"
+colour = "#b5651d"
+
+  [[profile.tab]]
+  title = "scratch"
+  dir   = "/tmp"
