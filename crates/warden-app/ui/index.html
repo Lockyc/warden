@@ -291,10 +291,9 @@
         reportRect();
       });
 
-      // Tab-cycle hotkeys (⌘←/⌘↑ prev, ⌘→/⌘↓ next): the native layer captures the keys on the
-      // focused terminal and emits a direction (-1/+1) to THIS window only (emit_to), so no label
-      // filter is needed. Read the rendered tab order from the DOM, step with wraparound, reuse
-      // select() (same path as a click → activate_tab + highlight).
+      // Tab navigation (⌘⇧[ prev, ⌘⇧] next): the app menu emits a direction (-1/+1) to THIS
+      // window only (emit_to), so no label filter is needed. Read the rendered tab order from the
+      // DOM, step with wraparound, reuse select() (same path as a click → activate_tab + highlight).
       listen('warden:cycle-tab', (e) => {
         const ids = [...document.querySelectorAll('.tab')].map(el => el.dataset.id);
         if (ids.length < 2) return;
@@ -304,6 +303,14 @@
         const base = cur === -1 ? (dir > 0 ? -1 : 0) : cur;
         const next = (base + dir + ids.length) % ids.length;
         select(ids[next]);
+      });
+
+      // Direct jump (⌘1–⌘9): the menu emits a 1-based position. Select the tab at that index;
+      // a position past the last tab is a no-op (e.g. ⌘7 with only 4 tabs).
+      listen('warden:select-tab', (e) => {
+        const ids = [...document.querySelectorAll('.tab')].map(el => el.dataset.id);
+        const n = e.payload;
+        if (n >= 1 && n <= ids.length) select(ids[n - 1]);
       });
 
       function paint() {

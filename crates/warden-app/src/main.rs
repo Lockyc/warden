@@ -17,6 +17,12 @@ use manager::{InitDto, WindowManager};
 
 use geometry::WebRect;
 
+// Menu-item IDs for the Tab submenu, matched in the Builder's on_menu_event handler.
+// Direct-jump items use the prefix `tab_jump_<n>` (1-based position).
+const MENU_TAB_PREV: &str = "tab_prev";
+const MENU_TAB_NEXT: &str = "tab_next";
+const MENU_TAB_JUMP_PREFIX: &str = "tab_jump_";
+
 #[derive(serde::Deserialize)]
 struct RectArg {
     x: f64,
@@ -125,6 +131,31 @@ fn main() {
     }
 
     tauri::Builder::default()
+        // Tab navigation menu items (⌘⇧[/⌘⇧], ⌘1–⌘9). Route to the focused window's chrome,
+        // which owns the tab list + select(); emit_to targets that one window so siblings don't
+        // also switch. Unknown IDs (e.g. predefined Quit/Close) are ignored.
+        .on_menu_event(|app, event| {
+            use tauri::{Emitter, Manager};
+            let Some(label) = app
+                .webview_windows()
+                .into_values()
+                .find(|w| w.is_focused().unwrap_or(false))
+                .map(|w| w.label().to_string())
+            else {
+                return;
+            };
+            let id = event.id().as_ref();
+            if id == MENU_TAB_PREV {
+                let _ = app.emit_to(label.as_str(), "warden:cycle-tab", -1i32);
+            } else if id == MENU_TAB_NEXT {
+                let _ = app.emit_to(label.as_str(), "warden:cycle-tab", 1i32);
+            } else if let Some(n) = id
+                .strip_prefix(MENU_TAB_JUMP_PREFIX)
+                .and_then(|s| s.parse::<u32>().ok())
+            {
+                let _ = app.emit_to(label.as_str(), "warden:select-tab", n);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             set_hole_rect,
             init_tabs,
@@ -151,36 +182,44 @@ fn main() {
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
 
-                // Minimal macOS app menu. Windows are built at runtime with no NSMenu, so the
-                // standard window shortcuts (⌘Q/⌘W/⌘M) are dead without this. The predefined
-                // items carry their own accelerators + actions, so there's nothing to handle.
+                // macOS menu. Windows are built at runtime with no NSMenu, so without this the
+                // standard window shortcuts (⌘Q/⌘W/⌘M) are dead and there's nowhere to surface
+                // tab navigation. The app submenu's predefined items self-handle; the Tab
+                // submenu's custom items fire the Builder's on_menu_event. ⌘⇧[/⌘⇧] (previous/
+                // next) and ⌘1–⌘9 (jump to position) are the macOS-standard tab chords — checked
+                // app-wide before any view, so they work regardless of focus and never collide
+                // with ⌘+arrow text navigation inside the terminal.
                 {
-                    use tauri::menu::{MenuBuilder, SubmenuBuilder};
+                    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
                     let app_menu = SubmenuBuilder::new(app, "warden")
                         .quit()
                         .close_window()
                         .minimize()
                         .build()?;
-                    let menu = MenuBuilder::new(app).item(&app_menu).build()?;
+
+                    let prev = MenuItemBuilder::with_id(MENU_TAB_PREV, "Previous Tab")
+                        .accelerator("Shift+Cmd+BracketLeft")
+                        .build(app)?;
+                    let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
+                        .accelerator("Shift+Cmd+BracketRight")
+                        .build(app)?;
+                    let mut tab_menu = SubmenuBuilder::new(app, "Tab").item(&prev).item(&next).separator();
+                    // ⌘1–⌘9 jump straight to the tab at that position (no-op past the last tab).
+                    let jumps = (1..=9)
+                        .map(|i| {
+                            MenuItemBuilder::with_id(format!("{MENU_TAB_JUMP_PREFIX}{i}"), format!("Tab {i}"))
+                                .accelerator(format!("Cmd+Digit{i}"))
+                                .build(app)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    for j in &jumps {
+                        tab_menu = tab_menu.item(j);
+                    }
+                    let tab_menu = tab_menu.build()?;
+
+                    let menu = MenuBuilder::new(app).item(&app_menu).item(&tab_menu).build()?;
                     app.set_menu(menu)?;
                 }
-
-                // Tab-cycle hotkeys (⌘+arrows). The focused terminal view captures the keys and
-                // calls back here (the seam stays Tauri-free); we forward the direction to the
-                // focused window's chrome, which moves the active tab via its existing select()
-                // path. emit_to targets that one window so siblings don't also cycle.
-                let cycle_handle = app.handle().clone();
-                crate::surface::ghostty::set_tab_cycle_handler(Box::new(move |dir| {
-                    use tauri::{Emitter, Manager};
-                    let focused = cycle_handle
-                        .webview_windows()
-                        .into_values()
-                        .find(|w| w.is_focused().unwrap_or(false))
-                        .map(|w| w.label().to_string());
-                    if let Some(label) = focused {
-                        let _ = cycle_handle.emit_to(label.as_str(), "warden:cycle-tab", dir);
-                    }
-                }));
 
                 // Hot-reload: watch the config file; on each event reload + diff
                 // against last_good + apply the resulting WindowOps to live
