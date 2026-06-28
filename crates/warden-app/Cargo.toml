@@ -11,8 +11,6 @@ tauri-build = { version = "2", features = [] }
 # WebviewWindowBuilder::transparent method is gated behind it on macOS). Windows
 # are created at runtime here, so config-side transparency no longer applies.
 tauri = { version = "2", features = ["macos-private-api"] }
-# macOS desktop-notification banners for terminal OSC 9/777 (see src/notify.rs).
-tauri-plugin-notification = "2"
 # Persist each window's size + position across launches, keyed by Tauri label.
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
@@ -26,3 +24,8 @@ tempfile = "3"
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSView", "NSWindow", "NSResponder", "NSEvent", "NSGraphics", "NSPasteboard", "NSApplication", "NSMenu", "NSImageRep", "NSBitmapImageRep"] }
 objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSThread", "NSData", "NSDictionary"] }
+# Native macOS banners for terminal OSC 9/777 (see src/notify.rs). Replaces the
+# tauri-plugin-notification backend, whose notify-rust/NSUserNotification path is
+# a silent no-op on macOS 26. block2 is for the authorization completion handler.
+block2 = "0.5"
+objc2-user-notifications = { version = "0.2", features = ["UNUserNotificationCenter", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "block2"] }

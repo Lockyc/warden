@@ -184,8 +184,6 @@ fn main() {
     }
 
     tauri::Builder::default()
-        // macOS banners for terminal desktop-notifications (OSC 9/777), shown by notify.rs.
-        .plugin(tauri_plugin_notification::init())
         // Persist each window's size + position (+ maximized) across launches, keyed by
         // Tauri label. Saving is automatic (on close/exit); restore is triggered explicitly
         // in manager.rs::build_window since warden's windows are built at runtime, not from
