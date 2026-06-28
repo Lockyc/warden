@@ -87,7 +87,25 @@ fn diagnostic_message(state: tauri::State<ManagerState>) -> String {
     state.0.lock().unwrap().diagnostic_msg.clone()
 }
 
+/// Remove tmux's `$TMUX`/`$TMUX_PANE` from warden-app's own environment so the shells it
+/// spawns never inherit them. tmux exports these into every process under a pane, and
+/// warden-app is routinely launched from inside a tmux session — e.g. the very agentmux
+/// session warden exists to *host*. libghostty gives each surface's shell warden-app's
+/// environment verbatim, so without this scrub every tab inherits a stale `$TMUX`; tmux-based
+/// tools (`amux`) then believe they're nested and refuse to build their frame, and prefix keys
+/// misroute. A terminal host must present a tmux-free base environment. Must run at the very
+/// top of `main()`, before any thread starts or surface spawns.
+fn scrub_inherited_tmux_env() {
+    for var in ["TMUX", "TMUX_PANE"] {
+        std::env::remove_var(var);
+    }
+}
+
 fn main() {
+    // warden hosts terminals — it must not leak its own launcher's tmux membership into them
+    // (breaks nested agentmux/tmux). Scrub before anything else inherits the environment.
+    scrub_inherited_tmux_env();
+
     // libghostty must be initialised once before any app/surface is created.
     #[cfg(target_os = "macos")]
     {
@@ -199,4 +217,19 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running warden");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrub_removes_inherited_tmux_vars() {
+        // Simulate warden-app launched from inside a tmux pane (the agentmux session it hosts).
+        std::env::set_var("TMUX", "/tmp/tmux-501/agentmux-term,2109,29");
+        std::env::set_var("TMUX_PANE", "%43");
+        scrub_inherited_tmux_env();
+        assert!(std::env::var_os("TMUX").is_none(), "TMUX must be scrubbed");
+        assert!(std::env::var_os("TMUX_PANE").is_none(), "TMUX_PANE must be scrubbed");
+    }
 }
