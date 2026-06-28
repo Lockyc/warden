@@ -6,6 +6,8 @@ use crate::registry::{Registry, TabDto};
 use crate::surface::PixelRect;
 use crate::ManagerState;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use warden_config::{Config, Reconciliation};
 
@@ -49,6 +51,9 @@ pub struct WindowManager {
     /// The message shown by the diagnostic window; fetched by its page via the
     /// `diagnostic_message` command. Empty when no diagnostic is showing.
     pub diagnostic_msg: String,
+    /// Seconds between background probe passes; shared with the poll thread so a
+    /// hot-reload can change cadence live. 0 = focus/refresh-only (no timer).
+    pub probe_interval: Arc<AtomicU64>,
 }
 
 impl WindowManager {
@@ -63,6 +68,7 @@ impl WindowManager {
                 probe_interval: 5,
             },
             diagnostic_msg: String::new(),
+            probe_interval: Arc::new(AtomicU64::new(5)),
         }
     }
 
@@ -92,6 +98,24 @@ impl WindowManager {
         if let Some(w) = app.get_webview_window(DIAG_LABEL) {
             let _ = w.close();
         }
+    }
+
+    /// Update the shared probe-pass cadence (the poll thread reads it each tick).
+    pub fn set_probe_interval(&self, secs: u64) {
+        self.probe_interval.store(secs, Ordering::Relaxed);
+    }
+
+    /// Probe work-lists grouped by window label. `only = Some(label)` restricts to
+    /// one window (focus trigger); `None` = every window (timer/refresh).
+    pub fn probe_targets(
+        &self,
+        only: Option<&str>,
+    ) -> Vec<(String, Vec<(String, std::path::PathBuf, String, String)>)> {
+        self.windows
+            .iter()
+            .filter(|(label, _)| only.is_none_or(|o| o == label.as_str()))
+            .map(|(label, ws)| (label.clone(), ws.registry.probe_targets()))
+            .collect()
     }
 
     /// Build one Tauri window for `spec`, mount its tabs, activate the first.
@@ -141,14 +165,22 @@ impl WindowManager {
         let app_for_event = app.clone();
         let label_for_event = spec.label.clone();
         window.on_window_event(move |event| {
-            if let tauri::WindowEvent::Destroyed = event {
-                if let Some(st) = app_for_event.try_state::<ManagerState>() {
-                    let mut m = st.lock();
-                    m.remove_window(&label_for_event);
-                    if m.is_empty() {
-                        app_for_event.exit(0);
+            match event {
+                tauri::WindowEvent::Destroyed => {
+                    if let Some(st) = app_for_event.try_state::<ManagerState>() {
+                        let mut m = st.lock();
+                        m.remove_window(&label_for_event);
+                        if m.is_empty() {
+                            app_for_event.exit(0);
+                        }
                     }
                 }
+                // Refresh this window's session dots when it gains focus — covers
+                // `probe_interval = 0` (no timer) and keeps a just-focused window current.
+                tauri::WindowEvent::Focused(true) => {
+                    crate::probe::spawn_pass(app_for_event.clone(), Some(label_for_event.clone()));
+                }
+                _ => {}
             }
         });
 
@@ -162,6 +194,7 @@ impl WindowManager {
 
     /// Materialize every window as a window. Sets `last_good = config`.
     pub fn materialize(&mut self, app: &AppHandle, config: Config) {
+        self.set_probe_interval(config.probe_interval);
         for spec in window_specs(&config) {
             let state = self.build_window(app, &spec);
             self.names.insert(spec.name.clone(), spec.label.clone());
@@ -298,5 +331,19 @@ impl WindowManager {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn probe_interval_defaults_to_5_and_is_settable() {
+        let m = WindowManager::new();
+        assert_eq!(m.probe_interval.load(Ordering::Relaxed), 5);
+        m.set_probe_interval(0);
+        assert_eq!(m.probe_interval.load(Ordering::Relaxed), 0);
     }
 }

@@ -15,6 +15,9 @@ mod manager;
 mod notify;
 
 #[cfg(target_os = "macos")]
+mod probe;
+
+#[cfg(target_os = "macos")]
 mod registry;
 
 #[cfg(target_os = "macos")]
@@ -366,6 +369,29 @@ fn main() {
                 // through it.
                 notify::init(handle.clone());
 
+                // Background session-probe poll loop. Reads the shared interval each
+                // tick so a hot-reload can change cadence (0 = focus/refresh-only).
+                {
+                    use std::sync::atomic::Ordering;
+                    use std::time::Duration;
+                    let st = handle.state::<ManagerState>();
+                    let interval = st.lock().probe_interval.clone();
+                    let app_poll = handle.clone();
+                    std::thread::spawn(move || loop {
+                        let secs = interval.load(Ordering::Relaxed);
+                        if secs > 0 {
+                            probe::run_pass(&app_poll, None);
+                            std::thread::sleep(Duration::from_secs(secs));
+                        } else {
+                            // Idle tick: stay responsive to a hot-reload that re-enables the timer.
+                            std::thread::sleep(Duration::from_secs(3));
+                        }
+                    });
+                }
+                // One pass right away so dots populate before the first timer tick
+                // (and at all when interval == 0 and the window doesn't emit Focused).
+                probe::spawn_pass(handle.clone(), None);
+
                 // macOS menu. Windows are built at runtime with no NSMenu, so without this the
                 // standard shortcuts are dead and there's nowhere to surface tab navigation.
                 // Predefined items (Minimize/Quit) self-handle; custom items fire the Builder's
@@ -436,6 +462,10 @@ fn main() {
                                 }
                                 // Clear any stale error banner.
                                 let _ = wh.emit("warden:error-clear", ());
+                                // Apply the (possibly changed) probe cadence and refresh dots now.
+                                m.set_probe_interval(loaded.config.probe_interval);
+                                drop(m);
+                                probe::spawn_pass(wh.clone(), None);
                             }
                             Ok(_) => {
                                 // Valid TOML but no windows: keep live windows up,
