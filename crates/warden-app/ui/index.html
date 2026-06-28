@@ -358,11 +358,16 @@
       });
 
       // Tab navigation (⌘⇧[ prev, ⌘⇧] next): the app menu emits a direction (-1/+1) to THIS
-      // window only (emit_to), so no label filter is needed. Read the rendered tab order from the
-      // DOM, step with wraparound, reuse select() (same path as a click → activate_tab + highlight).
+      // window only (emit_to), so no label filter is needed. Cycle ONLY through LOADED (live)
+      // tabs — landing on a cold tab would spawn it, which navigation must never do. A row is
+      // live iff its dot carries the `live` class (the same signal the unload click gates on);
+      // the active tab is always live, so it anchors the position. Step with wraparound and
+      // reuse select() (same path as a click → activate_tab + highlight).
       listen('warden:cycle-tab', (e) => {
-        const ids = [...document.querySelectorAll('.tab')].map(el => el.dataset.id);
-        if (ids.length < 2) return;
+        const ids = [...document.querySelectorAll('.tab')]
+          .filter(el => el.querySelector('.tab-dot.live'))
+          .map(el => el.dataset.id);
+        if (ids.length < 2) return; // 0 or 1 live tab — nowhere to cycle to
         const dir = e.payload < 0 ? -1 : 1;
         const cur = ids.indexOf(active);
         // Unknown active: step in from the end opposite the direction of travel.

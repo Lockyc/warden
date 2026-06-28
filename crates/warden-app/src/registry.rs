@@ -99,21 +99,13 @@ impl Registry {
         }
     }
 
-    /// The id of the tab to make visible when the one at `idx` is killed: prefer the
-    /// next tab, else the previous, else `None` (it was the only tab). Index-based,
-    /// since `unload` leaves the killed entry in place (now cold).
-    fn neighbor_id(&self, idx: usize) -> Option<String> {
-        self.tabs
-            .get(idx + 1)
-            .or_else(|| idx.checked_sub(1).and_then(|p| self.tabs.get(p)))
-            .map(|t| t.id.clone())
-    }
-
     /// Kill tab `id`'s surface + PTY, returning it to cold (it respawns a fresh
     /// shell on next focus, exactly like a never-opened tab). No-op if the tab is
-    /// unknown or already cold. If the killed tab was active, activate a neighbor so
-    /// the hole never goes blank, and return that neighbor's id for the chrome to
-    /// move its highlight to; otherwise return `None`.
+    /// unknown or already cold. If the killed tab was the active one, switch to an
+    /// already-**live** neighbour so unloading never spawns a fresh surface just to
+    /// fill the hole (see `pick_live_neighbour`); return that neighbour's id for the
+    /// chrome to move its highlight to. `None` if nothing live remains — the chrome
+    /// then blanks the hole rather than waking a cold tab.
     pub fn unload(&mut self, id: &str) -> Option<String> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Cold) {
@@ -122,7 +114,13 @@ impl Registry {
         }
         if self.active.as_deref() == Some(id) {
             self.active = None;
-            if let Some(next) = self.neighbor_id(idx) {
+            let live: Vec<bool> = self
+                .tabs
+                .iter()
+                .map(|t| matches!(t.slot, TabSlot::Spawned(_)))
+                .collect();
+            if let Some(n) = pick_live_neighbour(idx, &live) {
+                let next = self.tabs[n].id.clone();
                 self.activate(&next);
                 return Some(next);
             }
@@ -193,6 +191,22 @@ impl Registry {
         }
         self.active = None;
     }
+}
+
+/// Index of the tab to activate after the tab at `idx` is killed, given each tab's live
+/// (spawned) state. Prefer the immediate next tab **if it is live** (natural forward motion),
+/// else the nearest live tab to the left (the one you usually came from), else the nearest live
+/// tab to the right. `None` ⇒ nothing live to show — the caller leaves the hole blank rather
+/// than spawning a cold tab just to fill it. Pure index logic, so it's unit-testable without
+/// real surfaces (which `add(.., true)` can't fabricate against a null `ns_window`).
+fn pick_live_neighbour(idx: usize, live: &[bool]) -> Option<usize> {
+    if live.get(idx + 1).copied().unwrap_or(false) {
+        return Some(idx + 1);
+    }
+    if let Some(p) = (0..idx).rev().find(|&i| live[i]) {
+        return Some(p);
+    }
+    ((idx + 1)..live.len()).find(|&i| live[i])
 }
 
 #[cfg(test)]
@@ -280,23 +294,35 @@ mod tests {
     }
 
     #[test]
-    fn neighbor_prefers_next_then_previous() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("a", "/tmp"), false);
-        r.add(&spec("b", "/tmp"), false);
-        r.add(&spec("c", "/tmp"), false);
-        // Middle tab → the next one.
-        assert_eq!(r.neighbor_id(1).as_deref(), Some("c"));
-        // Last tab → fall back to the previous one.
-        assert_eq!(r.neighbor_id(2).as_deref(), Some("b"));
-        // First tab → the next one.
-        assert_eq!(r.neighbor_id(0).as_deref(), Some("b"));
+    fn pick_live_neighbour_prefers_next_when_live() {
+        // killed@1; next@2 is live → take it (forward motion).
+        assert_eq!(pick_live_neighbour(1, &[true, false, true, true]), Some(2));
     }
 
     #[test]
-    fn neighbor_of_lone_tab_is_none() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("only", "/tmp"), false);
-        assert_eq!(r.neighbor_id(0), None);
+    fn pick_live_neighbour_falls_back_to_previous_when_next_cold() {
+        // killed@1; next@2 cold; previous@0 live → previous (don't wake the cold next).
+        assert_eq!(pick_live_neighbour(1, &[true, false, false]), Some(0));
+    }
+
+    #[test]
+    fn pick_live_neighbour_prefers_nearest_live_left_over_right() {
+        // killed@2; next@3 cold; live to the left (@1) and far right (@4) → left wins.
+        assert_eq!(
+            pick_live_neighbour(2, &[false, true, false, false, true]),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn pick_live_neighbour_uses_right_when_nothing_live_left() {
+        // killed@0; next@1 cold; nothing to the left; live@3 → scan right to it.
+        assert_eq!(pick_live_neighbour(0, &[false, false, false, true]), Some(3));
+    }
+
+    #[test]
+    fn pick_live_neighbour_none_when_nothing_live() {
+        // No live tab anywhere → blank the hole, never spawn one to fill it.
+        assert_eq!(pick_live_neighbour(1, &[false, false, false]), None);
     }
 }
