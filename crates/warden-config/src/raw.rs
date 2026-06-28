@@ -13,7 +13,7 @@ pub struct RawConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RawWindow {
     pub title: String,
-    pub colour: String,
+    pub colour: Option<String>,
     pub icon: Option<String>,
     pub shell: Option<String>,
     pub cmd: Option<String>,
@@ -81,7 +81,7 @@ cmd = "tmux"
         assert_eq!(cfg.windows.len(), 1);
         let p = &cfg.windows[0];
         assert_eq!(p.title, "work");
-        assert_eq!(p.colour, "#0f8a8a");
+        assert_eq!(p.colour.as_deref(), Some("#0f8a8a"));
         assert_eq!(p.shell.as_deref(), Some("zsh"));
         assert_eq!(p.cmd.as_deref(), Some("tmux"));
         assert_eq!(p.tabs.len(), 2);

@@ -9,6 +9,10 @@ use thiserror::Error;
 /// cascaded `shell`; a tab's cascaded `cmd`, if any, is auto-run *inside* it.
 pub const DEFAULT_SHELL: &str = "fish -l";
 
+/// Window accent used when `colour` is omitted — a neutral grey so the banner
+/// still renders identity without an accent. (curator parity: omit → neutral.)
+pub const DEFAULT_COLOUR: Colour = Colour { r: 0x6b, g: 0x72, b: 0x80 };
+
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
 /// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
@@ -84,10 +88,13 @@ fn resolve_window(
     global_cmd: Option<&str>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
-    let colour = Colour::parse(&rp.colour).map_err(|source| ResolveError::BadColour {
-        window: rp.title.clone(),
-        source,
-    })?;
+    let colour = match rp.colour.as_deref() {
+        None => DEFAULT_COLOUR,
+        Some(s) => Colour::parse(s).map_err(|source| ResolveError::BadColour {
+            window: rp.title.clone(),
+            source,
+        })?,
+    };
     let icon = rp.icon.as_deref().map(expand_tilde);
 
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
@@ -692,5 +699,28 @@ icon = "~/some/icon.png"
         .unwrap();
         let home = dirs::home_dir().unwrap();
         assert_eq!(cfg.windows[0].icon, Some(home.join("some/icon.png")));
+    }
+
+    #[test]
+    fn missing_colour_uses_neutral_default() {
+        let cfg = resolve(parse(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp"
+"##).unwrap()).unwrap().0;
+        assert_eq!(cfg.windows[0].colour, super::DEFAULT_COLOUR);
+    }
+
+    #[test]
+    fn present_invalid_colour_still_errors() {
+        let err = resolve(parse(r##"
+[[window]]
+title = "work"
+colour = "not-a-colour"
+  [[window.tab]]
+  dir = "/tmp"
+"##).unwrap()).unwrap_err();
+        assert!(matches!(err, ResolveError::BadColour { .. }));
     }
 }
