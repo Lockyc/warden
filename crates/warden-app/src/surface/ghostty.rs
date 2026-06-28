@@ -37,7 +37,9 @@ use std::sync::OnceLock;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_app_kit::{NSEvent, NSPasteboard, NSPasteboardTypeString, NSResponder, NSView, NSWindow};
+use objc2_app_kit::{
+    NSApplication, NSEvent, NSPasteboard, NSPasteboardTypeString, NSResponder, NSView, NSWindow,
+};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 // --- AppKit modifier-flag bit masks (stable AppKit ABI values) ---
@@ -235,12 +237,25 @@ declare_class!(
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
         }
 
-        // ⌘-combo key-DOWN events are delivered via performKeyEquivalent:, NOT keyDown:, so
-        // without this the terminal never sees ⌘V/⌘C/etc. Forward to libghostty only when this
-        // is the focused surface, and return whether libghostty consumed it as a binding
-        // (paste/copy/…) — if not, return false so AppKit still handles ⌘Q/⌘W/⌘` and friends.
+        // ⌘-combo key-DOWN events arrive via performKeyEquivalent:, NOT keyDown:. Two owners can
+        // want them: the app menu (tab nav ⌘⇧[/⌘⇧], ⌘1–9, ⌘Q/⌘W/…) and libghostty's own keybinds.
+        // macOS consults the view hierarchy BEFORE the main menu, and libghostty binds the very
+        // same standard tab chords — so forwarding first let it swallow them (consumed=true) and
+        // the menu never fired (the "inconsistent tab switch" bug). Give the main menu first
+        // refusal: if it owns the chord, let it act and stop. Otherwise forward to libghostty
+        // (paste/copy/…) and return whether it consumed — if not, return NO so AppKit can still
+        // route ⌘` and friends. The menu's accelerators define the reserved set (self-maintaining).
         #[method(performKeyEquivalent:)]
         fn perform_key_equivalent(&self, event: &NSEvent) -> objc2::runtime::Bool {
+            if let Some(mtm) = MainThreadMarker::new() {
+                let main_menu = unsafe { NSApplication::sharedApplication(mtm).mainMenu() };
+                if let Some(menu) = main_menu {
+                    if unsafe { menu.performKeyEquivalent(event) } {
+                        return objc2::runtime::Bool::YES;
+                    }
+                }
+            }
+
             let surface = self.ivars().surface.get();
             if surface.is_null() || surface != FOCUSED_SURFACE.load(Ordering::Acquire) {
                 return objc2::runtime::Bool::NO;
