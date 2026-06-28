@@ -209,9 +209,8 @@ pub struct ghostty_target_s {
 // --- ghostty_action_s (passed BY VALUE to action_cb; 32 bytes total, verified via clang) ---
 // The real `action` member is a large tagged union (24 bytes, many variants). Because the
 // whole struct is 32 bytes (>16), the AArch64 / SysV-x86_64 C ABI passes it INDIRECTLY (by
-// hidden pointer), so the exact union contents are irrelevant to a callback that never reads
-// them — only the total size/alignment must match. We model the union as an opaque,
-// correctly-aligned 24-byte blob. Our action_cb is a no-op that ignores it.
+// hidden pointer). We model the union as an opaque, correctly-aligned 24-byte blob and read
+// only the variants warden acts on, reinterpreting the blob per the `tag` (see methods below).
 #[repr(C, align(8))]
 #[derive(Copy, Clone)]
 pub struct ghostty_action_u {
@@ -222,6 +221,49 @@ pub struct ghostty_action_u {
 pub struct ghostty_action_s {
     pub tag: u32,
     pub action: ghostty_action_u,
+}
+
+// Action tag discriminants we handle. `ghostty_action_tag_e` is a plain C enum, sequential from
+// `GHOSTTY_ACTION_QUIT = 0` (vendored ghostty.h:875) with no explicit values, so each value equals
+// its 0-based position. Read `tag` as a u32 and COMPARE (never transmute into a Rust enum) — an
+// unknown value from a future libghostty is then just "unhandled", not invalid-discriminant UB.
+pub const GHOSTTY_ACTION_DESKTOP_NOTIFICATION: u32 = 31; // ghostty.h:906
+pub const GHOSTTY_ACTION_RING_BELL: u32 = 50; // ghostty.h:925
+
+/// `ghostty_action_desktop_notification_s` (ghostty.h:650-653): the union variant for
+/// `DESKTOP_NOTIFICATION`. Two borrowed C strings, valid only for the duration of the action_cb
+/// call (libghostty owns them) — copy out before returning.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_desktop_notification_s {
+    pub title: *const c_char,
+    pub body: *const c_char,
+}
+
+impl ghostty_action_s {
+    pub fn is_ring_bell(&self) -> bool {
+        self.tag == GHOSTTY_ACTION_RING_BELL
+    }
+    /// Reinterpret the union as the desktop-notification payload, but only when the tag says so.
+    /// SAFETY of the cast: the tag guarantees the union holds this variant, and the 16-byte
+    /// struct is a prefix of the 8-aligned 24-byte union, so the read is in-bounds and aligned.
+    pub fn desktop_notification(&self) -> Option<&ghostty_action_desktop_notification_s> {
+        (self.tag == GHOSTTY_ACTION_DESKTOP_NOTIFICATION).then(|| unsafe {
+            &*(&self.action as *const ghostty_action_u
+                as *const ghostty_action_desktop_notification_s)
+        })
+    }
+}
+
+// Target tag: `GHOSTTY_TARGET_APP = 0`, `GHOSTTY_TARGET_SURFACE = 1` (ghostty.h:545-546).
+pub const GHOSTTY_TARGET_SURFACE: u32 = 1;
+
+impl ghostty_target_s {
+    /// The surface this action targets, or `None` for app-level targets (no tab to route to).
+    pub fn surface(&self) -> Option<ghostty_surface_t> {
+        // SAFETY: the union holds a surface pointer exactly when the tag is SURFACE.
+        (self.tag == GHOSTTY_TARGET_SURFACE).then(|| unsafe { self.target.surface })
+    }
 }
 
 // --- Runtime callback function-pointer types (vendored header lines 988-1005) ---
@@ -356,4 +398,87 @@ extern "C" {
         state: *mut c_void,
         confirmed: bool,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    /// Build an action whose union prefix holds a desktop-notification payload, exactly as
+    /// libghostty would (tag at offset 0, the two C-string pointers at offset 8).
+    fn notification_action(n: &ghostty_action_desktop_notification_s) -> ghostty_action_s {
+        let mut a = ghostty_action_s {
+            tag: GHOSTTY_ACTION_DESKTOP_NOTIFICATION,
+            action: ghostty_action_u { _bytes: [0; 24] },
+        };
+        // SAFETY: writing the 16-byte variant into the 8-aligned 24-byte union prefix.
+        unsafe {
+            std::ptr::write(
+                &mut a.action as *mut ghostty_action_u
+                    as *mut ghostty_action_desktop_notification_s,
+                *n,
+            );
+        }
+        a
+    }
+
+    #[test]
+    fn decodes_desktop_notification_title_and_body() {
+        let title = CString::new("Claude — locus").unwrap();
+        let body = CString::new("waiting for permission").unwrap();
+        let action = notification_action(&ghostty_action_desktop_notification_s {
+            title: title.as_ptr(),
+            body: body.as_ptr(),
+        });
+        let dn = action.desktop_notification().expect("tag matches → Some");
+        // SAFETY: pointers reference the live CStrings above.
+        assert_eq!(
+            unsafe { CStr::from_ptr(dn.title) }.to_str().unwrap(),
+            "Claude — locus"
+        );
+        assert_eq!(
+            unsafe { CStr::from_ptr(dn.body) }.to_str().unwrap(),
+            "waiting for permission"
+        );
+        assert!(!action.is_ring_bell());
+    }
+
+    #[test]
+    fn ring_bell_tag_is_recognised_and_not_a_notification() {
+        let bell = ghostty_action_s {
+            tag: GHOSTTY_ACTION_RING_BELL,
+            action: ghostty_action_u { _bytes: [0; 24] },
+        };
+        assert!(bell.is_ring_bell());
+        assert!(bell.desktop_notification().is_none());
+    }
+
+    #[test]
+    fn unknown_action_tag_decodes_to_nothing() {
+        // A tag warden doesn't handle (e.g. a future libghostty value) is inert, never UB.
+        let other = ghostty_action_s {
+            tag: 9999,
+            action: ghostty_action_u { _bytes: [0; 24] },
+        };
+        assert!(!other.is_ring_bell());
+        assert!(other.desktop_notification().is_none());
+    }
+
+    #[test]
+    fn target_surface_is_extracted_only_for_surface_tag() {
+        let mut ptr = 0u8;
+        let surface = &mut ptr as *mut u8 as ghostty_surface_t;
+        let surf_target = ghostty_target_s {
+            tag: GHOSTTY_TARGET_SURFACE,
+            target: ghostty_target_u { surface },
+        };
+        assert_eq!(surf_target.surface(), Some(surface));
+        // App-targeted (tag 0) → no surface to route to.
+        let app_target = ghostty_target_s {
+            tag: 0,
+            target: ghostty_target_u { surface },
+        };
+        assert_eq!(app_target.surface(), None);
+    }
 }

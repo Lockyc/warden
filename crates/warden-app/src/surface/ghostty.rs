@@ -24,12 +24,12 @@
 //! (Tauri's `setup` and command handlers run there). This is a spike-scoped
 //! affordance, documented here as the single load-bearing invariant.
 
-use super::{PixelRect, SurfaceError, TabSpec, TerminalSurface};
+use super::{PixelRect, SurfaceError, SurfaceEvent, SurfaceSignal, TabSpec, TerminalSurface};
 use crate::ffi;
 use crate::geometry;
 
 use std::cell::Cell;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -90,15 +90,47 @@ unsafe extern "C" fn wakeup_cb(_userdata: *mut c_void) {
     dispatch_async_f(main_queue(), app, tick_trampoline);
 }
 
-/// App/surface actions (set-title, new-window, ring-bell, ...). For a single
-/// embedded surface we handle none; returning false = "not handled", which the
-/// reference (`Ghostty.App.swift`) also does for every unimplemented action.
+/// App/surface actions (set-title, new-window, ring-bell, desktop-notification, ...). warden acts
+/// on the two attention signals — `RING_BELL` and `DESKTOP_NOTIFICATION` — decoding them into a
+/// seam-neutral `SurfaceEvent` and forwarding to the app-level sink (which routes to the owning
+/// tab). All other actions are unhandled; returning false = "not handled", which the reference
+/// (`Ghostty.App.swift`) also does for every unimplemented action. Runs on the main thread (called
+/// from a `ghostty_app_tick`).
 unsafe extern "C" fn action_cb(
     _app: ffi::ghostty_app_t,
-    _target: ffi::ghostty_target_s,
-    _action: ffi::ghostty_action_s,
+    target: ffi::ghostty_target_s,
+    action: ffi::ghostty_action_s,
 ) -> bool {
-    false
+    // Only surface-targeted signals map to a tab; app-level targets have nowhere to route.
+    let Some(surface) = target.surface() else {
+        return false;
+    };
+    let signal = if action.is_ring_bell() {
+        Some(SurfaceSignal::Bell)
+    } else if let Some(dn) = action.desktop_notification() {
+        // Copy the borrowed C strings out now — libghostty frees them when this call returns.
+        let read = |p: *const c_char| {
+            (!p.is_null())
+                .then(|| CStr::from_ptr(p).to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        Some(SurfaceSignal::Notification {
+            title: read(dn.title),
+            body: read(dn.body),
+        })
+    } else {
+        None
+    };
+    match signal {
+        Some(signal) => {
+            super::emit_surface_event(SurfaceEvent {
+                surface_id: surface as usize,
+                signal,
+            });
+            true
+        }
+        None => false,
+    }
 }
 
 /// The surface that should receive clipboard reads (paste). libghostty's `read_clipboard_cb` is
@@ -471,6 +503,13 @@ pub struct GhosttySurface {
 unsafe impl Send for GhosttySurface {}
 
 impl GhosttySurface {
+    /// Opaque identity of this surface — the libghostty surface handle as a `usize`. Matches the
+    /// pointer libghostty reports in an action's `target`, so the app layer can route a per-surface
+    /// signal (bell / notification) back to the owning tab.
+    pub fn id(&self) -> usize {
+        self.surface as usize
+    }
+
     /// `ns_window` is the raw `NSWindow *` pointer returned by Tauri's
     /// `WebviewWindow::ns_window()`. The `contentView` is derived here, keeping
     /// all objc2/AppKit calls inside this module (the seam constraint).

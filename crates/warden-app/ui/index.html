@@ -163,6 +163,17 @@
         font-size: 11px;
         font-weight: 700;
       }
+      /* Unread/attention badge: a tab raised a terminal notification (OSC 9/777) or
+         bell while it wasn't the visible tab. Amber so it reads as "needs attention"
+         and stays distinct from the green live dot and the red unload ✕. Sits just
+         left of the live/cold dot; cleared when you focus the tab. */
+      .tab-badge {
+        flex: none;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #f0883e;
+      }
       #terminal-hole {
         flex: 1;
         background: transparent;
@@ -198,6 +209,9 @@
       // warden:refresh events addressed to a sibling window — a robust guard
       // that does not rely on emit_to's per-webview targeting.
       let myLabel = null;
+      // Tab ids with an unread notification/bell badge. A Set (not just DOM state) so
+      // a warden:refresh re-render restores the badges instead of dropping them.
+      const badges = new Set();
 
       /** Opaque dark base the sidebar composites the profile tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
@@ -213,6 +227,22 @@
         let h = 0;
         for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
         return 'hsl(' + (h % 360) + ', 45%, 45%)';
+      }
+
+      /** Add/remove a tab's unread badge, keeping the `badges` set in sync so a
+          re-render restores it. Inserts the badge just left of the live/cold dot. */
+      function setBadge(id, on) {
+        if (on) badges.add(id); else badges.delete(id);
+        const row = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]');
+        if (!row) return;
+        let b = row.querySelector('.tab-badge');
+        if (on && !b) {
+          b = document.createElement('span');
+          b.className = 'tab-badge';
+          row.insertBefore(b, row.querySelector('.tab-dot'));
+        } else if (!on && b) {
+          b.remove();
+        }
       }
 
       /** Set a tab dot's live/cold class + tooltip from one source of truth, so the
@@ -286,6 +316,14 @@
           // textContent (not innerHTML): config titles never reach the HTML parser.
           title.textContent = t.title + (t.warn ? '  ⚠' : '');
           el.appendChild(title);
+
+          // Restore an unread badge if this tab raised one while hidden (the Set
+          // survives re-renders). Sits between the title and the live/cold dot.
+          if (badges.has(t.id)) {
+            const b = document.createElement('span');
+            b.className = 'tab-badge';
+            el.appendChild(b);
+          }
 
           // Live/cold dot that doubles as the unload control. Filled if the surface
           // is already spawned (keep_alive, or focused earlier this session), a
@@ -389,6 +427,13 @@
         if (active) unloadTab(active);
       });
 
+      // A tab raised an attention signal (terminal bell / OSC 9/777 desktop notification) while
+      // hidden — the native layer already suppressed it for the visible tab, so just badge it.
+      // Payload is the tab id.
+      listen('warden:notify', (e) => {
+        if (e.payload && e.payload !== active) setBadge(e.payload, true);
+      });
+
       function paint() {
         document.querySelectorAll('.tab').forEach(el => {
           const isActive = el.dataset.id === active;
@@ -406,6 +451,7 @@
 
       async function select(id) {
         active = id;
+        setBadge(id, false); // focusing a tab clears its unread badge
         paint();
         // Report rect before activating — layout is stable at this point.
         reportRect();

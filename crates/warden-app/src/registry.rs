@@ -89,6 +89,21 @@ impl Registry {
             .collect()
     }
 
+    /// The id of the tab owning the spawned surface with handle `surface_id`
+    /// (`GhosttySurface::id`), if any — routes a per-surface signal (bell /
+    /// notification) back to its tab.
+    pub fn tab_of_surface(&self, surface_id: usize) -> Option<&str> {
+        self.tabs.iter().find_map(|t| match &t.slot {
+            TabSlot::Spawned(s) if s.id() == surface_id => Some(t.id.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The currently-active (on-screen) tab id, if any.
+    pub fn active_tab(&self) -> Option<&str> {
+        self.active.as_deref()
+    }
+
     /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
     /// never-opened or previously unloaded — spawns a fresh surface from its spec.
     fn ensure_spawned(&mut self, idx: usize) {
@@ -317,7 +332,10 @@ mod tests {
     #[test]
     fn pick_live_neighbour_uses_right_when_nothing_live_left() {
         // killed@0; next@1 cold; nothing to the left; live@3 → scan right to it.
-        assert_eq!(pick_live_neighbour(0, &[false, false, false, true]), Some(3));
+        assert_eq!(
+            pick_live_neighbour(0, &[false, false, false, true]),
+            Some(3)
+        );
     }
 
     #[test]

@@ -4,9 +4,45 @@
 //! so a future SwiftTerm / GTK impl can be slotted in without touching callers.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 #[cfg(target_os = "macos")]
 pub mod ghostty;
+
+/// An attention signal a surface raised, in seam-neutral terms (no libghostty/Tauri types).
+/// The surface layer decodes the platform action into this; the app layer routes it to a tab.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SurfaceSignal {
+    /// The terminal rang its bell (`\a`). Carries no text.
+    Bell,
+    /// A desktop-notification escape (OSC 9 / OSC 777). `title`/`body` are whatever the program
+    /// emitted (either may be empty).
+    Notification { title: String, body: String },
+}
+
+/// A signal from a specific surface. `surface_id` is the opaque surface handle as a `usize`
+/// (`GhosttySurface::id`), which the app layer maps back to a (window, tab).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceEvent {
+    pub surface_id: usize,
+    pub signal: SurfaceSignal,
+}
+
+type SurfaceEventSink = Box<dyn Fn(SurfaceEvent) + Send + Sync>;
+static SURFACE_EVENT_SINK: OnceLock<SurfaceEventSink> = OnceLock::new();
+
+/// Install the app-level handler for surface signals (bell / desktop notification). Called once
+/// at setup; the surface layer stays ignorant of what happens with the events (seam boundary).
+pub(crate) fn set_surface_event_sink(sink: impl Fn(SurfaceEvent) + Send + Sync + 'static) {
+    let _ = SURFACE_EVENT_SINK.set(Box::new(sink));
+}
+
+/// Forward a decoded signal to the installed sink (no-op if none is set, e.g. in tests).
+pub(crate) fn emit_surface_event(event: SurfaceEvent) {
+    if let Some(sink) = SURFACE_EVENT_SINK.get() {
+        sink(event);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabSpec {

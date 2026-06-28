@@ -166,6 +166,18 @@ impl WindowManager {
         })
     }
 
+    /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and
+    /// whether that tab is currently **visible** (its window is focused AND it's the active tab).
+    /// A visible tab needs no notification — the user is already looking at it.
+    pub fn locate_surface(&self, surface_id: usize) -> Option<(String, String, bool)> {
+        self.windows.iter().find_map(|(label, ws)| {
+            let tab = ws.registry.tab_of_surface(surface_id)?;
+            let focused = ws.window.is_focused().unwrap_or(false);
+            let visible = focused && ws.registry.active_tab() == Some(tab);
+            Some((label.clone(), tab.to_string(), visible))
+        })
+    }
+
     /// Labels currently in use — the seed `unique_label` must avoid when
     /// assigning a fresh label to a newly-opened profile during reconcile.
     fn taken_labels(&self) -> HashSet<String> {
