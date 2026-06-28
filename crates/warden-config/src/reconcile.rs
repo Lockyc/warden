@@ -42,7 +42,7 @@ pub struct Reconciliation {
 /// `keep_alive` tabs). There is no concept of a live retitle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowUpdate {
-    pub name: String,
+    pub title: String,
     pub colour: Option<Colour>,
     pub icon: Option<Option<PathBuf>>,
     pub add_tabs: Vec<Tab>,
@@ -52,7 +52,7 @@ pub struct WindowUpdate {
 }
 
 fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
-    windows.iter().find(|p| p.name == name)
+    windows.iter().find(|p| p.title == name)
 }
 
 /// Diff two configs and return the set of operations needed to bring a running
@@ -79,13 +79,13 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
 
     // closed: in old, not in new
     for op in &old.windows {
-        if find(&new.windows, &op.name).is_none() {
-            close.push(op.name.clone());
+        if find(&new.windows, &op.title).is_none() {
+            close.push(op.title.clone());
         }
     }
 
     for np in &new.windows {
-        match find(&old.windows, &np.name) {
+        match find(&old.windows, &np.title) {
             None => open.push(np.clone()),
             Some(op) => {
                 let colour = (op.colour != np.colour).then_some(np.colour);
@@ -139,7 +139,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     || !set_groups.is_empty()
                 {
                     update.push(WindowUpdate {
-                        name: np.name.clone(),
+                        title: np.title.clone(),
                         colour,
                         icon,
                         add_tabs,
@@ -171,7 +171,7 @@ mod tests {
 
     const BASE: &str = r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "locus"
@@ -184,7 +184,7 @@ colour = "#0f8a8a"
         let new = cfg(BASE);
         let r = reconcile(&old, &new);
         assert_eq!(r.open.len(), 1);
-        assert_eq!(r.open[0].name, "work");
+        assert_eq!(r.open[0].title, "work");
         assert!(r.close.is_empty() && r.update.is_empty());
     }
 
@@ -221,7 +221,7 @@ colour = "#0f8a8a"
     fn added_and_removed_tabs_within_kept_window() {
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "ops"
@@ -245,7 +245,7 @@ colour = "#0f8a8a"
     fn reorder_only_emits_update_with_new_order() {
         let old = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "alpha"
@@ -256,7 +256,7 @@ colour = "#0f8a8a"
 "##);
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "beta"
@@ -283,7 +283,7 @@ colour = "#0f8a8a"
     fn icon_change_emits_update() {
         let old = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
 icon = "/tmp/old.png"
   [[window.tab]]
@@ -292,7 +292,7 @@ icon = "/tmp/old.png"
 "##);
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
 icon = "/tmp/new.png"
   [[window.tab]]
@@ -318,7 +318,7 @@ icon = "/tmp/new.png"
         // the complement of icon_change_emits_update).
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
 icon = "/tmp/new.png"
   [[window.tab]]
@@ -337,7 +337,7 @@ icon = "/tmp/new.png"
         // a removed icon would silently linger on the live window.
         let old = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
 icon = "/tmp/old.png"
   [[window.tab]]
@@ -358,11 +358,11 @@ icon = "/tmp/old.png"
         // Windows are diffed by name, so a rename is not an update — it's close(old)
         // + open(new), which destroys and recreates that window's terminals (incl.
         // keep_alive ones). Pins the documented destructive-rename behaviour.
-        let new = cfg(&BASE.replace(r#"name = "work""#, r#"name = "play""#));
+        let new = cfg(&BASE.replace(r#"title = "work""#, r#"title = "play""#));
         let r = reconcile(&cfg(BASE), &new);
         assert_eq!(r.close, vec!["work".to_string()]);
         assert_eq!(r.open.len(), 1);
-        assert_eq!(r.open[0].name, "play");
+        assert_eq!(r.open[0].title, "play");
         assert!(r.update.is_empty(), "a rename is never an in-place update");
     }
 
@@ -374,7 +374,7 @@ icon = "/tmp/old.png"
     fn in_place_tab_field_edit_is_not_detected() {
         let old = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "locus"
@@ -382,7 +382,7 @@ colour = "#0f8a8a"
 "##);
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "locus"
@@ -402,7 +402,7 @@ colour = "#0f8a8a"
         // without respawning the PTY.
         let old = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.group]]
   name = "old-name"
@@ -412,7 +412,7 @@ colour = "#0f8a8a"
 "##);
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.group]]
   name = "new-name"
@@ -438,7 +438,7 @@ colour = "#0f8a8a"
         // flat order is unchanged, so the change is detected purely via set_groups).
         let old = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "api"
@@ -446,7 +446,7 @@ colour = "#0f8a8a"
 "##);
         let new = cfg(r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.group]]
   name = "backend"
@@ -466,7 +466,7 @@ colour = "#0f8a8a"
     fn unchanged_groups_emit_no_update() {
         let same = r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.group]]
   name = "g"

@@ -54,14 +54,14 @@ mod tests {
         let (_d, path) = write_cfg(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   dir = "/tmp/locus"
 "##,
         );
         let loaded = load(&path).unwrap();
-        assert_eq!(loaded.config.windows[0].name, "work");
+        assert_eq!(loaded.config.windows[0].title, "work");
     }
 
     #[test]
@@ -78,7 +78,7 @@ colour = "#0f8a8a"
 
     #[test]
     fn invalid_colour_is_resolve_error() {
-        let (_d, path) = write_cfg("[[window]]\nname=\"x\"\ncolour=\"nope\"\n");
+        let (_d, path) = write_cfg("[[window]]\ntitle=\"x\"\ncolour=\"nope\"\n");
         assert!(matches!(load(&path).unwrap_err(), LoadError::Resolve(_)));
     }
 

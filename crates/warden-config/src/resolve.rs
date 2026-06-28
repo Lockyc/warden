@@ -34,8 +34,8 @@ pub enum ResolveError {
         #[source]
         source: ColourError,
     },
-    #[error("window at index {index} has an empty name")]
-    EmptyWindowName { index: usize },
+    #[error("window at index {index} has an empty title")]
+    EmptyWindowTitle { index: usize },
     #[error("window {window:?} has a tab with an empty explicit title")]
     EmptyTabTitle { window: String },
     #[error("window {window:?} has a group with an empty name")]
@@ -67,11 +67,11 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     let mut seen_windows = HashSet::new();
 
     for (index, rp) in raw.windows.iter().enumerate() {
-        if rp.name.trim().is_empty() {
-            return Err(ResolveError::EmptyWindowName { index });
+        if rp.title.trim().is_empty() {
+            return Err(ResolveError::EmptyWindowTitle { index });
         }
-        if !seen_windows.insert(rp.name.clone()) {
-            return Err(ResolveError::DuplicateWindow(rp.name.clone()));
+        if !seen_windows.insert(rp.title.clone()) {
+            return Err(ResolveError::DuplicateWindow(rp.title.clone()));
         }
         windows.push(resolve_window(rp, global_shell, global_cmd, &mut warnings)?);
     }
@@ -85,7 +85,7 @@ fn resolve_window(
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
     let colour = Colour::parse(&rp.colour).map_err(|source| ResolveError::BadColour {
-        window: rp.name.clone(),
+        window: rp.title.clone(),
         source,
     })?;
     let icon = rp.icon.as_deref().map(expand_tilde);
@@ -116,12 +116,12 @@ fn resolve_window(
     for g in &rp.groups {
         if g.name.trim().is_empty() {
             return Err(ResolveError::EmptyGroupName {
-                window: rp.name.clone(),
+                window: rp.title.clone(),
             });
         }
         if !seen_groups.insert(g.name.clone()) {
             return Err(ResolveError::DuplicateGroup {
-                window: rp.name.clone(),
+                window: rp.title.clone(),
                 group: g.name.clone(),
             });
         }
@@ -139,7 +139,7 @@ fn resolve_window(
     }
 
     Ok(Window {
-        name: rp.name.clone(),
+        title: rp.title.clone(),
         colour,
         icon,
         tabs,
@@ -161,27 +161,27 @@ fn resolve_tab(
 ) -> Result<Tab, ResolveError> {
     if rt.dir.trim().is_empty() {
         return Err(ResolveError::EmptyDir {
-            window: rp.name.clone(),
+            window: rp.title.clone(),
         });
     }
     let dir = expand_tilde(&rt.dir);
     if let Some(ref t) = rt.title {
         if t.trim().is_empty() {
             return Err(ResolveError::EmptyTabTitle {
-                window: rp.name.clone(),
+                window: rp.title.clone(),
             });
         }
     }
     let title = rt.title.clone().unwrap_or_else(|| basename(&dir));
     if !seen_titles.insert(title.clone()) {
         return Err(ResolveError::DuplicateTab {
-            window: rp.name.clone(),
+            window: rp.title.clone(),
             title,
         });
     }
     if !dir.exists() {
         warnings.push(Warning {
-            window: rp.name.clone(),
+            window: rp.title.clone(),
             message: format!("dir does not exist: {}", dir.display()),
         });
     }
@@ -217,7 +217,7 @@ mod tests {
         let (cfg, _) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   dir = "/tmp/locus"
@@ -234,12 +234,12 @@ colour = "#0f8a8a"
             r##"
 shell = "zsh"
 [[window]]
-name = "a"
+title = "a"
 colour = "#000000"
   [[window.tab]]
   dir = "/tmp/x"
 [[window]]
-name = "b"
+title = "b"
 colour = "#000000"
   [[window.tab]]
   dir = "/tmp/y"
@@ -258,7 +258,7 @@ colour = "#000000"
         let (cfg2, _) = resolve_str(
             r##"
 [[window]]
-name = "a"
+title = "a"
 colour = "#000000"
   [[window.tab]]
   dir = "/tmp/x"
@@ -277,7 +277,7 @@ colour = "#000000"
 shell = "fish"
 cmd = "global-cmd"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
 shell = "zsh"
 cmd = "amux"
@@ -294,7 +294,7 @@ cmd = "amux"
   dir = "/tmp/c"
   cmd = ""
 [[window]]
-name = "plain"
+title = "plain"
 colour = "#000000"
   [[window.tab]]
   title = "from-global"
@@ -328,7 +328,7 @@ colour = "#000000"
         let (cfg, _) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
 shell = "zsh"
   [[window.tab]]
@@ -352,7 +352,7 @@ shell = "zsh"
 shell = "fish"
 cmd = "global-cmd"
 [[window]]
-name = "bare"
+title = "bare"
 colour = "#000000"
 shell = ""
 cmd = ""
@@ -370,7 +370,7 @@ cmd = ""
         let (cfg, warns) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   dir = "/no/such/path/zzz"
@@ -388,10 +388,10 @@ colour = "#0f8a8a"
         let err = resolve_str(
             r##"
 [[window]]
-name = "dup"
+title = "dup"
 colour = "#000000"
 [[window]]
-name = "dup"
+title = "dup"
 colour = "#000000"
 "##,
         )
@@ -404,7 +404,7 @@ colour = "#000000"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
   [[window.tab]]
   title = "same"
@@ -433,7 +433,7 @@ colour = "#000000"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
   [[window.tab]]
   dir = "/a/locus"
@@ -456,7 +456,7 @@ colour = "#000000"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
   [[window.tab]]
   dir = "   "
@@ -476,7 +476,7 @@ colour = "#000000"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "teal"
 "##,
         )
@@ -489,7 +489,7 @@ colour = "teal"
         let (cfg, _warns) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   dir = "/"
@@ -507,7 +507,7 @@ colour = "#0f8a8a"
         let (cfg, _warns) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   dir = "~/some/deep/path"
@@ -521,16 +521,16 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn empty_window_name_is_error() {
+    fn empty_window_title_is_error() {
         let err = resolve_str(
             r##"
 [[window]]
-name = "  "
+title = "  "
 colour = "#000000"
 "##,
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::EmptyWindowName { index: 0 }));
+        assert!(matches!(err, ResolveError::EmptyWindowTitle { index: 0 }));
     }
 
     #[test]
@@ -538,7 +538,7 @@ colour = "#000000"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
   [[window.tab]]
   title = ""
@@ -554,7 +554,7 @@ colour = "#000000"
         let (cfg, _) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   title = "notes"
@@ -593,7 +593,7 @@ colour = "#0f8a8a"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
   [[window.group]]
   name = "  "
@@ -610,7 +610,7 @@ colour = "#000000"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
   [[window.group]]
   name = "dup"
@@ -640,7 +640,7 @@ colour = "#000000"
         let err = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#000000"
   [[window.tab]]
   title = "same"
@@ -667,7 +667,7 @@ colour = "#000000"
         let (cfg, _) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
   dir = "/tmp/locus"
@@ -682,7 +682,7 @@ colour = "#0f8a8a"
         let (cfg, _warns) = resolve_str(
             r##"
 [[window]]
-name = "work"
+title = "work"
 colour = "#0f8a8a"
 icon = "~/some/icon.png"
   [[window.tab]]

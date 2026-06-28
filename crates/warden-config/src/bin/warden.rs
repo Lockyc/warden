@@ -14,7 +14,7 @@ fn main() {
                         loaded.config.windows.len()
                     );
                     for p in &loaded.config.windows {
-                        println!("  window {:?} {}", p.name, p.colour.hex());
+                        println!("  window {:?} {}", p.title, p.colour.hex());
                         for t in &p.tabs {
                             let group = t
                                 .group

@@ -8,7 +8,7 @@ pub struct Config {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Window {
-    pub name: String,
+    pub title: String,
     pub colour: Colour,
     pub icon: Option<PathBuf>,
     pub tabs: Vec<Tab>,
