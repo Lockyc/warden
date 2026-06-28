@@ -9,10 +9,32 @@
         font-family: system-ui, sans-serif;
         overflow: hidden;
       }
+      /* Column root: the error bar (when shown) sits at the very top in normal
+         flow and PUSHES #app down, so the native terminal surface reflows below
+         it instead of being occluded by it (the NSView composites above the
+         WKWebView, so an absolutely-positioned overlay would be hidden). */
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+      #error {
+        flex: none;
+        display: none;       /* shown on warden:error */
+        /* Full-width OPAQUE bar at y=0 (no transparent gap above — wallpaper must
+           not show through). The macOS traffic lights overlay its top-left, so
+           the text is inset past them via padding-left; text wraps if long. */
+        background: #7a1f1f;
+        color: #ffd;
+        padding: 6px 10px 6px 80px;
+        font-size: 0.85rem;
+        line-height: 1.3;
+        white-space: normal;
+      }
       #app {
+        flex: 1;
+        min-height: 0;       /* allow the row to shrink when the banner appears */
         display: flex;
         flex-direction: row;
-        height: 100%;
       }
       #sidebar {
         width: 160px;
@@ -75,13 +97,15 @@
     </style>
   </head>
   <body>
+    <!-- Hot-reload error banner: hidden until a parse/empty-config event lands.
+         A full-width bar in NORMAL FLOW above #app — when shown it pushes #app
+         (and thus the native terminal surface) down rather than overlaying it,
+         since the NSView composites above the WKWebView and would occlude an
+         absolute overlay. OPAQUE (#7a1f1f): the window is transparent, so any
+         alpha would leak the wallpaper. Populated via textContent (never
+         innerHTML) — the error string never reaches the HTML parser. -->
+    <div id="error"></div>
     <div id="app">
-      <!-- Hot-reload error banner: hidden until a parse/empty-config event lands.
-           Spans the full window width at the very top, above the sidebar/hole row.
-           OPAQUE (#7a1f1f): the window is transparent, so any alpha here would
-           leak the wallpaper. Populated via textContent (never innerHTML) — the
-           error string is config/parser-sourced and never reaches the HTML parser. -->
-      <div id="error" style="display:none; position:absolute; top:0; left:0; right:0; z-index:10; background:#7a1f1f; color:#ffd; padding:.3rem .6rem; font-size:.85rem;"></div>
       <!-- data-tauri-drag-region: Tauri starts a window drag when the mousedown
            target itself carries this attribute. The non-interactive sidebar
            chrome drags; .tab elements (created without it) stay clickable; the
@@ -203,9 +227,15 @@
         const el = document.getElementById('error');
         el.textContent = '⚠ ' + e.payload;
         el.style.display = 'block';
+        // The banner now occupies a top strip, shrinking #app/#terminal-hole.
+        // The ResizeObserver should catch this, but report explicitly so the
+        // native surface reflows BELOW the banner immediately (no occlusion).
+        reportRect();
       });
       listen('warden:error-clear', () => {
         document.getElementById('error').style.display = 'none';
+        // #app grows back; resize the surface to reclaim the reclaimed strip.
+        reportRect();
       });
 
       function paint() {
