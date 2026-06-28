@@ -54,6 +54,27 @@ pub const GHOSTTY_MODS_ALT: ghostty_input_mods_e = 1 << 2;
 pub const GHOSTTY_MODS_SUPER: ghostty_input_mods_e = 1 << 3;
 pub const GHOSTTY_MODS_CAPS: ghostty_input_mods_e = 1 << 4;
 
+// --- ghostty_input_mouse_state_e ---
+#[repr(C)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ghostty_input_mouse_state_e {
+    GHOSTTY_MOUSE_RELEASE = 0,
+    GHOSTTY_MOUSE_PRESS = 1,
+}
+
+// --- ghostty_input_mouse_button_e (we forward left/right/middle; the rest map to UNKNOWN) ---
+#[repr(C)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ghostty_input_mouse_button_e {
+    GHOSTTY_MOUSE_UNKNOWN = 0,
+    GHOSTTY_MOUSE_LEFT = 1,
+    GHOSTTY_MOUSE_RIGHT = 2,
+    GHOSTTY_MOUSE_MIDDLE = 3,
+}
+
+// --- ghostty_input_scroll_mods_t (typedef int: bit 0 = precision deltas, bits 1-3 = momentum) ---
+pub type ghostty_input_scroll_mods_t = c_int;
+
 // --- Platform handle struct (carries NSView* on macOS) ---
 // Transcribed from: typedef struct { void* nsview; } ghostty_platform_macos_s;
 #[repr(C)]
@@ -294,4 +315,28 @@ extern "C" {
 
     // void ghostty_surface_set_focus(ghostty_surface_t, bool);
     pub fn ghostty_surface_set_focus(surface: ghostty_surface_t, focused: bool);
+
+    // bool ghostty_surface_mouse_button(ghostty_surface_t, state_e, button_e, mods_e);
+    pub fn ghostty_surface_mouse_button(
+        surface: ghostty_surface_t,
+        state: ghostty_input_mouse_state_e,
+        button: ghostty_input_mouse_button_e,
+        mods: ghostty_input_mods_e,
+    ) -> bool;
+
+    // void ghostty_surface_mouse_pos(ghostty_surface_t, double, double, mods_e);
+    pub fn ghostty_surface_mouse_pos(
+        surface: ghostty_surface_t,
+        x: f64,
+        y: f64,
+        mods: ghostty_input_mods_e,
+    );
+
+    // void ghostty_surface_mouse_scroll(ghostty_surface_t, double, double, scroll_mods_t);
+    pub fn ghostty_surface_mouse_scroll(
+        surface: ghostty_surface_t,
+        dx: f64,
+        dy: f64,
+        mods: ghostty_input_scroll_mods_t,
+    );
 }

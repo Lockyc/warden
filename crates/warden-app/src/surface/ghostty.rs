@@ -194,6 +194,56 @@ declare_class!(
         fn key_up(&self, event: &NSEvent) {
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
         }
+
+        // --- Mouse: forward button/drag/scroll so terminal mouse modes (tmux pane select,
+        // scrollback, TUI clicks) work. `mouseMoved` (hover with no button) needs an
+        // NSTrackingArea and is deferred — click/drag/scroll cover the core interactions. ---
+        #[method(mouseDown:)]
+        fn mouse_down(&self, event: &NSEvent) {
+            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT) };
+        }
+        #[method(mouseUp:)]
+        fn mouse_up(&self, event: &NSEvent) {
+            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT) };
+        }
+        #[method(mouseDragged:)]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            unsafe { forward_mouse_pos(self, event) };
+        }
+        #[method(rightMouseDown:)]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) };
+        }
+        #[method(rightMouseUp:)]
+        fn right_mouse_up(&self, event: &NSEvent) {
+            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) };
+        }
+        #[method(rightMouseDragged:)]
+        fn right_mouse_dragged(&self, event: &NSEvent) {
+            unsafe { forward_mouse_pos(self, event) };
+        }
+        #[method(otherMouseDown:)]
+        fn other_mouse_down(&self, event: &NSEvent) {
+            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE) };
+        }
+        #[method(otherMouseUp:)]
+        fn other_mouse_up(&self, event: &NSEvent) {
+            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE) };
+        }
+        #[method(otherMouseDragged:)]
+        fn other_mouse_dragged(&self, event: &NSEvent) {
+            unsafe { forward_mouse_pos(self, event) };
+        }
+        #[method(scrollWheel:)]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            unsafe { forward_scroll(self, event) };
+        }
     }
 );
 
@@ -222,21 +272,9 @@ fn is_printable_text(s: &str) -> bool {
     !s.is_empty() && !s.chars().any(|c| c.is_control())
 }
 
-/// Translate an AppKit key event into `ghostty_input_key_s` and forward it.
-/// Minimal translation: `text` (from `characters`) carries printable input,
-/// `keycode` is the macOS virtual keycode, `unshifted_codepoint` from
-/// `charactersIgnoringModifiers`. Full IME / NSTextInputClient handling (dead
-/// keys, marked text) is out of scope for the spike.
-unsafe fn forward_key(
-    view: &WardenHostView,
-    event: &NSEvent,
-    action: ffi::ghostty_input_action_e,
-) {
-    let surface = view.ivars().surface.get();
-    if surface.is_null() {
-        return;
-    }
-
+/// Map an AppKit event's modifier flags to ghostty's mods bitset. Shared by the key and
+/// mouse paths so both report the same modifier state.
+unsafe fn mods_from_event(event: &NSEvent) -> ffi::ghostty_input_mods_e {
     let flags = event.modifierFlags().0;
     let mut mods = ffi::GHOSTTY_MODS_NONE;
     if flags & NS_FLAG_SHIFT != 0 {
@@ -254,6 +292,71 @@ unsafe fn forward_key(
     if flags & NS_FLAG_CAPS != 0 {
         mods |= ffi::GHOSTTY_MODS_CAPS;
     }
+    mods
+}
+
+/// Forward the cursor position to libghostty. AppKit gives window coordinates with a
+/// bottom-left origin; ghostty wants the surface's top-left origin, so convert into the
+/// view's space and flip Y. Called before every button/scroll so the surface has the cell.
+unsafe fn forward_mouse_pos(view: &WardenHostView, event: &NSEvent) {
+    let surface = view.ivars().surface.get();
+    if surface.is_null() {
+        return;
+    }
+    let local = view.convertPoint_fromView(event.locationInWindow(), None);
+    let height = view.bounds().size.height;
+    ffi::ghostty_surface_mouse_pos(surface, local.x, height - local.y, mods_from_event(event));
+}
+
+/// Forward a mouse button press/release (position is updated first so the click lands on the
+/// right cell).
+unsafe fn forward_mouse_button(
+    view: &WardenHostView,
+    event: &NSEvent,
+    state: ffi::ghostty_input_mouse_state_e,
+    button: ffi::ghostty_input_mouse_button_e,
+) {
+    let surface = view.ivars().surface.get();
+    if surface.is_null() {
+        return;
+    }
+    forward_mouse_pos(view, event);
+    ffi::ghostty_surface_mouse_button(surface, state, button, mods_from_event(event));
+}
+
+/// Forward a scroll/trackpad event. The precision bit tells libghostty whether the deltas are
+/// pixel-precise (trackpad) or line-based (classic wheel).
+unsafe fn forward_scroll(view: &WardenHostView, event: &NSEvent) {
+    let surface = view.ivars().surface.get();
+    if surface.is_null() {
+        return;
+    }
+    forward_mouse_pos(view, event);
+    let mods: ffi::ghostty_input_scroll_mods_t = if event.hasPreciseScrollingDeltas() { 1 } else { 0 };
+    ffi::ghostty_surface_mouse_scroll(
+        surface,
+        event.scrollingDeltaX(),
+        event.scrollingDeltaY(),
+        mods,
+    );
+}
+
+/// Translate an AppKit key event into `ghostty_input_key_s` and forward it.
+/// Minimal translation: `text` (from `characters`) carries printable input,
+/// `keycode` is the macOS virtual keycode, `unshifted_codepoint` from
+/// `charactersIgnoringModifiers`. Full IME / NSTextInputClient handling (dead
+/// keys, marked text) is out of scope for the spike.
+unsafe fn forward_key(
+    view: &WardenHostView,
+    event: &NSEvent,
+    action: ffi::ghostty_input_action_e,
+) {
+    let surface = view.ivars().surface.get();
+    if surface.is_null() {
+        return;
+    }
+
+    let mods = mods_from_event(event);
 
     // Only forward `text` for genuinely-typed *printable* input (see `is_printable_text`).
     let text = event.characters().map(|s| s.to_string());
