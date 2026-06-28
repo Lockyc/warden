@@ -745,6 +745,19 @@ height = 800
     }
 
     #[test]
+    fn zero_window_height_errors() {
+        let err = resolve(parse(r#"
+[[window]]
+title = "work"
+width = 1200
+height = 0
+  [[window.tab]]
+  dir = "/tmp"
+"#).unwrap()).unwrap_err();
+        assert!(matches!(err, ResolveError::InvalidWindowSize { .. }));
+    }
+
+    #[test]
     fn present_invalid_colour_still_errors() {
         let err = resolve(parse(r##"
 [[window]]

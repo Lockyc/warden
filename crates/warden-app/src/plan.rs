@@ -24,7 +24,7 @@ pub struct WindowSpec {
     pub tabs: Vec<TabPlan>,
 }
 
-/// Map an arbitrary window name to the Tauri label charset `[A-Za-z0-9-/:_]`.
+/// Map an arbitrary window title to the Tauri label charset `[A-Za-z0-9-/:_]`.
 /// Disallowed chars → '-'; leading/trailing '-' trimmed; empty → "window".
 pub fn sanitize_label(name: &str) -> String {
     let mut s: String = name
