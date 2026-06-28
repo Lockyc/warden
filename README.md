@@ -8,7 +8,7 @@
 
 </div>
 
-warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **windows** and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each window carries a colour + name banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
+warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **windows** and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each window carries a colour + title banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
 
 warden is **generic and content-agnostic** — it knows nothing about any specific tool, so the command a tab runs is whatever you want: a shell, a TUI, a build watcher, an agent launcher. It stands on its own.
 
@@ -21,7 +21,7 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 **Working on macOS.** Public project, currently a private repo until it's ready for release. Two layers are built:
 
 - **Config-core** — the `warden-config` crate (parse / validate / resolve / diff / load / watch) plus a `warden validate` CLI.
-- **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens a window for each `[[window]]` in the config (colour + name banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`load_on_open` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour, re-section groups — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs from the **Tab** menu — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) or **⌘1–⌘9** jump to a position; **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
+- **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens a window for each `[[window]]` in the config (colour + title banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`load_on_open` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour, re-section groups — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs from the **Tab** menu — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) or **⌘1–⌘9** jump to a position; **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
 - **Tab-row affordances** — each sidebar tab shows a letter/colour tile and a **live/cold dot**: filled when the terminal is spawned, hollow when cold. Hovering a live dot reveals a ✕ that **unloads** the tab — kills the terminal and PTY; it goes cold and respawns a fresh shell on next focus. Tabs also **surface notifications**: when a background tab rings the bell or emits a desktop-notification escape (OSC 9 / OSC 777), warden badges its row with an amber dot, and a desktop notification additionally raises a macOS banner; the badge clears on focus. This is the channel [agentmux](https://github.com/lockyc/agentmux)'s Claude hooks feed instead of shelling out to `osascript`.
 
 Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle windows, ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
@@ -34,8 +34,10 @@ Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle windo
 shell = "fish -l"            # global default shell every tab spawns
 
 [[window]]                   # a native macOS window
-name   = "work"
-colour = "#0f8a8a"
+title  = "work"
+colour = "#0f8a8a"           # optional; omit for a neutral default
+width  = 1500                # optional; initial width (px, default 1500)
+height = 1000                # optional; initial height (px, default 1000)
 cmd    = "amux"              # this window's default startup command (each tab can override)
 
   [[window.tab]]             # a project terminal
@@ -55,7 +57,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
     dir   = "~/code/api"
 ```
 
-A window has its own colour + name banner; its tabs are project terminals. Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar.
+A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar.
 
 ## Build & use
 
