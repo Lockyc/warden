@@ -130,7 +130,7 @@ impl WindowManager {
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(st) = app_for_event.try_state::<ManagerState>() {
-                    let mut m = st.0.lock().unwrap();
+                    let mut m = st.lock();
                     m.remove_window(&label_for_event);
                     if m.is_empty() {
                         app_for_event.exit(0);
@@ -222,6 +222,20 @@ impl WindowManager {
                     order,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
+                        // An icon-only config change reaches here as an otherwise-empty
+                        // Update: per-profile window icon isn't applied yet (deferred),
+                        // and `order` still carries the unchanged tab sequence. Skip it
+                        // so an icon edit doesn't churn a full sidebar rebuild for zero
+                        // visible change.
+                        let current_order: Vec<String> =
+                            ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
+                        if colour.is_none()
+                            && add_tabs.is_empty()
+                            && remove_tabs.is_empty()
+                            && order == current_order
+                        {
+                            continue;
+                        }
                         if let Some(c) = colour {
                             ws.colour = c;
                         }

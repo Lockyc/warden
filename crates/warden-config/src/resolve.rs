@@ -261,6 +261,29 @@ colour = "#000000"
     }
 
     #[test]
+    fn empty_shell_opts_out_to_default_not_inherited() {
+        // `shell = ""` is *set* (empty), so — exactly like `cmd = ""` — it opts the
+        // tab out of inheriting the profile's shell rather than falling through to it.
+        // With nothing left in the cascade it resets to DEFAULT_SHELL, NOT "zsh".
+        // Locks the asymmetric-looking semantics so a future "empty inherits" change
+        // can't slip through (the `cmd = ""` case already has this guard).
+        let (cfg, _) = resolve_str(
+            r##"
+[[profile]]
+name = "work"
+colour = "#000000"
+shell = "zsh"
+  [[profile.tab]]
+  title = "opts-out"
+  dir = "/tmp/a"
+  shell = ""
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.profiles[0].tabs[0].shell, DEFAULT_SHELL);
+    }
+
+    #[test]
     fn nonexistent_dir_is_warning_not_error() {
         let (cfg, warns) = resolve_str(
             r##"

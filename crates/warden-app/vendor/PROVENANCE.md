@@ -2,6 +2,9 @@
 
 `GhosttyKit.xcframework` (macOS slice only) + `ghostty.h` are a THROWAWAY spike artifact.
 
+Ghostty is MIT-licensed; redistributing its compiled bytes here carries its
+license notice, in `LICENSE-ghostty` (this directory).
+
 - Source: third-party prebuilt `Lakr233/libghostty-spm`, release `storage.1.2.7`
   (https://github.com/Lakr233/libghostty-spm/releases/download/storage.1.2.7/GhosttyKit.xcframework.zip)
   zip sha256 `1c3d62a635ac62f5402fd5083e7f5e2628f3da50f490b8456d37186163986df6`.

@@ -27,8 +27,11 @@ impl Watcher {
         path: PathBuf,
         on_change: impl Fn(Result<Loaded, LoadError>) + Send + 'static,
     ) -> notify::Result<Watcher> {
+        // `parent()` returns Some("") for a bare relative filename (e.g. "config.toml"),
+        // and watching "" errors. Treat an empty parent the same as None → watch the cwd.
         let watch_dir = path
             .parent()
+            .filter(|p| !p.as_os_str().is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
         let target = path.clone();

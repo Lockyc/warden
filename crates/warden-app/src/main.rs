@@ -12,6 +12,9 @@ compile_error!(
 mod manager;
 
 #[cfg(target_os = "macos")]
+mod notify;
+
+#[cfg(target_os = "macos")]
 mod registry;
 
 #[cfg(target_os = "macos")]
@@ -41,6 +44,18 @@ struct RectArg {
 #[cfg(target_os = "macos")]
 struct ManagerState(std::sync::Mutex<WindowManager>);
 
+#[cfg(target_os = "macos")]
+impl ManagerState {
+    /// Lock the manager, recovering from a poisoned mutex. A command panic (e.g. a
+    /// surface that fails to spawn) leaves the manager *consistent* — the failing
+    /// mutation aborts before it touches state — so recovering the guard keeps every
+    /// other command and the watcher reconcile alive instead of cascading one panic
+    /// into permanently-dead IPC.
+    fn lock(&self) -> std::sync::MutexGuard<'_, WindowManager> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// Holds the config-file watcher for the app's lifetime. The watcher stops
 /// firing the moment it is dropped, so it must live in managed state rather
 /// than as a local in `setup`. [seam: manager only]
@@ -51,14 +66,14 @@ struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) -> Option<InitDto> {
-    state.0.lock().unwrap().init_dto(window.label())
+    state.lock().init_dto(window.label())
 }
 
 /// Activate tab `id` within the calling window's registry.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
-    let mut m = state.0.lock().unwrap();
+    let mut m = state.lock();
     if let Some(ws) = m.windows.get_mut(window.label()) {
         ws.registry.activate(&id);
     }
@@ -74,7 +89,7 @@ fn unload_tab(
     state: tauri::State<ManagerState>,
     id: String,
 ) -> Option<String> {
-    let mut m = state.0.lock().unwrap();
+    let mut m = state.lock();
     m.windows
         .get_mut(window.label())
         .and_then(|ws| ws.registry.unload(&id))
@@ -112,7 +127,7 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
         view_h,
     );
 
-    let mut m = state.0.lock().unwrap();
+    let mut m = state.lock();
     if let Some(ws) = m.windows.get_mut(window.label()) {
         ws.registry.set_active_frame(view_rect);
     }
@@ -122,7 +137,7 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn diagnostic_message(state: tauri::State<ManagerState>) -> String {
-    state.0.lock().unwrap().diagnostic_msg.clone()
+    state.lock().diagnostic_msg.clone()
 }
 
 /// Remove tmux's `$TMUX`/`$TMUX_PANE` from warden-app's own environment so the shells it
@@ -163,6 +178,8 @@ fn main() {
     }
 
     tauri::Builder::default()
+        // macOS banners for terminal desktop-notifications (OSC 9/777), shown by notify.rs.
+        .plugin(tauri_plugin_notification::init())
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
         // route through its chrome, which owns the tab list + select()/unload; emit_to targets
         // that one window so siblings don't also act. Close Window (⌘⇧W) closes it directly.
@@ -223,6 +240,12 @@ fn main() {
                     Err(e) => mgr.show_diagnostic(&handle, &e.to_string()),
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
+
+                // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
+                // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;
+                // needs ManagerState already managed (above) since the handler resolves surfaces
+                // through it.
+                notify::init(handle.clone());
 
                 // macOS menu. Windows are built at runtime with no NSMenu, so without this the
                 // standard shortcuts are dead and there's nowhere to surface tab navigation.
@@ -299,7 +322,7 @@ fn main() {
                         match res {
                             Ok(loaded) if !loaded.config.profiles.is_empty() => {
                                 let st = wh.state::<ManagerState>();
-                                let mut m = st.0.lock().unwrap();
+                                let mut m = st.lock();
                                 if m.is_empty() {
                                     // Recovery: nothing live (launched into the
                                     // diagnostic window). Materialize from scratch

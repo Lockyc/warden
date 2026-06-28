@@ -89,4 +89,9 @@ cargo run -p warden-config --bin warden -- validate path/to/config.toml
 
 ## License
 
-TBD.
+MIT — see [`LICENSE`](LICENSE).
+
+The vendored libghostty binary (`crates/warden-app/vendor/`) is third-party code
+distributed under its own MIT license (Ghostty); see
+[`crates/warden-app/vendor/LICENSE-ghostty`](crates/warden-app/vendor/LICENSE-ghostty)
+and `PROVENANCE.md` in that directory.
