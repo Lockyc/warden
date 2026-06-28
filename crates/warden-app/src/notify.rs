@@ -38,9 +38,15 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         return; // the user is already looking at this tab
     }
 
-    // Badge the tab in its window's sidebar. Payload is the tab id; the chrome marks it unread
-    // until focused. emit_to targets just that window.
-    let _ = app.emit_to(label.as_str(), "warden:notify", &tab);
+    // Badge the tab in its window's sidebar; the chrome marks it unread until focused. emit_to
+    // leaks to sibling windows here (see CLAUDE.md), so stamp the target window label into the
+    // payload and let the chrome drop events meant for a sibling — same guard as every other
+    // per-window event. Without it, a hidden tab's bell badges a same-titled tab in another window.
+    let _ = app.emit_to(
+        label.as_str(),
+        "warden:notify",
+        serde_json::json!({ "label": label, "id": tab }),
+    );
 
     // A desktop notification (OSC 9/777) additionally raises a macOS banner; a bare bell only
     // badges (no text to show, and bells are frequent enough that banners would be noise).

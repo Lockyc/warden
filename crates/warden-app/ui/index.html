@@ -543,9 +543,12 @@
 
       // A tab raised an attention signal (terminal bell / OSC 9/777 desktop notification) while
       // hidden — the native layer already suppressed it for the visible tab, so just badge it.
-      // Payload is the tab id.
+      // emit_to leaks to siblings, so forMe drops a notify meant for another window (else a
+      // same-titled tab here would falsely badge). Payload carries the target label + tab id.
       listen('warden:notify', (e) => {
-        if (e.payload && e.payload !== active) setBadge(e.payload, true);
+        if (!forMe(e)) return;
+        const id = e.payload && e.payload.id;
+        if (id && id !== active) setBadge(id, true);
       });
 
       function paint() {
