@@ -257,6 +257,7 @@ mod tests {
             shell: "fish".into(),
             startup: None,
             group: None,
+            probe: None,
         }
     }
 
