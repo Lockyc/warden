@@ -22,7 +22,7 @@ const INITIAL_RECT: PixelRect = PixelRect {
 /// label and never inserted into `WindowManager::windows`, so it is invisible
 /// to `is_empty()` and carries no `Destroyed`→last-window-quit handler: closing
 /// it alone never exits the app, and it never counts as a "live" window set.
-const DIAG_LABEL: &str = "warden-diagnostic";
+pub const DIAG_LABEL: &str = "warden-diagnostic";
 
 #[derive(serde::Serialize, Clone)]
 pub struct InitDto {
@@ -109,6 +109,16 @@ impl WindowManager {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .build()
                 .expect("build window window");
+
+        // Windows are built at runtime (not from tauri.conf.json), so the
+        // window-state plugin's automatic restore doesn't apply — trigger it
+        // explicitly. Saved bounds (keyed by the stable per-label) override the
+        // 900×600 builder default above; first launch (no saved state) keeps it.
+        {
+            use tauri_plugin_window_state::{StateFlags, WindowExt};
+            let _ = window
+                .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+        }
 
         let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 

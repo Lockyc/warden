@@ -18,7 +18,7 @@ mod notify;
 mod registry;
 
 #[cfg(target_os = "macos")]
-use manager::{InitDto, WindowManager};
+use manager::{InitDto, WindowManager, DIAG_LABEL};
 
 use geometry::WebRect;
 
@@ -186,6 +186,21 @@ fn main() {
     tauri::Builder::default()
         // macOS banners for terminal desktop-notifications (OSC 9/777), shown by notify.rs.
         .plugin(tauri_plugin_notification::init())
+        // Persist each window's size + position (+ maximized) across launches, keyed by
+        // Tauri label. Saving is automatic (on close/exit); restore is triggered explicitly
+        // in manager.rs::build_window since warden's windows are built at runtime, not from
+        // tauri.conf.json. The transient diagnostic window is excluded — its bounds are
+        // throwaway and must not bleed into a real window that later reuses nothing of it.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .skip_initial_state(DIAG_LABEL)
+                .build(),
+        )
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
         // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
         // reliable per-window target here (it leaks to siblings — the same reason warden:refresh
