@@ -2,7 +2,7 @@
 //! applies reconciliations. Impure (Tauri + AppKit) — verified at checkpoints.
 
 use crate::plan::{reconcile_ops, window_specs, WindowOp, WindowSpec};
-use crate::registry::{Registry, TabDto};
+use crate::registry::{ProbeTarget, Registry, TabDto};
 use crate::surface::PixelRect;
 use crate::ManagerState;
 use std::collections::{HashMap, HashSet};
@@ -25,6 +25,9 @@ const INITIAL_RECT: PixelRect = PixelRect {
 /// to `is_empty()` and carries no `Destroyed`→last-window-quit handler: closing
 /// it alone never exits the app, and it never counts as a "live" window set.
 pub const DIAG_LABEL: &str = "warden-diagnostic";
+
+/// One window's probe work-list: `(window label, its probe-enabled tabs)`.
+pub type WindowProbeTargets = (String, Vec<ProbeTarget>);
 
 #[derive(serde::Serialize, Clone)]
 pub struct InitDto {
@@ -107,10 +110,7 @@ impl WindowManager {
 
     /// Probe work-lists grouped by window label. `only = Some(label)` restricts to
     /// one window (focus trigger); `None` = every window (timer/refresh).
-    pub fn probe_targets(
-        &self,
-        only: Option<&str>,
-    ) -> Vec<(String, Vec<(String, std::path::PathBuf, String, String)>)> {
+    pub fn probe_targets(&self, only: Option<&str>) -> Vec<WindowProbeTargets> {
         self.windows
             .iter()
             .filter(|(label, _)| only.is_none_or(|o| o == label.as_str()))

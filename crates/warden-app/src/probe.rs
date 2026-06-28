@@ -94,6 +94,9 @@ mod tests {
     #[test]
     fn run_probe_runs_in_dir() {
         // `test "$(basename "$PWD")" = tmp` exits 0 only if cwd is /tmp.
-        assert!(run_probe("test \"$(basename \"$PWD\")\" = tmp", &PathBuf::from("/tmp")));
+        assert!(run_probe(
+            "test \"$(basename \"$PWD\")\" = tmp",
+            &PathBuf::from("/tmp")
+        ));
     }
 }

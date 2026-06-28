@@ -1,6 +1,10 @@
 use crate::surface::{ghostty::GhosttySurface, PixelRect, TabSpec, TerminalSurface};
 use std::os::raw::c_void;
 
+/// One probe-enabled tab's work item: `(id, dir, title, probe_cmd)`. The probe
+/// runner substitutes `{dir}`/`{title}` into `probe_cmd` and runs it with cwd = dir.
+pub type ProbeTarget = (String, std::path::PathBuf, String, String);
+
 /// Display descriptor sent to the web chrome.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TabDto {
@@ -96,7 +100,7 @@ impl Registry {
     /// `(id, dir, title, probe_cmd)` for every tab with a configured probe — the
     /// work-list the probe runner snapshots. Includes cold tabs (a session can
     /// exist while warden's own surface is unloaded — that's the point).
-    pub fn probe_targets(&self) -> Vec<(String, std::path::PathBuf, String, String)> {
+    pub fn probe_targets(&self) -> Vec<ProbeTarget> {
         self.tabs
             .iter()
             .filter_map(|t| {

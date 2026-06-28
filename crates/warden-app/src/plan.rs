@@ -333,7 +333,10 @@ colour = "#0f8a8a"
   probe = ""
 "##);
         let specs = window_specs(&c);
-        assert_eq!(specs[0].tabs[0].spec.probe.as_deref(), Some("check-session"));
+        assert_eq!(
+            specs[0].tabs[0].spec.probe.as_deref(),
+            Some("check-session")
+        );
         assert_eq!(specs[0].tabs[1].spec.probe, None); // opted out
     }
 

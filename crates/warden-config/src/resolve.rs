@@ -88,7 +88,13 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
         if !seen_windows.insert(rp.name.clone()) {
             return Err(ResolveError::DuplicateWindow(rp.name.clone()));
         }
-        windows.push(resolve_window(rp, global_shell, global_cmd, global_probe, &mut warnings)?);
+        windows.push(resolve_window(
+            rp,
+            global_shell,
+            global_cmd,
+            global_probe,
+            &mut warnings,
+        )?);
     }
     Ok((
         Config {
@@ -807,7 +813,10 @@ colour = "#000000"
         assert_eq!(work[0].probe.as_deref(), Some("win-probe")); // inherit window
         assert_eq!(work[1].probe.as_deref(), Some("tab-probe")); // tab wins
         assert_eq!(work[2].probe, None); // `probe = ""` opts out
-        assert_eq!(cfg.windows[1].tabs[0].probe.as_deref(), Some("global-probe"));
+        assert_eq!(
+            cfg.windows[1].tabs[0].probe.as_deref(),
+            Some("global-probe")
+        );
     }
 
     #[test]
