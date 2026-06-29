@@ -77,7 +77,7 @@ shell = "zsh"
 cmd = "tmux"
 
   [[window.tab]]
-  dir = "~/Developer/locus"
+  dir = "~/Developer/alpha"
   cmd = "tmux"
   load_on_open = true
 

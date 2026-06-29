@@ -62,8 +62,8 @@ cmd    = "amux"                        # optional; per-window startup override
 probe  = "…"                           # optional; session-presence probe override for this window
 
   [[window.tab]]                       # = a project terminal (loose/ungrouped → headerless section, first)
-  title      = "locus"                 # optional; default = basename(dir); non-empty & unique within the window
-  dir        = "~/Developer/…/locus"   # required
+  title      = "alpha"                 # optional; default = basename(dir); non-empty & unique within the window
+  dir        = "~/Developer/…/alpha"   # required
   shell      = "bash"                  # optional; per-tab shell override
   cmd        = "amux"                  # optional; per-tab startup override ("" = opt out → bare shell)
   load_on_open = true                  # optional; default false (spawn at launch + keep running for background work)

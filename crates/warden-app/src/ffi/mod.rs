@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn decodes_desktop_notification_title_and_body() {
-        let title = CString::new("Claude — locus").unwrap();
+        let title = CString::new("Claude — alpha").unwrap();
         let body = CString::new("waiting for permission").unwrap();
         let action = notification_action(&ghostty_action_desktop_notification_s {
             title: title.as_ptr(),
@@ -443,7 +443,7 @@ mod tests {
         // SAFETY: pointers reference the live CStrings above.
         assert_eq!(
             unsafe { CStr::from_ptr(dn.title) }.to_str().unwrap(),
-            "Claude — locus"
+            "Claude — alpha"
         );
         assert_eq!(
             unsafe { CStr::from_ptr(dn.body) }.to_str().unwrap(),

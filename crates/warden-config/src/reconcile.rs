@@ -173,8 +173,8 @@ mod tests {
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
+  title = "alpha"
+  dir = "/tmp/alpha"
 "##;
 
     #[test]
@@ -236,7 +236,7 @@ colour = "#0f8a8a"
                 .collect::<Vec<_>>(),
             vec!["ops"]
         );
-        assert_eq!(u.remove_tabs, vec!["locus".to_string()]);
+        assert_eq!(u.remove_tabs, vec!["alpha".to_string()]);
         assert_eq!(u.colour, None);
     }
 
@@ -301,16 +301,16 @@ colour = "#0f8a8a"
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
+  title = "alpha"
+  dir = "/tmp/alpha"
 "##);
         let new = cfg(r##"
 [[window]]
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus-new"
+  title = "alpha"
+  dir = "/tmp/alpha-new"
 "##);
         let r = reconcile(&old, &new);
         assert!(

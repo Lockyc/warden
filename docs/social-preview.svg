@@ -44,7 +44,7 @@
       <rect x="10" y="104" width="98" height="34" rx="8" fill="#15302f"/>
       <rect x="18" y="111" width="20" height="20" rx="6" fill="#2bb3a6"/>
       <text x="28" y="125" text-anchor="middle" fill="#03201f">l</text>
-      <text x="46" y="125" fill="#d8efed">locus</text>
+      <text x="46" y="125" fill="#d8efed">alpha</text>
       <circle cx="98" cy="121" r="4" fill="#3fd0c2"/>
 
       <rect x="18" y="155" width="20" height="20" rx="6" fill="#3f7fb8"/>
@@ -62,7 +62,7 @@
 
     <!-- terminal surface -->
     <g font-family="Menlo, Monaco, monospace">
-      <text x="138" y="74" font-size="17" font-weight="700" fill="#3fd0c2">~/locus</text>
+      <text x="138" y="74" font-size="17" font-weight="700" fill="#3fd0c2">~/alpha</text>
       <g font-size="15" fill="#c9d1d9">
         <text x="138" y="112">$ amux</text>
         <text x="138" y="142" fill="#7fb0ad">  claude</text>

@@ -228,8 +228,8 @@ mod tests {
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
+  title = "alpha"
+  dir = "/tmp/alpha"
   load_on_open = true
   [[window.tab]]
   title = "ops"
@@ -242,8 +242,8 @@ colour = "#0f8a8a"
         assert_eq!(w.title, "work");
         assert_eq!(w.colour, "#0f8a8a");
         assert_eq!(w.tabs.len(), 2);
-        assert_eq!(w.tabs[0].spec.id, "locus");
-        assert_eq!(w.tabs[0].spec.title, "locus");
+        assert_eq!(w.tabs[0].spec.id, "alpha");
+        assert_eq!(w.tabs[0].spec.title, "alpha");
         assert!(w.tabs[0].load_on_open);
         assert_eq!(w.tabs[1].spec.id, "ops");
         assert!(!w.tabs[1].load_on_open);
@@ -269,8 +269,8 @@ colour = "#0f8a8a"
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
+  title = "alpha"
+  dir = "/tmp/alpha"
 "##);
         let r = reconcile(&old, &new);
         let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
@@ -288,8 +288,8 @@ colour = "#0f8a8a"
 title = "work zone"
 colour = "#0f8a8a"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
+  title = "alpha"
+  dir = "/tmp/alpha"
 "##);
         let new = cfg("");
         let r = reconcile(&old, &new);
@@ -304,8 +304,8 @@ colour = "#0f8a8a"
 title = "work"
 colour = "{C}"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
+  title = "alpha"
+  dir = "/tmp/alpha"
 "##;
         let old = cfg(&base.replace("{C}", "#0f8a8a"));
         let new = cfg(&base.replace("{C}", "#112233"));
@@ -329,8 +329,8 @@ probe = "check-session"
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  title = "locus"
-  dir = "/tmp/locus"
+  title = "alpha"
+  dir = "/tmp/alpha"
   [[window.tab]]
   title = "ops"
   dir = "/tmp/ops"

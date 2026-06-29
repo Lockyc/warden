@@ -354,12 +354,12 @@ colour = "#0f8a8a"
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  dir = "/tmp/locus"
+  dir = "/tmp/alpha"
 "##,
         )
         .unwrap();
-        assert_eq!(cfg.windows[0].tabs[0].title, "locus");
-        assert_eq!(cfg.windows[0].tabs[0].key, "locus");
+        assert_eq!(cfg.windows[0].tabs[0].title, "alpha");
+        assert_eq!(cfg.windows[0].tabs[0].key, "alpha");
     }
 
     #[test]
@@ -570,9 +570,9 @@ colour = "#000000"
 title = "work"
 colour = "#000000"
   [[window.tab]]
-  dir = "/a/locus"
+  dir = "/a/alpha"
   [[window.tab]]
-  dir = "/b/locus"
+  dir = "/b/alpha"
 "##,
         )
         .unwrap_err();
@@ -580,7 +580,7 @@ colour = "#000000"
             err,
             ResolveError::DuplicateTab {
                 window: "work".into(),
-                title: "locus".into()
+                title: "alpha".into()
             }
         );
     }
@@ -804,7 +804,7 @@ colour = "#000000"
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  dir = "/tmp/locus"
+  dir = "/tmp/alpha"
 "##,
         )
         .unwrap();

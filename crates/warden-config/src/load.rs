@@ -57,7 +57,7 @@ mod tests {
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
-  dir = "/tmp/locus"
+  dir = "/tmp/alpha"
 "##,
         );
         let loaded = load(&path).unwrap();
