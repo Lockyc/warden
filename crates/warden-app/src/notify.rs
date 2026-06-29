@@ -36,8 +36,9 @@ use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_foundation::{NSDictionary, NSError, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
-    UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions, UNNotificationRequest,
-    UNNotificationResponse, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+    UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
+    UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
+    UNUserNotificationCenterDelegate,
 };
 
 /// True once authorization has been requested and a delegate installed — i.e. native banners are

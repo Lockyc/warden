@@ -11,7 +11,9 @@ notify = "6"
 dirs = "5"
 # Shared house-style TOML formatter + colour parsing (formerly warden's own fmt.rs/colour.rs),
 # now lifted into config-core and shared with curator. Git dep so the build needs no extra setup.
-config-core = { git = "https://github.com/Lockyc/config-core" }
+# Pinned by rev (same class as the libghostty pin) — config-core's formatter is warden's source
+# of truth for format-on-save, so a HEAD bump must be deliberate, not floated by `cargo update`.
+config-core = { git = "https://github.com/Lockyc/config-core", rev = "4742ec48499ade023dbfc14014cbcd9482d22aba" }
 # Used by load.rs / watch.rs tests for temp config dirs.
 tempfile = "3"
 

@@ -381,7 +381,7 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core#4742ec48499ade023dbfc14014cbcd9482d22aba"
+source = "git+https://github.com/Lockyc/config-core?rev=4742ec48499ade023dbfc14014cbcd9482d22aba#4742ec48499ade023dbfc14014cbcd9482d22aba"
 dependencies = [
  "taplo",
  "tempfile",

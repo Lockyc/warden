@@ -462,7 +462,11 @@ mod tests {
         r.add(&spec("t1", "/tmp/b"), false); // no kill
         assert_eq!(
             r.kill_target("t0"),
-            Some((std::path::PathBuf::from("/tmp/a"), "t0".to_string(), "kill {title}".to_string()))
+            Some((
+                std::path::PathBuf::from("/tmp/a"),
+                "t0".to_string(),
+                "kill {title}".to_string()
+            ))
         );
         assert_eq!(r.kill_target("t1"), None); // no kill command
         assert_eq!(r.kill_target("nope"), None); // unknown id

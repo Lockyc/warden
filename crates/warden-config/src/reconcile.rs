@@ -26,8 +26,8 @@ pub struct Reconciliation {
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. Changing a tab's
-///   `dir`, `cmd`, or `load_on_open` while keeping its `title` the same produces
-///   no op — the tab appears identical to the reconciler. The consumer must
+///   `dir`, `cmd`, `load_on_open`, `probe`, or `kill` while keeping its `title`
+///   the same produces no op — the tab appears identical to the reconciler. The consumer must
 ///   close and reopen the tab to pick up such field-level edits. (`group` is the
 ///   deliberate exception — it IS detected, via `set_groups`, because it's
 ///   presentational and must not cost the tab its PTY.)
@@ -63,9 +63,9 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. If a tab's `dir`,
-///   `cmd`, or `load_on_open` changes but its `title` stays the same, no update
-///   is emitted — the tab appears identical to the reconciler. The consumer
-///   must close and reopen the tab to pick up such field-level edits.
+///   `cmd`, `load_on_open`, `probe`, or `kill` changes but its `title` stays the
+///   same, no update is emitted — the tab appears identical to the reconciler.
+///   The consumer must close and reopen the tab to pick up such field-level edits.
 /// - A kept window's `width` or `height` change. Window size is owned by the
 ///   window-state plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config are not applied to a live
