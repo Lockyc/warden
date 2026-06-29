@@ -299,6 +299,26 @@ declare_class!(
             true
         }
 
+        // AppKit makes a clicked terminal view first responder directly — bypassing focus() (tab
+        // activate) and performKeyEquivalent: (⌘-chords), the only two paths that ever told
+        // libghostty about focus. So a plain mouse-click into a surface routed keystrokes here
+        // (keyDown: → this view's surface) while libghostty still believed the surface unfocused
+        // (some other surface having claimed focus via a chord, which set this one false) — and it
+        // drew a HOLLOW cursor that nonetheless accepted typing (the "cursor isn't filled but still
+        // types" bug). Sync the focus flag here: becomeFirstResponder: is the one AppKit hook every
+        // focus change funnels through (click, makeFirstResponder, key-window restore), so the
+        // cursor state now tracks the real first responder. Also retarget paste (FOCUSED_SURFACE) so
+        // a click makes this the clipboard-read surface, consistent with performKeyEquivalent:.
+        #[method(becomeFirstResponder)]
+        fn become_first_responder(&self) -> bool {
+            let surface = self.ivars().surface.get();
+            if !surface.is_null() {
+                FOCUSED_SURFACE.store(surface, Ordering::Release);
+                unsafe { ffi::ghostty_surface_set_focus(surface, true) };
+            }
+            true
+        }
+
         #[method(keyDown:)]
         fn key_down(&self, event: &NSEvent) {
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
