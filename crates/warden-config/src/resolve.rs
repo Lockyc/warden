@@ -96,6 +96,7 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     let global_shell = raw.shell.as_deref();
     let global_cmd = raw.cmd.as_deref();
     let global_probe = raw.probe.as_deref();
+    let global_kill = raw.kill.as_deref();
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
     let mut seen_windows = HashSet::new();
@@ -113,6 +114,7 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
             global_shell,
             global_cmd,
             global_probe,
+            global_kill,
             &mut warnings,
         )?);
     }
@@ -132,6 +134,7 @@ fn resolve_window(
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
+    global_kill: Option<&str>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
     let colour = match rp.colour.as_deref() {
@@ -168,6 +171,7 @@ fn resolve_window(
             global_shell,
             global_cmd,
             global_probe,
+            global_kill,
             &mut seen_titles,
             warnings,
         )?);
@@ -194,6 +198,7 @@ fn resolve_window(
                 global_shell,
                 global_cmd,
                 global_probe,
+                global_kill,
                 &mut seen_titles,
                 warnings,
             )?);
@@ -220,6 +225,7 @@ fn resolve_tab(
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
+    global_kill: Option<&str>,
     seen_titles: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
@@ -257,6 +263,7 @@ fn resolve_tab(
         .to_string();
     let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
     let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
+    let kill = cascade(rt.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
     Ok(Tab {
         key: title.clone(),
         title,
@@ -266,6 +273,7 @@ fn resolve_tab(
         load_on_open: rt.load_on_open,
         group,
         probe,
+        kill,
     })
 }
 
@@ -981,6 +989,61 @@ height = 0
         )
         .unwrap_err();
         assert!(matches!(err, ResolveError::InvalidWindowSize { .. }));
+    }
+
+    #[test]
+    fn kill_cascades_and_opts_out() {
+        let raw = crate::raw::parse(
+            r##"
+kill = "global-kill {dir}"
+
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+kill = "win-kill"
+
+  [[window.tab]]
+  dir = "/tmp"
+  title = "inherits-window"
+
+  [[window.tab]]
+  dir = "/tmp"
+  title = "own-kill"
+  kill = "tab-kill {title}"
+
+  [[window.tab]]
+  dir = "/tmp"
+  title = "opts-out"
+  kill = ""
+"##,
+        )
+        .unwrap();
+        let (cfg, _) = resolve(raw).unwrap();
+        let tabs = &cfg.windows[0].tabs;
+        // window level wins over global when the tab is silent
+        assert_eq!(tabs[0].kill.as_deref(), Some("win-kill"));
+        // tab level wins over window
+        assert_eq!(tabs[1].kill.as_deref(), Some("tab-kill {title}"));
+        // explicit "" opts the tab out of the inherited window/global value
+        assert_eq!(tabs[2].kill, None);
+    }
+
+    #[test]
+    fn kill_defaults_to_none_when_unset_everywhere() {
+        let raw = crate::raw::parse(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+
+  [[window.tab]]
+  dir = "/tmp"
+  title = "t"
+"##,
+        )
+        .unwrap();
+        let (cfg, _) = resolve(raw).unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].kill, None);
     }
 
     #[test]

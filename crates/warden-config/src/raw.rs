@@ -7,6 +7,7 @@ pub struct RawConfig {
     pub shell: Option<String>,
     pub cmd: Option<String>,
     pub probe: Option<String>,
+    pub kill: Option<String>,
     /// Seconds between background session-probe passes (global only). `None` →
     /// default 5; `Some(0)` → focus/refresh-only (no timer). See resolve.rs.
     pub probe_interval: Option<u64>,
@@ -29,6 +30,7 @@ pub struct RawWindow {
     pub shell: Option<String>,
     pub cmd: Option<String>,
     pub probe: Option<String>,
+    pub kill: Option<String>,
     // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,
     // rendered in a headerless section before any named groups.
     #[serde(default, rename = "tab")]
@@ -54,6 +56,7 @@ pub struct RawTab {
     pub shell: Option<String>,
     pub cmd: Option<String>,
     pub probe: Option<String>,
+    pub kill: Option<String>,
     #[serde(default)]
     pub load_on_open: bool,
 }

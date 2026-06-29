@@ -58,6 +58,10 @@ pub struct Tab {
     /// tab→window→global). `None` = no probe (the tab shows no session dot).
     /// Opaque to the crate — the app runs it and reads its exit code.
     pub probe: Option<String>,
+    /// Optional session-kill command for this tab (cascaded tab→window→global,
+    /// `""` opts out). `None` = no kill affordance. Opaque to the crate — the app
+    /// runs it via `sh -c` when the user confirms killing the tab's session.
+    pub kill: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
