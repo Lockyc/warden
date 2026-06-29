@@ -209,9 +209,8 @@
          exists (filled) vs configured-but-absent (hollow ring). CYAN so it reads
          as orthogonal to the green live/cold dot and amber unread badge. Sits
          between the unread badge and the live/cold dot. When the tab also has a
-         `kill` command AND a session is present (.on.kill), the dot becomes an
-         interactive kill control: hover reveals a red ✕, a first click arms it
-         (.armed, solid red ✕, ~3s), a second click confirms. */
+         `kill` command AND a session is present (.on.kill), clicking the dot puts
+         the WHOLE ROW into the red confirm state (✓/✗ controls then appear). */
       .tab-sess {
         flex: none;
         width: 16px;
@@ -234,23 +233,42 @@
       .tab-sess.on::before {
         background: #56b4e9;
       }
-      /* Interactive only when killable (on + has-kill). */
+      /* Interactive only when killable (on + has-kill): a pointer cue. The actual
+         confirm is the full-row state below — no hover-✕ on the dot anymore. */
       .tab-sess.on.kill {
         cursor: pointer;
       }
-      .tab-sess.on.kill:hover::before {
+      /* Whole-row kill confirmation: the row goes red, the trailing dots hide, and
+         ✓ (confirm, in the cyan-dot slot under the cursor) + ✗ (cancel, in the
+         green-dot slot) appear. Tile + title stay visible. */
+      .tab.confirming {
+        background: #5a1f1f;
+        color: #ffffff;
+      }
+      .tab.confirming .tab-badge,
+      .tab.confirming .tab-sess,
+      .tab.confirming .tab-dot {
         display: none;
       }
-      .tab-sess.on.kill:hover::after,
-      .tab-sess.armed::after {
-        content: '✕';
-        color: #f85149;
-        font-size: 11px;
+      .tab-confirm-yes,
+      .tab-confirm-no {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        display: none;            /* shown only while .confirming */
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        cursor: pointer;
+        font-size: 12px;
         font-weight: 700;
       }
-      .tab-sess.armed::before {
-        display: none;
+      .tab.confirming .tab-confirm-yes,
+      .tab.confirming .tab-confirm-no {
+        display: inline-flex;
       }
+      .tab-confirm-yes { color: #3fb950; }  /* ✓ confirm */
+      .tab-confirm-no  { color: #f85149; }  /* ✗ cancel  */
       #terminal-hole {
         flex: 1;
         background: transparent;
@@ -347,8 +365,7 @@
       // re-render restores the dots instead of dropping them. Distinct from the
       // live/cold dot (warden's own surface) and the unread badge.
       const session = new Set();
-      let armedKill = null;          // id of the currently-armed session dot, or null
-      let armedKillTimer = null;     // setTimeout handle for the ~3s arm window
+      let armedKill = null;          // id of the tab row currently in kill-confirm state, or null
 
       /** Opaque dark base the sidebar composites the window tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
@@ -418,35 +435,46 @@
         const on = session.has(id);
         let cls = 'tab-sess ' + (on ? 'on' : 'off');
         if (on && hasKill) cls += ' kill';
-        if (on && hasKill && armedKill === id) cls += ' armed';
         span.className = cls;
         span.dataset.kill = hasKill ? '1' : '';
       }
 
+      // Document-level cancels while a row is in confirm state (attached on arm,
+      // removed on disarm). Escape cancels; a click outside the armed row cancels
+      // (and proceeds to its normal handler, e.g. selecting another tab).
+      function onArmKeydown(e) {
+        if (e.key === 'Escape') disarmKill();
+      }
+      function onArmOutsideClick(e) {
+        if (!armedKill) return;
+        const row = document.querySelector('.tab[data-id="' + CSS.escape(armedKill) + '"]');
+        if (row && row.contains(e.target)) return; // inside the armed row → ✓/✗ handle it
+        disarmKill();
+      }
+
       function disarmKill() {
-        if (armedKillTimer) { clearTimeout(armedKillTimer); armedKillTimer = null; }
         const prev = armedKill;
         armedKill = null;
+        document.removeEventListener('keydown', onArmKeydown);
+        document.removeEventListener('click', onArmOutsideClick, true);
         if (prev) {
           const row = document.querySelector('.tab[data-id="' + CSS.escape(prev) + '"]');
-          const s = row && row.querySelector('.tab-sess');
-          if (s) s.classList.remove('armed');
+          if (row) row.classList.remove('confirming');
         }
       }
 
-      /** First click arms (red ✕, ~3s); a second click within the window confirms
-          and invokes the kill. Arming a different dot disarms the previous one. */
-      function clickKill(id, span) {
-        if (armedKill === id) {            // confirm
-          disarmKill();
-          invoke('kill_session', { id }).catch(
-            (err) => console.error('warden: kill_session failed', err));
-          return;
-        }
-        disarmKill();                      // arm this one
+      /** First click on a killable cyan dot puts that whole row into confirm state
+          (red, dots hidden, ✓/✗ shown). Confirm/cancel are the ✓/✗ handlers; this
+          only arms. Arming is a no-op if the row is already confirming. */
+      function clickKill(id, rowEl) {
+        if (armedKill === id) return;
+        disarmKill();                 // cancel any other confirming row (single-armed)
         armedKill = id;
-        span.classList.add('armed');
-        armedKillTimer = setTimeout(disarmKill, 3000);
+        rowEl.classList.add('confirming');
+        // Added during this click's bubble phase, so the capture listener does NOT
+        // fire for the current click — only for the next one.
+        document.addEventListener('keydown', onArmKeydown);
+        document.addEventListener('click', onArmOutsideClick, true);
       }
 
       /** Update a tab's session dot from the probe result, keeping `session` in
@@ -563,10 +591,10 @@
             el.appendChild(b);
           }
 
-          // Session-presence dot (only for probe-enabled tabs). Filled if the
-          // probe last reported a session, hollow ring otherwise. When the tab also has a
-          // `kill` command it doubles as a kill control while a session is present
-          // (two-step arm/confirm) — see clickKill.
+          // Session-presence dot (probe-enabled tabs). Filled if the probe last
+          // reported a session, hollow ring otherwise. When the tab also has a `kill`
+          // command and a session is present, clicking it puts the WHOLE ROW into the
+          // red confirm state (see clickKill) — the ✓/✗ controls below do the rest.
           if (t.has_probe) {
             const s = document.createElement('span');
             applySessClass(s, t.id, !!t.has_kill);
@@ -574,7 +602,7 @@
               s.addEventListener('click', (e) => {
                 if (!s.classList.contains('on')) return; // no session ⇒ nothing to kill
                 e.stopPropagation();                      // don't select the row
-                clickKill(t.id, s);
+                clickKill(t.id, el);                      // arm the ROW (el), not the dot
               });
             }
             el.appendChild(s);
@@ -593,6 +621,35 @@
             unloadTab(t.id);
           });
           el.appendChild(dot);
+
+          // Full-row kill-confirm controls: ✓ in the cyan-dot slot (under the cursor
+          // after the arming click), ✗ in the green-dot slot. Hidden until the row
+          // has `.confirming`. Only created for killable rows.
+          if (t.has_kill) {
+            const yes = document.createElement('span');
+            yes.className = 'tab-confirm-yes';
+            yes.textContent = '✓';
+            yes.title = 'confirm kill';
+            yes.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const id = armedKill;
+              disarmKill();
+              if (id) {
+                invoke('kill_session', { id }).catch(
+                  (err) => console.error('warden: kill_session failed', err));
+              }
+            });
+            const no = document.createElement('span');
+            no.className = 'tab-confirm-no';
+            no.textContent = '✗';
+            no.title = 'cancel';
+            no.addEventListener('click', (e) => {
+              e.stopPropagation();
+              disarmKill();
+            });
+            el.appendChild(yes);
+            el.appendChild(no);
+          }
 
           if (t.warn) el.title = 'working directory does not exist';
           list.appendChild(el);
