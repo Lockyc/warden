@@ -208,7 +208,10 @@
       /* Session-presence dot: a probe command for this tab reported a session
          exists (filled) vs configured-but-absent (hollow ring). CYAN so it reads
          as orthogonal to the green live/cold dot and amber unread badge. Sits
-         between the unread badge and the live/cold dot. Read-only — no hover. */
+         between the unread badge and the live/cold dot. When the tab also has a
+         `kill` command AND a session is present (.on.kill), the dot becomes an
+         interactive kill control: hover reveals a red ✕, a first click arms it
+         (.armed, solid red ✕, ~3s), a second click confirms. */
       .tab-sess {
         flex: none;
         width: 16px;
@@ -216,6 +219,7 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        line-height: 1;
       }
       .tab-sess::before {
         content: '';
@@ -229,6 +233,23 @@
       }
       .tab-sess.on::before {
         background: #56b4e9;
+      }
+      /* Interactive only when killable (on + has-kill). */
+      .tab-sess.on.kill {
+        cursor: pointer;
+      }
+      .tab-sess.on.kill:hover::before {
+        display: none;
+      }
+      .tab-sess.on.kill:hover::after,
+      .tab-sess.armed::after {
+        content: '✕';
+        color: #f85149;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .tab-sess.armed::before {
+        display: none;
       }
       #terminal-hole {
         flex: 1;
@@ -326,6 +347,8 @@
       // re-render restores the dots instead of dropping them. Distinct from the
       // live/cold dot (warden's own surface) and the unread badge.
       const session = new Set();
+      let armedKill = null;          // id of the currently-armed session dot, or null
+      let armedKillTimer = null;     // setTimeout handle for the ~3s arm window
 
       /** Opaque dark base the sidebar composites the window tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
@@ -388,15 +411,55 @@
         }
       }
 
+      /** Compute a session dot's class from session state + kill eligibility + arm
+          state, so both render() and setSession() stay consistent and a probe tick
+          mid-arm doesn't wipe the armed look. `hasKill` comes from the tab DTO. */
+      function applySessClass(span, id, hasKill) {
+        const on = session.has(id);
+        let cls = 'tab-sess ' + (on ? 'on' : 'off');
+        if (on && hasKill) cls += ' kill';
+        if (on && hasKill && armedKill === id) cls += ' armed';
+        span.className = cls;
+        span.dataset.kill = hasKill ? '1' : '';
+      }
+
+      function disarmKill() {
+        if (armedKillTimer) { clearTimeout(armedKillTimer); armedKillTimer = null; }
+        const prev = armedKill;
+        armedKill = null;
+        if (prev) {
+          const row = document.querySelector('.tab[data-id="' + CSS.escape(prev) + '"]');
+          const s = row && row.querySelector('.tab-sess');
+          if (s) s.classList.remove('armed');
+        }
+      }
+
+      /** First click arms (red ✕, ~3s); a second click within the window confirms
+          and invokes the kill. Arming a different dot disarms the previous one. */
+      function clickKill(id, span) {
+        if (armedKill === id) {            // confirm
+          disarmKill();
+          invoke('kill_session', { id }).catch(
+            (err) => console.error('warden: kill_session failed', err));
+          return;
+        }
+        disarmKill();                      // arm this one
+        armedKill = id;
+        span.classList.add('armed');
+        armedKillTimer = setTimeout(disarmKill, 3000);
+      }
+
       /** Update a tab's session dot from the probe result, keeping `session` in
           sync so a re-render restores it. Only flips an already-rendered dot
-          (probe-enabled rows have one); no-op for rows without a probe. */
+          (probe-enabled rows have one); no-op for rows without a probe. Routes
+          through applySessClass so a probe tick mid-arm doesn't wipe armed state. */
       function setSession(id, on) {
         if (on) session.add(id); else session.delete(id);
+        if (!on && armedKill === id) disarmKill(); // session gone → nothing to kill
         const row = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]');
         if (!row) return;
         const s = row.querySelector('.tab-sess');
-        if (s) s.className = 'tab-sess ' + (on ? 'on' : 'off');
+        if (s) applySessClass(s, id, s.dataset.kill === '1');
       }
 
       /** Set a tab dot's live/cold class + tooltip from one source of truth, so the
@@ -438,6 +501,7 @@
           the warden:refresh listener (hot-reload), so the sidebar is rebuilt the
           same way whether it's the initial DTO or a pushed reconcile snapshot. */
       function render(dto) {
+        disarmKill(); // disarm before rebuilding the list — no dangling timer on removed nodes
         const prevActive = active;
         windowColour = dto.colour ?? '#6b7280';
 
@@ -500,10 +564,19 @@
           }
 
           // Session-presence dot (only for probe-enabled tabs). Filled if the
-          // probe last reported a session, hollow ring otherwise.
+          // probe last reported a session, hollow ring otherwise. When the tab also has a
+          // `kill` command it doubles as a kill control while a session is present
+          // (two-step arm/confirm) — see clickKill.
           if (t.has_probe) {
             const s = document.createElement('span');
-            s.className = 'tab-sess ' + (session.has(t.id) ? 'on' : 'off');
+            applySessClass(s, t.id, !!t.has_kill);
+            if (t.has_kill) {
+              s.addEventListener('click', (e) => {
+                if (!s.classList.contains('on')) return; // no session ⇒ nothing to kill
+                e.stopPropagation();                      // don't select the row
+                clickKill(t.id, s);
+              });
+            }
             el.appendChild(s);
           }
 
@@ -694,6 +767,7 @@
       }
 
       async function select(id) {
+        disarmKill(); // cancel any pending arm when the user picks a different row
         active = id;
         setBadge(id, false); // focusing a tab clears its unread badge
         paint();
