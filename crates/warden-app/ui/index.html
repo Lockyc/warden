@@ -245,6 +245,9 @@
         background: #5a1f1f;
         color: #ffffff;
       }
+      .tab.confirming:hover {
+        background: #5a1f1f;
+      }
       .tab.confirming .tab-badge,
       .tab.confirming .tab-sess,
       .tab.confirming .tab-dot {
@@ -529,7 +532,7 @@
           the warden:refresh listener (hot-reload), so the sidebar is rebuilt the
           same way whether it's the initial DTO or a pushed reconcile snapshot. */
       function render(dto) {
-        disarmKill(); // disarm before rebuilding the list — no dangling timer on removed nodes
+        disarmKill(); // reset any pending confirm before rebuilding — no dangling listener / orphaned confirm row
         const prevActive = active;
         windowColour = dto.colour ?? '#6b7280';
 

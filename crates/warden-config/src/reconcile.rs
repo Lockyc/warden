@@ -473,6 +473,7 @@ colour = "#0f8a8a"
                 TabMeta { group: None, probe: None, kill: Some("kill-new".to_string()) }
             )]
         );
+        assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
     }
 
     #[test]
