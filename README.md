@@ -43,6 +43,8 @@ probe = '/opt/homebrew/bin/tmux has-session -t "=$(basename "$PWD" | tr .: __)" 
 
 so the dot shows whether its amux session is alive. `probe_interval` controls the cadence (`0` = check on focus/hot-reload only). Two things to get right, because warden runs the probe via bare `sh -c` with the *app's own* environment: name `tmux` by **absolute path** (a Finder/Dock-launched `warden.app` has a minimal PATH that omits `/opt/homebrew/bin`, so bare `tmux` is silently command-not-found — adjust the path to your `which tmux`), and **don't pass `-L`** (amux's agent sessions live on tmux's default socket).
 
+A tab's optional `kill` command (same cascade, same absolute-path / no-`-L` caveats) severs the session the dot represents: click the cyan dot once to arm, click again to confirm, and warden runs `kill` fire-and-forget — the surface stays open, and the probe re-runs immediately to update the dot.
+
 Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` window cycling, ad-hoc `cmd+T` / `cmd+N` tabs and windows, and a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch).
 
 ## Config

@@ -34,6 +34,9 @@ tab_digit_keys = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 ne
 #      empty in production and isn't inherited from Finder anyway — so don't pass `-L` here.
 probe          = '/opt/homebrew/bin/tmux has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
 probe_interval = 5
+# `kill` (optional, cascades like `probe`) runs when you confirm killing a tab's session by
+# clicking its cyan presence dot. Same env/PATH caveats — absolute binary paths.
+kill           = '/opt/homebrew/bin/tmux kill-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
 
 [[window]]
   title  = "personal"
