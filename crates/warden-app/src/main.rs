@@ -165,7 +165,10 @@ fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) ->
 #[tauri::command]
 fn probe_now(window: tauri::WebviewWindow) {
     use tauri::Manager;
-    probe::spawn_pass(window.app_handle().clone(), Some(window.label().to_string()));
+    probe::spawn_pass(
+        window.app_handle().clone(),
+        Some(window.label().to_string()),
+    );
 }
 
 /// Activate tab `id` within the calling window's registry.
