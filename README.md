@@ -12,6 +12,8 @@
 ![Tauri](https://img.shields.io/badge/Tauri-24C8DB?logo=tauri&logoColor=white)
 [![License](https://img.shields.io/github/license/Lockyc/warden)](LICENSE)
 
+<img src="docs/screenshot.png" alt="warden running two windows (personal + work) — a curator-style sidebar with grouped project tabs (live/cold dots) over embedded libghostty terminals" width="900">
+
 </div>
 
 warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **windows** and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each window carries a colour + title banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
