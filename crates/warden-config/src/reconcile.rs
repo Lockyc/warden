@@ -1,6 +1,18 @@
 use crate::model::{Config, Tab, Window};
 use crate::Colour;
 
+/// The in-place, non-respawn metadata of a kept tab — fields a consumer can apply
+/// to a *live* tab without killing its PTY: `group` (sidebar sectioning) and the
+/// externally-run `probe`/`kill` commands. Never the terminal itself. Carried by
+/// `WindowUpdate.set_meta` when any of these changed for a kept tab (keyed by
+/// `Tab::key`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabMeta {
+    pub group: Option<String>,
+    pub probe: Option<String>,
+    pub kill: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reconciliation {
     pub open: Vec<Window>,
@@ -18,19 +30,15 @@ pub struct Reconciliation {
 /// - `tab_order`: the order of kept tabs changed; on an emitted update
 ///   `tab_order` always carries the full new ordered key list so the consumer
 ///   can reorder the live tab strip without killing sessions.
-/// - `set_groups`: a kept tab's `group` (its `[[window.group]]` membership)
-///   changed — including a pure group rename, where order and keys are
-///   identical. Each entry is `(key, new_group)`; the consumer re-sections the
-///   sidebar **without** respawning (grouping is presentation only). Empty when
-///   no kept tab's group changed.
+/// - `set_meta`: a kept tab's in-place metadata (`group`, `probe`, or `kill`)
+///   changed. Each entry is `(key, TabMeta)` carrying the new values; the consumer
+///   applies them WITHOUT respawning (presentation + externally-run commands).
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. Changing a tab's
-///   `dir`, `cmd`, `load_on_open`, `probe`, or `kill` while keeping its `title`
-///   the same produces no op — the tab appears identical to the reconciler. The consumer must
-///   close and reopen the tab to pick up such field-level edits. (`group` is the
-///   deliberate exception — it IS detected, via `set_groups`, because it's
-///   presentational and must not cost the tab its PTY.)
+///   `dir`, `cmd`, `shell`, or `load_on_open` while keeping its `title` the same
+///   produces no op — the tab appears identical to the reconciler. The consumer
+///   must close and reopen the tab to pick up such field-level edits.
 /// - A kept window's `width` or `height` change. Window size is owned by the
 ///   window-state plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config have no effect on a live
@@ -46,7 +54,11 @@ pub struct WindowUpdate {
     pub add_tabs: Vec<Tab>,
     pub remove_tabs: Vec<String>,
     pub tab_order: Vec<String>,
-    pub set_groups: Vec<(String, Option<String>)>,
+    /// In-place metadata changes for kept tabs (keyed by `Tab::key`): `group`,
+    /// `probe`, or `kill` differ. The consumer applies them WITHOUT respawning —
+    /// presentation + externally-run commands, never the PTY. Empty when no kept
+    /// tab's metadata changed.
+    pub set_meta: Vec<(String, TabMeta)>,
 }
 
 fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
@@ -59,13 +71,14 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 /// **What IS detected:**
 /// - Windows opened/closed, matched by `title`.
 /// - For a kept window: colour change, tab add/remove (by
-///   `Tab::key` = resolved title), and tab reorder (via `tab_order`).
+///   `Tab::key` = resolved title), tab reorder (via `tab_order`), and in-place
+///   metadata changes (`group`, `probe`, `kill`) via `set_meta`.
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. If a tab's `dir`,
-///   `cmd`, `load_on_open`, `probe`, or `kill` changes but its `title` stays the
-///   same, no update is emitted — the tab appears identical to the reconciler.
-///   The consumer must close and reopen the tab to pick up such field-level edits.
+///   `cmd`, `shell`, or `load_on_open` changes but its `title` stays the same,
+///   no update is emitted — the tab appears identical to the reconciler. The
+///   consumer must close and reopen the tab to pick up such field-level edits.
 /// - A kept window's `width` or `height` change. Window size is owned by the
 ///   window-state plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config are not applied to a live
@@ -118,25 +131,38 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     .collect();
                 let order_changed = kept_old != kept_new;
                 let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
-                // Group reassignment of kept tabs (matched by key). Carries the new
-                // group so the consumer re-sections without respawning — a pure group
-                // rename, where keys/order are unchanged, is detected here too.
-                let set_groups: Vec<(String, Option<String>)> = np
+                // In-place metadata diff for kept tabs (group/probe/kill). Carries the
+                // new values so the consumer applies them without respawning. Matches a
+                // kept tab by key; emits only when at least one metadata field differs.
+                let set_meta: Vec<(String, TabMeta)> = np
                     .tabs
                     .iter()
                     .filter_map(|nt| {
                         op.tabs
                             .iter()
                             .find(|ot| ot.key == nt.key)
-                            .filter(|ot| ot.group != nt.group)
-                            .map(|_| (nt.key.clone(), nt.group.clone()))
+                            .filter(|ot| {
+                                ot.group != nt.group
+                                    || ot.probe != nt.probe
+                                    || ot.kill != nt.kill
+                            })
+                            .map(|_| {
+                                (
+                                    nt.key.clone(),
+                                    TabMeta {
+                                        group: nt.group.clone(),
+                                        probe: nt.probe.clone(),
+                                        kill: nt.kill.clone(),
+                                    },
+                                )
+                            })
                     })
                     .collect();
                 if colour.is_some()
                     || !add_tabs.is_empty()
                     || !remove_tabs.is_empty()
                     || order_changed
-                    || !set_groups.is_empty()
+                    || !set_meta.is_empty()
                 {
                     update.push(WindowUpdate {
                         title: np.title.clone(),
@@ -144,7 +170,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                         add_tabs,
                         remove_tabs,
                         tab_order,
-                        set_groups,
+                        set_meta,
                     });
                 }
             }
@@ -320,10 +346,7 @@ colour = "#0f8a8a"
     }
 
     #[test]
-    fn pure_group_rename_emits_update_with_set_groups_only() {
-        // Same tab, same key, same order — only the group name changed. Must emit an
-        // update carrying set_groups (and nothing else) so the sidebar re-sections
-        // without respawning the PTY.
+    fn pure_group_rename_emits_update_with_set_meta_only() {
         let old = cfg(r##"
 [[window]]
 title = "work"
@@ -348,17 +371,18 @@ colour = "#0f8a8a"
         assert_eq!(r.update.len(), 1, "a pure group rename must emit an update");
         let u = &r.update[0];
         assert_eq!(
-            u.set_groups,
-            vec![("api".to_string(), Some("new-name".to_string()))]
+            u.set_meta,
+            vec![(
+                "api".to_string(),
+                TabMeta { group: Some("new-name".to_string()), probe: None, kill: None }
+            )]
         );
         assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
         assert_eq!(u.colour, None);
     }
 
     #[test]
-    fn moving_loose_tab_into_group_sets_its_group() {
-        // A loose tab gains a group. set_groups carries the new membership (here the
-        // flat order is unchanged, so the change is detected purely via set_groups).
+    fn moving_loose_tab_into_group_sets_its_meta() {
         let old = cfg(r##"
 [[window]]
 title = "work"
@@ -380,8 +404,74 @@ colour = "#0f8a8a"
         let r = reconcile(&old, &new);
         assert_eq!(r.update.len(), 1);
         assert_eq!(
-            r.update[0].set_groups,
-            vec![("api".to_string(), Some("backend".to_string()))]
+            r.update[0].set_meta,
+            vec![(
+                "api".to_string(),
+                TabMeta { group: Some("backend".to_string()), probe: None, kill: None }
+            )]
+        );
+    }
+
+    #[test]
+    fn probe_change_on_kept_tab_emits_set_meta() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "api"
+  dir = "/tmp/api"
+  probe = "probe-old"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "api"
+  dir = "/tmp/api"
+  probe = "probe-new"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1, "a probe change on a kept tab must emit an update");
+        assert_eq!(
+            r.update[0].set_meta,
+            vec![(
+                "api".to_string(),
+                TabMeta { group: None, probe: Some("probe-new".to_string()), kill: None }
+            )]
+        );
+        assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn kill_change_on_kept_tab_emits_set_meta() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "api"
+  dir = "/tmp/api"
+  kill = "kill-old"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "api"
+  dir = "/tmp/api"
+  kill = "kill-new"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1, "a kill change on a kept tab must emit an update");
+        assert_eq!(
+            r.update[0].set_meta,
+            vec![(
+                "api".to_string(),
+                TabMeta { group: None, probe: None, kill: Some("kill-new".to_string()) }
+            )]
         );
     }
 

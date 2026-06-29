@@ -13,7 +13,7 @@ pub mod watch;
 pub use config_core::{format_file, format_str, Colour, ColourError};
 pub use load::{config_path, load, load_with, LoadError, Loaded};
 pub use model::{Config, Tab, TabDigitKeys, Warning, Window};
-pub use reconcile::{reconcile, Reconciliation, WindowUpdate};
+pub use reconcile::{reconcile, Reconciliation, TabMeta, WindowUpdate};
 pub use resolve::ResolveError;
 pub use watch::Watcher;
 
