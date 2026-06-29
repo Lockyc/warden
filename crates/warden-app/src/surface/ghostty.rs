@@ -37,7 +37,9 @@ use std::sync::OnceLock;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::AnyObject;
-use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
+use objc2::{
+    class, declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass,
+};
 use objc2_app_kit::{
     NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSEvent,
     NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSResponder,
@@ -499,16 +501,37 @@ declare_class!(
             }
             let Some(window) = self.window() else { return };
             let scale = window.backingScaleFactor();
+
+            // THE fix for "terminal is scaled wrong after unplugging a monitor". libghostty's macOS
+            // renderer makes this view layer-hosting — it assigns its own render layer to `view.layer`
+            // and sets that layer's `contentsScale` *only at creation* (renderer/Metal.zig); its live
+            // content-scale path never updates it. So when the window moves to a different-DPI display,
+            // Core Animation keeps compositing the layer at the stale scale and magnifies/shrinks the
+            // whole surface. Push the new scale onto the layer ourselves — exactly as Ghostty.app's
+            // own SurfaceView does — inside a CATransaction with actions disabled so CA doesn't animate
+            // the change. The font/cell metrics themselves reflow via the `set_content_scale` below;
+            // this line is purely the compositor's scale. SAFETY: main-thread AppKit; `layer` is this
+            // view's CALayer (or null before it's layer-hosting), only messaged, never retained.
+            unsafe {
+                let layer: *mut AnyObject = msg_send![self, layer];
+                if !layer.is_null() {
+                    let _: () = msg_send![class!(CATransaction), begin];
+                    let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+                    let _: () = msg_send![layer, setContentsScale: scale];
+                    let _: () = msg_send![class!(CATransaction), commit];
+                }
+            }
+
             let frame = self.frame();
             unsafe {
                 apply_surface_geometry(surface, frame.size.width, frame.size.height, scale);
             }
-            // The content-scale push above corrects the framebuffer but NOT the font: the vendored
-            // libghostty doesn't rebuild cell metrics on a live `set_content_scale`, so a DPI change
-            // leaves the grid rendered at the old scale until the surface is recreated. When the scale
-            // genuinely differs from what this surface's font was built at, signal a respawn — async
-            // so the teardown doesn't run while this NSView method is on the stack. Gated app-side on
-            // `respawn_on_scale_change`; if disabled the signal is dropped (manual respawn only).
+
+            // Opt-in fallback (`respawn_on_scale_change`, default off): if the contentsScale fix above
+            // ever proves insufficient on some display, recreating the surface always renders correctly
+            // (creation rebuilds everything from the current scale). Signal it async so the teardown
+            // doesn't run while this NSView method is on the stack; the manager drops the signal when
+            // the flag is off. Gated on a real change (live scale ≠ the view's creation scale).
             if (scale - self.ivars().built_scale.get()).abs() > f64::EPSILON {
                 unsafe {
                     dispatch_async_f(main_queue(), surface as *mut c_void, scale_changed_trampoline);

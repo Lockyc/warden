@@ -52,9 +52,9 @@ tab_digit_keys = "jump"                # optional; whole-app ⌘1/⌘2 mode: "ju
 probe = "…"                            # optional; session-presence probe, cascades global→window→tab (cyan dot on exit 0)
 probe_interval = 5                     # optional; seconds between probe passes (default 5; 0 = focus/refresh-only)
 kill  = "…"                            # optional; session-kill command, cascades global→window→tab; run fire-and-forget on confirm via the cyan dot
-respawn_on_scale_change = false        # optional; default false — recreate a tab's surface when its
-                                       #   display DPI changes (monitor unplug) so the font re-renders.
-                                       #   Restarts the tab's process (amux reattaches); see footgun.
+respawn_on_scale_change = false        # optional; default false — FALLBACK for display-DPI changes
+                                       #   (the in-place contentsScale fix is primary). Recreates a
+                                       #   tab's surface, restarting its process (amux reattaches).
 
 [[window]]                             # = a native macOS window
 title  = "work"                        # required, unique, non-empty; banner + window title

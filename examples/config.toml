@@ -21,7 +21,7 @@ shell                   = "fish -l" # global default shell for every tab
 cmd                     = "amux"    # global default: launch agentmux in each tab (shell stays live on exit)
 format_on_save          = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
 tab_digit_keys          = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
-respawn_on_scale_change = false     # recreate a tab's terminal on a display-DPI change (monitor unplug) so the font re-renders. RESTARTS the tab's process — fine if it reattaches (amux/tmux), lossy otherwise. Opt in only if that's safe for your tabs.
+respawn_on_scale_change = false     # FALLBACK for display-DPI changes (warden fixes them in place by default). Recreates a tab's surface, RESTARTING its process — fine if it reattaches (amux/tmux), lossy otherwise. Leave off unless the in-place fix misses a display.
 
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
 # dot when it exits 0. Here it's lit while the tab's agentmux session is live; any check works.
