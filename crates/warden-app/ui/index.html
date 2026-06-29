@@ -205,6 +205,31 @@
         border-radius: 50%;
         background: #f0883e;
       }
+      /* Session-presence dot: a probe command for this tab reported a session
+         exists (filled) vs configured-but-absent (hollow ring). CYAN so it reads
+         as orthogonal to the green live/cold dot and amber unread badge. Sits
+         between the unread badge and the live/cold dot. Read-only — no hover. */
+      .tab-sess {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .tab-sess::before {
+        content: '';
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        box-sizing: border-box;
+      }
+      .tab-sess.off::before {
+        border: 1px solid rgba(86, 180, 233, 0.5);
+      }
+      .tab-sess.on::before {
+        background: #56b4e9;
+      }
       #terminal-hole {
         flex: 1;
         background: transparent;
@@ -256,6 +281,10 @@
       // Tab ids with an unread notification/bell badge. A Set (not just DOM state) so
       // a warden:refresh re-render restores the badges instead of dropping them.
       const badges = new Set();
+      // Tab ids with a live session (per the probe). A Set so a warden:refresh
+      // re-render restores the dots instead of dropping them. Distinct from the
+      // live/cold dot (warden's own surface) and the unread badge.
+      const session = new Set();
 
       /** Opaque dark base the sidebar composites the window tint over. Must
           match the CSS #sidebar fallback so there's no flash before JS runs. */
@@ -298,7 +327,8 @@
       }
 
       /** Add/remove a tab's unread badge, keeping the `badges` set in sync so a
-          re-render restores it. Inserts the badge just left of the live/cold dot. */
+          re-render restores it. Inserts the badge at the start of the trailing-dot
+          group (left of the session dot if any, else the live/cold dot). */
       function setBadge(id, on) {
         if (on) badges.add(id); else badges.delete(id);
         const row = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]');
@@ -307,10 +337,25 @@
         if (on && !b) {
           b = document.createElement('span');
           b.className = 'tab-badge';
-          row.insertBefore(b, row.querySelector('.tab-dot'));
+          // Keep the trailing-edge order [badge][session][live/cold]: land before the
+          // session dot when the tab has one (probe-enabled), else before the live/cold
+          // dot — matches render()'s append order so a dynamic badge doesn't sit in the
+          // wrong slot and jump on the next re-render.
+          row.insertBefore(b, row.querySelector('.tab-sess') || row.querySelector('.tab-dot'));
         } else if (!on && b) {
           b.remove();
         }
+      }
+
+      /** Update a tab's session dot from the probe result, keeping `session` in
+          sync so a re-render restores it. Only flips an already-rendered dot
+          (probe-enabled rows have one); no-op for rows without a probe. */
+      function setSession(id, on) {
+        if (on) session.add(id); else session.delete(id);
+        const row = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]');
+        if (!row) return;
+        const s = row.querySelector('.tab-sess');
+        if (s) s.className = 'tab-sess ' + (on ? 'on' : 'off');
       }
 
       /** Set a tab dot's live/cold class + tooltip from one source of truth, so the
@@ -359,6 +404,7 @@
         // future tab that reuses the id doesn't inherit a stale unread dot.
         const ids = new Set(dto.tabs.map(t => t.id));
         badges.forEach(id => { if (!ids.has(id)) badges.delete(id); });
+        session.forEach(id => { if (!ids.has(id)) session.delete(id); });
 
         // Apply window identity: banner shows the name on the window colour;
         // the sidebar gets a faint tint of the same colour.
@@ -410,6 +456,14 @@
             const b = document.createElement('span');
             b.className = 'tab-badge';
             el.appendChild(b);
+          }
+
+          // Session-presence dot (only for probe-enabled tabs). Filled if the
+          // probe last reported a session, hollow ring otherwise.
+          if (t.has_probe) {
+            const s = document.createElement('span');
+            s.className = 'tab-sess ' + (session.has(t.id) ? 'on' : 'off');
+            el.appendChild(s);
           }
 
           // Live/cold dot that doubles as the unload control. Filled if the surface
@@ -467,6 +521,14 @@
         const stored = parseInt(localStorage.getItem(widthKey()), 10);
         if (Number.isFinite(stored)) applyWidth(stored);
         render(dto);
+        // Ask for the first probe pass only AFTER the session-state listener is
+        // registered (listen() is async), so the first emit can't race ahead of it
+        // and be dropped. This is what populates the dots at startup — critical for
+        // probe_interval=0 (no timer to heal a lost emit) and removes the up-to-one-
+        // tick hollow-dot latency for every interval. Background windows that never
+        // get launch focus rely on this too.
+        try { await sessionListenReady; } catch (e) { /* listener still works; worst case a tick of latency */ }
+        invokeSafe('probe_now');
       }
 
       // Hot-reload: the manager pushes a fresh snapshot to this window after a
@@ -549,6 +611,17 @@
         if (!forMe(e)) return;
         const id = e.payload && e.payload.id;
         if (id && id !== active) setBadge(id, true);
+      });
+
+      // Probe results for this window's tabs. emit_to leaks to siblings, so forMe
+      // drops a payload meant for another window (same guard as warden:notify).
+      // The promise resolves once the backend has registered this listener — init()
+      // awaits it before asking for the first probe pass, so that emit can't be lost.
+      const sessionListenReady = listen('warden:session-state', (e) => {
+        if (!forMe(e)) return;
+        const states = e.payload && e.payload.states;
+        if (!states) return;
+        Object.entries(states).forEach(([id, on]) => setSession(id, !!on));
       });
 
       function paint() {

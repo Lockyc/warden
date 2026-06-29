@@ -1,6 +1,10 @@
 use crate::surface::{ghostty::GhosttySurface, PixelRect, TabSpec, TerminalSurface};
 use std::os::raw::c_void;
 
+/// One probe-enabled tab's work item: `(id, dir, title, probe_cmd)`. The probe
+/// runner substitutes `{dir}`/`{title}` into `probe_cmd` and runs it with cwd = dir.
+pub type ProbeTarget = (String, std::path::PathBuf, String, String);
+
 /// Display descriptor sent to the web chrome.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TabDto {
@@ -9,6 +13,7 @@ pub struct TabDto {
     pub warn: bool,            // dir missing at materialize time
     pub spawned: bool,         // surface is live (load_on_open or already focused) vs cold/declared
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
+    pub has_probe: bool,       // a session-probe command is configured for this tab
 }
 
 /// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
@@ -87,6 +92,22 @@ impl Registry {
                 warn: t.warn,
                 spawned: matches!(t.slot, TabSlot::Spawned(_)),
                 group: t.spec.group.clone(),
+                has_probe: t.spec.probe.is_some(),
+            })
+            .collect()
+    }
+
+    /// `(id, dir, title, probe_cmd)` for every tab with a configured probe — the
+    /// work-list the probe runner snapshots. Includes cold tabs (a session can
+    /// exist while warden's own surface is unloaded — that's the point).
+    pub fn probe_targets(&self) -> Vec<ProbeTarget> {
+        self.tabs
+            .iter()
+            .filter_map(|t| {
+                t.spec
+                    .probe
+                    .as_ref()
+                    .map(|p| (t.id.clone(), t.spec.dir.clone(), t.title.clone(), p.clone()))
             })
             .collect()
     }
@@ -257,6 +278,18 @@ mod tests {
             shell: "fish".into(),
             startup: None,
             group: None,
+            probe: None,
+        }
+    }
+    fn spec_with_probe(id: &str, dir: &str, probe: Option<&str>) -> TabSpec {
+        TabSpec {
+            id: id.to_string(),
+            title: id.to_string(),
+            dir: PathBuf::from(dir),
+            shell: "sh".to_string(),
+            startup: None,
+            group: None,
+            probe: probe.map(String::from),
         }
     }
 
@@ -367,5 +400,28 @@ mod tests {
     fn pick_live_neighbour_none_when_nothing_live() {
         // No live tab anywhere → blank the hole, never spawn one to fill it.
         assert_eq!(pick_live_neighbour(1, &[false, false, false]), None);
+    }
+
+    #[test]
+    fn has_probe_flag_reflects_spec() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_probe("t0", "/tmp", Some("x")), false);
+        r.add(&spec_with_probe("t1", "/tmp", None), false);
+        let dtos = r.tab_dtos();
+        assert!(dtos[0].has_probe);
+        assert!(!dtos[1].has_probe);
+    }
+
+    #[test]
+    fn probe_targets_lists_only_probe_enabled_tabs() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_probe("t0", "/tmp/a", Some("cmd-a")), false);
+        r.add(&spec_with_probe("t1", "/tmp/b", None), false);
+        let targets = r.probe_targets();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, "t0");
+        assert_eq!(targets[0].1, PathBuf::from("/tmp/a"));
+        assert_eq!(targets[0].2, "t0"); // title (= id here)
+        assert_eq!(targets[0].3, "cmd-a");
     }
 }

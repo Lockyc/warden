@@ -11,7 +11,11 @@ pub const DEFAULT_SHELL: &str = "fish -l";
 
 /// Window accent used when `colour` is omitted — a neutral grey so the banner
 /// still renders identity without an accent. (curator parity: omit → neutral.)
-pub const DEFAULT_COLOUR: Colour = Colour { r: 0x6b, g: 0x72, b: 0x80 };
+pub const DEFAULT_COLOUR: Colour = Colour {
+    r: 0x6b,
+    g: 0x72,
+    b: 0x80,
+};
 
 /// Default window width when `width` is omitted. Matches curator's default.
 pub const DEFAULT_WIDTH: u32 = 1500;
@@ -53,7 +57,11 @@ pub enum ResolveError {
     #[error("window {window:?} has duplicate group: {group:?}")]
     DuplicateGroup { window: String, group: String },
     #[error("window {window:?} has invalid size {width}x{height} (must be > 0)")]
-    InvalidWindowSize { window: String, width: u32, height: u32 },
+    InvalidWindowSize {
+        window: String,
+        width: u32,
+        height: u32,
+    },
     #[error("invalid tab_digit_keys {0:?} (expected \"jump\" or \"cycle\")")]
     BadTabDigitKeys(String),
 }
@@ -87,6 +95,7 @@ fn basename(p: &Path) -> String {
 pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     let global_shell = raw.shell.as_deref();
     let global_cmd = raw.cmd.as_deref();
+    let global_probe = raw.probe.as_deref();
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
     let mut seen_windows = HashSet::new();
@@ -99,13 +108,20 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
         if !seen_windows.insert(rp.title.clone()) {
             return Err(ResolveError::DuplicateWindow(rp.title.clone()));
         }
-        windows.push(resolve_window(rp, global_shell, global_cmd, &mut warnings)?);
+        windows.push(resolve_window(
+            rp,
+            global_shell,
+            global_cmd,
+            global_probe,
+            &mut warnings,
+        )?);
     }
     Ok((
         Config {
             windows,
             format_on_save: raw.format_on_save.unwrap_or(false),
             tab_digit_keys,
+            probe_interval: raw.probe_interval.unwrap_or(5),
         },
         warnings,
     ))
@@ -115,6 +131,7 @@ fn resolve_window(
     rp: &RawWindow,
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
+    global_probe: Option<&str>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
     let colour = match rp.colour.as_deref() {
@@ -127,7 +144,11 @@ fn resolve_window(
     let width = rp.width.unwrap_or(DEFAULT_WIDTH);
     let height = rp.height.unwrap_or(DEFAULT_HEIGHT);
     if width == 0 || height == 0 {
-        return Err(ResolveError::InvalidWindowSize { window: rp.title.clone(), width, height });
+        return Err(ResolveError::InvalidWindowSize {
+            window: rp.title.clone(),
+            width,
+            height,
+        });
     }
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
@@ -146,6 +167,7 @@ fn resolve_window(
             rp,
             global_shell,
             global_cmd,
+            global_probe,
             &mut seen_titles,
             warnings,
         )?);
@@ -171,6 +193,7 @@ fn resolve_window(
                 rp,
                 global_shell,
                 global_cmd,
+                global_probe,
                 &mut seen_titles,
                 warnings,
             )?);
@@ -196,6 +219,7 @@ fn resolve_tab(
     rp: &RawWindow,
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
+    global_probe: Option<&str>,
     seen_titles: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
@@ -232,6 +256,7 @@ fn resolve_tab(
         .unwrap_or(DEFAULT_SHELL)
         .to_string();
     let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
+    let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
     Ok(Tab {
         key: title.clone(),
         title,
@@ -240,6 +265,7 @@ fn resolve_tab(
         startup,
         load_on_open: rt.load_on_open,
         group,
+        probe,
     })
 }
 
@@ -786,75 +812,192 @@ colour = "#0f8a8a"
     }
 
     #[test]
+    fn probe_cascades_with_nearest_level_winning() {
+        let (cfg, _) = resolve_str(
+            r##"
+probe = "global-probe"
+[[window]]
+title = "work"
+colour = "#000000"
+probe = "win-probe"
+  [[window.tab]]
+  title = "inherits"
+  dir = "/tmp/a"
+  [[window.tab]]
+  title = "overrides"
+  dir = "/tmp/b"
+  probe = "tab-probe"
+  [[window.tab]]
+  title = "opts-out"
+  dir = "/tmp/c"
+  probe = ""
+[[window]]
+title = "plain"
+colour = "#000000"
+  [[window.tab]]
+  title = "from-global"
+  dir = "/tmp/d"
+"##,
+        )
+        .unwrap();
+        let work = &cfg.windows[0].tabs;
+        assert_eq!(work[0].probe.as_deref(), Some("win-probe")); // inherit window
+        assert_eq!(work[1].probe.as_deref(), Some("tab-probe")); // tab wins
+        assert_eq!(work[2].probe, None); // `probe = ""` opts out
+        assert_eq!(
+            cfg.windows[1].tabs[0].probe.as_deref(),
+            Some("global-probe")
+        );
+    }
+
+    #[test]
+    fn probe_unset_everywhere_is_none() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].probe, None);
+    }
+
+    #[test]
+    fn probe_interval_defaults_to_5_and_parses() {
+        let (def, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(def.probe_interval, 5);
+
+        let (set, _) = resolve_str(
+            r##"
+probe_interval = 0
+[[window]]
+title = "w"
+colour = "#000000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(set.probe_interval, 0);
+    }
+
+    #[test]
     fn missing_colour_uses_neutral_default() {
-        let cfg = resolve(parse(r##"
+        let cfg = resolve(
+            parse(
+                r##"
 [[window]]
 title = "work"
   [[window.tab]]
   dir = "/tmp"
-"##).unwrap()).unwrap().0;
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
         assert_eq!(cfg.windows[0].colour, super::DEFAULT_COLOUR);
     }
 
     #[test]
     fn window_size_defaults_to_1500x1000() {
-        let cfg = resolve(parse(r##"
+        let cfg = resolve(
+            parse(
+                r##"
 [[window]]
 title = "work"
   [[window.tab]]
   dir = "/tmp"
-"##).unwrap()).unwrap().0;
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
         assert_eq!((cfg.windows[0].width, cfg.windows[0].height), (1500, 1000));
     }
 
     #[test]
     fn explicit_window_size_is_used() {
-        let cfg = resolve(parse(r##"
+        let cfg = resolve(
+            parse(
+                r##"
 [[window]]
 title = "work"
 width = 1200
 height = 800
   [[window.tab]]
   dir = "/tmp"
-"##).unwrap()).unwrap().0;
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
         assert_eq!((cfg.windows[0].width, cfg.windows[0].height), (1200, 800));
     }
 
     #[test]
     fn zero_window_size_errors() {
-        let err = resolve(parse(r##"
+        let err = resolve(
+            parse(
+                r##"
 [[window]]
 title = "work"
 width = 0
 height = 800
   [[window.tab]]
   dir = "/tmp"
-"##).unwrap()).unwrap_err();
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ResolveError::InvalidWindowSize { .. }));
     }
 
     #[test]
     fn zero_window_height_errors() {
-        let err = resolve(parse(r#"
+        let err = resolve(
+            parse(
+                r#"
 [[window]]
 title = "work"
 width = 1200
 height = 0
   [[window.tab]]
   dir = "/tmp"
-"#).unwrap()).unwrap_err();
+"#,
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ResolveError::InvalidWindowSize { .. }));
     }
 
     #[test]
     fn present_invalid_colour_still_errors() {
-        let err = resolve(parse(r##"
+        let err = resolve(
+            parse(
+                r##"
 [[window]]
 title = "work"
 colour = "not-a-colour"
   [[window.tab]]
   dir = "/tmp"
-"##).unwrap()).unwrap_err();
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
         assert!(matches!(err, ResolveError::BadColour { .. }));
     }
 }

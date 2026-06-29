@@ -79,6 +79,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
                 shell: t.shell.clone(),
                 startup: t.startup.clone(),
                 group: t.group.clone(),
+                probe: t.probe.clone(),
             },
             load_on_open: t.load_on_open,
         })
@@ -162,6 +163,7 @@ pub fn reconcile_ops(
                     shell: t.shell.clone(),
                     startup: t.startup.clone(),
                     group: t.group.clone(),
+                    probe: t.probe.clone(),
                 },
                 load_on_open: t.load_on_open,
             })
@@ -317,6 +319,29 @@ colour = "{C}"
             }
             other => panic!("expected Update, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn window_specs_carries_probe_onto_spec() {
+        let c = cfg(r##"
+probe = "check-session"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "locus"
+  dir = "/tmp/locus"
+  [[window.tab]]
+  title = "ops"
+  dir = "/tmp/ops"
+  probe = ""
+"##);
+        let specs = window_specs(&c);
+        assert_eq!(
+            specs[0].tabs[0].spec.probe.as_deref(),
+            Some("check-session")
+        );
+        assert_eq!(specs[0].tabs[1].spec.probe, None); // opted out
     }
 
     #[test]

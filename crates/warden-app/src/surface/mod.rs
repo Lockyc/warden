@@ -58,6 +58,9 @@ pub struct TabSpec {
     /// only so the registry can pass it to the chrome DTO for sidebar sectioning; the
     /// surface layer itself never reads it.
     pub group: Option<String>,
+    /// Optional session-presence probe command (cascaded in resolve). The probe
+    /// runner (`probe.rs`) runs it per tab; `None` = no session dot. Opaque here.
+    pub probe: Option<String>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

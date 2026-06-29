@@ -15,6 +15,9 @@ mod manager;
 mod notify;
 
 #[cfg(target_os = "macos")]
+mod probe;
+
+#[cfg(target_os = "macos")]
 mod registry;
 
 #[cfg(target_os = "macos")]
@@ -151,6 +154,21 @@ fn build_app_menu(app: &tauri::AppHandle, mode: warden_config::TabDigitKeys) -> 
 #[tauri::command]
 fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) -> Option<InitDto> {
     state.lock().init_dto(window.label())
+}
+
+/// Probe this window's tabs once, on demand. The chrome calls this right after its
+/// `warden:session-state` listener is registered, so the first session-presence emit
+/// can't be lost to the listener-registration race — which matters most for
+/// `probe_interval = 0` (no timer to heal a dropped emit) and also removes the
+/// up-to-one-tick hollow-dot latency at startup for every interval.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn probe_now(window: tauri::WebviewWindow) {
+    use tauri::Manager;
+    probe::spawn_pass(
+        window.app_handle().clone(),
+        Some(window.label().to_string()),
+    );
 }
 
 /// Activate tab `id` within the calling window's registry.
@@ -338,7 +356,8 @@ fn main() {
             init_tabs,
             activate_tab,
             unload_tab,
-            diagnostic_message
+            diagnostic_message,
+            probe_now
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -365,6 +384,40 @@ fn main() {
                 // needs ManagerState already managed (above) since the handler resolves surfaces
                 // through it.
                 notify::init(handle.clone());
+
+                // Background session-probe poll loop. Reads the shared interval each
+                // tick so a hot-reload can change cadence (0 = focus/refresh-only).
+                {
+                    use std::sync::atomic::Ordering;
+                    use std::time::Duration;
+                    // Wait in ≤3s slices, bailing the moment the interval changes, so a
+                    // hot-reload that shortens a long cadence (e.g. 60→5) or toggles the
+                    // timer on/off is picked up within a few seconds — not after the old
+                    // sleep elapses. This is what makes the cadence genuinely live.
+                    const SLICE: u64 = 3;
+                    let st = handle.state::<ManagerState>();
+                    let interval = st.lock().probe_interval.clone();
+                    let app_poll = handle.clone();
+                    std::thread::spawn(move || loop {
+                        let secs = interval.load(Ordering::Relaxed);
+                        if secs > 0 {
+                            probe::run_pass(&app_poll, None);
+                        }
+                        // secs == 0 → idle; still slice-sleep so re-enabling is responsive.
+                        let target = if secs > 0 { secs } else { SLICE };
+                        let mut slept = 0;
+                        while slept < target && interval.load(Ordering::Relaxed) == secs {
+                            let chunk = std::cmp::min(SLICE, target - slept);
+                            std::thread::sleep(Duration::from_secs(chunk));
+                            slept += chunk;
+                        }
+                    });
+                }
+                // No launch-time probe pass here: each window's chrome calls the
+                // `probe_now` command once its `warden:session-state` listener is
+                // registered (see init() in index.html), which populates the dots
+                // reliably without racing the listener — covering `probe_interval = 0`
+                // and background windows that never emit a launch `Focused`.
 
                 // macOS menu. Windows are built at runtime with no NSMenu, so without this the
                 // standard shortcuts are dead and there's nowhere to surface tab navigation.
@@ -423,6 +476,9 @@ fn main() {
                                     // Advance the reconcile baseline ONLY on a valid load.
                                     m.last_good = loaded.config.clone();
                                 }
+                                // Apply the (possibly changed) probe cadence while we still
+                                // hold the lock, then release it before any lock-free work.
+                                m.set_probe_interval(loaded.config.probe_interval);
                                 drop(m);
                                 // Opt-in tidy: rewrite the file formatted. Diff-guarded in
                                 // format_file, so warden's own write doesn't loop the watcher.
@@ -436,6 +492,9 @@ fn main() {
                                 }
                                 // Clear any stale error banner.
                                 let _ = wh.emit("warden:error-clear", ());
+                                // Refresh the session dots now that cadence/config may have changed
+                                // (lock already released, so the spawned pass can lock freely).
+                                probe::spawn_pass(wh.clone(), None);
                             }
                             Ok(_) => {
                                 // Valid TOML but no windows: keep live windows up,

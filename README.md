@@ -24,6 +24,14 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 - **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens a window for each `[[window]]` in the config (colour + title banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`load_on_open` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour, re-section groups — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs from the **Tab** menu — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to instead make **⌘1** / **⌘2** cycle next/prev (jumps then shift to **⌘3–⌘9**). **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
 - **Tab-row affordances** — each sidebar tab shows a letter/colour tile and a **live/cold dot**: filled when the terminal is spawned, hollow when cold. Hovering a live dot reveals a ✕ that **unloads** the tab — kills the terminal and PTY; it goes cold and respawns a fresh shell on next focus. Tabs also **surface notifications**: when a background tab rings the bell or emits a desktop-notification escape (OSC 9 / OSC 777), warden badges its row with an amber dot, and a desktop notification additionally raises a macOS banner; the badge clears on focus. This is the channel [agentmux](https://github.com/lockyc/agentmux)'s Claude hooks feed instead of shelling out to `osascript`.
 
+Each probe-enabled tab also carries a **session-presence dot** (cyan): warden runs a configured `probe` command per tab and lights the dot when it exits 0 — independent of whether warden's own terminal surface is loaded. Pairing with [agentmux](https://github.com/lockyc/agentmux), set:
+
+```toml
+probe = 'tmux -L "$AGENTMUX_AGENT_SOCKET" has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
+```
+
+so a tab shows whether its amux session is alive. `probe_interval` controls the cadence (`0` = check on focus/hot-reload only).
+
 Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle windows, ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
 
 ## Config
@@ -60,6 +68,8 @@ cmd    = "amux"              # this window's default startup command (each tab c
 
 A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar. Set `format_on_save = true` to have warden rewrite the config in house style on each clean hot-reload (the same formatting `warden fmt` applies).
 
+Set `format_on_save = true` (optional, default off) at the top level to have warden rewrite the config file to house TOML style on each clean hot-reload — useful when editing the config by hand and wanting it kept tidy automatically.
+
 ## Build & use
 
 With [`just`](https://github.com/casey/just) (run `just` to list recipes):
@@ -68,7 +78,7 @@ With [`just`](https://github.com/casey/just) (run `just` to list recipes):
 just run          # launch the app against examples/config.toml (never touches your real config)
 just validate     # validate the demo config (pass a path to validate another)
 just test         # workspace tests
-just fmt          # format Rust code (cargo fmt)
+just fmt          # format Rust sources (cargo fmt)
 just clippy       # lint (warnings as errors)
 just build        # build the release warden.app (needs: cargo install tauri-cli --version ^2)
 just deploy       # build, install to /Applications (unsigned), and relaunch
@@ -84,13 +94,16 @@ cargo test
 cargo run -p warden-app                                # launch the app (macOS; reads WARDEN_CONFIG or ~/.config/warden/config.toml)
 cargo run -p warden-config --bin warden -- validate    # validate ~/.config/warden/config.toml
 cargo run -p warden-config --bin warden -- validate path/to/config.toml
-cargo run -p warden-config --bin warden -- fmt              # format ~/.config/warden/config.toml in house style
-cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml   # check formatting (CI gate)
+cargo run -p warden-config --bin warden -- fmt         # format ~/.config/warden/config.toml in place
+cargo run -p warden-config --bin warden -- fmt path/to/config.toml
+cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # check only, no write
 ```
 
 `warden-app` materializes a window for each `[[window]]` and hot-reloads on save; edit the config while it's running to watch windows and tabs appear, disappear, and recolour live.
 
 `warden validate` prints the resolved windows/tabs and any warnings; exit code 0 (ok), 1 (load/parse/validation error), 2 (usage). `warden fmt` rewrites a config in warden's house TOML style (`--check` reports without writing, for a CI gate); `format_on_save = true` applies the same formatting automatically on each clean save.
+
+`warden fmt` formats the config file to house TOML style (consistent indentation, aligned `=`, section spacing). `--check` exits non-zero if the file would change — used in `just gate` to keep the demo config tidy.
 
 ## Layout
 
