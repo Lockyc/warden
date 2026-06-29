@@ -492,6 +492,10 @@ declare_class!(
         // between same-scale displays doesn't fire this, which is correct — nothing to update.
         #[method(viewDidChangeBackingProperties)]
         fn view_did_change_backing_properties(&self) {
+            // TEMPORARY scale-debug: confirm the override fires on unplug, and what scale it sees
+            // at fire time (suspected stale if the window isn't yet reassociated with its new screen).
+            let fire_scale = self.window().map(|w| w.backingScaleFactor());
+            eprintln!("[warden-scale] viewDidChangeBackingProperties FIRED, window scale={fire_scale:?}");
             let surface = self.ivars().surface.get();
             if surface.is_null() {
                 return;
@@ -500,7 +504,13 @@ declare_class!(
             let scale = window.backingScaleFactor();
             let frame = self.frame();
             unsafe {
-                apply_surface_geometry(surface, frame.size.width, frame.size.height, scale);
+                apply_surface_geometry(
+                    surface,
+                    frame.size.width,
+                    frame.size.height,
+                    scale,
+                    "viewDidChangeBackingProperties",
+                );
             }
         }
     }
@@ -661,8 +671,8 @@ unsafe fn apply_surface_geometry(
     width_pts: f64,
     height_pts: f64,
     scale: f64,
+    tag: &str,
 ) {
-    ffi::ghostty_surface_set_content_scale(surface, scale, scale);
     let (w, h) = geometry::backing_size(
         PixelRect {
             x: 0.0,
@@ -672,6 +682,14 @@ unsafe fn apply_surface_geometry(
         },
         scale,
     );
+    // TEMPORARY scale-debug instrumentation (remove after the monitor-unplug repro).
+    // Logs every content-scale/size push: which caller, the backingScaleFactor we read,
+    // the point dims, and the backing-pixel size we hand libghostty. Watch this on stderr
+    // (run via `just run` or the binary from a terminal) while unplugging a display.
+    eprintln!(
+        "[warden-scale] {tag}: scale={scale} pts={width_pts:.1}x{height_pts:.1} backing={w}x{h}"
+    );
+    ffi::ghostty_surface_set_content_scale(surface, scale, scale);
     ffi::ghostty_surface_set_size(surface, w, h);
 }
 
@@ -791,7 +809,7 @@ impl GhosttySurface {
                 host_view.removeFromSuperview();
                 return Err(SurfaceError::SurfaceCreateFailed);
             }
-            apply_surface_geometry(surface, rect.width, rect.height, scale);
+            apply_surface_geometry(surface, rect.width, rect.height, scale, "new");
 
             // The view forwards keystrokes to this surface for its whole life.
             // Per-view ownership => first-responder routing is correct across
@@ -819,7 +837,7 @@ impl TerminalSurface for GhosttySurface {
             );
             self.host_view.setFrame(frame);
             let scale = self.window.backingScaleFactor();
-            apply_surface_geometry(self.surface, rect.width, rect.height, scale);
+            apply_surface_geometry(self.surface, rect.width, rect.height, scale, "set_frame");
         }
     }
 
