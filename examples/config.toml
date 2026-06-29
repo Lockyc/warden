@@ -25,7 +25,14 @@ tab_digit_keys = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 ne
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
 # dot when it exits 0. Here it's lit while the tab's agentmux session is live; any check works.
 # probe_interval is in seconds (0 = check only on window focus / hot-reload).
-probe          = 'tmux -L "$AGENTMUX_AGENT_SOCKET" has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
+#
+# Two gotchas, both because warden runs the probe via bare `sh -c` with warden.app's *own* env:
+#   1. A Finder/Dock-launched warden.app has a minimal PATH (no /opt/homebrew/bin), so name the
+#      tmux binary by ABSOLUTE path — bare `tmux` is command-not-found → silent "no session".
+#      (Under `just run` it inherits your shell PATH, so bare `tmux` works there and masks this.)
+#   2. amux's agent sessions live on tmux's DEFAULT socket (no `-L`); `$AGENTMUX_AGENT_SOCKET` is
+#      empty in production and isn't inherited from Finder anyway — so don't pass `-L` here.
+probe          = '/opt/homebrew/bin/tmux has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
 probe_interval = 5
 
 [[window]]

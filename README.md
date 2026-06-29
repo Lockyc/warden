@@ -27,10 +27,10 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 Each probe-enabled tab also carries a **session-presence dot** (cyan): warden runs a configured `probe` command per tab and lights the dot when it exits 0 — independent of whether warden's own terminal surface is loaded. Pairing with [agentmux](https://github.com/lockyc/agentmux), set:
 
 ```toml
-probe = 'tmux -L "$AGENTMUX_AGENT_SOCKET" has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
+probe = '/opt/homebrew/bin/tmux has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
 ```
 
-so a tab shows whether its amux session is alive. `probe_interval` controls the cadence (`0` = check on focus/hot-reload only).
+so a tab shows whether its amux session is alive. `probe_interval` controls the cadence (`0` = check on focus/hot-reload only). Two things to get right, because warden runs the probe via bare `sh -c` with the *app's own* environment: name `tmux` by **absolute path** (a Finder/Dock-launched `warden.app` has a minimal PATH that omits `/opt/homebrew/bin`, so bare `tmux` is silently command-not-found — adjust the path to your `which tmux`), and **don't pass `-L`** (amux's agent sessions live on tmux's default socket).
 
 Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle windows, ad-hoc `cmd+T`/`cmd+N` tabs/windows, a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch), and `TerminalSurface` seam + IPC hardening.
 
