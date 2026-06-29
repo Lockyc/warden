@@ -9,8 +9,10 @@ toml = "0.8"
 thiserror = "1"
 notify = "6"
 dirs = "5"
-
-[dev-dependencies]
+# House-style TOML formatter (see fmt.rs) — embedded as a library so warden can
+# format the config itself; users never need a standalone taplo binary.
+taplo = "0.13"
+# Atomic in-place rewrite for format_file (temp file in the same dir + rename).
 tempfile = "3"
 
 [[bin]]

@@ -6,6 +6,12 @@ use serde::Deserialize;
 pub struct RawConfig {
     pub shell: Option<String>,
     pub cmd: Option<String>,
+    // When true, warden rewrites this config file formatted on each clean hot-reload
+    // (see fmt.rs). Optional; a missing field resolves to false.
+    pub format_on_save: Option<bool>,
+    // ⌘1/⌘2 menu behaviour: "jump" (default, ⌘1–9 jump to position) or "cycle"
+    // (⌘1 = next tab, ⌘2 = prev; jumps shift to ⌘3–9). Validated in resolve.rs.
+    pub tab_digit_keys: Option<String>,
     #[serde(default, rename = "window")]
     pub windows: Vec<RawWindow>,
 }

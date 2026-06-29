@@ -14,7 +14,11 @@
 # renders as a labelled section in the sidebar. Loose [[window.tab]]s (no group) render first, in a
 # headerless section. Groups are presentation only — they add no cascade level. See the last window.
 
-shell = "fish -l"                     # global default shell for every tab
+shell          = "fish -l" # global default shell for every tab
+format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
+# How ⌘1/⌘2 behave (whole-app). "jump" (default) = ⌘1–⌘9 jump to that tab position.
+# "cycle" = ⌘1 next tab / ⌘2 previous tab (like ⌘⇧] / ⌘⇧[); jumps then start at ⌘3.
+tab_digit_keys = "cycle"
 
 [[window]]                            # a window
 title  = "work"
@@ -27,8 +31,8 @@ cmd    = "echo 'in work'"             # default startup for this window's tabs (
   # `just validate` stays warning-free. NOTE: tilde expansion only handles `~/…` — a bare
   # `~` is left literal and warns; write `~/Library`, not `~`.
   [[window.tab]]
-  title = "library"
-  dir   = "~/Library"                 # inherits the window's cmd
+    title = "library"
+    dir   = "~/Library" # inherits the window's cmd
 
   [[window.tab]]
   title        = "logs"

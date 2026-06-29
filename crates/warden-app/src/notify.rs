@@ -109,7 +109,9 @@ fn setup_banners() {
     // escapes the call.
     let handler = RcBlock::new(|granted: Bool, _err: *mut NSError| {
         if !granted.as_bool() {
-            eprintln!("warden: notification authorization not granted — banners will be suppressed");
+            eprintln!(
+                "warden: notification authorization not granted — banners will be suppressed"
+            );
         }
     });
     unsafe { center.requestAuthorizationWithOptions_completionHandler(opts, &handler) };
@@ -174,7 +176,8 @@ fn show_banner(title: &str, body: &str) {
     let id = BANNER_SEQ.fetch_add(1, Ordering::Relaxed);
     let ident = NSString::from_str(&format!("warden-{id}"));
     // nil trigger → deliver immediately; nil completion handler → fire-and-forget.
-    let request =
-        unsafe { UNNotificationRequest::requestWithIdentifier_content_trigger(&ident, &content, None) };
+    let request = unsafe {
+        UNNotificationRequest::requestWithIdentifier_content_trigger(&ident, &content, None)
+    };
     unsafe { center.addNotificationRequest_withCompletionHandler(&request, None) };
 }

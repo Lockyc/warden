@@ -1,5 +1,5 @@
 use crate::colour::{Colour, ColourError};
-use crate::model::{Config, Tab, Warning, Window};
+use crate::model::{Config, Tab, TabDigitKeys, Warning, Window};
 use crate::raw::{RawConfig, RawWindow};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,19 @@ pub enum ResolveError {
     DuplicateGroup { window: String, group: String },
     #[error("window {window:?} has invalid size {width}x{height} (must be > 0)")]
     InvalidWindowSize { window: String, width: u32, height: u32 },
+    #[error("invalid tab_digit_keys {0:?} (expected \"jump\" or \"cycle\")")]
+    BadTabDigitKeys(String),
+}
+
+/// Parse the global `tab_digit_keys` setting. Missing/empty → the default
+/// (`Jump`); an unrecognised value is an error rather than a silent fallback.
+fn resolve_tab_digit_keys(raw: Option<&str>) -> Result<TabDigitKeys, ResolveError> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(TabDigitKeys::default()),
+        Some("jump") => Ok(TabDigitKeys::Jump),
+        Some("cycle") => Ok(TabDigitKeys::Cycle),
+        Some(other) => Err(ResolveError::BadTabDigitKeys(other.to_string())),
+    }
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
@@ -77,6 +90,7 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
     let mut seen_windows = HashSet::new();
+    let tab_digit_keys = resolve_tab_digit_keys(raw.tab_digit_keys.as_deref())?;
 
     for (index, rp) in raw.windows.iter().enumerate() {
         if rp.title.trim().is_empty() {
@@ -87,7 +101,14 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
         }
         windows.push(resolve_window(rp, global_shell, global_cmd, &mut warnings)?);
     }
-    Ok((Config { windows }, warnings))
+    Ok((
+        Config {
+            windows,
+            format_on_save: raw.format_on_save.unwrap_or(false),
+            tab_digit_keys,
+        },
+        warnings,
+    ))
 }
 
 fn resolve_window(
@@ -229,6 +250,74 @@ mod tests {
 
     fn resolve_str(s: &str) -> Result<(Config, Vec<Warning>), ResolveError> {
         resolve(parse(s).unwrap())
+    }
+
+    #[test]
+    fn format_on_save_defaults_false() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.format_on_save);
+    }
+
+    #[test]
+    fn format_on_save_parses_true() {
+        let (cfg, _) = resolve_str(
+            r##"
+format_on_save = true
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.format_on_save);
+    }
+
+    #[test]
+    fn tab_digit_keys_defaults_to_jump() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.tab_digit_keys, TabDigitKeys::Jump);
+    }
+
+    #[test]
+    fn tab_digit_keys_parses_cycle() {
+        let (cfg, _) = resolve_str(
+            r##"
+tab_digit_keys = "cycle"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.tab_digit_keys, TabDigitKeys::Cycle);
+    }
+
+    #[test]
+    fn tab_digit_keys_rejects_unknown() {
+        let err = resolve_str(
+            r##"
+tab_digit_keys = "wiggle"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(err, ResolveError::BadTabDigitKeys("wiggle".to_string()));
     }
 
     #[test]
