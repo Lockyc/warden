@@ -189,6 +189,35 @@ impl Registry {
         None
     }
 
+    /// Recreate the live surface owning `surface_id`, preserving the tab's spec — used after a
+    /// display backing-scale change, since the vendored libghostty doesn't reflow the font on a
+    /// live content-scale push (only a fresh surface rebuilds cell metrics at the new DPI). The
+    /// new surface reads the window's *current* `backingScaleFactor` at creation, so it renders
+    /// correctly. Re-shows + focuses if it was the active tab, else leaves it hidden. Returns
+    /// false (no-op) if `surface_id` isn't a live tab in this registry. Restarts the tab's
+    /// process — that cost is why the app gates this on `respawn_on_scale_change`.
+    pub fn respawn_surface(&mut self, surface_id: usize) -> bool {
+        let Some(idx) = self.tabs.iter().position(
+            |t| matches!(&t.slot, TabSlot::Spawned(s) if s.id() == surface_id),
+        ) else {
+            return false;
+        };
+        if let TabSlot::Spawned(old) = std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Cold) {
+            old.close();
+        }
+        let s = GhosttySurface::new(self.ns_window, self.last_rect, &self.tabs[idx].spec)
+            .expect("surface create");
+        if self.active.as_deref() == Some(self.tabs[idx].id.as_str()) {
+            s.set_frame(self.last_rect);
+            s.show();
+            s.focus();
+        } else {
+            s.hide();
+        }
+        self.tabs[idx].slot = TabSlot::Spawned(s);
+        true
+    }
+
     /// Show + focus the tab `id` (spawning it first if declared); hide all others.
     pub fn activate(&mut self, id: &str) {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {

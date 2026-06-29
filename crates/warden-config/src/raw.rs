@@ -17,6 +17,10 @@ pub struct RawConfig {
     // ⌘1/⌘2 menu behaviour: "jump" (default, ⌘1–9 jump to position) or "cycle"
     // (⌘1 = next tab, ⌘2 = prev; jumps shift to ⌘3–9). Validated in resolve.rs.
     pub tab_digit_keys: Option<String>,
+    // When true, warden recreates a tab's terminal surface on a display backing-scale
+    // change (monitor unplug) so the font re-renders at the new DPI. Restarts the tab's
+    // process. Optional; a missing field resolves to false. See model.rs / resolve.rs.
+    pub respawn_on_scale_change: Option<bool>,
     #[serde(default, rename = "window")]
     pub windows: Vec<RawWindow>,
 }

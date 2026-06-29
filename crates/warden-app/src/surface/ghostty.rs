@@ -315,6 +315,7 @@ declare_class!(
         fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Option<Retained<Self>> {
             let this = this.set_ivars(HostIvars {
                 surface: Cell::new(ptr::null_mut()),
+                built_scale: Cell::new(0.0),
             });
             unsafe { msg_send_id![super(this), initWithFrame: frame] }
         }
@@ -492,10 +493,6 @@ declare_class!(
         // between same-scale displays doesn't fire this, which is correct — nothing to update.
         #[method(viewDidChangeBackingProperties)]
         fn view_did_change_backing_properties(&self) {
-            // TEMPORARY scale-debug: confirm the override fires on unplug, and what scale it sees
-            // at fire time (suspected stale if the window isn't yet reassociated with its new screen).
-            let fire_scale = self.window().map(|w| w.backingScaleFactor());
-            eprintln!("[warden-scale] viewDidChangeBackingProperties FIRED, window scale={fire_scale:?}");
             let surface = self.ivars().surface.get();
             if surface.is_null() {
                 return;
@@ -504,13 +501,18 @@ declare_class!(
             let scale = window.backingScaleFactor();
             let frame = self.frame();
             unsafe {
-                apply_surface_geometry(
-                    surface,
-                    frame.size.width,
-                    frame.size.height,
-                    scale,
-                    "viewDidChangeBackingProperties",
-                );
+                apply_surface_geometry(surface, frame.size.width, frame.size.height, scale);
+            }
+            // The content-scale push above corrects the framebuffer but NOT the font: the vendored
+            // libghostty doesn't rebuild cell metrics on a live `set_content_scale`, so a DPI change
+            // leaves the grid rendered at the old scale until the surface is recreated. When the scale
+            // genuinely differs from what this surface's font was built at, signal a respawn — async
+            // so the teardown doesn't run while this NSView method is on the stack. Gated app-side on
+            // `respawn_on_scale_change`; if disabled the signal is dropped (manual respawn only).
+            if (scale - self.ivars().built_scale.get()).abs() > f64::EPSILON {
+                unsafe {
+                    dispatch_async_f(main_queue(), surface as *mut c_void, scale_changed_trampoline);
+                }
             }
         }
     }
@@ -523,11 +525,20 @@ declare_class!(
 /// focused window's view, which forwards to *its own* surface.
 struct HostIvars {
     surface: Cell<ffi::ghostty_surface_t>,
+    /// The backing scale the surface's font was built at (creation-time `backingScaleFactor`).
+    /// `viewDidChangeBackingProperties` compares the live scale against this to detect a *real*
+    /// DPI change (the override also fires on no-op backing changes / at launch), and signals a
+    /// respawn only when they differ. Set once in `new`; a respawn makes a fresh view with the
+    /// new scale, so it never needs updating in place.
+    built_scale: Cell<f64>,
 }
 
 impl WardenHostView {
     fn set_surface(&self, surface: ffi::ghostty_surface_t) {
         self.ivars().surface.set(surface);
+    }
+    fn set_built_scale(&self, scale: f64) {
+        self.ivars().built_scale.set(scale);
     }
 }
 
@@ -671,8 +682,8 @@ unsafe fn apply_surface_geometry(
     width_pts: f64,
     height_pts: f64,
     scale: f64,
-    tag: &str,
 ) {
+    ffi::ghostty_surface_set_content_scale(surface, scale, scale);
     let (w, h) = geometry::backing_size(
         PixelRect {
             x: 0.0,
@@ -682,15 +693,20 @@ unsafe fn apply_surface_geometry(
         },
         scale,
     );
-    // TEMPORARY scale-debug instrumentation (remove after the monitor-unplug repro).
-    // Logs every content-scale/size push: which caller, the backingScaleFactor we read,
-    // the point dims, and the backing-pixel size we hand libghostty. Watch this on stderr
-    // (run via `just run` or the binary from a terminal) while unplugging a display.
-    eprintln!(
-        "[warden-scale] {tag}: scale={scale} pts={width_pts:.1}x{height_pts:.1} backing={w}x{h}"
-    );
-    ffi::ghostty_surface_set_content_scale(surface, scale, scale);
     ffi::ghostty_surface_set_size(surface, w, h);
+}
+
+/// GCD work item: emit a `BackingScaleChanged` signal for the surface passed as `context`
+/// (its `*mut ghostty_surface_t` reinterpreted as a `usize` id). Dispatched async from
+/// `viewDidChangeBackingProperties` so the respawn it triggers (which frees this surface +
+/// its view) runs on a *later* runloop turn, not while the NSView method is still on the
+/// stack. If the surface was already torn down by the time this runs, the id simply won't
+/// match any live tab and the app drops it — the pointer is only ever compared, never read.
+unsafe extern "C" fn scale_changed_trampoline(context: *mut c_void) {
+    super::emit_surface_event(SurfaceEvent {
+        surface_id: context as usize,
+        signal: SurfaceSignal::BackingScaleChanged,
+    });
 }
 
 // --- GhosttySurface ---------------------------------------------------------
@@ -809,12 +825,15 @@ impl GhosttySurface {
                 host_view.removeFromSuperview();
                 return Err(SurfaceError::SurfaceCreateFailed);
             }
-            apply_surface_geometry(surface, rect.width, rect.height, scale, "new");
+            apply_surface_geometry(surface, rect.width, rect.height, scale);
 
             // The view forwards keystrokes to this surface for its whole life.
             // Per-view ownership => first-responder routing is correct across
             // windows by construction, no shared global to disambiguate.
             host_view.set_surface(surface);
+            // Record the scale the font was built at so viewDidChangeBackingProperties can tell a
+            // real DPI change (→ respawn) from a no-op backing-properties fire.
+            host_view.set_built_scale(scale);
 
             // Kick an initial tick in case the first wakeup raced app creation.
             dispatch_async_f(main_queue(), app as *mut c_void, tick_trampoline);
@@ -837,7 +856,7 @@ impl TerminalSurface for GhosttySurface {
             );
             self.host_view.setFrame(frame);
             let scale = self.window.backingScaleFactor();
-            apply_surface_geometry(self.surface, rect.width, rect.height, scale, "set_frame");
+            apply_surface_geometry(self.surface, rect.width, rect.height, scale);
         }
     }
 

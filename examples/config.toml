@@ -17,10 +17,11 @@
 # The `dir`s point at examples/projects/ (tracked mock dirs) so this demo validates warning-free
 # from the repo root. A real config uses absolute or ~/-prefixed paths to your actual projects.
 
-shell          = "fish -l" # global default shell for every tab
-cmd            = "amux"    # global default: launch agentmux in each tab (shell stays live on exit)
-format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
-tab_digit_keys = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
+shell                   = "fish -l" # global default shell for every tab
+cmd                     = "amux"    # global default: launch agentmux in each tab (shell stays live on exit)
+format_on_save          = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
+tab_digit_keys          = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
+respawn_on_scale_change = true      # recreate a tab's terminal on a display-DPI change (monitor unplug) so the font re-renders; restarts the tab's process (amux reattaches). Default off.
 
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
 # dot when it exits 0. Here it's lit while the tab's agentmux session is live; any check works.
@@ -37,7 +38,7 @@ probe_interval = 5
 # `kill` (optional, cascades like `probe`) runs when you confirm killing a tab's session: click
 # the cyan presence dot once to arm, again to confirm. Same env/PATH caveats — absolute binary
 # paths. It's only reachable on tabs that also set `probe` (no probe ⇒ no dot to click).
-kill           = '/opt/homebrew/bin/tmux kill-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
+kill = '/opt/homebrew/bin/tmux kill-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
 
 [[window]]
   title  = "personal"

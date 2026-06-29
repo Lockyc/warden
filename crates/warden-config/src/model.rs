@@ -12,6 +12,13 @@ pub struct Config {
     /// Seconds between background session-probe passes. 0 = focus/refresh-only.
     /// Default 5. Global concern — no per-window cascade.
     pub probe_interval: u64,
+    /// When true, warden recreates a tab's terminal surface when its window's
+    /// display backing-scale changes (e.g. unplugging an external monitor). The
+    /// vendored libghostty doesn't reflow the font on a live content-scale push,
+    /// so only a fresh surface re-renders at the new DPI — but recreating restarts
+    /// the tab's process (transparent for amux/tmux, which reattaches; lossy for a
+    /// bare process). Default false. Whole-app concern — no per-window cascade.
+    pub respawn_on_scale_change: bool,
 }
 
 /// Behaviour of the ⌘1/⌘2 menu accelerators (a whole-app keybinding mode).
