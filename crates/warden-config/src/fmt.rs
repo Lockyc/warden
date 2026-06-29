@@ -9,9 +9,9 @@ use taplo::formatter::{format, Options};
 
 /// Format TOML in warden's house style — reproduces and enforces the
 /// hand-formatted look of `examples/config.toml`: nested-table indentation,
-/// aligned `=` and trailing comments, authored key order preserved, and exactly
-/// one blank line before every section (taplo handles all but the blank-line
-/// normalization, which `separate_sections` adds on top — see its doc).
+/// aligned `=` and trailing comments, authored key order preserved, and blank
+/// lines separating top-level/group sections while nested tabs stay tight
+/// (taplo handles all but the blank-line normalization — see `separate_sections`).
 pub fn format_str(input: &str) -> String {
     let o = Options {
         indent_tables: true,
@@ -31,36 +31,82 @@ pub fn format_str(input: &str) -> String {
     separate_sections(&format(input, o))
 }
 
-/// Normalize vertical spacing to **exactly one blank line before every section
-/// header** (a `[[…]]` / `[…]` line). taplo only *caps* blank lines (set to 1
-/// above); this inserts the missing ones so sections are uniformly separated.
+/// Normalize vertical spacing: **one blank line before every container section
+/// header** (`[[window]]`, `[[window.group]]`, …) while **nested tab headers
+/// stay tight** (no blank before a `[[…tab]]`). taplo only *caps* blank lines
+/// (set to 1 above), so this both inserts the missing separators and strips
+/// blanks that crept in before a tab.
 ///
+/// "Tight vs separated" keys on the header's leaf segment — a leaf of `tab`
+/// (warden's terminal entry) is tight; anything else is a container, separated.
 /// A comment block glued to a header (no blank between them) is treated as part
-/// of that section — the blank goes *above* the comment, never between the
-/// comment and its header. No blank is added at the very start of the file.
-/// Idempotent: a file already spaced this way is returned unchanged.
+/// of that section, so the inserted/stripped blank applies above the comment,
+/// never between the comment and its header. No blank is added at the very start
+/// of the file. Idempotent: a file already spaced this way is returned unchanged.
 fn separate_sections(formatted: &str) -> String {
     let lines: Vec<&str> = formatted.lines().collect();
     let is_header = |l: &str| l.trim_start().starts_with('[');
     let is_comment = |l: &str| l.trim_start().starts_with('#');
+    // The header's final dotted key segment, e.g. `[[window.group.tab]]` → "tab".
+    let leaf = |l: &str| -> String {
+        l.trim_start()
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
     let mut out: Vec<&str> = Vec::with_capacity(lines.len() + 16);
     for (i, &line) in lines.iter().enumerate() {
-        // A section begins at a header that isn't glued to a comment above it,
-        // or at the top of a comment block that leads (without a blank) into a
-        // header — the latter carries the blank for the whole comment+header unit.
-        let header_starts = is_header(line) && !(i > 0 && is_comment(lines[i - 1]));
-        let comment_starts = is_comment(line) && !(i > 0 && is_comment(lines[i - 1])) && {
+        // A section unit begins at a header not glued to a comment above it, or at
+        // the top of a comment block leading (without a blank) into a header — the
+        // comment block carries the spacing for the whole comment+header unit.
+        let header_here = is_header(line) && !(i > 0 && is_comment(lines[i - 1]));
+        let comment_lead = is_comment(line) && !(i > 0 && is_comment(lines[i - 1])) && {
             let mut k = i;
             while k < lines.len() && is_comment(lines[k]) {
                 k += 1;
             }
             k < lines.len() && is_header(lines[k])
         };
-        if (header_starts || comment_starts)
-            && !out.is_empty()
-            && !out.last().is_some_and(|l| l.trim().is_empty())
-        {
-            out.push("");
+        if header_here || comment_lead {
+            // Find the header this unit leads to, and classify it.
+            let header_idx = if header_here {
+                i
+            } else {
+                let mut k = i;
+                while k < lines.len() && is_comment(lines[k]) {
+                    k += 1;
+                }
+                k
+            };
+            if leaf(lines[header_idx]) == "tab" {
+                // Tight: drop blanks before this nested tab — UNLESS a comment sits
+                // directly above them. Stripping there would glue that trailing
+                // comment to the header, and taplo would reparent + reindent it on
+                // the next pass (breaking idempotency), so keep the separating blank.
+                let comment_above = {
+                    let mut j = out.len();
+                    while j > 0 && out[j - 1].trim().is_empty() {
+                        j -= 1;
+                    }
+                    j > 0 && is_comment(out[j - 1])
+                };
+                if !comment_above {
+                    while out.last().is_some_and(|l| l.trim().is_empty()) {
+                        out.pop();
+                    }
+                }
+            } else if !out.is_empty() && !out.last().is_some_and(|l| l.trim().is_empty()) {
+                // Separated: ensure exactly one blank before the container (none
+                // at file start).
+                out.push("");
+            }
         }
         out.push(line);
     }
@@ -147,24 +193,73 @@ name="g"
 [[window.group.tab]]
 dir="/etc"
 "##;
+        // Containers (window, group) get a leading blank; nested tabs stay tight.
         let expected = r##"# header
 shell = "fish"
 
 [[window]]
   name   = "w"
   colour = "#0f8a8a"
-
   [[window.tab]]
     dir = "/tmp"
     cmd = ""     # opt out
 
   [[window.group]]
     name = "g"
-
     [[window.group.tab]]
       dir = "/etc"
 "##;
         assert_eq!(format_str(input), expected);
+    }
+
+    #[test]
+    fn tabs_tight_containers_separated() {
+        // Windows and groups get a leading blank; nested tabs stay tight — and a
+        // stray blank that crept in before a tab is stripped.
+        let input = "\
+[[window]]
+name=\"w\"
+
+[[window.tab]]
+dir=\"/a\"
+[[window.tab]]
+dir=\"/b\"
+[[window.group]]
+name=\"g\"
+[[window.group.tab]]
+dir=\"/c\"
+";
+        let expected = "\
+[[window]]
+  name = \"w\"
+  [[window.tab]]
+    dir = \"/a\"
+  [[window.tab]]
+    dir = \"/b\"
+
+  [[window.group]]
+    name = \"g\"
+    [[window.group.tab]]
+      dir = \"/c\"
+";
+        assert_eq!(format_str(input), expected);
+    }
+
+    #[test]
+    fn idempotent_when_comment_precedes_a_tab() {
+        // A trailing comment right before a tab must keep its separating blank, or
+        // stripping for tightness would glue the comment to the tab — taplo then
+        // reparents + reindents it on the next pass and format_str stops being
+        // idempotent (which would defeat the format-on-save diff-guard).
+        let input =
+            "[[window]]\nname=\"w\"\n[[window.tab]]\ntitle=\"a\"\n# note about a\n\n[[window.tab]]\ntitle=\"b\"\n";
+        let once = format_str(input);
+        assert_eq!(format_str(&once), once, "not idempotent:\n{once}");
+        // the note stays attached to tab a (indent 4), separated from tab b.
+        assert!(
+            once.contains("    # note about a\n\n  [[window.tab]]"),
+            "got:\n{once}"
+        );
     }
 
     #[test]
