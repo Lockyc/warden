@@ -6,6 +6,12 @@
 
 **A curator for your terminals** — windows, projects, and (mostly) muxers all the way down.
 
+[![Release](https://img.shields.io/github/v/release/Lockyc/warden?sort=semver&label=release)](https://github.com/Lockyc/warden/releases/latest)
+![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
+![Built with Rust](https://img.shields.io/badge/built%20with-Rust-CE412B?logo=rust&logoColor=white)
+![Tauri](https://img.shields.io/badge/Tauri-24C8DB?logo=tauri&logoColor=white)
+[![License](https://img.shields.io/github/license/Lockyc/warden)](LICENSE)
+
 </div>
 
 warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **windows** and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each window carries a colour + title banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
@@ -18,7 +24,7 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 
 ## Status
 
-**Working on macOS.** Public project, currently a private repo until it's ready for release. Two layers are built:
+**Working on macOS.** Two layers are built:
 
 - **Config-core** — the `warden-config` crate (parse / validate / resolve / diff / load / watch) plus a `warden validate` CLI.
 - **The app** — `warden-app`, a macOS Tauri app embedding [libghostty](https://github.com/ghostty-org/ghostty) terminal surfaces. It opens a window for each `[[window]]` in the config (colour + title banner, curator-style draggable sidebar, terminal under an overlay titlebar), spawns project tabs (`load_on_open` eager at launch, the rest lazy on first focus), and **hot-reloads on save** (add/remove windows and tabs, recolour, re-section groups — live). A missing/invalid config opens a diagnostic window; a parse error on a live edit shows a banner and keeps the last-good windows up. Switch tabs from the **Tab** menu — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to instead make **⌘1** / **⌘2** cycle next/prev (jumps then shift to **⌘3–⌘9**). **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
