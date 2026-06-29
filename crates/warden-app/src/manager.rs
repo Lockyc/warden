@@ -140,7 +140,8 @@ impl WindowManager {
         // Windows are built at runtime (not from tauri.conf.json), so the
         // window-state plugin's automatic restore doesn't apply — trigger it
         // explicitly. Saved bounds (keyed by the stable per-label) override the
-        // 900×600 builder default above; first launch (no saved state) keeps it.
+        // config-resolved builder default above (spec.width × spec.height,
+        // 1500×1000 by default); first launch (no saved state) keeps it.
         {
             use tauri_plugin_window_state::{StateFlags, WindowExt};
             let _ = window
