@@ -37,13 +37,16 @@ use std::sync::OnceLock;
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::AnyObject;
-use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::{
     NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSEvent,
     NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSResponder,
-    NSView, NSWindow,
+    NSView, NSWindow, NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
 };
-use objc2_foundation::{MainThreadMarker, NSData, NSDictionary, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSData, NSDictionary, NSNotification, NSNotificationCenter, NSPoint, NSRect,
+    NSSize, NSString,
+};
 
 // --- AppKit modifier-flag bit masks (stable AppKit ABI values) ---
 const NS_FLAG_CAPS: usize = 1 << 16;
@@ -317,6 +320,35 @@ declare_class!(
                 unsafe { ffi::ghostty_surface_set_focus(surface, true) };
             }
             true
+        }
+
+        // becomeFirstResponder: only fires on a *change* of first responder — AppKit doesn't re-send
+        // it when a window merely re-becomes key with its old first responder intact. So switching
+        // apps/windows away and back left libghostty's focus flag stale: a surface stayed focused
+        // (filled cursor) in a now-non-key window, or stayed hollow after the window came back. These
+        // two observers (registered per-window in `new`, scoped via `object: window`) track key state
+        // directly. Gate on `!isHidden()` so only the active tab's view in the keyed window reacts —
+        // every tab view in a window receives the notification, but exactly one is unhidden (show()/
+        // hide()), the same disambiguation performKeyEquivalent: uses.
+        #[method(windowDidBecomeKey:)]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            let surface = self.ivars().surface.get();
+            // SAFETY: notifications are delivered on the main thread.
+            if surface.is_null() || unsafe { self.isHidden() } {
+                return;
+            }
+            FOCUSED_SURFACE.store(surface, Ordering::Release);
+            unsafe { ffi::ghostty_surface_set_focus(surface, true) };
+        }
+
+        #[method(windowDidResignKey:)]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            let surface = self.ivars().surface.get();
+            // SAFETY: notifications are delivered on the main thread.
+            if surface.is_null() || unsafe { self.isHidden() } {
+                return;
+            }
+            unsafe { ffi::ghostty_surface_set_focus(surface, false) };
         }
 
         #[method(keyDown:)]
@@ -679,6 +711,24 @@ impl GhosttySurface {
             // Topmost subview => above the WKWebView (which is added by wry first).
             content_view.addSubview(&host_view);
 
+            // Track this window's key state so libghostty's cursor focus follows it (filled in the
+            // key window, hollow otherwise) even when no first-responder change fires — see the
+            // windowDidBecomeKey:/windowDidResignKey: handlers. Scoped to `window` so each surface
+            // only hears its own window; removed in close().
+            let center = NSNotificationCenter::defaultCenter();
+            center.addObserver_selector_name_object(
+                &host_view,
+                sel!(windowDidBecomeKey:),
+                Some(NSWindowDidBecomeKeyNotification),
+                Some(&window),
+            );
+            center.addObserver_selector_name_object(
+                &host_view,
+                sel!(windowDidResignKey:),
+                Some(NSWindowDidResignKeyNotification),
+                Some(&window),
+            );
+
             // Build the surface config from defaults, then override platform/dir/shell/startup.
             let mut cfg = ffi::ghostty_surface_config_new();
             cfg.userdata = ptr::null_mut();
@@ -771,6 +821,9 @@ impl TerminalSurface for GhosttySurface {
     }
 
     fn close(self) {
+        // Drop the key-state observers registered in new() before the view is freed, so the
+        // notification center stops messaging a dangling view.
+        unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.host_view) };
         // Stop targeting this surface for paste before freeing it (avoid completing a request
         // against a dangling pointer); only clear if it's the one currently focused.
         let _ = FOCUSED_SURFACE.compare_exchange(

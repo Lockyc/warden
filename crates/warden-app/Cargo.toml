@@ -23,7 +23,7 @@ tempfile = "3"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-app-kit = { version = "0.2", features = ["NSView", "NSWindow", "NSResponder", "NSEvent", "NSGraphics", "NSPasteboard", "NSApplication", "NSMenu", "NSImageRep", "NSBitmapImageRep"] }
-objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSThread", "NSData", "NSDictionary"] }
+objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSThread", "NSData", "NSDictionary", "NSNotification"] }
 # Native macOS banners for terminal OSC 9/777 (see src/notify.rs). Replaces the
 # tauri-plugin-notification backend, whose notify-rust/NSUserNotification path is
 # a silent no-op on macOS 26. block2 is for the authorization completion handler.
