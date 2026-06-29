@@ -45,6 +45,7 @@ gate:
     cargo fmt --all --check
     cargo clippy --workspace -- -D warnings
     cargo test --workspace
+    cargo run -p warden-config --bin warden -- fmt --check examples/config.toml
 
 # Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)
 [group("dist")]

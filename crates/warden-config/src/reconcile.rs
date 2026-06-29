@@ -36,6 +36,10 @@ pub struct Reconciliation {
 ///   close and reopen the tab to pick up such field-level edits. (`group` is the
 ///   deliberate exception — it IS detected, via `set_groups`, because it's
 ///   presentational and must not cost the tab its PTY.)
+/// - A kept window's `width` or `height` change. Window size is owned by the
+///   window-state plugin after first launch and is a first-run default only;
+///   subsequent changes to those fields in the config have no effect on a live
+///   window.
 ///
 /// **Window renames are destructive.** A rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
@@ -68,6 +72,10 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///   `cmd`, or `keep_alive` changes but its `title` stays the same, no update
 ///   is emitted — the tab appears identical to the reconciler. The consumer
 ///   must close and reopen the tab to pick up such field-level edits.
+/// - A kept window's `width` or `height` change. Window size is owned by the
+///   window-state plugin after first launch and is a first-run default only;
+///   subsequent changes to those fields in the config are not applied to a live
+///   window.
 ///
 /// **Window renames are destructive** — a rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including

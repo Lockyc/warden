@@ -83,7 +83,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
         /* Fallback colour; JS sets to the window colour */
-        background: #0f8a8a;
+        background: #6b7280;
       }
       #tab-list {
         flex: 1;
@@ -271,7 +271,7 @@
           console.error('warden: IPC ' + cmd + ' failed', err);
         });
       }
-      let windowColour = '#0f8a8a';
+      let windowColour = '#6b7280';
       let active = null;
       // This window's Tauri label, learned from the init DTO. Required to ignore
       // per-window events addressed to a sibling window: emit_to does NOT reliably
@@ -398,7 +398,7 @@
           same way whether it's the initial DTO or a pushed reconcile snapshot. */
       function render(dto) {
         const prevActive = active;
-        windowColour = dto.colour ?? '#0f8a8a';
+        windowColour = dto.colour ?? '#6b7280';
 
         // Drop badges for tabs that no longer exist (removed/renamed by a hot-reload), so a
         // future tab that reuses the id doesn't inherit a stale unread dot.
