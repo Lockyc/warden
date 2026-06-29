@@ -53,12 +53,12 @@ build:
     cd crates/warden-app && cargo tauri build
 
 # Build a release .app, install/replace it in /Applications (strips quarantine), then relaunch.
-# Unsigned local build — no notarization; Gatekeeper is satisfied via the quarantine strip.
+# Delegates to install.sh for build+install (never touches your real config).
 [group("dist")]
-deploy: build
+deploy:
     #!/usr/bin/env bash
     set -euo pipefail
-    bash scripts/install-app.sh "target/release/bundle/macos/warden.app"
+    bash install.sh
     echo "→ launching"
     open "/Applications/warden.app"
     echo "✓ warden updated in /Applications"
