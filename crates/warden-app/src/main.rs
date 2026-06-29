@@ -197,6 +197,37 @@ fn unload_tab(
         .and_then(|ws| ws.registry.unload(&id))
 }
 
+/// Kill the *session* tab `id` represents (the thing its `probe` checks for) by running
+/// its configured `kill` command via `sh -c`, cwd = the tab's dir, fire-and-forget on a
+/// detached thread (exit code ignored — warden has no response to a failed kill, and must
+/// not block the UI thread). Does NOT unload warden's terminal surface: a live tab stays
+/// live. No-op if the tab has no `kill` set. After spawning the kill, re-probe this window
+/// so the cyan presence dot drops once the session is actually gone (the poll loop would
+/// also re-converge, but this makes it prompt). Same minimal-env PATH footgun as probes —
+/// see scrub note + CLAUDE.md.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
+    use tauri::Manager;
+    let target = {
+        let m = state.lock();
+        m.windows
+            .get(window.label())
+            .and_then(|ws| ws.registry.kill_target(&id))
+    };
+    let Some((dir, title, cmd)) = target else {
+        return; // unknown tab or no kill command configured
+    };
+    let cmd = probe::substitute(&cmd, &dir, &title);
+    // Fire-and-forget: run_probe runs `sh -c cmd` (cwd = dir, output discarded); we ignore
+    // the returned exit bool. Off the UI thread so a slow kill can't stall the app.
+    std::thread::spawn(move || {
+        let _ = probe::run_probe(&cmd, &dir);
+    });
+    // Refresh presence so the dot reflects the now-killed session promptly.
+    probe::spawn_pass(window.app_handle().clone(), Some(window.label().to_string()));
+}
+
 /// Update the calling window's active-surface frame from a web-coordinate rect.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -356,6 +387,7 @@ fn main() {
             init_tabs,
             activate_tab,
             unload_tab,
+            kill_session,
             diagnostic_message,
             probe_now
         ])
