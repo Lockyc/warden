@@ -14,6 +14,7 @@ pub struct TabDto {
     pub spawned: bool,         // surface is live (load_on_open or already focused) vs cold/declared
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
     pub has_probe: bool,       // a session-probe command is configured for this tab
+    pub has_kill: bool,        // a session-kill command is configured for this tab
 }
 
 /// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
@@ -93,6 +94,7 @@ impl Registry {
                 spawned: matches!(t.slot, TabSlot::Spawned(_)),
                 group: t.spec.group.clone(),
                 has_probe: t.spec.probe.is_some(),
+                has_kill: t.spec.kill.is_some(),
             })
             .collect()
     }
@@ -110,6 +112,18 @@ impl Registry {
                     .map(|p| (t.id.clone(), t.spec.dir.clone(), t.title.clone(), p.clone()))
             })
             .collect()
+    }
+
+    /// `(dir, title, kill_cmd)` for tab `id` if it has a configured kill command,
+    /// else `None` (unknown tab, or no kill set). The caller substitutes
+    /// `{dir}`/`{title}` into `kill_cmd` and runs it with cwd = dir. Independent of
+    /// the surface being live — a session can exist while warden's surface is cold.
+    pub fn kill_target(&self, id: &str) -> Option<(std::path::PathBuf, String, String)> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        t.spec
+            .kill
+            .as_ref()
+            .map(|k| (t.spec.dir.clone(), t.title.clone(), k.clone()))
     }
 
     /// Reassign a tab's group (presentation only — does not touch its surface/PTY).
@@ -279,6 +293,7 @@ mod tests {
             startup: None,
             group: None,
             probe: None,
+            kill: None,
         }
     }
     fn spec_with_probe(id: &str, dir: &str, probe: Option<&str>) -> TabSpec {
@@ -290,6 +305,7 @@ mod tests {
             startup: None,
             group: None,
             probe: probe.map(String::from),
+            kill: None,
         }
     }
 
@@ -423,5 +439,32 @@ mod tests {
         assert_eq!(targets[0].1, PathBuf::from("/tmp/a"));
         assert_eq!(targets[0].2, "t0"); // title (= id here)
         assert_eq!(targets[0].3, "cmd-a");
+    }
+
+    #[test]
+    fn has_kill_flag_reflects_spec() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut s_with = spec("t0", "/tmp");
+        s_with.kill = Some("kill-cmd {dir}".into());
+        r.add(&s_with, false);
+        r.add(&spec("t1", "/tmp"), false); // kill: None
+        let dtos = r.tab_dtos();
+        assert!(dtos[0].has_kill);
+        assert!(!dtos[1].has_kill);
+    }
+
+    #[test]
+    fn kill_target_returns_dir_title_cmd_only_when_set() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut s = spec("t0", "/tmp/a");
+        s.kill = Some("kill {title}".into());
+        r.add(&s, false);
+        r.add(&spec("t1", "/tmp/b"), false); // no kill
+        assert_eq!(
+            r.kill_target("t0"),
+            Some((std::path::PathBuf::from("/tmp/a"), "t0".to_string(), "kill {title}".to_string()))
+        );
+        assert_eq!(r.kill_target("t1"), None); // no kill command
+        assert_eq!(r.kill_target("nope"), None); // unknown id
     }
 }

@@ -61,6 +61,10 @@ pub struct TabSpec {
     /// Optional session-presence probe command (cascaded in resolve). The probe
     /// runner (`probe.rs`) runs it per tab; `None` = no session dot. Opaque here.
     pub probe: Option<String>,
+    /// Optional session-kill command (cascaded in resolve). The app runs it via
+    /// `sh -c` when the user confirms killing this tab's session. `None` = no kill
+    /// affordance. Opaque here — same shape as `probe`.
+    pub kill: Option<String>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

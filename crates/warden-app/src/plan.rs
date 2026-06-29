@@ -80,6 +80,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
                 startup: t.startup.clone(),
                 group: t.group.clone(),
                 probe: t.probe.clone(),
+                kill: t.kill.clone(),
             },
             load_on_open: t.load_on_open,
         })
@@ -164,6 +165,7 @@ pub fn reconcile_ops(
                     startup: t.startup.clone(),
                     group: t.group.clone(),
                     probe: t.probe.clone(),
+                    kill: t.kill.clone(),
                 },
                 load_on_open: t.load_on_open,
             })
@@ -319,6 +321,26 @@ colour = "{C}"
             }
             other => panic!("expected Update, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn window_specs_carries_kill_onto_spec() {
+        let c = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+kill = "kill-session"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/alpha"
+  [[window.tab]]
+  title = "ops"
+  dir = "/tmp/ops"
+  kill = ""
+"##);
+        let specs = window_specs(&c);
+        assert_eq!(specs[0].tabs[0].spec.kill.as_deref(), Some("kill-session"));
+        assert_eq!(specs[0].tabs[1].spec.kill, None); // opted out
     }
 
     #[test]
