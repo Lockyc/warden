@@ -120,9 +120,9 @@ pub enum WindowOp {
         add_tabs: Vec<TabPlan>,
         remove_tabs: Vec<String>, // tab ids (= Tab::key)
         order: Vec<String>,       // full new tab id order
-        // (tab id, new group) for kept tabs whose [[window.group]] changed —
-        // re-sections the sidebar without respawning. None = back to loose.
-        set_groups: Vec<(String, Option<String>)>,
+        // In-place metadata for kept tabs whose group/probe/kill changed —
+        // applied live (sidebar re-section + new probe/kill) without respawning.
+        set_meta: Vec<(String, warden_config::TabMeta)>,
     },
 }
 
@@ -176,7 +176,7 @@ pub fn reconcile_ops(
             add_tabs,
             remove_tabs: u.remove_tabs.clone(),
             order: u.tab_order.clone(),
-            set_groups: u.set_groups.clone(),
+            set_meta: u.set_meta.clone(),
         });
     }
 

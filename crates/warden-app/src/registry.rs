@@ -140,12 +140,22 @@ impl Registry {
             .map(|k| (t.spec.dir.clone(), t.title.clone(), k.clone()))
     }
 
-    /// Reassign a tab's group (presentation only — does not touch its surface/PTY).
-    /// Used by a hot-reload `set_groups` so regrouping or a group rename re-sections
-    /// the sidebar without killing the terminal. No-op if `id` is unknown.
-    pub fn set_group(&mut self, id: &str, group: Option<String>) {
+    /// Apply a kept tab's in-place metadata (group/probe/kill) from a hot-reload —
+    /// presentation + externally-run commands only, NEVER the surface/PTY. A config
+    /// edit to group/probe/kill on a kept tab takes effect live without respawn:
+    /// sidebar re-sections for group, new probe/kill picked up on the next poll/kill.
+    /// No-op if `id` is unknown.
+    pub fn set_meta(
+        &mut self,
+        id: &str,
+        group: Option<String>,
+        probe: Option<String>,
+        kill: Option<String>,
+    ) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
             t.spec.group = group;
+            t.spec.probe = probe;
+            t.spec.kill = kill;
         }
     }
 
@@ -375,16 +385,25 @@ mod tests {
     }
 
     #[test]
-    fn set_group_updates_dto_without_touching_surface() {
+    fn set_meta_updates_spec_without_touching_surface() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
         assert_eq!(r.tab_dtos()[0].group, None);
-        r.set_group("t0", Some("backend".into()));
-        assert_eq!(r.tab_dtos()[0].group.as_deref(), Some("backend"));
-        // Cold tab stays cold — regrouping never spawns.
+        assert!(!r.tab_dtos()[0].has_probe && !r.tab_dtos()[0].has_kill);
+        r.set_meta(
+            "t0",
+            Some("backend".into()),
+            Some("probe-x".into()),
+            Some("kill-y".into()),
+        );
+        let d = &r.tab_dtos()[0];
+        assert_eq!(d.group.as_deref(), Some("backend"));
+        assert!(d.has_probe, "probe applied in place");
+        assert!(d.has_kill, "kill applied in place");
+        // No respawn — a cold tab stays cold.
         assert!(!r.is_spawned("t0"));
         // Unknown id is a no-op (doesn't panic).
-        r.set_group("nope", Some("x".into()));
+        r.set_meta("nope", None, None, None);
     }
 
     #[test]

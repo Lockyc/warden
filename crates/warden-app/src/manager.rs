@@ -313,12 +313,12 @@ impl WindowManager {
                     add_tabs,
                     remove_tabs,
                     order,
-                    set_groups,
+                    set_meta,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
                         // Skip no-op updates (e.g. a config save that changes nothing
                         // visible). `order` still carries the unchanged tab sequence; a
-                        // group change always carries `set_groups`, so it is never
+                        // metadata change always carries `set_meta`, so it is never
                         // mistaken for a no-op.
                         let current_order: Vec<String> =
                             ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
@@ -326,7 +326,7 @@ impl WindowManager {
                             && add_tabs.is_empty()
                             && remove_tabs.is_empty()
                             && order == current_order
-                            && set_groups.is_empty()
+                            && set_meta.is_empty()
                         {
                             continue;
                         }
@@ -347,10 +347,12 @@ impl WindowManager {
                                 );
                             }
                         }
-                        // Re-section kept tabs whose group changed (presentation only —
-                        // no respawn), before reorder + the DTO push below.
-                        for (id, group) in &set_groups {
-                            ws.registry.set_group(id, group.clone());
+                        // Apply in-place metadata (group/probe/kill) without respawning;
+                        // the warden:refresh below pushes fresh DTOs (has_probe/has_kill
+                        // recomputed) and the post-reload spawn_pass re-probes.
+                        for (id, meta) in &set_meta {
+                            ws.registry
+                                .set_meta(id, meta.group.clone(), meta.probe.clone(), meta.kill.clone());
                         }
                         ws.registry.reorder(&order);
                         // Push the new snapshot so the chrome rebuilds the sidebar.
