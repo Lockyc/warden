@@ -7,70 +7,66 @@
 # it exits). `keep_alive` spawns the tab at launch and keeps it running for background work; other
 # tabs spawn lazily on first focus.
 #
-# `shell` and `cmd` CASCADE: set them globally, per-window, or per-tab — the nearest level wins.
-# A missing value inherits from above; `cmd = ""` opts a level out of an inherited command.
+# `shell`, `cmd`, and `probe` CASCADE: set them globally, per-window, or per-tab — the nearest
+# level wins. A missing value inherits from above; `cmd = ""` opts a level out of an inherited cmd.
 #
 # Tabs can be grouped: a [[window.group]] (with a `name`) holds its own [[window.group.tab]]s and
 # renders as a labelled section in the sidebar. Loose [[window.tab]]s (no group) render first, in a
-# headerless section. Groups are presentation only — they add no cascade level. See the last window.
+# headerless section. See the "work" window below.
+#
+# The `dir`s point at examples/projects/ (tracked mock dirs) so this demo validates warning-free
+# from the repo root. A real config uses absolute or ~/-prefixed paths to your actual projects.
 
 shell          = "fish -l" # global default shell for every tab
+cmd            = "amux"    # global default: launch agentmux in each tab (shell stays live on exit)
 format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
-# How ⌘1/⌘2 behave (whole-app). "jump" (default) = ⌘1–⌘9 jump to that tab position.
-# "cycle" = ⌘1 next tab / ⌘2 previous tab (like ⌘⇧] / ⌘⇧[); jumps then start at ⌘3.
-tab_digit_keys = "cycle"
+tab_digit_keys = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
 
-# Optional: a per-tab "session exists" indicator. warden runs this command for each tab
-# (cwd = the tab's dir) on a timer and lights a cyan dot when it exits 0. Generic — any
-# check works. The amux/tmux case (point probe at the agentmux session socket):
-# probe = 'tmux -L "$AGENTMUX_AGENT_SOCKET" has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
-# probe_interval = 5   # seconds; 0 = check only on window focus / hot-reload
+# Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
+# dot when it exits 0. Here it's lit while the tab's agentmux session is live; any check works.
+# probe_interval is in seconds (0 = check only on window focus / hot-reload).
+probe          = 'tmux -L "$AGENTMUX_AGENT_SOCKET" has-session -t "=$(basename "$PWD" | tr .: __)" 2>/dev/null'
+probe_interval = 5
 
-[[window]] # a window
+[[window]]
+  name   = "personal"
+  colour = "#1f9e8a"
+  [[window.tab]]
+    title = "dotfiles"
+    dir   = "examples/projects/personal/dotfiles"
+  [[window.tab]] # cmd = "" opts out of amux → plain shell; keep_alive runs it from launch
+    title      = "blog"
+    dir        = "examples/projects/personal/blog"
+    cmd        = ""
+    keep_alive = true
+  [[window.tab]] # also a plain shell (no agent) for quick notes
+    title = "notes"
+    dir   = "examples/projects/personal/notes"
+    cmd   = ""
+
+[[window]]
   name   = "work"
-  colour = "#0f8a8a"
-  cmd    = "echo 'in work'" # default startup for this window's tabs (each can override)
-  # Point these at your own project dirs. The demo paths all exist on a stock macOS so
-  # `just validate` stays warning-free. NOTE: tilde expansion only handles `~/…` — a bare
-  # `~` is left literal and warns; write `~/Library`, not `~`.
-  [[window.tab]]
-    title = "library"
-    dir   = "~/Library"       # inherits the window's cmd
-    probe = 'test -d "$HOME"' # demo probe: always exits 0 → FILLED cyan dot. Use a real
-    # check in practice (e.g. `test -d .git`, or the amux has-session line at the top).
-
-  [[window.tab]]
-    title      = "logs"
-    dir        = "/var/log"
-    cmd        = ""         # opt out: bare shell, no startup command
-    keep_alive = true       # spawns at launch + stays live for background work
-
-[[window]]
-  name   = "play"
-  colour = "#b5651d"
-  [[window.tab]]
-    title = "scratch"
-    dir   = "/tmp"
-    shell = "zsh"     # per-tab shell override
-
-[[window]]
-  name   = "grouped" # demonstrates [[window.group]] sidebar sectioning
-  colour = "#5b6ee1"
-  [[window.tab]] # loose tab → renders first, no header
-    title = "home"
-    dir   = "~/Library"
+  colour = "#4063c4"
+  [[window.tab]] # loose tab → renders before any group
+    title      = "planning"
+    dir        = "examples/projects/work/planning"
+    keep_alive = true
 
   [[window.group]]
-    name = "system" # a labelled section + its tabs below
+    name = "backend"
     [[window.group.tab]]
-      title = "etc"
-      dir   = "/etc"
+      title = "api"
+      dir   = "examples/projects/work/api"
     [[window.group.tab]]
-      title = "syslog"
-      dir   = "/var/log"
+      title = "workers"
+      dir   = "examples/projects/work/workers"
 
   [[window.group]]
-    name = "scratch space"
+    name = "frontend"
     [[window.group.tab]]
-      title = "tmpdir"
-      dir   = "/tmp"
+      title = "web"
+      dir   = "examples/projects/work/web"
+    [[window.group.tab]] # per-tab shell override (a toolchain that wants zsh)
+      title = "mobile"
+      dir   = "examples/projects/work/mobile"
+      shell = "zsh"
