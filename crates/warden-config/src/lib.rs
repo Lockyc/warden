@@ -1,7 +1,5 @@
 //! warden-config: parse, validate, resolve, and reconcile warden's TOML config.
 
-pub mod colour;
-pub mod fmt;
 pub mod load;
 pub mod model;
 pub mod raw;
@@ -9,8 +7,10 @@ pub mod reconcile;
 pub mod resolve;
 pub mod watch;
 
-pub use colour::Colour;
-pub use fmt::{format_file, format_str};
+// House-style formatter + colour parsing are shared with curator via the config-core crate.
+// Re-exported at the root so the rest of warden-config (and warden-app) keep using
+// `warden_config::{Colour, ColourError, format_file, format_str}` unchanged.
+pub use config_core::{format_file, format_str, Colour, ColourError};
 pub use load::{config_path, load, LoadError, Loaded};
 pub use model::{Config, Tab, TabDigitKeys, Warning, Window};
 pub use reconcile::{reconcile, Reconciliation, WindowUpdate};

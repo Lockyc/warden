@@ -613,6 +613,16 @@
         if (id && id !== active) setBadge(id, true);
       });
 
+      // The user clicked a desktop-notification banner: the native layer already raised this
+      // window, so just select the tab that fired it (clears its badge too). Best-effort — a stale
+      // id (tab since unloaded/removed) has no row, so leave the active tab as-is. forMe drops a
+      // focus meant for a sibling window (emit_to leaks; same guard as warden:notify).
+      listen('warden:focus-tab', (e) => {
+        if (!forMe(e)) return;
+        const id = e.payload && e.payload.id;
+        if (id && document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]')) select(id);
+      });
+
       // Probe results for this window's tabs. emit_to leaks to siblings, so forMe
       // drops a payload meant for another window (same guard as warden:notify).
       // The promise resolves once the backend has registered this listener — init()
