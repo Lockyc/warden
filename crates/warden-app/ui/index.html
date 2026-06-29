@@ -233,6 +233,30 @@
       #terminal-hole {
         flex: 1;
         background: transparent;
+        position: relative;  /* containing block for the empty-state overlay */
+      }
+      /* Empty-state placeholder (curator's blank-screen idiom, re-interpreted).
+         Shown only when no tab is selected (active === null) — e.g. after the last
+         live tab is unloaded, or a zero-tab init/reload. Sits INSIDE the hole and
+         is composited BEHIND the native terminal surface (the NSView draws above
+         the webview), so a live tab naturally occludes it; we still toggle on
+         `active` so it can't bleed through a translucent terminal theme. OPAQUE:
+         the window is transparent, so a non-opaque fill would leak the wallpaper —
+         the whole point is to stop that leak when the hole has no surface. */
+      #empty-state {
+        position: absolute;
+        inset: 0;
+        display: none;            /* shown by paint() when active === null */
+        align-items: center;
+        justify-content: center;
+        background: #0e1516;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #empty-state svg {
+        width: 160px;
+        height: auto;
+        opacity: 0.9;
       }
     </style>
   </head>
@@ -257,7 +281,24 @@
              the sidebar instead of starting a window drag (see #sidebar-resize). -->
         <div id="sidebar-resize"></div>
       </aside>
-      <div id="terminal-hole"></div>
+      <div id="terminal-hole">
+        <!-- Blank background shown when no tab is selected (toggled by paint()).
+             warden's shield mark in muted grey — silhouette/chevrons/notch lifted
+             from assets/icon-app.svg's path geometry, recoloured (no tile/gradient)
+             so it reads "inactive". Behind the native terminal surface; see #empty-state. -->
+        <div id="empty-state">
+          <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
+            <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
+                  fill="#283034"/>
+            <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M 186 126 L 270 230 L 186 334" stroke-width="18" opacity="0.3"/>
+              <path d="M 208 152 L 270 230 L 208 308" stroke-width="20" opacity="0.55"/>
+              <path d="M 230 178 L 270 230 L 230 282" stroke-width="26" opacity="1"/>
+            </g>
+            <rect x="296" y="210" width="34" height="40" rx="7" fill="#5c676c"/>
+          </svg>
+        </div>
+      </div>
     </div>
     <script>
       const { invoke } = window.__TAURI__.core;
@@ -635,6 +676,9 @@
       });
 
       function paint() {
+        // Show the blank-background placeholder only when no tab is selected (the
+        // hole has no native surface, so it would otherwise leak the wallpaper).
+        document.getElementById('empty-state').style.display = active === null ? 'flex' : 'none';
         document.querySelectorAll('.tab').forEach(el => {
           const isActive = el.dataset.id === active;
           el.classList.toggle('active', isActive);
