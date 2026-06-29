@@ -79,6 +79,26 @@ cmd    = "amux"              # this window's default startup command (each tab c
 
 A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar. Set `format_on_save = true` to have warden rewrite the config in house style on each clean hot-reload (the same formatting `warden fmt` applies).
 
+## Install
+
+**Guided (Claude Code):** run `/warden:install` — it checks prerequisites
+(Xcode Command Line Tools, Rust, the Tauri CLI), builds warden from source, installs
+it to `/Applications`, and seeds your config.
+
+**One-liner:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lockyc/warden/main/install.sh | bash
+```
+
+This clones warden to `~/.warden`, builds the release bundle (`cargo tauri build`),
+installs `warden.app` to `/Applications`, and seeds `~/.config/warden/config.toml`
+from the example if you don't already have one. Re-run it any time to update
+(it git-pulls and rebuilds). macOS only.
+
+Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
+([rustup](https://rustup.rs)). The installer installs the Tauri CLI itself if missing.
+
 ## Build & use
 
 With [`just`](https://github.com/casey/just) (run `just` to list recipes):
