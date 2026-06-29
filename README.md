@@ -110,10 +110,10 @@ just test         # workspace tests
 just fmt          # format Rust sources (cargo fmt)
 just clippy       # lint (warnings as errors)
 just build        # build the release warden.app (needs: cargo install tauri-cli --version ^2)
-just deploy       # build, install to /Applications (unsigned), and relaunch
+just deploy       # build, install to /Applications, and relaunch
 ```
 
-`just deploy` produces a **non-notarized** local build (code-signed with your Apple Development identity if you have one, else unsigned) and strips the Gatekeeper quarantine xattr so it runs; it is not notarized for distribution to other machines.
+Builds are **signed with Developer ID and notarized** automatically when the Apple signing/notary env vars are set in the build environment (`APPLE_SIGNING_IDENTITY` pointing at a Developer ID Application cert, plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`, or `APPLE_API_KEY*`) — so release artifacts open on other Macs without a Gatekeeper block. Without those vars (e.g. building from source as a contributor), the build is ad-hoc/unsigned and `just deploy` strips the Gatekeeper quarantine xattr so the local copy still runs.
 
 Or with cargo directly:
 
