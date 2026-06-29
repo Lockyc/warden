@@ -1,0 +1,101 @@
+<!-- warden GitHub social preview (1280x640). Source of truth; edit this, then regenerate the PNG:
+     rsvg-convert -w 1280 -h 640 docs/social-preview.svg -o docs/social-preview.png   (brew install librsvg) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bgg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c1a1a"/>
+      <stop offset="1" stop-color="#070d0d"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.16" cy="0.18" r="0.65">
+      <stop offset="0" stop-color="#0f8a8a" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#0f8a8a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="banner" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17b0a8"/>
+      <stop offset="1" stop-color="#0f8a8a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bgg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <rect x="20" y="20" width="1240" height="600" rx="28" fill="none" stroke="#163030" stroke-width="2"/>
+
+  <!-- warden window: sidebar (colour banner + tab list) + terminal surface -->
+  <svg x="104" y="170" width="300" height="300" viewBox="0 0 300 300">
+    <rect x="0" y="0" width="300" height="300" rx="22" fill="#0a1212" stroke="#1f3a3a" stroke-width="2"/>
+
+    <!-- overlay titlebar: traffic lights reach over the sidebar -->
+    <circle cx="26" cy="26" r="6.5" fill="#ff5f56"/>
+    <circle cx="48" cy="26" r="6.5" fill="#ffbd2e"/>
+    <circle cx="70" cy="26" r="6.5" fill="#27c93f"/>
+
+    <!-- sidebar -->
+    <rect x="0" y="0" width="118" height="300" rx="22" fill="#0d1717"/>
+    <rect x="100" y="0" width="18" height="300" fill="#0d1717"/>
+    <line x1="118" y1="0" x2="118" y2="300" stroke="#16302f" stroke-width="2"/>
+
+    <!-- colour + title banner -->
+    <rect x="12" y="48" width="94" height="40" rx="10" fill="url(#banner)"/>
+    <text x="26" y="73" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#02201f">work</text>
+
+    <!-- tab rows: letter tile + label + live/probe dots -->
+    <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="13" font-weight="600">
+      <!-- active tab -->
+      <rect x="10" y="104" width="98" height="34" rx="8" fill="#15302f"/>
+      <rect x="18" y="111" width="20" height="20" rx="6" fill="#2bb3a6"/>
+      <text x="28" y="125" text-anchor="middle" fill="#03201f">l</text>
+      <text x="46" y="125" fill="#d8efed">locus</text>
+      <circle cx="98" cy="121" r="4" fill="#3fd0c2"/>
+
+      <rect x="18" y="155" width="20" height="20" rx="6" fill="#3f7fb8"/>
+      <text x="28" y="169" text-anchor="middle" fill="#04121f">a</text>
+      <text x="46" y="169" fill="#9fb3b2">api</text>
+      <circle cx="98" cy="165" r="4" fill="none" stroke="#3a5a59" stroke-width="2"/>
+      <circle cx="86" cy="165" r="3.5" fill="#54b0ff"/>
+
+      <rect x="18" y="199" width="20" height="20" rx="6" fill="#b8863f"/>
+      <text x="28" y="213" text-anchor="middle" fill="#1f1204">w</text>
+      <text x="46" y="213" fill="#9fb3b2">web</text>
+      <circle cx="98" cy="209" r="4" fill="none" stroke="#3a5a59" stroke-width="2"/>
+      <circle cx="86" cy="209" r="3.5" fill="#e3a93a"/>
+    </g>
+
+    <!-- terminal surface -->
+    <g font-family="Menlo, Monaco, monospace">
+      <text x="138" y="74" font-size="17" font-weight="700" fill="#3fd0c2">~/locus</text>
+      <g font-size="15" fill="#c9d1d9">
+        <text x="138" y="112">$ amux</text>
+        <text x="138" y="142" fill="#7fb0ad">  claude</text>
+        <text x="240" y="142" fill="#5f7a78">live</text>
+        <text x="138" y="172" fill="#7fb0ad">  shell</text>
+        <text x="240" y="172" fill="#5f7a78">idle</text>
+      </g>
+      <rect x="132" y="216" width="2" height="18" fill="#3fd0c2"/>
+    </g>
+  </svg>
+
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+    <text x="470" y="278" font-size="108" font-weight="700" fill="#ffffff" letter-spacing="-2">warden</text>
+    <text x="474" y="344" font-size="33" fill="#9fb8b6">A curator for your terminals — windows, projects,</text>
+    <text x="474" y="388" font-size="33" fill="#9fb8b6">and muxers all the way down. macOS only.</text>
+
+    <g font-size="26" font-weight="500">
+      <g>
+        <rect x="472" y="432" width="116" height="50" rx="25" fill="#102726" stroke="#1f5a57"/>
+        <text x="530" y="465" text-anchor="middle" fill="#4fd3c6">macOS</text>
+      </g>
+      <g>
+        <rect x="604" y="432" width="150" height="50" rx="25" fill="#102726" stroke="#1f5a57"/>
+        <text x="679" y="465" text-anchor="middle" fill="#4fd3c6">Tauri v2</text>
+      </g>
+      <g>
+        <rect x="770" y="432" width="100" height="50" rx="25" fill="#102726" stroke="#1f5a57"/>
+        <text x="820" y="465" text-anchor="middle" fill="#4fd3c6">Rust</text>
+      </g>
+      <g>
+        <rect x="886" y="432" width="178" height="50" rx="25" fill="#102726" stroke="#1f5a57"/>
+        <text x="975" y="465" text-anchor="middle" fill="#4fd3c6">libghostty</text>
+      </g>
+    </g>
+  </g>
+</svg>
