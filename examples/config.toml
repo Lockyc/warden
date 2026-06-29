@@ -20,12 +20,12 @@ format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in
 # "cycle" = ⌘1 next tab / ⌘2 previous tab (like ⌘⇧] / ⌘⇧[); jumps then start at ⌘3.
 tab_digit_keys = "cycle"
 
-[[window]]                            # a window
-title  = "work"
-colour = "#0f8a8a"
-width  = 1800                         # optional; default 1500 — wider for the main work window
-height = 1100                         # optional; default 1000
-cmd    = "echo 'in work'"             # default startup for this window's tabs (each can override)
+[[window]] # a window
+  title  = "work"
+  colour = "#0f8a8a"
+  width  = 1800             # optional; default 1500 — wider for the main work window
+  height = 1100             # optional; default 1000
+  cmd    = "echo 'in work'" # default startup for this window's tabs (each can override)
 
   # Point these at your own project dirs. The demo paths all exist on a stock macOS so
   # `just validate` stays warning-free. NOTE: tilde expansion only handles `~/…` — a bare
@@ -35,39 +35,39 @@ cmd    = "echo 'in work'"             # default startup for this window's tabs (
     dir   = "~/Library" # inherits the window's cmd
 
   [[window.tab]]
-  title        = "logs"
-  dir          = "/var/log"
-  cmd          = ""                   # opt out: bare shell, no startup command
-  load_on_open = true                 # spawns at launch + stays live for background work
+    title        = "logs"
+    dir          = "/var/log"
+    cmd          = ""         # opt out: bare shell, no startup command
+    load_on_open = true       # spawns at launch + stays live for background work
 
 [[window]]
-title = "play"
-# colour omitted → falls back to warden's neutral default
+  title = "play"
+  # colour omitted → falls back to warden's neutral default
 
   [[window.tab]]
-  title = "scratch"
-  dir   = "/tmp"
-  shell = "zsh"                       # per-tab shell override
+    title = "scratch"
+    dir   = "/tmp"
+    shell = "zsh"     # per-tab shell override
 
 [[window]]
-title  = "grouped"                    # demonstrates [[window.group]] sidebar sectioning
-colour = "#5b6ee1"
+  title  = "grouped" # demonstrates [[window.group]] sidebar sectioning
+  colour = "#5b6ee1"
 
-  [[window.tab]]                      # loose tab → renders first, no header
-  title = "home"
-  dir   = "~/Library"
-
-  [[window.group]]
-  name = "system"                     # a labelled section + its tabs below
-    [[window.group.tab]]
-    title = "etc"
-    dir   = "/etc"
-    [[window.group.tab]]
-    title = "syslog"
-    dir   = "/var/log"
+  [[window.tab]] # loose tab → renders first, no header
+    title = "home"
+    dir   = "~/Library"
 
   [[window.group]]
-  name = "scratch space"
+    name = "system" # a labelled section + its tabs below
     [[window.group.tab]]
-    title = "tmpdir"
-    dir   = "/tmp"
+      title = "etc"
+      dir   = "/etc"
+    [[window.group.tab]]
+      title = "syslog"
+      dir   = "/var/log"
+
+  [[window.group]]
+    name = "scratch space"
+    [[window.group.tab]]
+      title = "tmpdir"
+      dir   = "/tmp"

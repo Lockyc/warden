@@ -32,7 +32,7 @@ fn cascade<'a>(
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ResolveError {
-    #[error("duplicate window name: {0:?}")]
+    #[error("duplicate window title: {0:?}")]
     DuplicateWindow(String),
     #[error("window {window:?} has duplicate tab title: {title:?}")]
     DuplicateTab { window: String, title: String },

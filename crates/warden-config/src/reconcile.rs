@@ -31,6 +31,9 @@ pub struct Reconciliation {
 ///   close and reopen the tab to pick up such field-level edits. (`group` is the
 ///   deliberate exception — it IS detected, via `set_groups`, because it's
 ///   presentational and must not cost the tab its PTY.)
+/// - A kept window's `width`/`height` change. Window size is only a first-run
+///   `inner_size` default — `tauri-plugin-window-state` owns the size after the
+///   first launch — so a size edit is neither detected nor applied here.
 ///
 /// **Window renames are destructive.** A rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
@@ -62,6 +65,8 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///   `cmd`, or `load_on_open` changes but its `title` stays the same, no update
 ///   is emitted — the tab appears identical to the reconciler. The consumer
 ///   must close and reopen the tab to pick up such field-level edits.
+/// - A kept window's `width`/`height` change — window size is a first-run
+///   `inner_size` default only (the window-state plugin owns it thereafter).
 ///
 /// **Window renames are destructive** — a rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including

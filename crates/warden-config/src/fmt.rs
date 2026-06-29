@@ -76,7 +76,7 @@ mod tests {
         let input = r##"# header
 shell="fish"
 [[window]]
-name="w"
+title="w"
 colour="#0f8a8a"
 [[window.tab]]
 dir="/tmp"
@@ -89,7 +89,7 @@ dir="/etc"
         let expected = r##"# header
 shell = "fish"
 [[window]]
-  name   = "w"
+  title  = "w"
   colour = "#0f8a8a"
   [[window.tab]]
     dir = "/tmp"

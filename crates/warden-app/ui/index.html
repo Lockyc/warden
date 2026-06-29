@@ -82,8 +82,8 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        /* Fallback colour; JS sets to the window colour */
-        background: #0f8a8a;
+        /* Fallback colour (neutral default); JS sets to the window colour */
+        background: #6b7280;
       }
       #tab-list {
         flex: 1;
@@ -246,7 +246,7 @@
           console.error('warden: IPC ' + cmd + ' failed', err);
         });
       }
-      let windowColour = '#0f8a8a';
+      let windowColour = '#6b7280';
       let active = null;
       // This window's Tauri label, learned from the init DTO. Required to ignore
       // per-window events addressed to a sibling window: emit_to does NOT reliably

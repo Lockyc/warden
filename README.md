@@ -32,6 +32,7 @@ Deferred (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` to cycle windo
 
 ```toml
 shell = "fish -l"            # global default shell every tab spawns
+format_on_save = true        # optional; rewrite this file tidy on each clean save (default off)
 
 [[window]]                   # a native macOS window
 title  = "work"
@@ -57,7 +58,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
     dir   = "~/code/api"
 ```
 
-A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar.
+A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar. Set `format_on_save = true` to have warden rewrite the config in house style on each clean hot-reload (the same formatting `warden fmt` applies).
 
 ## Build & use
 
@@ -67,7 +68,7 @@ With [`just`](https://github.com/casey/just) (run `just` to list recipes):
 just run          # launch the app against examples/config.toml (never touches your real config)
 just validate     # validate the demo config (pass a path to validate another)
 just test         # workspace tests
-just fmt          # format
+just fmt          # format Rust code (cargo fmt)
 just clippy       # lint (warnings as errors)
 just build        # build the release warden.app (needs: cargo install tauri-cli --version ^2)
 just deploy       # build, install to /Applications (unsigned), and relaunch
@@ -83,11 +84,13 @@ cargo test
 cargo run -p warden-app                                # launch the app (macOS; reads WARDEN_CONFIG or ~/.config/warden/config.toml)
 cargo run -p warden-config --bin warden -- validate    # validate ~/.config/warden/config.toml
 cargo run -p warden-config --bin warden -- validate path/to/config.toml
+cargo run -p warden-config --bin warden -- fmt              # format ~/.config/warden/config.toml in house style
+cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml   # check formatting (CI gate)
 ```
 
 `warden-app` materializes a window for each `[[window]]` and hot-reloads on save; edit the config while it's running to watch windows and tabs appear, disappear, and recolour live.
 
-`warden validate` prints the resolved windows/tabs and any warnings; exit code 0 (ok), 1 (load/parse/validation error), 2 (usage).
+`warden validate` prints the resolved windows/tabs and any warnings; exit code 0 (ok), 1 (load/parse/validation error), 2 (usage). `warden fmt` rewrites a config in warden's house TOML style (`--check` reports without writing, for a CI gate); `format_on_save = true` applies the same formatting automatically on each clean save.
 
 ## Layout
 
