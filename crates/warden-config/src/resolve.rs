@@ -1,6 +1,6 @@
-use crate::colour::{Colour, ColourError};
 use crate::model::{Config, Tab, TabDigitKeys, Warning, Window};
 use crate::raw::{RawConfig, RawWindow};
+use crate::{Colour, ColourError};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;

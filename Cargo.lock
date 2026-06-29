@@ -379,6 +379,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "config-core"
+version = "0.1.0"
+source = "git+https://github.com/Lockyc/config-core#4742ec48499ade023dbfc14014cbcd9482d22aba"
+dependencies = [
+ "taplo",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4187,10 +4197,10 @@ dependencies = [
 name = "warden-config"
 version = "0.1.0"
 dependencies = [
+ "config-core",
  "dirs 5.0.1",
  "notify",
  "serde",
- "taplo",
  "tempfile",
  "thiserror 1.0.69",
  "toml 0.8.23",

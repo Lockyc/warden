@@ -11,7 +11,7 @@ pub struct RawConfig {
     /// default 5; `Some(0)` → focus/refresh-only (no timer). See resolve.rs.
     pub probe_interval: Option<u64>,
     // When true, warden rewrites this config file formatted on each clean hot-reload
-    // (see fmt.rs). Optional; a missing field resolves to false.
+    // (via config-core's format_file). Optional; a missing field resolves to false.
     pub format_on_save: Option<bool>,
     // ⌘1/⌘2 menu behaviour: "jump" (default, ⌘1–9 jump to position) or "cycle"
     // (⌘1 = next tab, ⌘2 = prev; jumps shift to ⌘3–9). Validated in resolve.rs.

@@ -1,4 +1,4 @@
-use crate::colour::Colour;
+use crate::Colour;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]

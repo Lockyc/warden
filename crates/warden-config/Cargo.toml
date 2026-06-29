@@ -9,10 +9,10 @@ toml = "0.8"
 thiserror = "1"
 notify = "6"
 dirs = "5"
-# House-style TOML formatter (see fmt.rs) — embedded as a library so warden can
-# format the config itself; users never need a standalone taplo binary.
-taplo = "0.13"
-# Atomic in-place rewrite for format_file (temp file in the same dir + rename).
+# Shared house-style TOML formatter + colour parsing (formerly warden's own fmt.rs/colour.rs),
+# now lifted into config-core and shared with curator. Git dep so the build needs no extra setup.
+config-core = { git = "https://github.com/Lockyc/config-core" }
+# Used by load.rs / watch.rs tests for temp config dirs.
 tempfile = "3"
 
 [[bin]]

@@ -1,5 +1,5 @@
-use crate::colour::Colour;
 use crate::model::{Config, Tab, Window};
+use crate::Colour;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reconciliation {
