@@ -516,6 +516,14 @@
         const stored = parseInt(localStorage.getItem(widthKey()), 10);
         if (Number.isFinite(stored)) applyWidth(stored);
         render(dto);
+        // Ask for the first probe pass only AFTER the session-state listener is
+        // registered (listen() is async), so the first emit can't race ahead of it
+        // and be dropped. This is what populates the dots at startup — critical for
+        // probe_interval=0 (no timer to heal a lost emit) and removes the up-to-one-
+        // tick hollow-dot latency for every interval. Background windows that never
+        // get launch focus rely on this too.
+        try { await sessionListenReady; } catch (e) { /* listener still works; worst case a tick of latency */ }
+        invokeSafe('probe_now');
       }
 
       // Hot-reload: the manager pushes a fresh snapshot to this window after a
@@ -602,7 +610,9 @@
 
       // Probe results for this window's tabs. emit_to leaks to siblings, so forMe
       // drops a payload meant for another window (same guard as warden:notify).
-      listen('warden:session-state', (e) => {
+      // The promise resolves once the backend has registered this listener — init()
+      // awaits it before asking for the first probe pass, so that emit can't be lost.
+      const sessionListenReady = listen('warden:session-state', (e) => {
         if (!forMe(e)) return;
         const states = e.payload && e.payload.states;
         if (!states) return;

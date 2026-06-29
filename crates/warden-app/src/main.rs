@@ -156,6 +156,18 @@ fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) ->
     state.lock().init_dto(window.label())
 }
 
+/// Probe this window's tabs once, on demand. The chrome calls this right after its
+/// `warden:session-state` listener is registered, so the first session-presence emit
+/// can't be lost to the listener-registration race — which matters most for
+/// `probe_interval = 0` (no timer to heal a dropped emit) and also removes the
+/// up-to-one-tick hollow-dot latency at startup for every interval.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn probe_now(window: tauri::WebviewWindow) {
+    use tauri::Manager;
+    probe::spawn_pass(window.app_handle().clone(), Some(window.label().to_string()));
+}
+
 /// Activate tab `id` within the calling window's registry.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -341,7 +353,8 @@ fn main() {
             init_tabs,
             activate_tab,
             unload_tab,
-            diagnostic_message
+            diagnostic_message,
+            probe_now
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -397,9 +410,11 @@ fn main() {
                         }
                     });
                 }
-                // One pass right away so dots populate before the first timer tick
-                // (and at all when interval == 0 and the window doesn't emit Focused).
-                probe::spawn_pass(handle.clone(), None);
+                // No launch-time probe pass here: each window's chrome calls the
+                // `probe_now` command once its `warden:session-state` listener is
+                // registered (see init() in index.html), which populates the dots
+                // reliably without racing the listener — covering `probe_interval = 0`
+                // and background windows that never emit a launch `Focused`.
 
                 // macOS menu. Windows are built at runtime with no NSMenu, so without this the
                 // standard shortcuts are dead and there's nowhere to surface tab navigation.
