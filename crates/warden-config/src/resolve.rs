@@ -1015,6 +1015,14 @@ kill = "win-kill"
   dir = "/tmp"
   title = "opts-out"
   kill = ""
+
+[[window]]
+title = "w2"
+colour = "#0f8a8a"
+
+  [[window.tab]]
+  dir = "/tmp"
+  title = "inherits-global"
 "##,
         )
         .unwrap();
@@ -1026,6 +1034,13 @@ kill = "win-kill"
         assert_eq!(tabs[1].kill.as_deref(), Some("tab-kill {title}"));
         // explicit "" opts the tab out of the inherited window/global value
         assert_eq!(tabs[2].kill, None);
+        // global reaches a tab when no window/tab level is set — exercises the
+        // `global_kill` threading directly (w1 masks it with a window-level kill).
+        // The cascaded value is stored raw; `{dir}` is substituted at run time, not here.
+        assert_eq!(
+            cfg.windows[1].tabs[0].kill.as_deref(),
+            Some("global-kill {dir}")
+        );
     }
 
     #[test]
