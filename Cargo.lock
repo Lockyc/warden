@@ -4177,7 +4177,7 @@ dependencies = [
 
 [[package]]
 name = "warden-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
