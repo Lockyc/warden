@@ -5,9 +5,14 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// The shell spawned in a tab when no `shell` is set at any level. Each tab runs the
-/// cascaded `shell`; a tab's cascaded `cmd`, if any, is auto-run *inside* it.
-pub const DEFAULT_SHELL: &str = "fish -l";
+/// Last-resort shell when no `shell` is set at any level *and* the caller injected none.
+/// warden is a terminal, so the app/CLI detect the user's **login shell** at runtime and
+/// pass it as the default via [`resolve_with`]/[`load_with`] — a terminal runs your login
+/// shell. This neutral macOS fallback only applies to the bare [`resolve`]/[`load`] API
+/// (tests, mainly) or if that detection fails. Spawned as a **login shell** (`-l`) so it
+/// sources config and builds PATH, exactly as a terminal would. Each tab runs the cascaded
+/// `shell`; a tab's cascaded `cmd`, if any, is auto-run *inside* it.
+pub const DEFAULT_SHELL: &str = "/bin/zsh -l";
 
 /// Window accent used when `colour` is omitted — a neutral grey so the banner
 /// still renders identity without an accent. (curator parity: omit → neutral.)
@@ -92,7 +97,21 @@ fn basename(p: &Path) -> String {
         .unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
 
+/// Resolve with the built-in [`DEFAULT_SHELL`] as the unset-`shell` fallback. Convenience
+/// for tests and the bare [`load`]; the app/CLI use [`resolve_with`] to inject the user's
+/// detected login shell instead.
 pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
+    resolve_with(raw, DEFAULT_SHELL)
+}
+
+/// Resolve a raw config, defaulting an unset `shell` (at every cascade level) to
+/// `default_shell` — the caller's detected **login shell**. warden is a terminal, so the app
+/// passes your `$SHELL` here; this keeps the crate pure (no env access) by taking the default
+/// as data.
+pub fn resolve_with(
+    raw: RawConfig,
+    default_shell: &str,
+) -> Result<(Config, Vec<Warning>), ResolveError> {
     let global_shell = raw.shell.as_deref();
     let global_cmd = raw.cmd.as_deref();
     let global_probe = raw.probe.as_deref();
@@ -111,6 +130,7 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
         }
         windows.push(resolve_window(
             rp,
+            default_shell,
             global_shell,
             global_cmd,
             global_probe,
@@ -129,8 +149,10 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_window(
     rp: &RawWindow,
+    default_shell: &str,
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
@@ -168,6 +190,7 @@ fn resolve_window(
             rt,
             None,
             rp,
+            default_shell,
             global_shell,
             global_cmd,
             global_probe,
@@ -195,6 +218,7 @@ fn resolve_window(
                 rt,
                 Some(g.name.clone()),
                 rp,
+                default_shell,
                 global_shell,
                 global_cmd,
                 global_probe,
@@ -222,6 +246,7 @@ fn resolve_tab(
     rt: &crate::raw::RawTab,
     group: Option<String>,
     rp: &RawWindow,
+    default_shell: &str,
     global_shell: Option<&str>,
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
@@ -256,10 +281,11 @@ fn resolve_tab(
         });
     }
     // `shell` and `cmd` cascade tab → window → global (nearest set level wins); `shell`
-    // falls back to the built-in when unset everywhere, `cmd` is a startup command run
-    // *inside* the shell (None = bare shell; `cmd = ""` at any level opts out of inheritance).
+    // falls back to `default_shell` (the caller's detected login shell) when unset everywhere,
+    // `cmd` is a startup command run *inside* the shell (None = bare shell; `cmd = ""` at any
+    // level opts out of inheritance).
     let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), global_shell)
-        .unwrap_or(DEFAULT_SHELL)
+        .unwrap_or(default_shell)
         .to_string();
     let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
     let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);

@@ -1,12 +1,23 @@
 use std::path::PathBuf;
-use warden_config::{config_path, format_file, format_str, load};
+use warden_config::{config_path, format_file, format_str, load_with};
+
+/// The shell warden defaults an unset tab to — the user's login shell, run as a login shell,
+/// like a terminal. `$SHELL` (falling back to the macOS default), with `-l`. Detected here in
+/// the binary so the pure crate stays env-free, matching what warden-app injects at runtime.
+fn login_shell() -> String {
+    let path = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+    format!("{path} -l")
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("validate") => {
             let path = args.get(2).map(PathBuf::from).unwrap_or_else(config_path);
-            match load(&path) {
+            match load_with(&path, &login_shell()) {
                 Ok(loaded) => {
                     println!(
                         "ok: {} ({} window(s))",

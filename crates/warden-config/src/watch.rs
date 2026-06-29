@@ -1,4 +1,5 @@
-use crate::load::{load, LoadError, Loaded};
+use crate::load::{load_with, LoadError, Loaded};
+use crate::resolve::DEFAULT_SHELL;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
 use std::path::PathBuf;
 
@@ -27,6 +28,18 @@ impl Watcher {
         path: PathBuf,
         on_change: impl Fn(Result<Loaded, LoadError>) + Send + 'static,
     ) -> notify::Result<Watcher> {
+        Watcher::with_default(path, DEFAULT_SHELL, on_change)
+    }
+
+    /// Like [`Watcher::new`], but each reload defaults an unset `shell` to `default_shell`
+    /// (the caller's detected login shell) — so hot-reload keeps the same login-shell default
+    /// as the app's initial load instead of falling back to [`DEFAULT_SHELL`].
+    pub fn with_default(
+        path: PathBuf,
+        default_shell: impl Into<String>,
+        on_change: impl Fn(Result<Loaded, LoadError>) + Send + 'static,
+    ) -> notify::Result<Watcher> {
+        let default_shell = default_shell.into();
         // `parent()` returns Some("") for a bare relative filename (e.g. "config.toml"),
         // and watching "" errors. Treat an empty parent the same as None → watch the cwd.
         let watch_dir = path
@@ -52,7 +65,7 @@ impl Watcher {
                     .iter()
                     .any(|p| p.file_name() == want_name.as_deref())
                 {
-                    on_change(load(&target));
+                    on_change(load_with(&target, &default_shell));
                 }
             }
         })?;

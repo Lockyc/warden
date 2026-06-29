@@ -1,6 +1,6 @@
 use crate::model::{Config, Warning};
 use crate::raw::parse;
-use crate::resolve::{resolve, ResolveError};
+use crate::resolve::{resolve_with, ResolveError, DEFAULT_SHELL};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -28,10 +28,19 @@ pub fn config_path() -> PathBuf {
     base.join(".config").join("warden").join("config.toml")
 }
 
+/// Load with the built-in [`DEFAULT_SHELL`] fallback. Convenience for tests; the app/CLI
+/// call [`load_with`] to inject the user's detected login shell.
 pub fn load(path: &Path) -> Result<Loaded, LoadError> {
+    load_with(path, DEFAULT_SHELL)
+}
+
+/// Read + parse + resolve, defaulting an unset `shell` to `default_shell` (the caller's
+/// detected login shell). This is the path the app and the watcher use so hot-reload keeps
+/// the same login-shell default as the initial load.
+pub fn load_with(path: &Path, default_shell: &str) -> Result<Loaded, LoadError> {
     let text = std::fs::read_to_string(path)?;
     let raw = parse(&text)?;
-    let (config, warnings) = resolve(raw)?;
+    let (config, warnings) = resolve_with(raw, default_shell)?;
     Ok(Loaded { config, warnings })
 }
 

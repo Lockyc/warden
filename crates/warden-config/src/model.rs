@@ -42,8 +42,9 @@ pub struct Tab {
     pub key: String,
     pub title: String,
     pub dir: PathBuf,
-    /// The shell to spawn in this tab (= `default_cmd`, e.g. `"fish -l"`). It runs as an
-    /// interactive shell under the terminal's PTY, so shell functions/aliases resolve.
+    /// The shell to spawn in this tab (resolved cascade, e.g. `"/opt/homebrew/bin/fish -l"`;
+    /// defaults to the caller's login shell when unset). It runs as an interactive shell under
+    /// the terminal's PTY, so shell functions/aliases resolve.
     pub shell: String,
     /// Optional startup command auto-run inside `shell` (the tab's `cmd`). `None` = bare
     /// shell. It is *typed into* the interactive shell — not exec'd directly — so a shell

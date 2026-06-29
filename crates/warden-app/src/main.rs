@@ -296,79 +296,28 @@ fn scrub_inherited_tmux_env() {
     }
 }
 
-// Sentinels bracketing the login PATH in the helper-shell output, so anything an rc file
-// prints around it (banners, `nvm`/`conda` chatter) can't corrupt the readout.
-const PATH_SENTINEL_START: &str = "__WARDEN_PATH_START__";
-const PATH_SENTINEL_END: &str = "__WARDEN_PATH_END__";
-
-/// Adopt the user's **login-shell PATH** so warden — and every terminal, `probe`, and `kill`
-/// it spawns — can find tools the GUI launch context hides. Launched from Dock/Finder/Spotlight,
-/// a `.app` inherits only the minimal launchd PATH (`/usr/bin:/bin:/usr/sbin:/sbin`); a shell
-/// named without an absolute path (`fish -l`, the built-in default) is then not found and the
-/// tab dies immediately (`exec: fish: not found`). Rather than guess install prefixes — Homebrew,
-/// nix, MacPorts and custom setups all differ, and not every user has any of them — we ask the
-/// user's own login shell what PATH it builds and adopt that, the approach VS Code and
-/// `exec-path-from-shell` use for the same GUI-launch gap. Since surfaces/probes/kill all inherit
-/// warden-app's process env (same lever as the tmux scrub), setting it once here fixes all three.
-///
-/// Best-effort and self-limiting: if the shell can't be run, exceeds the deadline, or yields
-/// nothing parseable, PATH is left exactly as inherited — warden never ends up *worse* off than a
-/// no-op. Captures the **login** environment (`-l`); a PATH set only in interactive-only rc
-/// (`.zshrc` without a `.zprofile` export) isn't seen — naming such a binary by absolute path in
-/// config remains the robust fallback.
-fn restore_login_path() {
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    // launchd populates SHELL from the user's directory record even for GUI launches; fall back
-    // to the macOS default if it's somehow unset.
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    // Read PATH via `printenv`, NOT `echo $PATH`: the latter is shell-syntax-dependent (fish joins
-    // list vars with spaces, not colons). `printenv` emits the colon-delimited PATH the login shell
-    // built regardless of which shell ran it, so one snippet works for bash/zsh/fish alike.
-    let snippet = format!(
-        "printf %s {PATH_SENTINEL_START}; /usr/bin/printenv PATH; printf %s {PATH_SENTINEL_END}"
-    );
-
-    // Run on a side thread with a deadline so a slow/pathological login rc (conda, nvm, …) can't
-    // hang warden's startup. On timeout we abandon the result; the orphan child reaps itself and
-    // PATH stays as-is.
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let out = std::process::Command::new(&shell)
-            .args(["-l", "-c", &snippet])
-            .output();
-        let _ = tx.send(out);
-    });
-
-    let Ok(Ok(out)) = rx.recv_timeout(Duration::from_secs(3)) else {
-        return; // failed to spawn or timed out — keep the inherited PATH
-    };
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if let Some(path) = extract_sentinel_path(&stdout) {
-        if !path.is_empty() {
-            std::env::set_var("PATH", path);
-        }
-    }
-}
-
-/// Extract the PATH the login shell printed between the sentinels, tolerating rc-file noise
-/// printed before or after it. `None` if both sentinels aren't present (e.g. the shell errored
-/// or printed nothing), which the caller treats as "leave PATH untouched".
-fn extract_sentinel_path(output: &str) -> Option<String> {
-    let after = output.split_once(PATH_SENTINEL_START)?.1;
-    let inner = after.split_once(PATH_SENTINEL_END)?.0;
-    Some(inner.trim().to_string())
+/// The shell warden spawns when a tab's config sets none — the user's **login shell**, run
+/// as a login shell, exactly as a terminal does. Read from `$SHELL` (launchd populates it from
+/// the user's directory record even for a Dock/Finder launch), falling back to the macOS
+/// default. Returned as an absolute path with `-l`, which is the whole point: libghostty finds
+/// it without any PATH lookup — a GUI launch's minimal launchd PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
+/// would otherwise miss a Homebrew/nix shell and the tab would die `exec: <shell>: not found` —
+/// and the login shell then sources the user's config and builds PATH for the interactive
+/// session. A config `shell` (at any cascade level) overrides this; warden is generic, so an
+/// override is an arbitrary command, expected to name its binary by absolute path like a
+/// terminal's command field.
+fn login_shell() -> String {
+    let path = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+    format!("{path} -l")
 }
 
 fn main() {
     // warden hosts terminals — it must not leak its own launcher's tmux membership into them
     // (breaks nested agentmux/tmux). Scrub before anything else inherits the environment.
     scrub_inherited_tmux_env();
-    // A GUI (Dock/Finder) launch gives warden only the minimal launchd PATH, so a shell/probe/kill
-    // named by bare command would be not-found. Adopt the login-shell PATH before any surface or
-    // probe spawns and inherits this process's environment.
-    restore_login_path();
 
     // libghostty must be initialised once before any app/surface is created.
     #[cfg(target_os = "macos")]
@@ -476,7 +425,7 @@ fn main() {
                 // single diagnostic window instead of materializing windows.
                 // Recovery happens in the watcher: the first valid load while no
                 // window window is live materializes + closes the diagnostic.
-                match warden_config::load(&warden_config::config_path()) {
+                match warden_config::load_with(&warden_config::config_path(), &login_shell()) {
                     Ok(loaded) if !loaded.config.windows.is_empty() => {
                         mgr.materialize(&handle, loaded.config);
                     }
@@ -548,14 +497,15 @@ fn main() {
                 // every Tauri/AppKit/registry touch is main-thread only — hop via
                 // run_on_main_thread before doing any of it.
                 let cfg_path = warden_config::config_path();
-                // Watcher::new requires the config's parent dir to already exist.
+                // Watcher::with_default requires the config's parent dir to already exist.
                 if let Some(parent) = cfg_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let wh = app.handle().clone();
                 // The formatter's copy of the path (cfg_path is moved into the watcher).
                 let fmt_path = cfg_path.clone();
-                let watcher = warden_config::Watcher::new(cfg_path, move |res| {
+                // Inject the login shell so hot-reload uses the same default as the initial load.
+                let watcher = warden_config::Watcher::with_default(cfg_path, login_shell(), move |res| {
                     let wh = wh.clone();
                     let fmt_path = fmt_path.clone();
                     let _ = wh.clone().run_on_main_thread(move || {
@@ -652,24 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn extract_sentinel_path_pulls_path_from_noisy_output() {
-        // A login rc that prints a banner before and after the PATH readout must not corrupt it.
-        let out = format!(
-            "Welcome back!\n{PATH_SENTINEL_START}/opt/homebrew/bin:/usr/bin:/bin\n{PATH_SENTINEL_END}\nnvm: loaded\n"
-        );
-        assert_eq!(
-            extract_sentinel_path(&out).as_deref(),
-            Some("/opt/homebrew/bin:/usr/bin:/bin")
-        );
-    }
-
-    #[test]
-    fn extract_sentinel_path_none_without_both_sentinels() {
-        // Shell errored / printed nothing usable → leave PATH untouched.
-        assert_eq!(extract_sentinel_path("command not found"), None);
-        assert_eq!(
-            extract_sentinel_path(&format!("{PATH_SENTINEL_START}/usr/bin")),
-            None
-        );
+    fn login_shell_uses_shell_env_with_login_flag() {
+        std::env::set_var("SHELL", "/opt/homebrew/bin/fish");
+        assert_eq!(login_shell(), "/opt/homebrew/bin/fish -l");
+        // Empty/unset $SHELL falls back to the macOS default, still as a login shell.
+        std::env::set_var("SHELL", "");
+        assert_eq!(login_shell(), "/bin/zsh -l");
     }
 }

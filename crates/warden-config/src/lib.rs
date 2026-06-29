@@ -11,7 +11,7 @@ pub mod watch;
 // Re-exported at the root so the rest of warden-config (and warden-app) keep using
 // `warden_config::{Colour, ColourError, format_file, format_str}` unchanged.
 pub use config_core::{format_file, format_str, Colour, ColourError};
-pub use load::{config_path, load, LoadError, Loaded};
+pub use load::{config_path, load, load_with, LoadError, Loaded};
 pub use model::{Config, Tab, TabDigitKeys, Warning, Window};
 pub use reconcile::{reconcile, Reconciliation, WindowUpdate};
 pub use resolve::ResolveError;
