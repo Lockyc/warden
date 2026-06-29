@@ -36,7 +36,7 @@ tab_digit_keys = "cycle"
   # `~` is left literal and warns; write `~/Library`, not `~`.
   [[window.tab]]
     title = "library"
-    dir   = "~/Library" # inherits the window's cmd
+    dir   = "~/Library"       # inherits the window's cmd
     probe = 'test -d "$HOME"' # demo probe: always exits 0 → FILLED cyan dot. Use a real
     # check in practice (e.g. `test -d .git`, or the amux has-session line at the top).
 
@@ -65,15 +65,18 @@ tab_digit_keys = "cycle"
 
   [[window.group]]
     name = "system" # a labelled section + its tabs below
+
     [[window.group.tab]]
       title = "etc"
       dir   = "/etc"
+
     [[window.group.tab]]
       title = "syslog"
       dir   = "/var/log"
 
   [[window.group]]
     name = "scratch space"
+
     [[window.group.tab]]
       title = "tmpdir"
       dir   = "/tmp"
