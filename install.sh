@@ -24,7 +24,22 @@ fi
 REPO_URL="https://github.com/lockyc/warden"
 INSTALL_DIR="$HOME/.warden"
 
-# 1. Resolve the source dir (IN_REPO vs clone at ~/.warden).
+# 1. Hard prerequisites. /warden:install offers to install these; the bare
+#    script only refuses with a hint (except the Tauri CLI, which it backstops).
+missing=0
+for c in git cargo; do
+  if ! command -v "$c" >/dev/null 2>&1; then
+    echo "warden: '$c' is required but not found on PATH" >&2
+    missing=1
+  fi
+done
+if [ "$missing" -ne 0 ]; then
+  echo "warden: install Rust (https://rustup.rs) and Xcode Command Line Tools" >&2
+  echo "        (xcode-select --install), then re-run." >&2
+  exit 1
+fi
+
+# 2. Resolve the source dir (IN_REPO vs clone at ~/.warden).
 if [ -f install.sh ] && [ -f crates/warden-app/tauri.conf.json ]; then
   SRC="$(pwd)"
   echo "→ building from the current warden checkout: $SRC"
@@ -40,21 +55,6 @@ else
     exit 1
   fi
   SRC="$INSTALL_DIR"
-fi
-
-# 2. Hard prerequisites. /warden:install offers to install these; the bare
-#    script only refuses with a hint (except the Tauri CLI, which it backstops).
-missing=0
-for c in git cargo; do
-  if ! command -v "$c" >/dev/null 2>&1; then
-    echo "warden: '$c' is required but not found on PATH" >&2
-    missing=1
-  fi
-done
-if [ "$missing" -ne 0 ]; then
-  echo "warden: install Rust (https://rustup.rs) and Xcode Command Line Tools" >&2
-  echo "        (xcode-select --install), then re-run." >&2
-  exit 1
 fi
 
 # 3. Tauri CLI backstop — warden has no npm, so the CLI is a cargo global.

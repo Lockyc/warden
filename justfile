@@ -52,8 +52,9 @@ gate:
 build:
     cd crates/warden-app && cargo tauri build
 
-# Build a release .app, install/replace it in /Applications (strips quarantine), then relaunch.
-# Delegates to install.sh for build+install (never touches your real config).
+# Build a release .app, install/replace it in /Applications, then relaunch.
+# Delegates build+install to install.sh (seeds ~/.config/warden/config.toml only if absent);
+# the relaunch stays here because install.sh never launches the app.
 [group("dist")]
 deploy:
     #!/usr/bin/env bash
