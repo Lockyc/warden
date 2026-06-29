@@ -327,7 +327,8 @@
       }
 
       /** Add/remove a tab's unread badge, keeping the `badges` set in sync so a
-          re-render restores it. Inserts the badge just left of the live/cold dot. */
+          re-render restores it. Inserts the badge at the start of the trailing-dot
+          group (left of the session dot if any, else the live/cold dot). */
       function setBadge(id, on) {
         if (on) badges.add(id); else badges.delete(id);
         const row = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]');
@@ -336,7 +337,11 @@
         if (on && !b) {
           b = document.createElement('span');
           b.className = 'tab-badge';
-          row.insertBefore(b, row.querySelector('.tab-dot'));
+          // Keep the trailing-edge order [badge][session][live/cold]: land before the
+          // session dot when the tab has one (probe-enabled), else before the live/cold
+          // dot — matches render()'s append order so a dynamic badge doesn't sit in the
+          // wrong slot and jump on the next re-render.
+          row.insertBefore(b, row.querySelector('.tab-sess') || row.querySelector('.tab-dot'));
         } else if (!on && b) {
           b.remove();
         }
