@@ -192,17 +192,6 @@ fn setup_banners() {
 /// Uses `ManagerState::lock` (not a bare `unwrap`) so a poisoned mutex recovers instead of
 /// crashing the notification path — matching every command handler.
 fn handle(app: &AppHandle, event: SurfaceEvent) {
-    // A backing-scale change is a lifecycle signal, not an attention one: recreate the surface at
-    // the new DPI (gated on config in the manager) rather than badging a tab. Like the badge path
-    // this runs on the main thread — the signal is async-dispatched from the surface method, so it
-    // never nests inside a command holding `ManagerState`.
-    if event.signal == SurfaceSignal::BackingScaleChanged {
-        app.state::<ManagerState>()
-            .lock()
-            .respawn_surface_for_scale(event.surface_id);
-        return;
-    }
-
     let located = app
         .state::<ManagerState>()
         .lock()

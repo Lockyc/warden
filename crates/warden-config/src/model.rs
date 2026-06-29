@@ -12,13 +12,6 @@ pub struct Config {
     /// Seconds between background session-probe passes. 0 = focus/refresh-only.
     /// Default 5. Global concern — no per-window cascade.
     pub probe_interval: u64,
-    /// Fallback for display-DPI changes (e.g. unplugging a monitor). warden's primary
-    /// fix updates the render layer's `contentsScale` in place (no restart); this flag
-    /// additionally recreates a tab's surface on a real scale change, which always
-    /// re-renders cleanly but restarts the tab's process (transparent for amux/tmux,
-    /// which reattaches; lossy for a bare process). Default false — only needed if the
-    /// in-place fix ever proves insufficient. Whole-app concern — no per-window cascade.
-    pub respawn_on_scale_change: bool,
 }
 
 /// Behaviour of the ⌘1/⌘2 menu accelerators (a whole-app keybinding mode).

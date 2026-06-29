@@ -17,11 +17,10 @@
 # The `dir`s point at examples/projects/ (tracked mock dirs) so this demo validates warning-free
 # from the repo root. A real config uses absolute or ~/-prefixed paths to your actual projects.
 
-shell                   = "fish -l" # global default shell for every tab
-cmd                     = "amux"    # global default: launch agentmux in each tab (shell stays live on exit)
-format_on_save          = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
-tab_digit_keys          = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
-respawn_on_scale_change = false     # FALLBACK for display-DPI changes (warden fixes them in place by default). Recreates a tab's surface, RESTARTING its process — fine if it reattaches (amux/tmux), lossy otherwise. Leave off unless the in-place fix misses a display.
+shell          = "fish -l" # global default shell for every tab
+cmd            = "amux"    # global default: launch agentmux in each tab (shell stays live on exit)
+format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
+tab_digit_keys = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
 
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
 # dot when it exits 0. Here it's lit while the tab's agentmux session is live; any check works.

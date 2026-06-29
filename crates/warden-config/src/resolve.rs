@@ -124,7 +124,6 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
             format_on_save: raw.format_on_save.unwrap_or(false),
             tab_digit_keys,
             probe_interval: raw.probe_interval.unwrap_or(5),
-            respawn_on_scale_change: raw.respawn_on_scale_change.unwrap_or(false),
         },
         warnings,
     ))
@@ -312,33 +311,6 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert!(cfg.format_on_save);
-    }
-
-    #[test]
-    fn respawn_on_scale_change_defaults_false() {
-        let (cfg, _) = resolve_str(
-            r##"
-[[window]]
-title = "w"
-colour = "#0f8a8a"
-"##,
-        )
-        .unwrap();
-        assert!(!cfg.respawn_on_scale_change);
-    }
-
-    #[test]
-    fn respawn_on_scale_change_parses_true() {
-        let (cfg, _) = resolve_str(
-            r##"
-respawn_on_scale_change = true
-[[window]]
-title = "w"
-colour = "#0f8a8a"
-"##,
-        )
-        .unwrap();
-        assert!(cfg.respawn_on_scale_change);
     }
 
     #[test]

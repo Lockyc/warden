@@ -54,9 +54,6 @@ Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` window cy
 ```toml
 shell = "fish -l"            # global default shell every tab spawns
 format_on_save = true        # optional; rewrite this file tidy on each clean save (default off)
-respawn_on_scale_change = false  # optional; FALLBACK for display-DPI changes (warden fixes them in
-                             #   place by default). Recreates a tab's surface, restarting its
-                             #   process (amux reattaches). Default off.
 
 [[window]]                   # a native macOS window
 title  = "work"

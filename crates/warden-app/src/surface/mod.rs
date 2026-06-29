@@ -9,9 +9,8 @@ use std::sync::OnceLock;
 #[cfg(target_os = "macos")]
 pub mod ghostty;
 
-/// A signal a surface raised, in seam-neutral terms (no libghostty/Tauri types). The surface
-/// layer decodes the platform event into this; the app layer routes it (to a tab, or to a
-/// lifecycle action).
+/// An attention signal a surface raised, in seam-neutral terms (no libghostty/Tauri types).
+/// The surface layer decodes the platform action into this; the app layer routes it to a tab.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceSignal {
     /// The terminal rang its bell (`\a`). Carries no text.
@@ -19,10 +18,6 @@ pub enum SurfaceSignal {
     /// A desktop-notification escape (OSC 9 / OSC 777). `title`/`body` are whatever the program
     /// emitted (either may be empty).
     Notification { title: String, body: String },
-    /// The surface's window moved to a display with a different backing scale (DPI). The vendored
-    /// libghostty doesn't reflow the font on a live content-scale push, so the app layer recreates
-    /// the surface at the new scale — but only when `respawn_on_scale_change` is configured.
-    BackingScaleChanged,
 }
 
 /// A signal from a specific surface. `surface_id` is the opaque surface handle as a `usize`

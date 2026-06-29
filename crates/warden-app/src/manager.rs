@@ -69,7 +69,6 @@ impl WindowManager {
                 format_on_save: false,
                 tab_digit_keys: warden_config::TabDigitKeys::default(),
                 probe_interval: 5,
-                respawn_on_scale_change: false,
             },
             diagnostic_msg: String::new(),
             probe_interval: Arc::new(AtomicU64::new(5)),
@@ -224,22 +223,6 @@ impl WindowManager {
             let visible = focused && ws.registry.active_tab() == Some(tab);
             Some((label.clone(), tab.to_string(), visible))
         })
-    }
-
-    /// Recreate the surface `surface_id` at its window's current backing scale, in response to a
-    /// `BackingScaleChanged` signal — but only when `respawn_on_scale_change` is configured (it
-    /// restarts the tab's process; default off). Reads `last_good` so a hot-reload toggling the
-    /// flag takes effect live. No-op if disabled or the surface is no longer live (e.g. it was
-    /// unloaded between the signal being scheduled and delivered).
-    pub fn respawn_surface_for_scale(&mut self, surface_id: usize) {
-        if !self.last_good.respawn_on_scale_change {
-            return;
-        }
-        for ws in self.windows.values_mut() {
-            if ws.registry.respawn_surface(surface_id) {
-                break;
-            }
-        }
     }
 
     /// Labels currently in use — the seed `unique_label` must avoid when

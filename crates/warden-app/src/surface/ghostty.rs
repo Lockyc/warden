@@ -317,7 +317,6 @@ declare_class!(
         fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Option<Retained<Self>> {
             let this = this.set_ivars(HostIvars {
                 surface: Cell::new(ptr::null_mut()),
-                built_scale: Cell::new(0.0),
             });
             unsafe { msg_send_id![super(this), initWithFrame: frame] }
         }
@@ -526,17 +525,6 @@ declare_class!(
             unsafe {
                 apply_surface_geometry(surface, frame.size.width, frame.size.height, scale);
             }
-
-            // Opt-in fallback (`respawn_on_scale_change`, default off): if the contentsScale fix above
-            // ever proves insufficient on some display, recreating the surface always renders correctly
-            // (creation rebuilds everything from the current scale). Signal it async so the teardown
-            // doesn't run while this NSView method is on the stack; the manager drops the signal when
-            // the flag is off. Gated on a real change (live scale ≠ the view's creation scale).
-            if (scale - self.ivars().built_scale.get()).abs() > f64::EPSILON {
-                unsafe {
-                    dispatch_async_f(main_queue(), surface as *mut c_void, scale_changed_trampoline);
-                }
-            }
         }
     }
 );
@@ -548,20 +536,11 @@ declare_class!(
 /// focused window's view, which forwards to *its own* surface.
 struct HostIvars {
     surface: Cell<ffi::ghostty_surface_t>,
-    /// The backing scale the surface's font was built at (creation-time `backingScaleFactor`).
-    /// `viewDidChangeBackingProperties` compares the live scale against this to detect a *real*
-    /// DPI change (the override also fires on no-op backing changes / at launch), and signals a
-    /// respawn only when they differ. Set once in `new`; a respawn makes a fresh view with the
-    /// new scale, so it never needs updating in place.
-    built_scale: Cell<f64>,
 }
 
 impl WardenHostView {
     fn set_surface(&self, surface: ffi::ghostty_surface_t) {
         self.ivars().surface.set(surface);
-    }
-    fn set_built_scale(&self, scale: f64) {
-        self.ivars().built_scale.set(scale);
     }
 }
 
@@ -719,19 +698,6 @@ unsafe fn apply_surface_geometry(
     ffi::ghostty_surface_set_size(surface, w, h);
 }
 
-/// GCD work item: emit a `BackingScaleChanged` signal for the surface passed as `context`
-/// (its `*mut ghostty_surface_t` reinterpreted as a `usize` id). Dispatched async from
-/// `viewDidChangeBackingProperties` so the respawn it triggers (which frees this surface +
-/// its view) runs on a *later* runloop turn, not while the NSView method is still on the
-/// stack. If the surface was already torn down by the time this runs, the id simply won't
-/// match any live tab and the app drops it — the pointer is only ever compared, never read.
-unsafe extern "C" fn scale_changed_trampoline(context: *mut c_void) {
-    super::emit_surface_event(SurfaceEvent {
-        surface_id: context as usize,
-        signal: SurfaceSignal::BackingScaleChanged,
-    });
-}
-
 // --- GhosttySurface ---------------------------------------------------------
 pub struct GhosttySurface {
     host_view: Retained<WardenHostView>,
@@ -854,9 +820,6 @@ impl GhosttySurface {
             // Per-view ownership => first-responder routing is correct across
             // windows by construction, no shared global to disambiguate.
             host_view.set_surface(surface);
-            // Record the scale the font was built at so viewDidChangeBackingProperties can tell a
-            // real DPI change (→ respawn) from a no-op backing-properties fire.
-            host_view.set_built_scale(scale);
 
             // Kick an initial tick in case the first wakeup raced app creation.
             dispatch_async_f(main_queue(), app as *mut c_void, tick_trampoline);
