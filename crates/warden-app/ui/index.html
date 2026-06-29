@@ -635,6 +635,15 @@
         const stored = parseInt(localStorage.getItem(widthKey()), 10);
         if (Number.isFinite(stored)) applyWidth(stored);
         render(dto);
+        // A surface that failed to spawn while the window was being built (before
+        // this listener existed) rides in on the snapshot — show it in the banner.
+        // textContent (not innerHTML): the reason string never reaches the parser.
+        if (dto.error) {
+          const el = document.getElementById('error');
+          el.textContent = '⚠ ' + dto.error;
+          el.style.display = 'block';
+          reportRect();
+        }
         // Ask for the first probe pass only AFTER the session-state listener is
         // registered (listen() is async), so the first emit can't race ahead of it
         // and be dropped. This is what populates the dots at startup — critical for

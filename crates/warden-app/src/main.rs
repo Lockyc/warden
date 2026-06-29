@@ -54,13 +54,13 @@ struct ManagerState(std::sync::Mutex<WindowManager>);
 
 #[cfg(target_os = "macos")]
 impl ManagerState {
-    /// Lock the manager, recovering from a poisoned mutex. A single-step command panic
-    /// (e.g. a surface that fails to spawn) leaves the manager *consistent* — the failing
-    /// mutation aborts before it touches state. A panic partway through a multi-step op
-    /// (`apply`/`materialize`) can leave partial state, but recovering the guard still
-    /// keeps every subsequent command and the watcher reconcile alive instead of
-    /// cascading one panic into permanently-dead IPC — the panic sources here are
-    /// near-fatal AppKit/libghostty failures, so partial reconcile is the lesser evil.
+    /// Lock the manager, recovering from a poisoned mutex. Surface-spawn failures no
+    /// longer panic — they degrade to a cold tab (see `registry.rs` / `build_window`).
+    /// What remains is the rare near-fatal AppKit failure: a multi-step op
+    /// (`apply`/`materialize`) can still panic partway (e.g. an `ns_window`/window
+    /// build `.expect`) and leave partial state, but recovering the guard keeps every
+    /// subsequent command and the watcher reconcile alive instead of cascading one
+    /// panic into permanently-dead IPC — the lesser evil.
     fn lock(&self) -> std::sync::MutexGuard<'_, WindowManager> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -175,9 +175,18 @@ fn probe_now(window: tauri::WebviewWindow) {
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
-    let mut m = state.lock();
-    if let Some(ws) = m.windows.get_mut(window.label()) {
-        ws.registry.activate(&id);
+    use tauri::Emitter;
+    let err = {
+        let mut m = state.lock();
+        m.windows
+            .get_mut(window.label())
+            .and_then(|ws| ws.registry.activate(&id).err())
+    };
+    // A lazy spawn failed on click: the tab stays cold (blank placeholder) instead
+    // of panicking. The chrome is listening now, so push the reason to the banner.
+    if let Some(e) = err {
+        eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
+        let _ = window.emit("warden:error", format!("couldn't open terminal: {e}"));
     }
 }
 
@@ -505,68 +514,69 @@ fn main() {
                 // The formatter's copy of the path (cfg_path is moved into the watcher).
                 let fmt_path = cfg_path.clone();
                 // Inject the login shell so hot-reload uses the same default as the initial load.
-                let watcher = warden_config::Watcher::with_default(cfg_path, login_shell(), move |res| {
-                    let wh = wh.clone();
-                    let fmt_path = fmt_path.clone();
-                    let _ = wh.clone().run_on_main_thread(move || {
-                        use tauri::{Emitter, Manager};
-                        match res {
-                            Ok(loaded) if !loaded.config.windows.is_empty() => {
-                                let st = wh.state::<ManagerState>();
-                                let mut m = st.lock();
-                                // The app menu is global, not part of window reconcile;
-                                // rebuild it only when the digit-keys mode actually flips.
-                                let old_mode = m.last_good.tab_digit_keys;
-                                let new_mode = loaded.config.tab_digit_keys;
-                                if m.is_empty() {
-                                    // Recovery: nothing live (launched into the
-                                    // diagnostic window). Materialize from scratch
-                                    // and close the diagnostic, rather than
-                                    // reconciling against an empty last_good.
-                                    m.materialize(&wh, loaded.config.clone());
-                                    m.clear_diagnostic(&wh);
-                                } else {
-                                    let recon =
-                                        warden_config::reconcile(&m.last_good, &loaded.config);
-                                    m.apply(&wh, &recon);
-                                    // Advance the reconcile baseline ONLY on a valid load.
-                                    m.last_good = loaded.config.clone();
+                let watcher =
+                    warden_config::Watcher::with_default(cfg_path, login_shell(), move |res| {
+                        let wh = wh.clone();
+                        let fmt_path = fmt_path.clone();
+                        let _ = wh.clone().run_on_main_thread(move || {
+                            use tauri::{Emitter, Manager};
+                            match res {
+                                Ok(loaded) if !loaded.config.windows.is_empty() => {
+                                    let st = wh.state::<ManagerState>();
+                                    let mut m = st.lock();
+                                    // The app menu is global, not part of window reconcile;
+                                    // rebuild it only when the digit-keys mode actually flips.
+                                    let old_mode = m.last_good.tab_digit_keys;
+                                    let new_mode = loaded.config.tab_digit_keys;
+                                    if m.is_empty() {
+                                        // Recovery: nothing live (launched into the
+                                        // diagnostic window). Materialize from scratch
+                                        // and close the diagnostic, rather than
+                                        // reconciling against an empty last_good.
+                                        m.materialize(&wh, loaded.config.clone());
+                                        m.clear_diagnostic(&wh);
+                                    } else {
+                                        let recon =
+                                            warden_config::reconcile(&m.last_good, &loaded.config);
+                                        m.apply(&wh, &recon);
+                                        // Advance the reconcile baseline ONLY on a valid load.
+                                        m.last_good = loaded.config.clone();
+                                    }
+                                    // Apply the (possibly changed) probe cadence while we still
+                                    // hold the lock, then release it before any lock-free work.
+                                    m.set_probe_interval(loaded.config.probe_interval);
+                                    drop(m);
+                                    // Opt-in tidy: rewrite the file formatted. Diff-guarded in
+                                    // format_file, so warden's own write doesn't loop the watcher.
+                                    // Only runs on a clean parse (this branch).
+                                    if loaded.config.format_on_save {
+                                        let _ = warden_config::format_file(&fmt_path);
+                                    }
+                                    // Rebuild the global app menu only when the digit-keys mode flips.
+                                    if old_mode != new_mode {
+                                        let _ = build_app_menu(&wh, new_mode);
+                                    }
+                                    // Clear any stale error banner.
+                                    let _ = wh.emit("warden:error-clear", ());
+                                    // Refresh the session dots now that cadence/config may have changed
+                                    // (lock already released, so the spawned pass can lock freely).
+                                    probe::spawn_pass(wh.clone(), None);
                                 }
-                                // Apply the (possibly changed) probe cadence while we still
-                                // hold the lock, then release it before any lock-free work.
-                                m.set_probe_interval(loaded.config.probe_interval);
-                                drop(m);
-                                // Opt-in tidy: rewrite the file formatted. Diff-guarded in
-                                // format_file, so warden's own write doesn't loop the watcher.
-                                // Only runs on a clean parse (this branch).
-                                if loaded.config.format_on_save {
-                                    let _ = warden_config::format_file(&fmt_path);
+                                Ok(_) => {
+                                    // Valid TOML but no windows: keep live windows up,
+                                    // surface the error banner rather than tearing down.
+                                    let _ = wh.emit(
+                                        "warden:error",
+                                        "config has no [[window]] entries".to_string(),
+                                    );
                                 }
-                                // Rebuild the global app menu only when the digit-keys mode flips.
-                                if old_mode != new_mode {
-                                    let _ = build_app_menu(&wh, new_mode);
+                                Err(e) => {
+                                    // Keep last_good; surface the parse error in the banner.
+                                    let _ = wh.emit("warden:error", e.to_string());
                                 }
-                                // Clear any stale error banner.
-                                let _ = wh.emit("warden:error-clear", ());
-                                // Refresh the session dots now that cadence/config may have changed
-                                // (lock already released, so the spawned pass can lock freely).
-                                probe::spawn_pass(wh.clone(), None);
                             }
-                            Ok(_) => {
-                                // Valid TOML but no windows: keep live windows up,
-                                // surface the error banner rather than tearing down.
-                                let _ = wh.emit(
-                                    "warden:error",
-                                    "config has no [[window]] entries".to_string(),
-                                );
-                            }
-                            Err(e) => {
-                                // Keep last_good; surface the parse error in the banner.
-                                let _ = wh.emit("warden:error", e.to_string());
-                            }
-                        }
+                        });
                     });
-                });
                 // Keep the watcher alive for the app's lifetime. Log a failure so a
                 // dead watcher (no hot-reload) is distinguishable from a working one.
                 match watcher {

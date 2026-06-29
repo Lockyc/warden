@@ -1,4 +1,4 @@
-use crate::surface::{ghostty::GhosttySurface, PixelRect, TabSpec, TerminalSurface};
+use crate::surface::{ghostty::GhosttySurface, PixelRect, SurfaceError, TabSpec, TerminalSurface};
 use std::os::raw::c_void;
 
 /// One probe-enabled tab's work item: `(id, dir, title, probe_cmd)`. The probe
@@ -58,13 +58,26 @@ impl Registry {
 
     /// Add a tab. `load_on_open=true` spawns now (eager); `false` declares it
     /// (lazy — spawns on first `activate`). [spec §3]
-    pub fn add(&mut self, spec: &TabSpec, load_on_open: bool) {
+    ///
+    /// A failed *eager* spawn is non-fatal: the tab is still added as a **cold**
+    /// entry (it shows in the sidebar and retries on next `activate`/focus) and
+    /// the `SurfaceError` is returned for the caller to surface — never a panic,
+    /// since one bad surface must not take down the window. A declared tab can't
+    /// fail here (no spawn attempted) → always `Ok`.
+    pub fn add(&mut self, spec: &TabSpec, load_on_open: bool) -> Result<(), SurfaceError> {
         let warn = !spec.dir.exists();
+        let mut err = None;
         let slot = if load_on_open {
-            let s =
-                GhosttySurface::new(self.ns_window, self.last_rect, spec).expect("surface create");
-            s.hide();
-            TabSlot::Spawned(s)
+            match GhosttySurface::new(self.ns_window, self.last_rect, spec) {
+                Ok(s) => {
+                    s.hide();
+                    TabSlot::Spawned(s)
+                }
+                Err(e) => {
+                    err = Some(e);
+                    TabSlot::Cold
+                }
+            }
         } else {
             TabSlot::Cold
         };
@@ -75,6 +88,7 @@ impl Registry {
             spec: spec.clone(),
             slot,
         });
+        err.map_or(Ok(()), Err)
     }
 
     #[cfg(test)]
@@ -152,12 +166,14 @@ impl Registry {
 
     /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
     /// never-opened or previously unloaded — spawns a fresh surface from its spec.
-    fn ensure_spawned(&mut self, idx: usize) {
+    /// A spawn failure leaves the tab cold and returns the error (the caller
+    /// surfaces it); the tab can be retried by activating it again. Never panics.
+    fn ensure_spawned(&mut self, idx: usize) -> Result<(), SurfaceError> {
         if let TabSlot::Cold = self.tabs[idx].slot {
-            let s = GhosttySurface::new(self.ns_window, self.last_rect, &self.tabs[idx].spec)
-                .expect("surface create");
+            let s = GhosttySurface::new(self.ns_window, self.last_rect, &self.tabs[idx].spec)?;
             self.tabs[idx].slot = TabSlot::Spawned(s);
         }
+        Ok(())
     }
 
     /// Kill tab `id`'s surface + PTY, returning it to cold (it respawns a fresh
@@ -182,7 +198,9 @@ impl Registry {
                 .collect();
             if let Some(n) = pick_live_neighbour(idx, &live) {
                 let next = self.tabs[n].id.clone();
-                self.activate(&next);
+                // The neighbour is already live (pick_live_neighbour only returns
+                // spawned tabs), so this activate never spawns and can't fail.
+                let _ = self.activate(&next);
                 return Some(next);
             }
         }
@@ -190,11 +208,16 @@ impl Registry {
     }
 
     /// Show + focus the tab `id` (spawning it first if declared); hide all others.
-    pub fn activate(&mut self, id: &str) {
+    ///
+    /// If the lazy spawn fails the tab is marked active anyway but stays cold, so
+    /// the hole shows the blank placeholder (no live surface for `idx`); the error
+    /// is returned for the caller to surface, and re-activating retries. Returns
+    /// `Ok` for an unknown id (no-op) and for an already-spawned tab.
+    pub fn activate(&mut self, id: &str) -> Result<(), SurfaceError> {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
-            return;
+            return Ok(());
         };
-        self.ensure_spawned(idx);
+        let spawned = self.ensure_spawned(idx);
         let rect = self.last_rect;
         for (i, t) in self.tabs.iter().enumerate() {
             if let TabSlot::Spawned(s) = &t.slot {
@@ -208,6 +231,7 @@ impl Registry {
             }
         }
         self.active = Some(id.to_string());
+        spawned
     }
 
     /// Update the geometry of the active surface; store for hidden surfaces
@@ -313,7 +337,7 @@ mod tests {
     fn declared_tab_is_not_spawned() {
         // ns_window is never dereferenced for a declared (load_on_open=false) tab.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/tmp"), false);
+        let _ = r.add(&spec("t0", "/tmp"), false);
         assert!(!r.is_spawned("t0"));
         // It still shows up in the chrome DTOs.
         let dtos = r.tab_dtos();
@@ -326,15 +350,15 @@ mod tests {
     #[test]
     fn missing_dir_sets_warn_flag() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/no/such/dir/xyz"), false);
+        let _ = r.add(&spec("t0", "/no/such/dir/xyz"), false);
         assert!(r.tab_dtos()[0].warn, "missing dir must set warn");
     }
 
     #[test]
     fn remove_drops_declared_entry() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/tmp"), false);
-        r.add(&spec("t1", "/tmp"), false);
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        let _ = r.add(&spec("t1", "/tmp"), false);
         r.remove("t0");
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["t1".to_string()]);
@@ -343,8 +367,8 @@ mod tests {
     #[test]
     fn reorder_reorders_declared_entries() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("a", "/tmp"), false);
-        r.add(&spec("b", "/tmp"), false);
+        let _ = r.add(&spec("a", "/tmp"), false);
+        let _ = r.add(&spec("b", "/tmp"), false);
         r.reorder(&["b".to_string(), "a".to_string()]);
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
@@ -353,7 +377,7 @@ mod tests {
     #[test]
     fn set_group_updates_dto_without_touching_surface() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/tmp"), false);
+        let _ = r.add(&spec("t0", "/tmp"), false);
         assert_eq!(r.tab_dtos()[0].group, None);
         r.set_group("t0", Some("backend".into()));
         assert_eq!(r.tab_dtos()[0].group.as_deref(), Some("backend"));
@@ -368,7 +392,7 @@ mod tests {
         // A declared (never-spawned) tab has no surface to kill: unload reports no
         // active change and the tab stays put and cold.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/tmp"), false);
+        let _ = r.add(&spec("t0", "/tmp"), false);
         assert_eq!(r.unload("t0"), None);
         assert!(!r.is_spawned("t0"));
         assert_eq!(r.tab_dtos().len(), 1);
@@ -377,7 +401,7 @@ mod tests {
     #[test]
     fn unload_of_unknown_tab_is_noop() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/tmp"), false);
+        let _ = r.add(&spec("t0", "/tmp"), false);
         assert_eq!(r.unload("nope"), None);
         assert_eq!(r.tab_dtos().len(), 1);
     }
@@ -421,8 +445,8 @@ mod tests {
     #[test]
     fn has_probe_flag_reflects_spec() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec_with_probe("t0", "/tmp", Some("x")), false);
-        r.add(&spec_with_probe("t1", "/tmp", None), false);
+        let _ = r.add(&spec_with_probe("t0", "/tmp", Some("x")), false);
+        let _ = r.add(&spec_with_probe("t1", "/tmp", None), false);
         let dtos = r.tab_dtos();
         assert!(dtos[0].has_probe);
         assert!(!dtos[1].has_probe);
@@ -431,8 +455,8 @@ mod tests {
     #[test]
     fn probe_targets_lists_only_probe_enabled_tabs() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec_with_probe("t0", "/tmp/a", Some("cmd-a")), false);
-        r.add(&spec_with_probe("t1", "/tmp/b", None), false);
+        let _ = r.add(&spec_with_probe("t0", "/tmp/a", Some("cmd-a")), false);
+        let _ = r.add(&spec_with_probe("t1", "/tmp/b", None), false);
         let targets = r.probe_targets();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].0, "t0");
@@ -446,8 +470,8 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let mut s_with = spec("t0", "/tmp");
         s_with.kill = Some("kill-cmd {dir}".into());
-        r.add(&s_with, false);
-        r.add(&spec("t1", "/tmp"), false); // kill: None
+        let _ = r.add(&s_with, false);
+        let _ = r.add(&spec("t1", "/tmp"), false); // kill: None
         let dtos = r.tab_dtos();
         assert!(dtos[0].has_kill);
         assert!(!dtos[1].has_kill);
@@ -458,8 +482,8 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let mut s = spec("t0", "/tmp/a");
         s.kill = Some("kill {title}".into());
-        r.add(&s, false);
-        r.add(&spec("t1", "/tmp/b"), false); // no kill
+        let _ = r.add(&s, false);
+        let _ = r.add(&spec("t1", "/tmp/b"), false); // no kill
         assert_eq!(
             r.kill_target("t0"),
             Some((

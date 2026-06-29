@@ -38,6 +38,12 @@ pub struct InitDto {
     pub title: String,
     pub colour: String,
     pub tabs: Vec<TabDto>,
+    /// A surface-spawn failure that happened while building this window, surfaced
+    /// in the chrome's error banner on init. `None` = all tabs built cleanly. This
+    /// is the launch channel for spawn errors: `build_window` runs before the
+    /// webview registers its `warden:error` listener, so a pushed event would be
+    /// lost — the chrome pulls this with the snapshot instead.
+    pub error: Option<String>,
 }
 
 pub struct WindowState {
@@ -45,6 +51,8 @@ pub struct WindowState {
     pub registry: Registry,
     pub title: String,
     pub colour: String,
+    /// Surface-spawn failure(s) from `build_window`, shown once via the init DTO.
+    pub spawn_error: Option<String>,
 }
 
 pub struct WindowManager {
@@ -151,12 +159,36 @@ impl WindowManager {
         let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 
         let mut registry = Registry::new(ns_window, INITIAL_RECT);
+        // Surface-create failures (a null libghostty surface, an interior-NUL in a
+        // config dir/shell) must NOT panic the whole app at launch — the failing
+        // tab stays cold and its reason is collected for the init banner; every
+        // other tab and window still comes up.
+        let mut spawn_errors: Vec<String> = Vec::new();
         for t in &spec.tabs {
-            registry.add(&t.spec, t.load_on_open);
+            if let Err(e) = registry.add(&t.spec, t.load_on_open) {
+                spawn_errors.push(format!("{}: {e}", t.spec.title));
+            }
         }
         if let Some(first) = spec.tabs.first() {
-            registry.activate(&first.spec.id);
+            if let Err(e) = registry.activate(&first.spec.id) {
+                let msg = format!("{}: {e}", first.spec.title);
+                // The first tab may have already failed its eager add above; don't
+                // report the same tab twice.
+                if !spawn_errors.contains(&msg) {
+                    spawn_errors.push(msg);
+                }
+            }
         }
+        let spawn_error = if spawn_errors.is_empty() {
+            None
+        } else {
+            let joined = spawn_errors.join("; ");
+            eprintln!(
+                "warden: surface spawn failed in window {:?}: {joined}",
+                spec.title
+            );
+            Some(format!("couldn't open terminal — {joined}"))
+        };
 
         // On manual close (or any destroy), drop the window's state and reap its
         // surfaces; quit when the last window window goes away. Idempotent with
@@ -190,6 +222,7 @@ impl WindowManager {
             registry,
             title: spec.title.clone(),
             colour: spec.colour.clone(),
+            spawn_error,
         }
     }
 
@@ -210,6 +243,7 @@ impl WindowManager {
             title: ws.title.clone(),
             colour: ws.colour.clone(),
             tabs: ws.registry.tab_dtos(),
+            error: ws.spawn_error.clone(),
         })
     }
 
@@ -303,7 +337,15 @@ impl WindowManager {
                             ws.registry.remove(id);
                         }
                         for tp in &add_tabs {
-                            ws.registry.add(&tp.spec, tp.load_on_open);
+                            // A failed eager spawn on hot-reload leaves the tab cold
+                            // (it retries on focus, which surfaces the error via the
+                            // banner then) — log it, never panic.
+                            if let Err(e) = ws.registry.add(&tp.spec, tp.load_on_open) {
+                                eprintln!(
+                                    "warden: surface spawn failed for tab {:?}: {e}",
+                                    tp.spec.title
+                                );
+                            }
                         }
                         // Re-section kept tabs whose group changed (presentation only —
                         // no respawn), before reorder + the DTO push below.
@@ -324,6 +366,9 @@ impl WindowManager {
                             title: ws.title.clone(),
                             colour: ws.colour.clone(),
                             tabs: ws.registry.tab_dtos(),
+                            // Refresh carries no spawn error; a hot-reload add
+                            // failure is logged + retried-on-focus, not banner-pushed.
+                            error: None,
                         };
                         let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
                     }
