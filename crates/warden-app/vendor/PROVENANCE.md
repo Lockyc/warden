@@ -1,6 +1,6 @@
-# Vendored libghostty (spike artifact)
+# Vendored libghostty (throwaway prebuilt)
 
-`GhosttyKit.xcframework` (macOS slice only) + `ghostty.h` are a THROWAWAY spike artifact.
+`GhosttyKit.xcframework` (macOS slice only) + `ghostty.h` are a THROWAWAY prebuilt artifact.
 
 Ghostty is MIT-licensed; redistributing its compiled bytes here carries its
 license notice, in `LICENSE-ghostty` (this directory).
@@ -13,14 +13,14 @@ license notice, in `LICENSE-ghostty` (this directory).
   download integrity against Lakr233's manifest, NOT that the bytes are genuine, unmodified upstream
   Ghostty. This is **vendor self-attestation, not independent verification.** The binary links and
   runs in-process with full user privileges (it spawns the user's shells), so treat it as untrusted-
-  but-pragmatic for the spike; the Plan-2 upstream source build is what actually removes this risk.
+  but-pragmatic for now; a controlled upstream source build (pinned commit) is what actually removes this risk.
 - The vendored `GhosttyKit.xcframework/Info.plist` still lists the `ios-*` slices in
   `AvailableLibraries` even though only `macos-arm64_x86_64/` was kept — stale vendor metadata,
   harmless (the build hardcodes the macOS slice path).
 - Why prebuilt, not source: building GhosttyKit from upstream needs Zig 0.15.2, which cannot
   link against this machine's macOS 26.5 SDK (Xcode 26.5) — a bleeding-edge-OS toolchain gap,
-  not a project problem. Documented in the spike spec §5.1.
-- This build carries non-upstream iOS patches and is independently versioned. It is fine for
-  proving the embed (the spike's question); it is NOT the production pin. Plan 2 must replace it
+  not a project problem.
+- This build carries non-upstream iOS patches and is independently versioned. It works for the
+  current embed but is NOT a production pin; warden-app should still replace it
   with a controlled upstream source build once the OS/Zig situation allows (or via a CI runner).
 - Only the `macos-arm64_x86_64` slice (universal static `libghostty.a`) is kept; iOS slices pruned.

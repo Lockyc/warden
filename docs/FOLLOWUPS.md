@@ -2,15 +2,15 @@
 
 Known, intentionally-deferred work. Each item is a conscious deferral, not an oversight — recorded here so it isn't lost. Remove an item when it's done.
 
-## For Plan 2 (the Tauri app) to add when it wires its consumer
+## To add in `warden-app` when needed
 
-These are trivial, zero-retrofit additions the consumer makes the moment it needs them; deferred from the config-core crate per YAGNI.
+These are trivial, zero-retrofit additions to make the moment `warden-app` needs them; deferred per YAGNI.
 
-- **Add `serde` derives to the model types** (`Config`, `Window`, `Tab`, `Warning`, `Colour`) — only if a future slice chooses IPC-direct model types over the app's own DTOs. Plan 2's first slice deliberately maps `Window`/`Tab` → app DTOs (web contract decoupled from the model), so this stays deferred. Tauri IPC `#[command]` return types must be `Serialize` to cross to the web chrome. `serde` is already a dependency — add the `derive`/`serialize` feature and the derives when the IPC layer lands, rather than maintaining parallel DTOs.
+- **Add `serde` derives to the model types** (`Config`, `Window`, `Tab`, `Warning`, `Colour`) — only if a future slice chooses IPC-direct model types over the app's own DTOs. `warden-app` deliberately maps `Window`/`Tab` → app DTOs (web contract decoupled from the model), so this stays deferred. Tauri IPC `#[command]` return types must be `Serialize` to cross to the web chrome. `serde` is already a dependency — add the `derive`/`serialize` feature and the derives when the IPC layer lands, rather than maintaining parallel DTOs.
 
-## Watcher robustness (deferred to the consumer)
+## Watcher robustness (deferred to `warden-app`)
 
-- **No debounce / coalescing** in `Watcher` (`crates/warden-config/src/watch.rs`). The callback fires for every filesystem event matching the config file name. Editors that write in place (rather than atomic temp-file + rename) can produce a transient `load()` parse error (a partial read mid-write) and/or multiple callbacks per save. Atomic-save editors are unaffected. Debounce/coalescing is intentionally left to the consumer (Plan 2), which owns the reload UX and already keeps last-good config on a parse error. Also documented at the call site.
+- **No debounce / coalescing** in `Watcher` (`crates/warden-config/src/watch.rs`). The callback fires for every filesystem event matching the config file name. Editors that write in place (rather than atomic temp-file + rename) can produce a transient `load()` parse error (a partial read mid-write) and/or multiple callbacks per save. Atomic-save editors are unaffected. Debounce/coalescing is intentionally left to `warden-app`, which owns the reload UX and already keeps last-good config on a parse error. Also documented at the call site.
 
 ## Lower-priority / edge cases
 
@@ -22,9 +22,9 @@ These are trivial, zero-retrofit additions the consumer makes the moment it need
 
 - `config_path_respects_env` (`crates/warden-config/src/load.rs`) mutates the process-global `WARDEN_CONFIG`. Cleanup is panic-safe (removed before the assert), but if a second test that reads `config_path()`/`WARDEN_CONFIG` is ever added, serialize them (e.g. `serial_test`) or refactor `config_path` to take an injected override — Rust runs tests in parallel threads. Inert today (no other reader).
 
-## Spike S → Plan 2 (the `warden-app` Tauri surface embed)
+## `warden-app` surface-embed hardening
 
-The `crates/warden-app` spike proved the Tauri + libghostty surface embed on macOS (all checkpoints human-verified). It is the **seed of Plan 2**, not production. Deferred work, by priority:
+`crates/warden-app` embeds libghostty terminal surfaces in Tauri on macOS. The following hardening is deferred, by priority:
 
 - **libghostty is a throwaway prebuilt.** Vendored artifact is `Lakr233/libghostty-spm` `storage.1.2.7` — third-party, iOS-patched, ~Ghostty 1.2.7 — committed as a 39MB static `libghostty.a`. Replace with a controlled **upstream source build** (pinned commit). The source build is currently blocked on this machine: Ghostty pins **Zig 0.15.2**, which cannot link the **macOS 26.5 SDK** (undefined libSystem symbols incl. `__availability_version_check`, reproduces on a trivial hello-world). Revisit when a Zig that supports the macOS 26 SDK also builds the chosen Ghostty ref, or build on a CI runner with a compatible SDK. Also: don't commit the binary — use Git LFS or fetch-in-`build.rs`.
 - **Make the `TerminalSurface` seam object-safe.** `close(self)` (by value) makes `Box<dyn TerminalSurface>` impossible, so the registry stores the concrete `GhosttySurface` — compile-time backend swap only, not runtime polymorphism (can't hold heterogeneous surfaces). Use `close(&mut self)` or Drop-based teardown. Pairs with: **add `Drop` for `GhosttySurface`** (today a surface freed only via explicit `close`/`close_all`; a dropped-without-close surface leaks the libghostty surface + its shell pty). Concrete trigger: `registry.rs:47` `GhosttySurface::new(...).expect(...)`, reached from the eager keep-alive spawn loop in `build_window` (`manager.rs:110`) — if surface #2/#3 fails, the already-created surfaces drop without `ghostty_surface_free`, leaking surface + pty. A `Drop` impl closes both this partial-init path and the general case (mind the double-free vs `close(self)` — Drop must become the sole free path).
