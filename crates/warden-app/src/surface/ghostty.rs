@@ -198,11 +198,34 @@ unsafe fn clipboard_image_to_temp_path(pb: &NSPasteboard) -> Option<String> {
             rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)?
         }
     };
-    let n = PASTE_IMAGE_SEQ.fetch_add(1, Ordering::Relaxed);
-    let mut path = std::env::temp_dir();
-    path.push(format!("warden-paste-{}-{}.png", std::process::id(), n));
-    std::fs::write(&path, png.bytes()).ok()?;
-    Some(path.to_str()?.to_owned())
+    // Create the temp file O_EXCL with 0600 perms rather than `fs::write` (which follows symlinks
+    // and truncates whatever's at the path, and leaves the bytes umask-default 0644). This only
+    // matters if $TMPDIR is world-writable — default macOS $TMPDIR is the per-user 0700
+    // `/var/folders/…/T`, so there's no live exposure — but it's the correct way to land another
+    // process's screenshot bytes. pid+seq can collide with a stale file from a prior run that
+    // reused this pid (files accrete for the session), so retry on AlreadyExists.
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let pid = std::process::id();
+    for _ in 0..64 {
+        let n = PASTE_IMAGE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!("warden-paste-{}-{}.png", pid, n));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(png.bytes()).ok()?;
+                return Some(path.to_str()?.to_owned());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 unsafe extern "C" fn confirm_read_clipboard_cb(
     _userdata: *mut c_void,
