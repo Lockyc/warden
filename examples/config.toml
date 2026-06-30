@@ -23,18 +23,16 @@ format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in
 tab_digit_keys = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
 
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
-# dot when it exits 0. Here it checks the tab's amux session — the agent on tmux's DEFAULT socket,
-# OR a lingering frame on the agentmux-frame socket (so the dot stays lit if the agent exits but the
-# frame wrapper is still up). probe_interval is in seconds (0 = check on window focus / hot-reload).
+# dot when it exits 0. `amux --probe` exits 0 when the tab's amux session exists — the agent OR a
+# lingering frame (so the dot stays lit if the agent exits but the frame wrapper is still up). amux
+# owns the session naming + socket layout, so this stays a one-liner that can't drift from it.
+# probe_interval is in seconds (0 = check on window focus / hot-reload).
 #
-# Two gotchas, both because warden runs the probe via bare `sh -c` with warden.app's *own* env:
-#   1. A Finder/Dock-launched warden.app has a minimal PATH (no /opt/homebrew/bin), so name the
-#      tmux binary by ABSOLUTE path — bare `tmux` is command-not-found → silent "no session".
-#      (Under `just run` it inherits your shell PATH, so bare `tmux` works there and masks this.)
-#   2. The agent check takes NO `-L` (amux's agents live on tmux's default socket); the frame check
-#      uses `-L agentmux-frame` (amux's frame wrapper has its own socket). `$AGENTMUX_*` vars aren't
-#      inherited from a Finder launch, so the socket name is hard-coded, not read from env.
-probe          = 'T=/opt/homebrew/bin/tmux; b=$(basename "$PWD" | tr .: __); "$T" has-session -t "=$b" 2>/dev/null || "$T" -L agentmux-frame has-session -t "=$b-frame" 2>/dev/null'
+# Name amux by ABSOLUTE path: warden runs the probe via `sh -c` with warden.app's own env, and a
+# Finder/Dock-launched .app has a minimal PATH. (amux's internal `tmux` calls then resolve via
+# warden's login-PATH import; under `just run` everything's on PATH anyway.) Not using agentmux?
+# Point `probe` at any check that exits 0 when your session exists.
+probe          = '"$HOME/.agentmux/bin/amux" --probe'
 probe_interval = 5
 # `kill` (optional, cascades like `probe`) runs when you confirm killing a tab's session: click the
 # cyan presence dot once to arm, again to confirm. `amux --kill` tears down the WHOLE project — the
