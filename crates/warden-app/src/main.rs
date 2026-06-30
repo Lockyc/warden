@@ -323,6 +323,24 @@ fn login_shell() -> String {
     format!("{path} -l")
 }
 
+/// The window-state plugin's save file, namespaced to the **resolved config path** so two
+/// configs that name a window the same don't share saved bounds. Without this, the test/example
+/// config (`just run` → `examples/config.toml`) and a prod `~/.config/warden/config.toml` both
+/// key window state by `sanitize_label(title)` in the *same* file — identical titles collide and
+/// the test window restores prod's size/position. Bounds belong to a (config, window) pair, so we
+/// scope the filename by a stable hash of the config path (canonicalized when it exists, so a
+/// symlinked path doesn't fork the state). Deterministic across runs: `DefaultHasher::new()` uses
+/// fixed seeds. Moving/renaming the config orphans its saved bounds — acceptable, since the path
+/// is otherwise stable (`config_path()`).
+fn window_state_filename() -> String {
+    use std::hash::{Hash, Hasher};
+    let path = warden_config::config_path();
+    let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    canonical.hash(&mut h);
+    format!(".window-state-{:016x}.json", h.finish())
+}
+
 fn main() {
     // warden hosts terminals — it must not leak its own launcher's tmux membership into them
     // (breaks nested agentmux/tmux). Scrub before anything else inherits the environment.
@@ -348,10 +366,11 @@ fn main() {
 
     tauri::Builder::default()
         // Persist each window's size + position (+ maximized) across launches, keyed by
-        // Tauri label. Saving is automatic (on close/exit); restore is triggered explicitly
-        // in manager.rs::build_window since warden's windows are built at runtime, not from
-        // tauri.conf.json. The transient diagnostic window is excluded — its bounds are
-        // throwaway and must not bleed into a real window that later reuses nothing of it.
+        // Tauri label *within a per-config state file* (see window_state_filename) so two configs
+        // that share a window title don't share bounds. Saving is automatic (on close/exit);
+        // restore is triggered explicitly in manager.rs::build_window since warden's windows are
+        // built at runtime, not from tauri.conf.json. The transient diagnostic window is excluded
+        // — its bounds are throwaway and must not bleed into a real window that reuses nothing.
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -360,6 +379,7 @@ fn main() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .skip_initial_state(DIAG_LABEL)
+                .with_filename(window_state_filename())
                 .build(),
         )
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
