@@ -9,6 +9,36 @@
         font-family: system-ui, sans-serif;
         overflow: hidden;
       }
+      /* Chrome sizing tokens. The default set is "comfortable"; the chrome sets
+         data-density="compact" on <html> from the global config, swapping in the
+         condensed set below — the whole type + spacing scale moves as a unit, so the
+         proportion stays intact. render() applies the attribute on init + hot-reload. */
+      :root {
+        --title-font: 16px;
+        --title-pad: 10px 12px;
+        --group-font: 14px;
+        --group-pad: 14px 12px 6px;
+        --row-font: 14px;
+        --row-pad: 9px 12px;
+        --row-gap: 10px;
+        --tile-size: 20px;
+        --tile-font: 11px;
+        --dot-size: 9px;
+        --sidebar-w: 240px;
+      }
+      [data-density="compact"] {
+        --title-font: 14px;
+        --title-pad: 7px 10px;
+        --group-font: 12px;
+        --group-pad: 10px 9px 4px;
+        --row-font: 12px;
+        --row-pad: 6px 9px;
+        --row-gap: 8px;
+        --tile-size: 17px;
+        --tile-font: 10px;
+        --dot-size: 8px;
+        --sidebar-w: 200px;
+      }
       /* Column root: the error bar (when shown) sits at the very top in normal
          flow and PUSHES #app down, so the native terminal surface reflows below
          it instead of being occluded by it (the NSView composites above the
@@ -37,7 +67,7 @@
         flex-direction: row;
       }
       #sidebar {
-        width: 240px;
+        width: var(--sidebar-w);
         flex: none;
         position: relative;  /* containing block for the resize handle */
         display: flex;
@@ -75,8 +105,8 @@
       #banner {
         flex: none;
         order: -1;          /* always first even if DOM order shifts */
-        padding: 10px 12px;
-        font-size: 16px;
+        padding: var(--title-pad);
+        font-size: var(--title-font);
         font-weight: 700;
         color: #fff;
         white-space: nowrap;
@@ -111,8 +141,8 @@
         z-index: 1;
         background: #15191e;
         border-top: 1px solid #313640;
-        padding: 14px 12px 6px;
-        font-size: 14px;
+        padding: var(--group-pad);
+        font-size: var(--group-font);
         font-weight: 700;
         letter-spacing: 0.06em;
         text-transform: uppercase;
@@ -127,13 +157,13 @@
       .tab {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: var(--row-gap);
         margin: 0 6px;
-        padding: 9px 12px;
+        padding: var(--row-pad);
         border-radius: 5px;
         cursor: pointer;
         color: #ddd;
-        font-size: 14px;
+        font-size: var(--row-font);
         user-select: none;
         transition: background 0.1s, color 0.1s;
       }
@@ -148,13 +178,13 @@
          presentation for at-a-glance scanning; ported from curator's chrome. */
       .tab-icon {
         flex: none;
-        width: 20px;
-        height: 20px;
+        width: var(--tile-size);
+        height: var(--tile-size);
         border-radius: 5px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        font-size: 11px;
+        font-size: var(--tile-font);
         font-weight: 600;
         color: #fff;
       }
@@ -165,7 +195,7 @@
         white-space: nowrap;
       }
       /* Live/cold indicator + unload control at the row's trailing edge (curator's
-         loaded-dot idiom). The visual dot is a 9px ::before centred in a 16px box
+         loaded-dot idiom). The visual dot is a var(--dot-size) ::before centred in a 16px box
          (a comfortable hover/click target). A filled green dot = the terminal
          surface is live (load_on_open, or focused once); a hollow ring = cold (never
          opened, or unloaded — spawns fresh on next focus). Hovering a LIVE dot
@@ -184,8 +214,8 @@
       }
       .tab-dot.cold::before {
         content: '';
-        width: 9px;
-        height: 9px;
+        width: var(--dot-size);
+        height: var(--dot-size);
         border-radius: 50%;
         box-sizing: border-box;
         border: 1px solid rgba(238, 238, 238, 0.3);
@@ -195,8 +225,8 @@
       }
       .tab-dot.live::before {
         content: '';
-        width: 9px;
-        height: 9px;
+        width: var(--dot-size);
+        height: var(--dot-size);
         border-radius: 50%;
         background: #3fb950;
       }
@@ -215,8 +245,8 @@
          left of the live/cold dot; cleared when you focus the tab. */
       .tab-badge {
         flex: none;
-        width: 9px;
-        height: 9px;
+        width: var(--dot-size);
+        height: var(--dot-size);
         border-radius: 50%;
         background: #f0883e;
       }
@@ -237,8 +267,8 @@
       }
       .tab-sess::before {
         content: '';
-        width: 9px;
-        height: 9px;
+        width: var(--dot-size);
+        height: var(--dot-size);
         border-radius: 50%;
         box-sizing: border-box;
       }
@@ -438,11 +468,18 @@
           match the CSS #sidebar fallback so there's no flash before JS runs. */
       const SIDEBAR_BASE = [21, 25, 30]; // #15191e
 
-      /** Sidebar width: default (matches the CSS) and lower bound. The upper bound
-          is computed against the live window width so a narrow window can't have its
-          terminal squeezed away (see clampWidth). */
-      const SIDEBAR_DEFAULT_WIDTH = 240;
+      /** Sidebar width lower bound. The upper bound is computed against the live
+          window width so a narrow window can't have its terminal squeezed away (see
+          clampWidth). */
       const SIDEBAR_MIN_WIDTH = 120;
+      /** The default sidebar width for the active density — read from the CSS
+          `--sidebar-w` token, which `data-density` switches (240 comfortable /
+          200 compact). First-run uses the CSS default directly; reset reads it here
+          so it follows the density. Falls back to 240 if the value can't be read. */
+      function defaultWidth() {
+        const v = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'), 10);
+        return Number.isFinite(v) ? v : 240;
+      }
 
       /** Clamp a desired sidebar width into [min, min(400, 40% of window)]. */
       function clampWidth(w) {
@@ -599,6 +636,10 @@
         disarmKill(); // reset any pending confirm before rebuilding — no dangling listener / orphaned confirm row
         const prevActive = active;
         windowColour = dto.colour ?? '#6b7280';
+        // Whole-app density: the global config's token ("comfortable" | "compact"),
+        // applied to <html> so the CSS sizing variables switch. Every snapshot carries
+        // it, so a hot-reload that flips density restyles the chrome here — no relaunch.
+        document.documentElement.setAttribute('data-density', dto.density || 'comfortable');
 
         // Drop badges for tabs that no longer exist (removed/renamed by a hot-reload), so a
         // future tab that reuses the id doesn't inherit a stale unread dot.
@@ -1008,9 +1049,9 @@
         handle.addEventListener('dblclick', (e) => {
           e.preventDefault();
           e.stopPropagation();
-          applyWidth(SIDEBAR_DEFAULT_WIDTH);
+          applyWidth(defaultWidth());
           reportRect();
-          persistWidth(SIDEBAR_DEFAULT_WIDTH);
+          persistWidth(defaultWidth());
         });
       }
 

@@ -631,7 +631,7 @@ fn main() {
                                     } else {
                                         let recon =
                                             warden_config::reconcile(&m.last_good, &loaded.config);
-                                        m.apply(&wh, &recon);
+                                        m.apply(&wh, &recon, loaded.config.density.as_str());
                                         // Advance the reconcile baseline ONLY on a valid load.
                                         m.last_good = loaded.config.clone();
                                     }
