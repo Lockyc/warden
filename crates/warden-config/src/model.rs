@@ -12,6 +12,31 @@ pub struct Config {
     /// Seconds between background session-probe passes. 0 = focus/refresh-only.
     /// Default 5. Global concern — no per-window cascade.
     pub probe_interval: u64,
+    /// Chrome sizing mode. Whole-app concern — no per-window cascade.
+    pub density: Density,
+}
+
+/// UI density — a whole-app presentation mode that scales the chrome's type and
+/// spacing as a unit. The crate only carries the choice; the app's chrome owns the
+/// actual sizes (it maps this to a `data-density` attribute → CSS variables).
+///
+/// - `Comfortable` (default): the standard sizing.
+/// - `Compact`: proportionally condensed type + spacing for denser tab lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Density {
+    #[default]
+    Comfortable,
+    Compact,
+}
+
+impl Density {
+    /// The token the chrome's `data-density` attribute uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Density::Comfortable => "comfortable",
+            Density::Compact => "compact",
+        }
+    }
 }
 
 /// Behaviour of the ⌘1/⌘2 menu accelerators (a whole-app keybinding mode).

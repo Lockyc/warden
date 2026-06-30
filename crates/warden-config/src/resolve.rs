@@ -1,4 +1,4 @@
-use crate::model::{Config, Tab, TabDigitKeys, Warning, Window};
+use crate::model::{Config, Density, Tab, TabDigitKeys, Warning, Window};
 use crate::raw::{RawConfig, RawWindow};
 use crate::{Colour, ColourError};
 use std::collections::HashSet;
@@ -69,6 +69,8 @@ pub enum ResolveError {
     },
     #[error("invalid tab_digit_keys {0:?} (expected \"jump\" or \"cycle\")")]
     BadTabDigitKeys(String),
+    #[error("invalid density {0:?} (expected \"comfortable\" or \"compact\")")]
+    BadDensity(String),
 }
 
 /// Parse the global `tab_digit_keys` setting. Missing/empty → the default
@@ -79,6 +81,17 @@ fn resolve_tab_digit_keys(raw: Option<&str>) -> Result<TabDigitKeys, ResolveErro
         Some("jump") => Ok(TabDigitKeys::Jump),
         Some("cycle") => Ok(TabDigitKeys::Cycle),
         Some(other) => Err(ResolveError::BadTabDigitKeys(other.to_string())),
+    }
+}
+
+/// Parse the global `density` setting. Missing/empty → the default
+/// (`Comfortable`); an unrecognised value is an error rather than a silent fallback.
+fn resolve_density(raw: Option<&str>) -> Result<Density, ResolveError> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(Density::default()),
+        Some("comfortable") => Ok(Density::Comfortable),
+        Some("compact") => Ok(Density::Compact),
+        Some(other) => Err(ResolveError::BadDensity(other.to_string())),
     }
 }
 
@@ -120,6 +133,7 @@ pub fn resolve_with(
     let mut windows = Vec::with_capacity(raw.windows.len());
     let mut seen_windows = HashSet::new();
     let tab_digit_keys = resolve_tab_digit_keys(raw.tab_digit_keys.as_deref())?;
+    let density = resolve_density(raw.density.as_deref())?;
 
     for (index, rp) in raw.windows.iter().enumerate() {
         if rp.title.trim().is_empty() {
@@ -144,6 +158,7 @@ pub fn resolve_with(
             format_on_save: raw.format_on_save.unwrap_or(false),
             tab_digit_keys,
             probe_interval: raw.probe_interval.unwrap_or(5),
+            density,
         },
         warnings,
     ))
@@ -378,6 +393,47 @@ colour = "#0f8a8a"
         )
         .unwrap_err();
         assert_eq!(err, ResolveError::BadTabDigitKeys("wiggle".to_string()));
+    }
+
+    #[test]
+    fn density_defaults_to_comfortable() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.density, Density::Comfortable);
+    }
+
+    #[test]
+    fn density_parses_compact() {
+        let (cfg, _) = resolve_str(
+            r##"
+density = "compact"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.density, Density::Compact);
+    }
+
+    #[test]
+    fn density_rejects_unknown() {
+        let err = resolve_str(
+            r##"
+density = "roomy"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(err, ResolveError::BadDensity("roomy".to_string()));
     }
 
     #[test]

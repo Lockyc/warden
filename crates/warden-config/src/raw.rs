@@ -17,6 +17,8 @@ pub struct RawConfig {
     // ⌘1/⌘2 menu behaviour: "jump" (default, ⌘1–9 jump to position) or "cycle"
     // (⌘1 = next tab, ⌘2 = prev; jumps shift to ⌘3–9). Validated in resolve.rs.
     pub tab_digit_keys: Option<String>,
+    // Chrome sizing: "comfortable" (default) or "compact". Validated in resolve.rs.
+    pub density: Option<String>,
     #[serde(default, rename = "window")]
     pub windows: Vec<RawWindow>,
 }
