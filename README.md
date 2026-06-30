@@ -26,7 +26,7 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 
 ## Features
 
-- **A window per `[[window]]`** — native macOS windows, each with a colour + title banner, a curator-style draggable sidebar, and the terminal under an overlay titlebar.
+- **A window per `[[window]]`** — native macOS windows, each with a colour + title banner, a curator-style draggable sidebar, and the terminal under an overlay titlebar. The **Window** menu lists every configured window — raise an open one or reopen one you've closed (**⌘⇧T** reopens the last closed).
 - **Project tabs** — each tab is a real terminal in a working directory. `load_on_open` tabs spawn at launch and keep running; the rest spawn lazily on first focus. Tabs can be **grouped** into labelled sidebar sections.
 - **Live hot-reload** — edit the config and windows and tabs are added, removed, recoloured, and re-sectioned live on save. A missing or invalid config opens a diagnostic window; a parse error mid-edit keeps the last-good windows up behind an error banner.
 - **Tab-row affordances** — a letter/colour tile and a **live/cold dot** (filled when the terminal is spawned, hollow when cold). Hover a live dot for a ✕ that **unloads** the tab — kills the terminal and PTY; it respawns a fresh shell on next focus.
