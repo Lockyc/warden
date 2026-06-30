@@ -605,11 +605,18 @@ fn main() {
                 // single diagnostic window instead of materializing windows.
                 // Recovery happens in the watcher: the first valid load while no
                 // window window is live materializes + closes the diagnostic.
+                // Read the `notify_debug` toggle from the loaded config (default false) before the
+                // config is consumed by materialize — it gates notify.rs's diagnostic trace.
+                let mut notify_debug = false;
                 match warden_config::load_with(&warden_config::config_path(), &login_shell()) {
                     Ok(loaded) if !loaded.config.windows.is_empty() => {
+                        notify_debug = loaded.config.notify_debug;
                         mgr.materialize(&handle, loaded.config);
                     }
-                    Ok(_) => mgr.show_diagnostic(&handle, "config has no [[window]] entries"),
+                    Ok(loaded) => {
+                        notify_debug = loaded.config.notify_debug;
+                        mgr.show_diagnostic(&handle, "config has no [[window]] entries");
+                    }
                     Err(e) => mgr.show_diagnostic(&handle, &e.to_string()),
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
@@ -617,8 +624,8 @@ fn main() {
                 // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
                 // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;
                 // needs ManagerState already managed (above) since the handler resolves surfaces
-                // through it.
-                notify::init(handle.clone());
+                // through it. `notify_debug` (config, default false) gates the diagnostic trace.
+                notify::init(handle.clone(), notify_debug);
 
                 // Background session-probe poll loop. Reads the shared interval each
                 // tick so a hot-reload can change cadence (0 = focus/refresh-only).
@@ -694,6 +701,10 @@ fn main() {
                                     let mut m = st.lock();
                                     // The app menu is global, not part of window reconcile;
                                     // rebuilt below from current state.
+                                    // Density is global too — a density-only edit yields an empty
+                                    // reconcile (no per-window op), so nudge every chrome below.
+                                    let old_density = m.last_good.density;
+                                    let new_density = loaded.config.density;
                                     if m.is_empty() {
                                         // Recovery: nothing live (launched into the
                                         // diagnostic window). Materialize from scratch
@@ -707,6 +718,12 @@ fn main() {
                                         m.apply(&wh, &recon, loaded.config.density.as_str());
                                         // Advance the reconcile baseline ONLY on a valid load.
                                         m.last_good = loaded.config.clone();
+                                        // A density flip alone produces no per-window op, so
+                                        // apply() emitted nothing; re-push every window's snapshot
+                                        // (now carrying the new density) so each chrome restyles.
+                                        if old_density != new_density {
+                                            m.refresh_all_chrome(&wh);
+                                        }
                                     }
                                     // Apply the (possibly changed) probe cadence while we still
                                     // hold the lock, then release it before any lock-free work.

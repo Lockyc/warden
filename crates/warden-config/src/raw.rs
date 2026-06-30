@@ -19,6 +19,11 @@ pub struct RawConfig {
     pub tab_digit_keys: Option<String>,
     // Chrome sizing: "comfortable" (default) or "compact". Validated in resolve.rs.
     pub density: Option<String>,
+    // Diagnostic toggle: when true, warden-app appends a trace of the notification
+    // path (signal type, target tab, banner post/accept, willPresent) to a log file.
+    // Off by default; a debug aid for the macOS-26 banner-suppression issue (see
+    // docs/notifications.md). Opaque to the crate — the app owns the behaviour.
+    pub notify_debug: Option<bool>,
     #[serde(default, rename = "window")]
     pub windows: Vec<RawWindow>,
 }

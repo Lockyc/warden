@@ -51,6 +51,32 @@ static BANNER_READY: AtomicBool = AtomicBool::new(false);
 /// main thread with no context of its own, so it reaches the manager + chrome through this.
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
+/// Diagnostic toggle (config `notify_debug`, default false; read once at launch). When on, the
+/// notification path is traced to a log file. Exists to investigate the macOS-26 banner-suppression
+/// issue where warden posts an accepted, `willPresent`-handled `.banner` that the OS never renders
+/// (see docs/notifications.md): the trace proves warden's side is correct so the suspect is the OS.
+static NOTIFY_DEBUG: AtomicBool = AtomicBool::new(false);
+
+/// Where the `notify_debug` trace is written. `/tmp` is fine — a fresh log per boot is exactly what
+/// the reboot-and-retry workflow wants.
+const NOTIFY_DEBUG_LOG: &str = "/tmp/warden-notify-dbg.log";
+
+/// Append a line to the trace log — a no-op unless `notify_debug` is enabled. Best-effort: a failed
+/// open is silently ignored (diagnostics must never affect the notification path).
+fn dbglog(msg: &str) {
+    if !NOTIFY_DEBUG.load(Ordering::Relaxed) {
+        return;
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(NOTIFY_DEBUG_LOG)
+    {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 /// Monotonic suffix for notification request identifiers, so distinct alerts don't coalesce
 /// (a reused identifier *replaces* the pending request rather than stacking a new banner).
 static BANNER_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -84,6 +110,7 @@ declare_class!(
             _notification: &UNNotification,
             completion_handler: &block2::Block<dyn Fn(UNNotificationPresentationOptions)>,
         ) {
+            dbglog("willPresent fired -> returning .banner | .sound (warden's side is done)");
             let opts = UNNotificationPresentationOptions::UNNotificationPresentationOptionBanner
                 | UNNotificationPresentationOptions::UNNotificationPresentationOptionSound;
             completion_handler.call((opts,));
@@ -147,10 +174,15 @@ fn focus_window_tab(label: String, id: Option<String>) {
 
 /// Install the surface-signal handler and prime native banners. Called once at setup (on the main
 /// thread); captures the `AppHandle` the callback needs to reach the manager + emit chrome events.
-pub fn init(app: AppHandle) {
+/// `debug` is the config `notify_debug` flag, read once here (a hot-reload change needs a restart).
+pub fn init(app: AppHandle, debug: bool) {
+    NOTIFY_DEBUG.store(debug, Ordering::Relaxed);
     let _ = APP_HANDLE.set(app.clone());
     crate::surface::set_surface_event_sink(move |event| handle(&app, event));
     setup_banners();
+    if debug {
+        dbglog("--- notify_debug enabled; tracing notification path ---");
+    }
 }
 
 /// Request notification authorization once and install the presentation delegate. No-op in dev
@@ -193,14 +225,30 @@ fn setup_banners() {
 /// Uses `ManagerState::lock` (not a bare `unwrap`) so a poisoned mutex recovers instead of
 /// crashing the notification path — matching every command handler.
 fn handle(app: &AppHandle, event: SurfaceEvent) {
+    if NOTIFY_DEBUG.load(Ordering::Relaxed) {
+        let kind = match &event.signal {
+            SurfaceSignal::Bell => "Bell (badge only, no banner by design)".to_string(),
+            SurfaceSignal::Notification { title, body } => {
+                format!("Notification(title={title:?}, body={body:?})")
+            }
+        };
+        dbglog(&format!(
+            "handle: signal={kind} surface={}",
+            event.surface_id
+        ));
+    }
     let located = app
         .state::<ManagerState>()
         .lock()
         .locate_surface(event.surface_id);
     let Some((label, tab, visible)) = located else {
+        dbglog("handle: surface not located (unloaded?) -> dropped");
         return; // surface not found (e.g. just unloaded) — drop the signal
     };
     if visible {
+        dbglog(&format!(
+            "handle: tab {label}/{tab} is visible -> no notify (correct)"
+        ));
         return; // the user is already looking at this tab
     }
 
@@ -222,6 +270,9 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         } else {
             title
         };
+        dbglog(&format!(
+            "handle: posting banner for {label}/{tab} title={title:?}"
+        ));
         show_banner(&title, &body, &label, &tab);
     }
 }
@@ -231,6 +282,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
 /// `userInfo` so a click can route back to the originating window + tab (`did_receive`).
 fn show_banner(title: &str, body: &str, label: &str, tab: &str) {
     if !BANNER_READY.load(Ordering::Acquire) {
+        dbglog("show_banner: BANNER_READY=false -> no-op (dev build, or before setup)");
         return;
     }
     let center = unsafe { UNUserNotificationCenter::currentNotificationCenter() };
@@ -254,5 +306,18 @@ fn show_banner(title: &str, body: &str, label: &str, tab: &str) {
     let request = unsafe {
         UNNotificationRequest::requestWithIdentifier_content_trigger(&ident, &content, None)
     };
-    unsafe { center.addNotificationRequest_withCompletionHandler(&request, None) };
+    // Production path is fire-and-forget (nil completion handler). Under notify_debug, attach a
+    // handler that records whether usernoted *accepted* the request — the boundary that tells us
+    // warden handed the OS a valid banner (so a missing banner is downstream of warden).
+    if NOTIFY_DEBUG.load(Ordering::Relaxed) {
+        let cb = RcBlock::new(|err: *mut NSError| {
+            dbglog(&format!(
+                "show_banner: addNotificationRequest accepted by usernoted (err_null={})",
+                err.is_null()
+            ));
+        });
+        unsafe { center.addNotificationRequest_withCompletionHandler(&request, Some(&cb)) };
+    } else {
+        unsafe { center.addNotificationRequest_withCompletionHandler(&request, None) };
+    }
 }

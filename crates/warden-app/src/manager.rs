@@ -89,6 +89,7 @@ impl WindowManager {
                 tab_digit_keys: warden_config::TabDigitKeys::default(),
                 probe_interval: 5,
                 density: warden_config::Density::default(),
+                notify_debug: false,
             },
             diagnostic_msg: String::new(),
             probe_interval: Arc::new(AtomicU64::new(5)),
@@ -276,6 +277,19 @@ impl WindowManager {
         })
     }
 
+    /// Re-emit every open window's snapshot as `warden:refresh` so each chrome rebuilds with the
+    /// current global state. Used for a global-setting change (e.g. `density`) that produces no
+    /// per-window reconcile op — `apply()` only emits for windows with a diff, so a density-only
+    /// edit would otherwise never reach the chrome. Reuses `init_dto`, which carries the live
+    /// density from `last_good` (already advanced to the new config by the caller).
+    pub fn refresh_all_chrome(&self, app: &AppHandle) {
+        for label in self.windows.keys() {
+            if let Some(dto) = self.init_dto(label) {
+                let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
+            }
+        }
+    }
+
     /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and
     /// whether that tab is currently **visible** (its window is focused AND it's the active tab).
     /// A visible tab needs no notification — the user is already looking at it.
@@ -443,8 +457,12 @@ impl WindowManager {
                         // the warden:refresh below pushes fresh DTOs (has_probe/has_kill
                         // recomputed) and the post-reload spawn_pass re-probes.
                         for (id, meta) in &set_meta {
-                            ws.registry
-                                .set_meta(id, meta.group.clone(), meta.probe.clone(), meta.kill.clone());
+                            ws.registry.set_meta(
+                                id,
+                                meta.group.clone(),
+                                meta.probe.clone(),
+                                meta.kill.clone(),
+                            );
                         }
                         ws.registry.reorder(&order);
                         // Push the new snapshot so the chrome rebuilds the sidebar.
