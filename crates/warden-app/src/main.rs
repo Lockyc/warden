@@ -243,7 +243,18 @@ fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     // of panicking. The chrome is listening now, so push the reason to the banner.
     if let Some(e) = err {
         eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
-        let _ = window.emit("warden:error", format!("couldn't open terminal: {e}"));
+        // A per-tab spawn error belongs to THIS window only. `emit` broadcasts to every
+        // webview (the documented emit_to-leaks footgun), so stamp the window label into
+        // the payload and let the chrome's label filter drop it in siblings — mirroring the
+        // per-window build-time error (InitDto.error). The global config-error path keeps
+        // emitting a bare string (no label), which every window's banner still shows.
+        let _ = window.emit(
+            "warden:error",
+            serde_json::json!({
+                "label": window.label(),
+                "message": format!("couldn't open terminal: {e}"),
+            }),
+        );
     }
 }
 

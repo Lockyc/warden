@@ -857,8 +857,14 @@
       // live windows up and shows the reason here; the next valid load clears it.
       // textContent (not innerHTML) — the error string never reaches the HTML parser.
       listen('warden:error', (e) => {
+        const p = e.payload;
+        // Two shapes: a per-tab spawn error is scoped — {label, message} — and must show
+        // ONLY in its own window (emit broadcasts to all webviews); a global config error
+        // (parse / no-window, from the watcher) is a bare string shown in every window.
+        if (p && typeof p === 'object' && p.label && myLabel && p.label !== myLabel) return;
+        const msg = (p && typeof p === 'object') ? p.message : p;
         const el = document.getElementById('error');
-        el.textContent = '⚠ ' + e.payload;
+        el.textContent = '⚠ ' + msg;
         el.style.display = 'block';
         // The banner now occupies a top strip, shrinking #app/#terminal-hole.
         // The ResizeObserver should catch this, but report explicitly so the

@@ -754,13 +754,32 @@ impl GhosttySurface {
                 msg_send_id![mtm.alloc::<WardenHostView>(), initWithFrame: frame];
             host_view.setWantsLayer(true);
 
+            // Build the fallible CStrings up front — BEFORE wiring the view into AppKit — so an
+            // interior NUL in dir/shell/cmd returns Err while host_view is still just a local
+            // Retained (dropped cleanly), leaving no zombie subview or dangling observer behind.
+            // They must also outlive ghostty_surface_new (it copies the bytes), which this scope
+            // guarantees.
+            let c_dir = CString::new(spec.dir.to_string_lossy().into_owned())
+                .map_err(|_| SurfaceError::SurfaceCreateFailed)?;
+            let c_shell =
+                CString::new(spec.shell.clone()).map_err(|_| SurfaceError::SurfaceCreateFailed)?;
+            // A tab's startup command is NOT exec'd — it's typed into the interactive shell
+            // (newline-terminated so it runs). This is what makes a shell *function* like
+            // `amux` resolve and leaves a live shell once the command exits.
+            let c_startup = spec
+                .startup
+                .as_ref()
+                .map(|s| CString::new(format!("{s}\n")))
+                .transpose()
+                .map_err(|_| SurfaceError::SurfaceCreateFailed)?;
+
             // Topmost subview => above the WKWebView (which is added by wry first).
             content_view.addSubview(&host_view);
 
             // Track this window's key state so libghostty's cursor focus follows it (filled in the
             // key window, hollow otherwise) even when no first-responder change fires — see the
             // windowDidBecomeKey:/windowDidResignKey: handlers. Scoped to `window` so each surface
-            // only hears its own window; removed in close().
+            // only hears its own window; removed in close() (and on the surface-null Err below).
             let center = NSNotificationCenter::defaultCenter();
             center.addObserver_selector_name_object(
                 &host_view,
@@ -786,31 +805,18 @@ impl GhosttySurface {
             };
             cfg.scale_factor = scale;
             cfg.font_size = 0.0; // inherit configured font size
-
-            // Keep CStrings alive across ghostty_surface_new (it copies them).
-            let c_dir = CString::new(spec.dir.to_string_lossy().into_owned())
-                .map_err(|_| SurfaceError::SurfaceCreateFailed)?;
-            let c_shell =
-                CString::new(spec.shell.clone()).map_err(|_| SurfaceError::SurfaceCreateFailed)?;
             cfg.working_directory = c_dir.as_ptr();
             cfg.command = c_shell.as_ptr();
-
-            // A tab's startup command is NOT exec'd — it's typed into the interactive shell
-            // (newline-terminated so it runs). This is what makes a shell *function* like
-            // `amux` resolve and leaves a live shell once the command exits. The CString must
-            // outlive ghostty_surface_new (it copies the bytes), so it's bound in this scope.
-            let c_startup = spec
-                .startup
-                .as_ref()
-                .map(|s| CString::new(format!("{s}\n")))
-                .transpose()
-                .map_err(|_| SurfaceError::SurfaceCreateFailed)?;
             if let Some(c) = &c_startup {
                 cfg.initial_input = c.as_ptr();
             }
 
             let surface = ffi::ghostty_surface_new(app, &cfg);
             if surface.is_null() {
+                // Unwind the AppKit wiring this fn added (mirroring close()) so a libghostty
+                // spawn failure degrades to a clean cold tab — no leaked subview, no live
+                // observer registration messaging a freed view.
+                center.removeObserver(&host_view);
                 host_view.removeFromSuperview();
                 return Err(SurfaceError::SurfaceCreateFailed);
             }

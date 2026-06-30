@@ -1,6 +1,7 @@
 //! Pure bridge: `warden_config` types → app-side window/tab descriptors, plus
 //! Tauri window-label sanitization. No AppKit, no Tauri — fully unit-tested.
 
+use crate::manager::DIAG_LABEL;
 use crate::surface::TabSpec;
 use std::collections::{HashMap, HashSet};
 use warden_config::{Config, Reconciliation, Window};
@@ -97,7 +98,11 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
 
 /// Map a whole config to window specs, assigning unique labels in window order.
 pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
+    // Reserve the diagnostic window's label so a config window whose title
+    // sanitizes to it (e.g. "warden diagnostic") gets `-2`, not a collision that
+    // silently breaks window-state persistence / crashes config recovery.
     let mut taken = HashSet::new();
+    taken.insert(DIAG_LABEL.to_string());
     config
         .windows
         .iter()
@@ -172,6 +177,9 @@ pub fn reconcile_ops(
 ) -> Vec<WindowOp> {
     let mut ops = Vec::new();
     let mut assigned: HashSet<String> = taken.clone();
+    // Same reservation as window_specs: a newly-opened window must never grab
+    // the diagnostic label.
+    assigned.insert(DIAG_LABEL.to_string());
 
     for window in &recon.open {
         let label = unique_label(&window.title, &assigned);
@@ -500,5 +508,23 @@ colour = "#222222"
         // the "-2" suffix via unique_label.
         assert_eq!(specs[0].label, "a-b");
         assert_eq!(specs[1].label, "a-b-2");
+    }
+
+    #[test]
+    fn window_specs_reserves_diagnostic_label() {
+        // A window whose title sanitizes to the reserved diagnostic label must NOT
+        // be assigned that label (it would silently break window-state persistence
+        // and crash config recovery) — it gets the "-2" suffix instead.
+        let c = cfg(r##"
+[[window]]
+title = "warden diagnostic"
+colour = "#111111"
+  [[window.tab]]
+  title = "t1"
+  dir = "/tmp/t1"
+"##);
+        let specs = window_specs(&c);
+        assert_ne!(specs[0].label, DIAG_LABEL);
+        assert_eq!(specs[0].label, "warden-diagnostic-2");
     }
 }
