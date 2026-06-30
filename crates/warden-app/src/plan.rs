@@ -109,6 +109,42 @@ pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
         .collect()
 }
 
+/// One row of the Window menu: a configured window and whether it is currently open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowMenuEntry {
+    pub label: String,
+    pub title: String,
+    pub open: bool,
+}
+
+/// Map the configured window specs (config order) to menu entries, tagging each
+/// with whether its label is currently in the live `open` set.
+pub fn window_menu_entries(specs: &[WindowSpec], open: &HashSet<String>) -> Vec<WindowMenuEntry> {
+    specs
+        .iter()
+        .map(|s| WindowMenuEntry {
+            label: s.label.clone(),
+            title: s.title.clone(),
+            open: open.contains(&s.label),
+        })
+        .collect()
+}
+
+/// The label `⌘⇧T` should reopen: the most-recently-closed window (top of the
+/// stack) that is still configured and not already open. Skips entries that were
+/// closed-then-deleted-from-config or have since been reopened. `None` if none qualify.
+pub fn next_reopen_target(
+    last_closed: &[String],
+    configured: &HashSet<String>,
+    open: &HashSet<String>,
+) -> Option<String> {
+    last_closed
+        .iter()
+        .rev()
+        .find(|l| configured.contains(*l) && !open.contains(*l))
+        .cloned()
+}
+
 /// One operation to bring the live window set in line with a reloaded config.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowOp {
@@ -187,6 +223,83 @@ pub fn reconcile_ops(
 mod tests {
     use super::*;
     use warden_config::{load, Config};
+
+    fn set(items: &[&str]) -> std::collections::HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn spec(label: &str, title: &str) -> WindowSpec {
+        WindowSpec {
+            label: label.to_string(),
+            title: title.to_string(),
+            colour: "#000000".to_string(),
+            width: 800.0,
+            height: 600.0,
+            tabs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn menu_entries_preserve_order_and_tag_open_state() {
+        let specs = vec![spec("work", "work"), spec("side", "side-project")];
+        let open = set(&["work"]);
+        let entries = window_menu_entries(&specs, &open);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "work");
+        assert_eq!(entries[0].title, "work");
+        assert!(entries[0].open);
+        assert_eq!(entries[1].label, "side");
+        assert!(!entries[1].open);
+    }
+
+    #[test]
+    fn reopen_target_none_when_stack_empty() {
+        assert_eq!(next_reopen_target(&[], &set(&["work"]), &set(&[])), None);
+    }
+
+    #[test]
+    fn reopen_target_picks_most_recent_closed_configured() {
+        // Closed in order: work, then side. side is the most recent.
+        let stack = vec!["work".to_string(), "side".to_string()];
+        let configured = set(&["work", "side"]);
+        let open = set(&[]);
+        assert_eq!(
+            next_reopen_target(&stack, &configured, &open),
+            Some("side".to_string())
+        );
+    }
+
+    #[test]
+    fn reopen_target_skips_already_open() {
+        // side is back open, so the next reopenable is work.
+        let stack = vec!["work".to_string(), "side".to_string()];
+        let configured = set(&["work", "side"]);
+        let open = set(&["side"]);
+        assert_eq!(
+            next_reopen_target(&stack, &configured, &open),
+            Some("work".to_string())
+        );
+    }
+
+    #[test]
+    fn reopen_target_skips_no_longer_configured() {
+        // side was closed then deleted from config; fall back to work.
+        let stack = vec!["work".to_string(), "side".to_string()];
+        let configured = set(&["work"]);
+        let open = set(&[]);
+        assert_eq!(
+            next_reopen_target(&stack, &configured, &open),
+            Some("work".to_string())
+        );
+    }
+
+    #[test]
+    fn reopen_target_none_when_all_open_or_unconfigured() {
+        let stack = vec!["work".to_string(), "side".to_string()];
+        let configured = set(&["work", "side"]);
+        let open = set(&["work", "side"]);
+        assert_eq!(next_reopen_target(&stack, &configured, &open), None);
+    }
 
     fn cfg(toml: &str) -> Config {
         // Reuse the crate's parse+resolve via a temp file load would be heavy;
