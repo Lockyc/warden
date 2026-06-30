@@ -83,6 +83,7 @@ impl WindowManager {
                 tab_digit_keys: warden_config::TabDigitKeys::default(),
                 probe_interval: 5,
                 density: warden_config::Density::default(),
+                notify_debug: false,
             },
             diagnostic_msg: String::new(),
             probe_interval: Arc::new(AtomicU64::new(5)),
@@ -374,8 +375,12 @@ impl WindowManager {
                         // the warden:refresh below pushes fresh DTOs (has_probe/has_kill
                         // recomputed) and the post-reload spawn_pass re-probes.
                         for (id, meta) in &set_meta {
-                            ws.registry
-                                .set_meta(id, meta.group.clone(), meta.probe.clone(), meta.kill.clone());
+                            ws.registry.set_meta(
+                                id,
+                                meta.group.clone(),
+                                meta.probe.clone(),
+                                meta.kill.clone(),
+                            );
                         }
                         ws.registry.reorder(&order);
                         // Push the new snapshot so the chrome rebuilds the sidebar.

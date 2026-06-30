@@ -159,6 +159,7 @@ pub fn resolve_with(
             tab_digit_keys,
             probe_interval: raw.probe_interval.unwrap_or(5),
             density,
+            notify_debug: raw.notify_debug.unwrap_or(false),
         },
         warnings,
     ))
@@ -352,6 +353,33 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert!(cfg.format_on_save);
+    }
+
+    #[test]
+    fn notify_debug_defaults_false() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.notify_debug);
+    }
+
+    #[test]
+    fn notify_debug_parses_true() {
+        let (cfg, _) = resolve_str(
+            r##"
+notify_debug = true
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.notify_debug);
     }
 
     #[test]
