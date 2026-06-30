@@ -37,6 +37,9 @@ const MENU_TAB_PREV_DIGIT: &str = "tab_prev_digit";
 const MENU_TAB_CLOSE: &str = "tab_close";
 const MENU_TAB_JUMP_PREFIX: &str = "tab_jump_";
 const MENU_WINDOW_CLOSE: &str = "window_close";
+const MENU_WINDOW_REOPEN_LAST: &str = "window_reopen_last";
+// Per-window items: id = this prefix + the window's Tauri label.
+const MENU_WINDOW_PREFIX: &str = "window_open_";
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -82,8 +85,12 @@ struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 /// IDs simply differ per mode. `set_menu` replaces the app-global menu wholesale,
 /// so a hot-reload that flips the mode just rebuilds (see the watcher).
 #[cfg(target_os = "macos")]
-fn build_app_menu(app: &tauri::AppHandle, mode: warden_config::TabDigitKeys) -> tauri::Result<()> {
-    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+fn build_app_menu(
+    app: &tauri::AppHandle,
+    mode: warden_config::TabDigitKeys,
+    entries: Vec<crate::plan::WindowMenuEntry>,
+) -> tauri::Result<()> {
+    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     use warden_config::TabDigitKeys;
 
     let close_window = MenuItemBuilder::with_id(MENU_WINDOW_CLOSE, "Close Window")
@@ -141,12 +148,56 @@ fn build_app_menu(app: &tauri::AppHandle, mode: warden_config::TabDigitKeys) -> 
     }
     let tab_menu = tab_menu.build()?;
 
+    // Window menu: reopen-last (⌘⇧T) + one row per configured window. Open windows
+    // get a checkmark and raise on select; closed windows show "(closed)" and reopen.
+    let reopen_last = MenuItemBuilder::with_id(MENU_WINDOW_REOPEN_LAST, "Reopen Last Closed")
+        .accelerator("Shift+Cmd+KeyT")
+        .build(app)?;
+    let mut window_menu = SubmenuBuilder::new(app, "Window")
+        .item(&reopen_last)
+        .separator();
+    // Build the per-window check items first so their `&` refs outlive the chained
+    // `.item()` calls (same pattern as the tab jumps above).
+    let window_items = entries
+        .iter()
+        .map(|e| {
+            let text = if e.open {
+                e.title.clone()
+            } else {
+                format!("{}  (closed)", e.title)
+            };
+            CheckMenuItemBuilder::with_id(format!("{MENU_WINDOW_PREFIX}{}", e.label), text)
+                .checked(e.open)
+                .build(app)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for it in &window_items {
+        window_menu = window_menu.item(it);
+    }
+    let window_menu = window_menu.build()?;
+
     let menu = MenuBuilder::new(app)
         .item(&app_menu)
         .item(&tab_menu)
+        .item(&window_menu)
         .build()?;
     app.set_menu(menu)?;
     Ok(())
+}
+
+/// Re-derive the app menu from current manager state and install it. Locks
+/// `ManagerState` itself, so callers MUST NOT hold the lock when calling this
+/// (the mutex is non-reentrant). Rebuilds on launch, window open/close, and
+/// hot-reload — the Window submenu's checkmarks/(closed) tags track live state.
+#[cfg(target_os = "macos")]
+fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::Manager;
+    let st = app.state::<ManagerState>();
+    let (mode, entries) = {
+        let m = st.lock();
+        (m.last_good.tab_digit_keys, m.window_menu_entries())
+    };
+    build_app_menu(app, mode, entries)
 }
 
 /// Return the calling window's banner + tab descriptors, resolved by label.
@@ -463,6 +514,35 @@ fn main() {
         // directly. Unknown IDs (e.g. predefined Quit/Minimize, which self-handle) are ignored.
         .on_menu_event(|app, event| {
             use tauri::{Emitter, Manager};
+            let id = event.id().as_ref();
+
+            // Window menu acts on the manager/app, not the focused window — handle it
+            // before the focused-window lookup (reopen-last needs no focused window).
+            if id == MENU_WINDOW_REOPEN_LAST {
+                let st = app.state::<ManagerState>();
+                let reopened = { st.lock().reopen_last(app) };
+                if reopened {
+                    let _ = rebuild_menu(app);
+                }
+                return;
+            }
+            if let Some(win_label) = id.strip_prefix(MENU_WINDOW_PREFIX) {
+                let st = app.state::<ManagerState>();
+                let reopened = {
+                    let mut m = st.lock();
+                    if m.windows.contains_key(win_label) {
+                        m.focus_window(win_label);
+                        false
+                    } else {
+                        m.reopen_window(app, win_label)
+                    }
+                };
+                if reopened {
+                    let _ = rebuild_menu(app);
+                }
+                return;
+            }
+
             let Some(win) = app
                 .webview_windows()
                 .into_values()
@@ -471,7 +551,6 @@ fn main() {
                 return;
             };
             let label = win.label().to_string();
-            let id = event.id().as_ref();
             if id == MENU_TAB_PREV || id == MENU_TAB_PREV_DIGIT {
                 let _ = app.emit_to(
                     label.as_str(),
@@ -588,10 +667,7 @@ fn main() {
                 // (read from last_good, set by the load above; default Jump for the
                 // diagnostic-at-launch case). build_app_menu rebuilds wholesale, so a
                 // hot-reload that flips the mode just calls it again (see the watcher).
-                {
-                    let mode = app.state::<ManagerState>().lock().last_good.tab_digit_keys;
-                    build_app_menu(app.handle(), mode)?;
-                }
+                rebuild_menu(app.handle())?;
 
                 // Hot-reload: watch the config file; on each event reload + diff
                 // against last_good + apply the resulting WindowOps to live
@@ -618,9 +694,7 @@ fn main() {
                                     let st = wh.state::<ManagerState>();
                                     let mut m = st.lock();
                                     // The app menu is global, not part of window reconcile;
-                                    // rebuild it only when the digit-keys mode actually flips.
-                                    let old_mode = m.last_good.tab_digit_keys;
-                                    let new_mode = loaded.config.tab_digit_keys;
+                                    // rebuilt below from current state.
                                     if m.is_empty() {
                                         // Recovery: nothing live (launched into the
                                         // diagnostic window). Materialize from scratch
@@ -645,10 +719,10 @@ fn main() {
                                     if loaded.config.format_on_save {
                                         let _ = warden_config::format_file(&fmt_path);
                                     }
-                                    // Rebuild the global app menu only when the digit-keys mode flips.
-                                    if old_mode != new_mode {
-                                        let _ = build_app_menu(&wh, new_mode);
-                                    }
+                                    // Rebuild the global app menu: the digit-keys mode and/or the
+                                    // window set may have changed (open/close ops in apply). Lock
+                                    // was released at `drop(m)` above; rebuild_menu re-locks.
+                                    let _ = rebuild_menu(&wh);
                                     // Clear any stale error banner.
                                     let _ = wh.emit("warden:error-clear", ());
                                     // Refresh the session dots now that cadence/config may have changed
