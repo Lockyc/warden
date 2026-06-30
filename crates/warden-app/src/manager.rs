@@ -70,6 +70,11 @@ pub struct WindowManager {
     /// Seconds between background probe passes; shared with the poll thread so a
     /// hot-reload can change cadence live. 0 = focus/refresh-only (no timer).
     pub probe_interval: Arc<AtomicU64>,
+    /// Tauri labels of windows the user has closed, most-recent last. Drives
+    /// `⌘⇧T` (Reopen Last Closed). Filtered against the live configured/open sets
+    /// at reopen time, so stale entries (closed-then-deleted, or already reopened)
+    /// are skipped rather than pruned eagerly.
+    pub last_closed: Vec<String>,
 }
 
 impl WindowManager {
@@ -86,6 +91,7 @@ impl WindowManager {
             },
             diagnostic_msg: String::new(),
             probe_interval: Arc::new(AtomicU64::new(5)),
+            last_closed: Vec::new(),
         }
     }
 
@@ -207,10 +213,24 @@ impl WindowManager {
             match event {
                 tauri::WindowEvent::Destroyed => {
                     if let Some(st) = app_for_event.try_state::<ManagerState>() {
-                        let mut m = st.lock();
-                        m.remove_window(&label_for_event);
-                        if m.is_empty() {
-                            app_for_event.exit(0);
+                        // Record this close so `⌘⇧T` can reopen it. Fires for manual
+                        // close AND hot-reload removal; a no-longer-configured label is
+                        // filtered out at reopen time, so pushing unconditionally is safe.
+                        let exited = {
+                            let mut m = st.lock();
+                            m.last_closed.push(label_for_event.clone());
+                            m.remove_window(&label_for_event);
+                            if m.is_empty() {
+                                app_for_event.exit(0);
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        // Refresh the Window menu's checkmarks/(closed) tags. Lock is
+                        // dropped above; rebuild_menu re-locks (non-reentrant mutex).
+                        if !exited {
+                            let _ = crate::rebuild_menu(&app_for_event);
                         }
                     }
                 }
@@ -285,6 +305,56 @@ impl WindowManager {
         if let Some(mut ws) = self.windows.remove(label) {
             ws.registry.close_all();
             self.names.retain(|_, l| l != label);
+        }
+    }
+
+    /// Menu rows for every configured window, tagged open/closed. Derived live
+    /// from `last_good` (deterministic labels via `window_specs`) and the live
+    /// `windows` keyset — nothing persisted.
+    pub fn window_menu_entries(&self) -> Vec<crate::plan::WindowMenuEntry> {
+        let specs = window_specs(&self.last_good);
+        let open: HashSet<String> = self.windows.keys().cloned().collect();
+        crate::plan::window_menu_entries(&specs, &open)
+    }
+
+    /// Raise `label`'s window (unminimize + focus) if it is open. No-op otherwise.
+    pub fn focus_window(&self, label: &str) {
+        if let Some(ws) = self.windows.get(label) {
+            let _ = ws.window.unminimize();
+            let _ = ws.window.set_focus();
+        }
+    }
+
+    /// Rebuild a closed window from its config spec (same label ⇒ saved bounds
+    /// restore). Returns `false` if already open or no longer configured.
+    pub fn reopen_window(&mut self, app: &AppHandle, label: &str) -> bool {
+        if self.windows.contains_key(label) {
+            return false;
+        }
+        let Some(spec) = window_specs(&self.last_good)
+            .into_iter()
+            .find(|s| s.label == label)
+        else {
+            return false;
+        };
+        let state = self.build_window(app, &spec);
+        self.names.insert(spec.title.clone(), spec.label.clone());
+        self.windows.insert(spec.label.clone(), state);
+        self.last_closed.retain(|l| l != label);
+        true
+    }
+
+    /// Reopen the most-recently-closed reopenable window (`⌘⇧T`). Returns whether
+    /// a window was reopened.
+    pub fn reopen_last(&mut self, app: &AppHandle) -> bool {
+        let configured: HashSet<String> = window_specs(&self.last_good)
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
+        let open: HashSet<String> = self.windows.keys().cloned().collect();
+        match crate::plan::next_reopen_target(&self.last_closed, &configured, &open) {
+            Some(label) => self.reopen_window(app, &label),
+            None => false,
         }
     }
 
