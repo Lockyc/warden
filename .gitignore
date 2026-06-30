@@ -3,3 +3,6 @@ docs/superpowers/
 
 # Tauri generated
 crates/warden-app/gen/
+
+# Release artifacts built by scripts/release.sh (uploaded to GitHub, not tracked)
+/warden-*-macos.zip
