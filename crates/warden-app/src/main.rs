@@ -621,6 +621,10 @@ fn main() {
                                     // rebuild it only when the digit-keys mode actually flips.
                                     let old_mode = m.last_good.tab_digit_keys;
                                     let new_mode = loaded.config.tab_digit_keys;
+                                    // Density is global too — a density-only edit yields an empty
+                                    // reconcile (no per-window op), so nudge every chrome below.
+                                    let old_density = m.last_good.density;
+                                    let new_density = loaded.config.density;
                                     if m.is_empty() {
                                         // Recovery: nothing live (launched into the
                                         // diagnostic window). Materialize from scratch
@@ -634,6 +638,12 @@ fn main() {
                                         m.apply(&wh, &recon, loaded.config.density.as_str());
                                         // Advance the reconcile baseline ONLY on a valid load.
                                         m.last_good = loaded.config.clone();
+                                        // A density flip alone produces no per-window op, so
+                                        // apply() emitted nothing; re-push every window's snapshot
+                                        // (now carrying the new density) so each chrome restyles.
+                                        if old_density != new_density {
+                                            m.refresh_all_chrome(&wh);
+                                        }
                                     }
                                     // Apply the (possibly changed) probe cadence while we still
                                     // hold the lock, then release it before any lock-free work.

@@ -254,6 +254,19 @@ impl WindowManager {
         })
     }
 
+    /// Re-emit every open window's snapshot as `warden:refresh` so each chrome rebuilds with the
+    /// current global state. Used for a global-setting change (e.g. `density`) that produces no
+    /// per-window reconcile op — `apply()` only emits for windows with a diff, so a density-only
+    /// edit would otherwise never reach the chrome. Reuses `init_dto`, which carries the live
+    /// density from `last_good` (already advanced to the new config by the caller).
+    pub fn refresh_all_chrome(&self, app: &AppHandle) {
+        for label in self.windows.keys() {
+            if let Some(dto) = self.init_dto(label) {
+                let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
+            }
+        }
+    }
+
     /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and
     /// whether that tab is currently **visible** (its window is focused AND it's the active tab).
     /// A visible tab needs no notification — the user is already looking at it.
