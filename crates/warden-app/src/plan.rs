@@ -110,6 +110,9 @@ pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
 }
 
 /// One row of the Window menu: a configured window and whether it is currently open.
+// Tested scaffolding for the deferred `⌘\`` Window menu (docs/FOLLOWUPS.md); no
+// production caller yet, so allow it to sit unused until that feature is wired.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowMenuEntry {
     pub label: String,
@@ -119,6 +122,8 @@ pub struct WindowMenuEntry {
 
 /// Map the configured window specs (config order) to menu entries, tagging each
 /// with whether its label is currently in the live `open` set.
+// Scaffolding for the deferred `⌘\`` Window menu (docs/FOLLOWUPS.md) — wired by tests only.
+#[allow(dead_code)]
 pub fn window_menu_entries(specs: &[WindowSpec], open: &HashSet<String>) -> Vec<WindowMenuEntry> {
     specs
         .iter()
@@ -133,6 +138,8 @@ pub fn window_menu_entries(specs: &[WindowSpec], open: &HashSet<String>) -> Vec<
 /// The label `⌘⇧T` should reopen: the most-recently-closed window (top of the
 /// stack) that is still configured and not already open. Skips entries that were
 /// closed-then-deleted-from-config or have since been reopened. `None` if none qualify.
+// Scaffolding for the deferred reopen-from-menu affordance (docs/FOLLOWUPS.md) — tests only.
+#[allow(dead_code)]
 pub fn next_reopen_target(
     last_closed: &[String],
     configured: &HashSet<String>,
