@@ -142,9 +142,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                             .iter()
                             .find(|ot| ot.key == nt.key)
                             .filter(|ot| {
-                                ot.group != nt.group
-                                    || ot.probe != nt.probe
-                                    || ot.kill != nt.kill
+                                ot.group != nt.group || ot.probe != nt.probe || ot.kill != nt.kill
                             })
                             .map(|_| {
                                 (
@@ -374,7 +372,11 @@ colour = "#0f8a8a"
             u.set_meta,
             vec![(
                 "api".to_string(),
-                TabMeta { group: Some("new-name".to_string()), probe: None, kill: None }
+                TabMeta {
+                    group: Some("new-name".to_string()),
+                    probe: None,
+                    kill: None
+                }
             )]
         );
         assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
@@ -407,7 +409,11 @@ colour = "#0f8a8a"
             r.update[0].set_meta,
             vec![(
                 "api".to_string(),
-                TabMeta { group: Some("backend".to_string()), probe: None, kill: None }
+                TabMeta {
+                    group: Some("backend".to_string()),
+                    probe: None,
+                    kill: None
+                }
             )]
         );
     }
@@ -433,12 +439,20 @@ colour = "#0f8a8a"
   probe = "probe-new"
 "##);
         let r = reconcile(&old, &new);
-        assert_eq!(r.update.len(), 1, "a probe change on a kept tab must emit an update");
+        assert_eq!(
+            r.update.len(),
+            1,
+            "a probe change on a kept tab must emit an update"
+        );
         assert_eq!(
             r.update[0].set_meta,
             vec![(
                 "api".to_string(),
-                TabMeta { group: None, probe: Some("probe-new".to_string()), kill: None }
+                TabMeta {
+                    group: None,
+                    probe: Some("probe-new".to_string()),
+                    kill: None
+                }
             )]
         );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
@@ -465,12 +479,20 @@ colour = "#0f8a8a"
   kill = "kill-new"
 "##);
         let r = reconcile(&old, &new);
-        assert_eq!(r.update.len(), 1, "a kill change on a kept tab must emit an update");
+        assert_eq!(
+            r.update.len(),
+            1,
+            "a kill change on a kept tab must emit an update"
+        );
         assert_eq!(
             r.update[0].set_meta,
             vec![(
                 "api".to_string(),
-                TabMeta { group: None, probe: None, kill: Some("kill-new".to_string()) }
+                TabMeta {
+                    group: None,
+                    probe: None,
+                    kill: Some("kill-new".to_string())
+                }
             )]
         );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
