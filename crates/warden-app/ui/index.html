@@ -241,12 +241,17 @@
       /* Whole-row kill confirmation: the row goes red, the trailing dots hide, and
          ✓ (confirm, in the cyan-dot slot under the cursor) + ✗ (cancel, in the
          green-dot slot) appear. Tile + title stay visible. */
+      /* `!important`: paint() sets the ACTIVE row's background as an inline style
+         (the window-colour tint), which would otherwise beat this stylesheet rule
+         and suppress the red on the active tab — the common case (you arm the tab
+         you're looking at). Overriding it here keeps the inline tint underneath, so
+         removing `.confirming` reveals the active highlight again with no repaint. */
       .tab.confirming {
-        background: #5a1f1f;
+        background: #5a1f1f !important;
         color: #ffffff;
       }
       .tab.confirming:hover {
-        background: #5a1f1f;
+        background: #5a1f1f !important;
       }
       .tab.confirming .tab-badge,
       .tab.confirming .tab-sess,
@@ -431,9 +436,9 @@
         }
       }
 
-      /** Compute a session dot's class from session state + kill eligibility + arm
-          state, so both render() and setSession() stay consistent and a probe tick
-          mid-arm doesn't wipe the armed look. `hasKill` comes from the tab DTO. */
+      /** Compute a session dot's class from session state + kill eligibility, so
+          render() and setSession() stay consistent. `hasKill` comes from the tab DTO
+          (gates whether the dot is clickable to start a kill confirm). */
       function applySessClass(span, id, hasKill) {
         const on = session.has(id);
         let cls = 'tab-sess ' + (on ? 'on' : 'off');
@@ -482,8 +487,8 @@
 
       /** Update a tab's session dot from the probe result, keeping `session` in
           sync so a re-render restores it. Only flips an already-rendered dot
-          (probe-enabled rows have one); no-op for rows without a probe. Routes
-          through applySessClass so a probe tick mid-arm doesn't wipe armed state. */
+          (probe-enabled rows have one); no-op for rows without a probe. If the
+          confirming tab's session drops, cancel the confirm — nothing left to kill. */
       function setSession(id, on) {
         if (on) session.add(id); else session.delete(id);
         if (!on && armedKill === id) disarmKill(); // session gone → nothing to kill
@@ -850,6 +855,7 @@
           visible, the native layer activates a neighbour and returns its id so the
           highlight follows; killing the last remaining tab leaves a blank hole. */
       async function unloadTab(id) {
+        disarmKill(); // ⌘W can fire while a row is confirming (no DOM click to cancel it)
         let newActive;
         try {
           newActive = await invoke('unload_tab', { id });
