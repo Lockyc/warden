@@ -197,7 +197,11 @@ fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let st = app.state::<ManagerState>();
     let (mode, entries, reopen_available) = {
         let m = st.lock();
-        (m.last_good.tab_digit_keys, m.window_menu_entries(), m.has_reopen_target())
+        (
+            m.last_good.tab_digit_keys,
+            m.window_menu_entries(),
+            m.has_reopen_target(),
+        )
     };
     build_app_menu(app, mode, entries, reopen_available)
 }
