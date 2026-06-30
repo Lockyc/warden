@@ -70,10 +70,11 @@ pub struct WindowManager {
     /// Seconds between background probe passes; shared with the poll thread so a
     /// hot-reload can change cadence live. 0 = focus/refresh-only (no timer).
     pub probe_interval: Arc<AtomicU64>,
-    /// Tauri labels of windows the user has closed, most-recent last. Drives
-    /// `⌘⇧T` (Reopen Last Closed). Filtered against the live configured/open sets
-    /// at reopen time, so stale entries (closed-then-deleted, or already reopened)
-    /// are skipped rather than pruned eagerly.
+    /// Tauri labels of windows the user has closed, most-recent last (MRU stack).
+    /// Drives `⌘⇧T` (Reopen Last Closed). Deduped on push so a repeated close
+    /// moves the label to the end rather than growing duplicates. Pruned at reopen
+    /// (`reopen_window` / `reopen_last`). Stale entries (closed-then-deleted, or
+    /// already reopened) are filtered at reopen time.
     pub last_closed: Vec<String>,
 }
 
@@ -218,6 +219,7 @@ impl WindowManager {
                         // filtered out at reopen time, so pushing unconditionally is safe.
                         let exited = {
                             let mut m = st.lock();
+                            m.last_closed.retain(|l| l != &label_for_event);
                             m.last_closed.push(label_for_event.clone());
                             m.remove_window(&label_for_event);
                             if m.is_empty() {
@@ -356,6 +358,16 @@ impl WindowManager {
             Some(label) => self.reopen_window(app, &label),
             None => false,
         }
+    }
+
+    /// Whether `⌘⇧T` / "Reopen Last Closed" has a reopenable target right now.
+    pub fn has_reopen_target(&self) -> bool {
+        let configured: HashSet<String> = window_specs(&self.last_good)
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
+        let open: HashSet<String> = self.windows.keys().cloned().collect();
+        crate::plan::next_reopen_target(&self.last_closed, &configured, &open).is_some()
     }
 
     /// Bring the live window set in line with a reloaded config by executing the

@@ -89,6 +89,7 @@ fn build_app_menu(
     app: &tauri::AppHandle,
     mode: warden_config::TabDigitKeys,
     entries: Vec<crate::plan::WindowMenuEntry>,
+    reopen_available: bool,
 ) -> tauri::Result<()> {
     use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
     use warden_config::TabDigitKeys;
@@ -152,6 +153,7 @@ fn build_app_menu(
     // get a checkmark and raise on select; closed windows show "(closed)" and reopen.
     let reopen_last = MenuItemBuilder::with_id(MENU_WINDOW_REOPEN_LAST, "Reopen Last Closed")
         .accelerator("Shift+Cmd+KeyT")
+        .enabled(reopen_available)
         .build(app)?;
     let mut window_menu = SubmenuBuilder::new(app, "Window")
         .item(&reopen_last)
@@ -193,11 +195,11 @@ fn build_app_menu(
 fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::Manager;
     let st = app.state::<ManagerState>();
-    let (mode, entries) = {
+    let (mode, entries, reopen_available) = {
         let m = st.lock();
-        (m.last_good.tab_digit_keys, m.window_menu_entries())
+        (m.last_good.tab_digit_keys, m.window_menu_entries(), m.has_reopen_target())
     };
-    build_app_menu(app, mode, entries)
+    build_app_menu(app, mode, entries, reopen_available)
 }
 
 /// Return the calling window's banner + tab descriptors, resolved by label.
@@ -528,18 +530,15 @@ fn main() {
             }
             if let Some(win_label) = id.strip_prefix(MENU_WINDOW_PREFIX) {
                 let st = app.state::<ManagerState>();
-                let reopened = {
+                {
                     let mut m = st.lock();
                     if m.windows.contains_key(win_label) {
                         m.focus_window(win_label);
-                        false
                     } else {
-                        m.reopen_window(app, win_label)
+                        m.reopen_window(app, win_label);
                     }
-                };
-                if reopened {
-                    let _ = rebuild_menu(app);
                 }
+                let _ = rebuild_menu(app);
                 return;
             }
 
