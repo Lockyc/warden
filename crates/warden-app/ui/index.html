@@ -150,7 +150,7 @@
         white-space: nowrap;
       }
       /* Live/cold indicator + unload control at the row's trailing edge (curator's
-         loaded-dot idiom). The visual dot is a 7px ::before centred in a 16px box
+         loaded-dot idiom). The visual dot is a 9px ::before centred in a 16px box
          (a comfortable hover/click target). A filled green dot = the terminal
          surface is live (load_on_open, or focused once); a hollow ring = cold (never
          opened, or unloaded — spawns fresh on next focus). Hovering a LIVE dot
@@ -169,8 +169,8 @@
       }
       .tab-dot.cold::before {
         content: '';
-        width: 7px;
-        height: 7px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
         box-sizing: border-box;
         border: 1px solid rgba(238, 238, 238, 0.3);
@@ -180,8 +180,8 @@
       }
       .tab-dot.live::before {
         content: '';
-        width: 7px;
-        height: 7px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
         background: #3fb950;
       }
@@ -200,8 +200,8 @@
          left of the live/cold dot; cleared when you focus the tab. */
       .tab-badge {
         flex: none;
-        width: 7px;
-        height: 7px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
         background: #f0883e;
       }
@@ -222,8 +222,8 @@
       }
       .tab-sess::before {
         content: '';
-        width: 7px;
-        height: 7px;
+        width: 9px;
+        height: 9px;
         border-radius: 50%;
         box-sizing: border-box;
       }
