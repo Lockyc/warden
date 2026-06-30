@@ -17,10 +17,11 @@
 # The `dir`s point at examples/projects/ (tracked mock dirs) so this demo validates warning-free
 # from the repo root. A real config uses absolute or ~/-prefixed paths to your actual projects.
 
-shell          = "fish -l" # global default shell for every tab
-cmd            = "amux"    # global default: launch agentmux in each tab (shell stays live on exit)
-format_on_save = true      # warden rewrites THIS file tidy on each save (opt-in; default off)
-tab_digit_keys = "jump"    # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
+shell          = "fish -l"     # global default shell for every tab
+cmd            = "amux"        # global default: launch agentmux in each tab (shell stays live on exit)
+format_on_save = true          # warden rewrites THIS file tidy on each save (opt-in; default off)
+tab_digit_keys = "jump"        # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
+density        = "comfortable" # chrome sizing: "comfortable" (default) or "compact" (condensed)
 
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
 # dot when it exits 0. `amux --probe` exits 0 when the tab's amux session exists — the agent OR a

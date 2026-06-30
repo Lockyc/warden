@@ -54,6 +54,7 @@ Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): `cmd+\`` window cy
 ```toml
 shell = "fish -l"            # global default shell (omit → your login shell, run as login)
 format_on_save = true        # optional; rewrite this file tidy on each clean save (default off)
+density = "compact"          # optional; "comfortable" (default) or "compact" (condensed chrome)
 
 [[window]]                   # a native macOS window
 title  = "work"
@@ -79,7 +80,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
     dir   = "~/code/api"
 ```
 
-A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar. Set `format_on_save = true` to have warden rewrite the config in house style on each clean hot-reload (the same formatting `warden fmt` applies).
+A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar. Set `format_on_save = true` to have warden rewrite the config in house style on each clean hot-reload (the same formatting `warden fmt` applies). Set `density = "compact"` to condense the chrome (type + spacing scaled down proportionally) when you want denser tab lists; the default is `"comfortable"`. It hot-reloads like everything else.
 
 ## Install
 
