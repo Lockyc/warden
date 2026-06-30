@@ -96,6 +96,11 @@ fn resolve_density(raw: Option<&str>) -> Result<Density, ResolveError> {
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
+    if s == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
     if let Some(rest) = s.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
@@ -270,12 +275,13 @@ fn resolve_tab(
     seen_titles: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
-    if rt.dir.trim().is_empty() {
+    let dir_str = rt.dir.trim();
+    if dir_str.is_empty() {
         return Err(ResolveError::EmptyDir {
             window: rp.title.clone(),
         });
     }
-    let dir = expand_tilde(&rt.dir);
+    let dir = expand_tilde(dir_str);
     if let Some(ref t) = rt.title {
         if t.trim().is_empty() {
             return Err(ResolveError::EmptyTabTitle {

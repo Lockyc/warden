@@ -21,8 +21,12 @@ pub enum LoadError {
 }
 
 pub fn config_path() -> PathBuf {
+    // A set-but-empty WARDEN_CONFIG falls through to the default rather than
+    // yielding `PathBuf::from("")` (which would only surface a confusing read error).
     if let Ok(p) = std::env::var("WARDEN_CONFIG") {
-        return PathBuf::from(p);
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
     }
     let base = dirs::home_dir().unwrap_or_default();
     base.join(".config").join("warden").join("config.toml")

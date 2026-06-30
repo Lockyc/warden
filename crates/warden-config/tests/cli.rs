@@ -127,3 +127,24 @@ fn fmt_check_rejects_non_toml_exit_1() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("not valid TOML"));
 }
+
+#[test]
+fn fmt_formats_schema_invalid_but_valid_toml() {
+    // `fmt`'s only precondition is well-formed TOML syntax — NOT a full warden
+    // schema. A `[[window]]` missing its required `title` is valid TOML the
+    // formatter tidies fine; it must format (exit 0), not be rejected as "not
+    // valid TOML".
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = write(
+        tmp.path(),
+        "config.toml",
+        "[[window]]\ncolour=\"#0f8a8a\"\n",
+    );
+    let out = run(&["fmt", cfg.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "schema-invalid but syntactically-valid TOML must still format: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

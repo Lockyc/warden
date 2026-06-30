@@ -71,8 +71,10 @@ fn main() {
                 }
             };
             // Refuse to "format" a non-TOML file: taplo error-recovers and would
-            // return it unchanged, falsely reporting success.
-            if let Err(e) = warden_config::raw::parse(&original) {
+            // return it unchanged, falsely reporting success. Check *syntax* only
+            // (a schema-agnostic parse) — `fmt` tidies any well-formed TOML, so a
+            // valid file that's merely missing a warden field must still format.
+            if let Err(e) = original.parse::<toml::Table>() {
                 eprintln!("error: {} is not valid TOML: {e}", path.display());
                 std::process::exit(1);
             }
