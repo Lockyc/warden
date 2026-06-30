@@ -37,7 +37,7 @@
         flex-direction: row;
       }
       #sidebar {
-        width: 160px;
+        width: 240px;
         flex: none;
         position: relative;  /* containing block for the resize handle */
         display: flex;
@@ -89,7 +89,10 @@
         flex: 1;
         display: flex;
         flex-direction: column;
-        padding: 8px 6px;
+        /* No horizontal padding: group headers run full-bleed (their separator line
+           spans the sidebar), while .tab rows inset themselves via their own margin
+           to read as rounded chips. */
+        padding: 8px 0;
         gap: 2px;
         overflow-y: auto;
       }
@@ -99,6 +102,15 @@
          rows, skip headers and keep mapping to visual tab position. */
       .group-header {
         flex: none;
+        /* Sticky section header (curator's idiom): pins to the top of the scroll while
+           its group is on screen, with a separator line dividing sections. The opaque
+           background must match the (window-tinted) sidebar so rows scroll invisibly
+           under it — render() sets it to the same tint; this is the pre-paint fallback. */
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #15191e;
+        border-top: 1px solid #313640;
         padding: 14px 12px 6px;
         font-size: 14px;
         font-weight: 700;
@@ -109,21 +121,24 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      .group-header:first-child {
+        border-top: none;
+      }
       .tab {
         display: flex;
         align-items: center;
         gap: 10px;
+        margin: 0 6px;
         padding: 9px 12px;
         border-radius: 5px;
         cursor: pointer;
-        color: rgba(238, 238, 238, 0.65);
+        color: #ddd;
         font-size: 14px;
         user-select: none;
         transition: background 0.1s, color 0.1s;
       }
       .tab:hover:not(.active) {
-        background: rgba(255, 255, 255, 0.07);
-        color: #eef;
+        background: #2a2a2a;
       }
       .tab.active {
         color: #fff;
@@ -426,7 +441,7 @@
       /** Sidebar width: default (matches the CSS) and lower bound. The upper bound
           is computed against the live window width so a narrow window can't have its
           terminal squeezed away (see clampWidth). */
-      const SIDEBAR_DEFAULT_WIDTH = 160;
+      const SIDEBAR_DEFAULT_WIDTH = 240;
       const SIDEBAR_MIN_WIDTH = 120;
 
       /** Clamp a desired sidebar width into [min, min(400, 40% of window)]. */
@@ -610,6 +625,9 @@
           if (g !== lastGroup && g !== null) {
             const h = document.createElement('div');
             h.className = 'group-header';
+            // Match the sticky header's opaque background to the window-tinted sidebar
+            // (same blend as #sidebar above) so rows scroll invisibly under it.
+            h.style.background = tintOverBase(windowColour, 0.12);
             // textContent (not innerHTML): config group names never reach the HTML parser.
             h.textContent = g;
             list.appendChild(h);
