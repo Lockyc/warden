@@ -210,7 +210,7 @@
          as orthogonal to the green live/cold dot and amber unread badge. Sits
          between the unread badge and the live/cold dot. When the tab also has a
          `kill` command AND a session is present (.on.kill), clicking the dot puts
-         the WHOLE ROW into the red confirm state (✓/✗ controls then appear). */
+         the WHOLE ROW into the red confirm state (⏻/↩ controls then appear). */
       .tab-sess {
         flex: none;
         width: 16px;
@@ -234,12 +234,16 @@
         background: #56b4e9;
       }
       /* Interactive only when killable (on + has-kill): a pointer cue. The actual
-         confirm is the full-row state below — no hover-✕ on the dot anymore. */
+         confirm is the full-row state below — no hover-✕ on the dot anymore. On hover
+         the dot gains a soft red halo, foreshadowing the red confirm it opens. */
       .tab-sess.on.kill {
         cursor: pointer;
       }
+      .tab-sess.on.kill:hover::before {
+        box-shadow: 0 0 0 3px rgba(255, 91, 82, 0.22);
+      }
       /* Whole-row kill confirmation: the row goes red, the trailing dots hide, and
-         ✓ (confirm, in the cyan-dot slot under the cursor) + ✗ (cancel, in the
+         ⏻ (terminate, in the cyan-dot slot under the cursor) + ↩ (cancel, in the
          green-dot slot) appear. Tile + title stay visible. */
       /* `!important`: paint() sets the ACTIVE row's background as an inline style
          (the window-colour tint), which would otherwise beat this stylesheet rule
@@ -280,6 +284,19 @@
          dangerous and the safe out recedes. */
       .tab-confirm-kill   { color: #ff5b52; }                  /* ⏻ terminate (bright red on the maroon row) */
       .tab-confirm-cancel { color: rgba(255, 255, 255, 0.5); } /* ↩ cancel (muted, recedes)               */
+      /* Hover = a rounded button chip: destructive ⏻ brightens over a red chip, safe ↩
+         brightens over a neutral chip. Click stays the scale-press — hover and press
+         read distinctly. */
+      .tab-confirm-kill:hover {
+        background: rgba(255, 91, 82, 0.2);
+        border-radius: 4px;
+        color: #ff7b73;
+      }
+      .tab-confirm-cancel:hover {
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 4px;
+        color: rgba(255, 255, 255, 0.95);
+      }
       /* Confirm feedback: ⏻ presses (scale) and the row emits ONE brighter-red pulse,
          ~180ms, added as `.killing` by the ⏻ click handler. The pulse is a layered
          box-shadow overlay, NOT `background`: `.tab.confirming` sets
@@ -629,7 +646,7 @@
           // Session-presence dot (probe-enabled tabs). Filled if the probe last
           // reported a session, hollow ring otherwise. When the tab also has a `kill`
           // command and a session is present, clicking it puts the WHOLE ROW into the
-          // red confirm state (see clickKill) — the ✓/✗ controls below do the rest.
+          // red confirm state (see clickKill) — the ⏻/↩ controls below do the rest.
           if (t.has_probe) {
             const s = document.createElement('span');
             applySessClass(s, t.id, !!t.has_kill);
