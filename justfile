@@ -52,6 +52,13 @@ gate:
 build:
     cd crates/warden-app && cargo tauri build
 
+# Build a NOTARIZED warden.app and attach it to its GitHub release (version from Cargo.toml).
+# Run AFTER the release is tagged/pushed and `gh release create v<version>` published the notes
+# (see CLAUDE.md › Releases). Refuses to run without the Apple signing/notary env vars.
+[group("dist")]
+release:
+    bash scripts/release.sh
+
 # Build a release .app, install/replace it in /Applications, then relaunch.
 # Delegates build+install to install.sh (seeds ~/.config/warden/config.toml only if absent);
 # the relaunch stays here because install.sh never launches the app.

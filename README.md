@@ -83,6 +83,11 @@ A window has its own colour + title banner; its tabs are project terminals. `wid
 
 ## Install
 
+**Download (no build):** grab `warden-<version>-macos.zip` from the
+[latest release](https://github.com/Lockyc/warden/releases/latest), unzip, and move
+`warden.app` to `/Applications`. Release builds are signed with Developer ID and notarized,
+so they open without a Gatekeeper block. macOS only.
+
 **Guided (Claude Code):** run `/warden:install` — it checks prerequisites
 (Xcode Command Line Tools, Rust, the Tauri CLI), builds warden from source, installs
 it to `/Applications`, and seeds your config.
