@@ -24,6 +24,8 @@
         --tile-size: 20px;
         --tile-font: 11px;
         --dot-size: 9px;
+        --glyph-x: 11px;
+        --glyph-confirm: 13px;
         --sidebar-w: 240px;
       }
       [data-density="compact"] {
@@ -37,6 +39,8 @@
         --tile-size: 17px;
         --tile-font: 10px;
         --dot-size: 8px;
+        --glyph-x: 10px;
+        --glyph-confirm: 12px;
         --sidebar-w: 200px;
       }
       /* Column root: the error bar (when shown) sits at the very top in normal
@@ -236,7 +240,7 @@
       .tab-dot.live:hover::after {
         content: '✕';
         color: #f85149;
-        font-size: 11px;
+        font-size: var(--glyph-x);
         font-weight: 700;
       }
       /* Unread/attention badge: a tab raised a terminal notification (OSC 9/777) or
@@ -317,7 +321,7 @@
         justify-content: center;
         line-height: 1;
         cursor: pointer;
-        font-size: 13px;
+        font-size: var(--glyph-confirm);
         font-weight: 700;
       }
       .tab.confirming .tab-confirm-kill,
