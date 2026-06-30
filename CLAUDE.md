@@ -99,6 +99,7 @@ Validation: unique window title, unique tab title within a window (window-wide �
 ## Build / test / run
 
 - `cargo build` / `cargo test` (workspace). `warden-app` is macOS-only (libghostty embed); it fails to compile elsewhere by design.
+- **Toolchain is pinned** in `rust-toolchain.toml` (currently `1.96.0`, with `rustfmt`+`clippy`) so formatting and lints are identical for everyone — an unpinned `stable` drifts and re-wraps committed code, which has bitten `just fmt`/`just check` here. rustup auto-installs the pinned version. **Keep it in lockstep with the repos that share config-core** (curator) **and config-core itself**: config-core is a *git dependency*, so its own pin does **not** apply when warden builds it — warden's toolchain compiles the whole graph; config-core's pin only governs developing config-core standalone. Bump all three together, naturally when bumping config-core's pinned rev.
 - `cargo run -p warden-config --bin warden -- validate [path]` — validates a config and prints the resolved window/tab tree + warnings (exit 0 ok / 1 load error / 2 usage).
 - `cargo run -p warden-config --bin warden -- fmt [--check] [path]` — formats a config in the shared house style (config-core's taplo-backed formatter — no external taplo binary needed). `--check` is non-mutating and exits 1 if the file would change (for a pre-merge gate).
 - `cargo run -p warden-app` — launch the GUI (reads `WARDEN_CONFIG` or `~/.config/warden/config.toml`).

@@ -1,0 +1,13 @@
+# Pin the toolchain so rustfmt/clippy behave identically for everyone and in CI —
+# an unpinned `stable` drifts as new releases re-wrap code or add lints, which has
+# already caused spurious fmt churn here. rustup auto-installs this on first cargo use.
+#
+# Keep this version in lockstep with the sibling repos that share config-core
+# (curator) and config-core itself, so the shared formatter/lints match across all
+# three. config-core is a *git dependency*, so its own pin does NOT apply when warden
+# builds it — warden uses THIS toolchain for the whole graph; config-core's pin only
+# governs developing config-core standalone. Bump all three together (the natural
+# moment is when you bump config-core's pinned rev).
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
