@@ -1,10 +1,30 @@
 #!/usr/bin/env bash
-# docaudit pre-push gate — installed by `docaudit install-hook`.
-# Activated per clone via core.hooksPath -> .githooks. Fails closed: a missing
-# docaudit blocks the push (install it: go install git.lsjc.au/lachlan/docaudit@latest).
+# docaudit pre-push gate — installed by 'docaudit install-hook'. Activated per
+# clone via core.hooksPath -> .githooks. Fails closed: if docaudit can't be found
+# the push is blocked (install: go install git.lsjc.au/lachlan/docaudit@latest).
 set -euo pipefail
-command -v docaudit >/dev/null || {
-  echo "docaudit not installed (go install git.lsjc.au/lachlan/docaudit@latest)" >&2
-  exit 1
+
+# Resolve docaudit even under a minimal hook PATH. Git runs hooks with whatever
+# PATH the caller had; GUI clients and some agent harnesses push with a bare PATH
+# that omits ~/go/bin, so 'command -v docaudit' alone is unreliable and would
+# make the gate fail-closed (blocked) purely because it couldn't see an installed
+# binary. Fall back to the Go install dirs before giving up.
+docaudit_bin() {
+  if command -v docaudit >/dev/null 2>&1; then command -v docaudit; return; fi
+  local d
+  for d in "${GOBIN:-}" "${GOPATH:+${GOPATH%%:*}/bin}" "$HOME/go/bin"; do
+    [ -n "$d" ] && [ -x "$d/docaudit" ] && { printf '%s\n' "$d/docaudit"; return; }
+  done
+  if command -v go >/dev/null 2>&1; then
+    d="$(go env GOBIN 2>/dev/null)"; [ -z "$d" ] && d="$(go env GOPATH 2>/dev/null)/bin"
+    [ -x "$d/docaudit" ] && { printf '%s\n' "$d/docaudit"; return; }
+  fi
+  return 1
 }
-exec docaudit --checks orphans,broken,untracked .
+
+if ! bin="$(docaudit_bin)"; then
+  echo "docaudit: not found on PATH or in the Go bin dir — push blocked (fail-closed)." >&2
+  echo "  install it: go install git.lsjc.au/lachlan/docaudit@latest" >&2
+  exit 1
+fi
+exec "$bin" --checks orphans,broken,untracked .
