@@ -66,6 +66,30 @@ pub struct Window {
     pub width: u32,
     pub height: u32,
     pub tabs: Vec<Tab>,
+    /// Project-tree roots for this window (`[[window.root]]`), in file order after any
+    /// groups. Declarations only — the app scans each and synthesizes project tabs.
+    pub roots: Vec<Root>,
+}
+
+/// A project-tree root (`[[window.root]]`): a directory scanned for git projects,
+/// each discovered project synthesized into a `Tab` by the app's scanner. A new
+/// cascade level (root→window→global) for its projects' `shell`/`cmd`/`probe`/`kill`
+/// — discovered projects have no per-tab config, so the root is where those attach.
+/// Presentational section header is `name`. The crate does **no** scanning: this is a
+/// declaration the app expands at runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Root {
+    pub name: String,
+    pub dir: PathBuf,
+    pub depth: u32,
+    /// Resolved shell for discovered projects (cascade root→window→global, then login shell).
+    pub shell: String,
+    /// Resolved startup command for discovered projects (`None` = bare shell).
+    pub startup: Option<String>,
+    /// Resolved session-presence probe for discovered projects (`None` = no dot).
+    pub probe: Option<String>,
+    /// Resolved session-kill command for discovered projects (`None` = no kill affordance).
+    pub kill: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
