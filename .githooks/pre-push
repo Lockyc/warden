@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# docaudit pre-push gate — installed by `docaudit install-hook`.
+# Activated per clone via core.hooksPath -> .githooks. Fails closed: a missing
+# docaudit blocks the push (install it: go install git.lsjc.au/lachlan/docaudit@latest).
+set -euo pipefail
+command -v docaudit >/dev/null || {
+  echo "docaudit not installed (go install git.lsjc.au/lachlan/docaudit@latest)" >&2
+  exit 1
+}
+exec docaudit --checks orphans,broken,untracked .
