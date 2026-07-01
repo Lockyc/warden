@@ -102,3 +102,41 @@ appears on screen is the signature of the OS-side suppression above — and the 
 
 `/tmp` is deliberate: a fresh log per boot matches the reboot-and-retry workflow. Turn the flag off
 (or remove it) once the OS-side issue is resolved.
+
+## The escape hatch we didn't build: a notification sidecar
+
+If the foreground suppression ever proves **durable** (survives reboots; becomes settled macOS-26
+behaviour rather than the transient corrupted-service above), warden is not out of options — there is
+a proven bypass. This section records it so the option isn't re-derived, and records why it stays on
+the shelf for now.
+
+**Why the suppression is per-app, not per-window.** macOS attributes a notification to the *posting
+process's bundle identifier*, and at delivery time asks one question: *is that bundle the currently
+frontmost (active) application?* (same frontmost notion as `NSWorkspace.frontmostApplication`.) If
+yes → the "foreground" path, which silences the banner and consults the app's `willPresent` delegate;
+if no → the "background" path, which just shows the banner. The check is on the **app**, never a
+window — which is why *any* warden window being frontmost triggers it, and why warden's own banners
+work only when warden is backgrounded.
+
+**The bypass.** Post the banner from a *different* bundle that is **never frontmost**. Its
+notifications always take the background path — the one that still works on the affected machine — so
+they render regardless of what warden is doing. `terminal-notifier` is the existence proof: a
+separate `.app` bundle that posts on behalf of CLI scripts, with banners attributed to *its own*
+bundle id (a plain command-line/Foundation tool can't post at all — it must be a bundled `.app`). A
+warden helper would be an `LSUIElement` background agent nested in `warden.app`, handed each banner
+over IPC. As a bonus it also sidesteps a *second* macOS bug — foreground-presented banners never fire
+the click/`didReceive` callback, so a background-delivered banner restores click-to-surface.
+
+> **Decision (2026-07): do NOT build the sidecar yet.** Status: active.
+> The current evidence is a *transient* corrupted notification service (a reboot is documented to
+> clear it; the foreground-only variant was seen on one machine; no durable macOS-26 `willPresent`
+> regression is publicly documented). A sidecar is a large, permanent structure to paper over that:
+> a nested helper `.app` with its **own** bundle id and **own** authorization prompt; an IPC channel
+> warden→helper for every banner; a **reverse** channel for clicks (today the click delegate is
+> in-process and cleanly raises the window+tab via `focus_window_tab` — a helper would receive the
+> click and have to IPC back); banners branded with the helper's identity; and it re-introduces the
+> exact external-helper dependency warden deliberately shed when it moved off `osascript`/the plugin
+> to in-process `UNUserNotificationCenter`. **Flip this decision** only if the suppression survives a
+> reboot *and* is confirmed to hit other apps' foreground banners too (i.e. it's settled OS behaviour,
+> not service corruption) — then the sidecar is the correct fix and `terminal-notifier` is the
+> reference. Until then the remedy is the reboot/OS fixes above, and warden's code stays untouched.
