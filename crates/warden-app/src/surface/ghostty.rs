@@ -57,6 +57,11 @@ const NS_FLAG_CONTROL: usize = 1 << 18;
 const NS_FLAG_OPTION: usize = 1 << 19;
 const NS_FLAG_COMMAND: usize = 1 << 20;
 
+// macOS virtual keycode for the physical grave/backtick key (kVK_ANSI_Grave). This is the key
+// macOS's window-cycle shortcut lives on; matching by keycode keeps the reservation below correct
+// across keyboard layouts (the shortcut follows the physical key, not the "`" character).
+const NS_KEYCODE_GRAVE: u16 = 0x32;
+
 // --- Process-global state ---------------------------------------------------
 // The shared ghostty app handle (created once). Stored as usize so the static
 // is trivially Send/Sync; reconstituted to a pointer on read.
@@ -405,6 +410,18 @@ declare_class!(
                 }
             }
 
+            // ⌘` / ⌘⇧` is macOS's own "cycle windows of this app" chord — a system window-
+            // management shortcut no terminal should eat. Never forward it to libghostty: a surface
+            // in the Kitty keyboard protocol (a running TUI turned it on) WOULD encode ⌘` and report
+            // consumed=true, so warden returned YES and AppKit's cycling never ran — the chord died
+            // silently on whatever tab had such a program running, while bare-shell tabs cycled fine.
+            // Hand it straight back to AppKit (return NO) so cycling is uniform across every tab.
+            // warden owns no cmd+` binding of its own by design — window cycling is macOS's, and
+            // fighting it would be a losing battle. SAFETY: delivered on the main thread.
+            if unsafe { is_window_cycle_chord(event) } {
+                return objc2::runtime::Bool::NO;
+            }
+
             let surface = self.ivars().surface.get();
             // Disambiguate sibling tab views: the hidden views in this window ALSO receive
             // performKeyEquivalent:, but exactly one host view per window is unhidden — the
@@ -552,6 +569,19 @@ impl WardenHostView {
 /// lets the key encoder derive the byte from key + mods.
 fn is_printable_text(s: &str) -> bool {
     !s.is_empty() && !s.chars().any(|c| c.is_control())
+}
+
+/// True for ⌘` / ⌘⇧` — macOS's "cycle windows of this app" chord. Matched by physical keycode
+/// (not the "`" character) so it holds across keyboard layouts, and gated on Command with no
+/// Ctrl/Option so only the genuine window-cycle chord is reserved (Shift is allowed — ⌘⇧` cycles
+/// the other direction). `performKeyEquivalent:` uses this to hand the chord back to AppKit rather
+/// than forward it to libghostty.
+unsafe fn is_window_cycle_chord(event: &NSEvent) -> bool {
+    let flags = event.modifierFlags().0;
+    flags & NS_FLAG_COMMAND != 0
+        && flags & NS_FLAG_CONTROL == 0
+        && flags & NS_FLAG_OPTION == 0
+        && event.keyCode() == NS_KEYCODE_GRAVE
 }
 
 /// Map an AppKit event's modifier flags to ghostty's mods bitset. Shared by the key and
