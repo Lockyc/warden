@@ -1,4 +1,4 @@
-use crate::model::{Config, Density, Tab, TabDigitKeys, Warning, Window};
+use crate::model::{Config, Density, Root, Tab, TabDigitKeys, Warning, Window};
 use crate::raw::{RawConfig, RawWindow};
 use crate::{Colour, ColourError};
 use std::collections::HashSet;
@@ -27,6 +27,10 @@ pub const DEFAULT_WIDTH: u32 = 1500;
 
 /// Default window height when `height` is omitted. Matches curator's default.
 pub const DEFAULT_HEIGHT: u32 = 1000;
+
+/// Default project-tree scan depth below a root's `dir` when `depth` is omitted —
+/// a safety floor against runaway walks on a deep or huge tree.
+pub const DEFAULT_ROOT_DEPTH: u32 = 6;
 
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
@@ -71,6 +75,14 @@ pub enum ResolveError {
     BadTabDigitKeys(String),
     #[error("invalid density {0:?} (expected \"comfortable\" or \"compact\")")]
     BadDensity(String),
+    #[error("window {window:?} has a root with an empty dir")]
+    EmptyRootDir { window: String },
+    #[error("window {window:?} has a root with an empty name")]
+    EmptyRootName { window: String },
+    #[error("window {window:?} has duplicate section name: {name:?}")]
+    DuplicateSection { window: String, name: String },
+    #[error("window {window:?} has a root with invalid depth {depth} (must be >= 1)")]
+    InvalidRootDepth { window: String, depth: u32 },
 }
 
 /// Parse the global `tab_digit_keys` setting. Missing/empty → the default
@@ -222,14 +234,18 @@ fn resolve_window(
         )?);
     }
 
-    let mut seen_groups = HashSet::new();
+    // Section names (group names + root names) share one uniqueness namespace: a group
+    // and a root can't share a name, matching how both render as labelled sidebar
+    // sections. A group-vs-group clash still reports `DuplicateGroup`; any other clash
+    // (root-vs-root or cross-kind) reports `DuplicateSection`.
+    let mut seen_sections = HashSet::new();
     for g in &rp.groups {
         if g.name.trim().is_empty() {
             return Err(ResolveError::EmptyGroupName {
                 window: rp.title.clone(),
             });
         }
-        if !seen_groups.insert(g.name.clone()) {
+        if !seen_sections.insert(g.name.clone()) {
             return Err(ResolveError::DuplicateGroup {
                 window: rp.title.clone(),
                 group: g.name.clone(),
@@ -251,12 +267,34 @@ fn resolve_window(
         }
     }
 
+    let mut roots = Vec::with_capacity(rp.roots.len());
+    for rr in &rp.roots {
+        let root = resolve_root(
+            rr,
+            rp,
+            default_shell,
+            global_shell,
+            global_cmd,
+            global_probe,
+            global_kill,
+            warnings,
+        )?;
+        if !seen_sections.insert(root.name.clone()) {
+            return Err(ResolveError::DuplicateSection {
+                window: rp.title.clone(),
+                name: root.name.clone(),
+            });
+        }
+        roots.push(root);
+    }
+
     Ok(Window {
         title: rp.title.clone(),
         colour,
         width,
         height,
         tabs,
+        roots,
     })
 }
 
@@ -321,6 +359,67 @@ fn resolve_tab(
         startup,
         load_on_open: rt.load_on_open,
         group,
+        probe,
+        kill,
+    })
+}
+
+/// Resolve one raw root into a `Root`. Mirrors `resolve_tab`'s cascade but with no
+/// tab level (root → window → global) since a root has no per-tab config of its own.
+#[allow(clippy::too_many_arguments)]
+fn resolve_root(
+    rr: &crate::raw::RawRoot,
+    rp: &RawWindow,
+    default_shell: &str,
+    global_shell: Option<&str>,
+    global_cmd: Option<&str>,
+    global_probe: Option<&str>,
+    global_kill: Option<&str>,
+    warnings: &mut Vec<Warning>,
+) -> Result<Root, ResolveError> {
+    let dir_str = rr.dir.trim();
+    if dir_str.is_empty() {
+        return Err(ResolveError::EmptyRootDir {
+            window: rp.title.clone(),
+        });
+    }
+    let dir = expand_tilde(dir_str);
+    // name defaults to basename(dir); an explicit empty name is an error.
+    let name = match rr.name.as_deref() {
+        Some(n) if n.trim().is_empty() => {
+            return Err(ResolveError::EmptyRootName {
+                window: rp.title.clone(),
+            });
+        }
+        Some(n) => n.to_string(),
+        None => basename(&dir),
+    };
+    let depth = rr.depth.unwrap_or(DEFAULT_ROOT_DEPTH);
+    if depth == 0 {
+        return Err(ResolveError::InvalidRootDepth {
+            window: rp.title.clone(),
+            depth,
+        });
+    }
+    if !dir.exists() {
+        warnings.push(Warning {
+            window: rp.title.clone(),
+            message: format!("root dir does not exist: {}", dir.display()),
+        });
+    }
+    // Cascade root→window→global (no tab level); shell falls back to the login shell.
+    let shell = cascade(rr.shell.as_deref(), rp.shell.as_deref(), global_shell)
+        .unwrap_or(default_shell)
+        .to_string();
+    let startup = cascade(rr.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
+    let probe = cascade(rr.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
+    let kill = cascade(rr.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
+    Ok(Root {
+        name,
+        dir,
+        depth,
+        shell,
+        startup,
         probe,
         kill,
     })
@@ -1203,6 +1302,94 @@ colour = "#0f8a8a"
         .unwrap();
         let (cfg, _) = resolve(raw).unwrap();
         assert_eq!(cfg.windows[0].tabs[0].kill, None);
+    }
+
+    #[test]
+    fn root_cascade_resolves_from_window_and_global() {
+        let (cfg, _) = resolve_str(
+            r##"
+shell = "gsh -l"
+probe = "global-probe"
+
+[[window]]
+title = "dev"
+probe = "win-probe"
+
+  [[window.root]]
+  dir = "~/Developer"
+  cmd = "run"
+"##,
+        )
+        .unwrap();
+        let r = &cfg.windows[0].roots[0];
+        assert_eq!(r.name, "Developer"); // defaulted from basename
+        assert_eq!(r.depth, 6); // default depth
+        assert_eq!(r.shell, "gsh -l"); // from global
+        assert_eq!(r.startup.as_deref(), Some("run"));
+        assert_eq!(r.probe.as_deref(), Some("win-probe")); // window beats global
+        assert!(r.kill.is_none());
+    }
+
+    #[test]
+    fn root_empty_probe_opts_out_of_inherited() {
+        let (cfg, _) = resolve_str(
+            r##"
+probe = "global-probe"
+[[window]]
+title = "dev"
+  [[window.root]]
+  dir = "~/x"
+  probe = ""
+"##,
+        )
+        .unwrap();
+        assert!(cfg.windows[0].roots[0].probe.is_none());
+    }
+
+    #[test]
+    fn root_name_collides_with_group_name_errors() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "dev"
+  [[window.group]]
+  name = "shared"
+    [[window.group.tab]]
+    dir = "~/a"
+  [[window.root]]
+  name = "shared"
+  dir = "~/b"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateSection {
+                window: "dev".into(),
+                name: "shared".into()
+            }
+        );
+    }
+
+    #[test]
+    fn root_bad_depth_errors() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "dev"
+  [[window.root]]
+  dir = "~/x"
+  depth = 0
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::InvalidRootDepth {
+                window: "dev".into(),
+                depth: 0
+            }
+        );
     }
 
     #[test]
