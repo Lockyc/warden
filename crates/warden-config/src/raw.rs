@@ -50,6 +50,11 @@ pub struct RawWindow {
     // tagging every tab with its group (loose = `None`); see resolve.rs.
     #[serde(default, rename = "group")]
     pub groups: Vec<RawGroup>,
+    // Project-tree roots (`[[window.root]]`): a scanned projects dir whose discovered
+    // git projects are synthesized into tabs app-side. A new cascade level for its
+    // projects (root→window→global); see resolve.rs. Presented as a labelled section.
+    #[serde(default, rename = "root")]
+    pub roots: Vec<RawRoot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -57,6 +62,17 @@ pub struct RawGroup {
     pub name: String,
     #[serde(default, rename = "tab")]
     pub tabs: Vec<RawTab>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RawRoot {
+    pub name: Option<String>,
+    pub dir: String,
+    pub depth: Option<u32>,
+    pub shell: Option<String>,
+    pub cmd: Option<String>,
+    pub probe: Option<String>,
+    pub kill: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -160,5 +176,34 @@ colour = "#0f8a8a"
         assert_eq!(w.groups[0].tabs.len(), 2);
         assert_eq!(w.groups[1].name, "backend");
         assert_eq!(w.groups[1].tabs[0].dir, "~/dev/api");
+    }
+
+    #[test]
+    fn parses_window_roots() {
+        let cfg = parse(
+            r##"
+[[window]]
+title = "dev"
+colour = "#0f8a8a"
+
+  [[window.root]]
+  name = "Developer"
+  dir = "~/Developer"
+  depth = 4
+  probe = "check --probe"
+
+  [[window.root]]
+  dir = "~/work"
+"##,
+        )
+        .unwrap();
+        let w = &cfg.windows[0];
+        assert_eq!(w.roots.len(), 2);
+        assert_eq!(w.roots[0].name.as_deref(), Some("Developer"));
+        assert_eq!(w.roots[0].dir, "~/Developer");
+        assert_eq!(w.roots[0].depth, Some(4));
+        assert_eq!(w.roots[0].probe.as_deref(), Some("check --probe"));
+        assert!(w.roots[1].name.is_none());
+        assert_eq!(w.roots[1].dir, "~/work");
     }
 }
