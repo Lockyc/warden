@@ -23,8 +23,34 @@ alerts **Enabled**, and that **no Focus/Do-Not-Disturb assertion** was active. T
 not render. So the suppression is in macOS's notification *presentation* layer, downstream of
 everything warden controls.
 
+The `.banner | .sound` value itself is also correct — re-verified against the binding
+(`objc2-user-notifications`): `Banner = 1<<4 = 16`, `Sound = 1<<1 = 2`, so the delegate returns
+`18`, the exact NSUInteger that un-suppresses a foreground banner. There is no remaining lever on
+warden's side: returning `.banner` from `willPresent` *is* the only mechanism an app has to present
+a banner while it is frontmost.
+
 This is the trap: every signal warden can read says "should show a banner," so the instinct is to
 keep changing warden. The evidence says the lever is the OS, not the code.
+
+### The regression has a foreground-only variant — mind the discriminator
+
+The suppression is **not always unconditional.** On the author's machine it killed *every* banner
+(foreground and background alike). On another affected machine it manifested **foreground-only**:
+banners rendered normally when warden was **backgrounded** but were dropped only when a warden window
+was **frontmost** — while the `notify_debug` trace still showed `willPresent fired -> returning
+.banner | .sound`. This is fully consistent with the mechanism: macOS consults `willPresent` *only*
+in the foreground, so a presentation-layer fault on that path suppresses foreground banners while the
+background delivery path (which never touches `willPresent`) keeps working.
+
+The practical consequence is that the naïve discriminator "do *any* banners appear?" can mislead —
+warden's own backgrounded banners appearing does **not** exonerate the foreground path. Refine it to
+**"do *foreground* banners appear from any app?"**: bring a sibling app frontmost (curator, or
+Messages/Slack/Discord) and trigger one of *its* notifications while it is the active app. If that
+banner is also missing → the OS foreground-presentation path is broken machine-wide (apply the fixes
+below). If sibling apps *do* banner while frontmost but warden alone doesn't, that would be
+warden-specific — but the trace above (delegate fires, returns `18`, usernoted accepts) leaves warden
+nothing more to satisfy, so re-open the OS-registration angle (the two-paths `lsregister` note
+below), not `notify.rs`.
 
 ## What the macOS-26 ("Tahoe") evidence points to
 
@@ -50,11 +76,13 @@ keep changing warden. The evidence says the lever is the OS, not the code.
    `rm -rf ~/Library/Group\ Containers/group.com.apple.UserNotifications/Library/UserNotifications/Remote/default/*`
 4. Boot into **Safe Mode** (rebuilds caches), then restart normally.
 
-A useful discriminator before any of this: do banners from *other* apps (Messages, curator) appear?
-If nothing banners → system-wide breakage (the fixes above). If others banner but warden doesn't →
-that *would* be warden-specific; re-open the investigation (the LaunchServices dump did show warden
-registered at two paths — `/Applications` and a build dir — clearable with a full `lsregister -kill
--r -domain local -domain system -domain user` rebuild, then run only the `/Applications` copy).
+A useful discriminator before any of this: do **foreground** banners from *other* apps (Messages,
+curator) appear — i.e. with that app frontmost (see the foreground-only variant above; don't settle
+for warden's own backgrounded banners working)? If nothing banners → system-wide breakage (the fixes
+above). If others banner but warden doesn't → that *would* be warden-specific; re-open the
+investigation (the LaunchServices dump did show warden registered at two paths — `/Applications` and
+a build dir — clearable with a full `lsregister -kill -r -domain local -domain system -domain user`
+rebuild, then run only the `/Applications` copy).
 
 ## Reproducing with the `notify_debug` trace
 
