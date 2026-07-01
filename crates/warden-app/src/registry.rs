@@ -15,6 +15,7 @@ pub struct TabDto {
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
     pub has_probe: bool,       // a session-probe command is configured for this tab
     pub has_kill: bool,        // a session-kill command is configured for this tab
+    pub has_cmd: bool,         // a startup command is configured (→ presence dot can offer restart)
 }
 
 /// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
@@ -109,6 +110,7 @@ impl Registry {
                 group: t.spec.group.clone(),
                 has_probe: t.spec.probe.is_some(),
                 has_kill: t.spec.kill.is_some(),
+                has_cmd: t.spec.startup.is_some(),
             })
             .collect()
     }
@@ -138,6 +140,28 @@ impl Registry {
             .kill
             .as_ref()
             .map(|k| (t.spec.dir.clone(), t.title.clone(), k.clone()))
+    }
+
+    /// Restart tab `id`'s session by re-typing its startup command into the **live** shell
+    /// (newline-terminated, exactly as `initial_input` delivers it at spawn) — the runtime twin of
+    /// how the tab launched. Preserves the terminal/scrollback (no respawn). Returns `false` (no-op)
+    /// when the tab is unknown, has no startup command, or is cold — a cold tab has no shell to type
+    /// into and is (re)started by activating it. The chrome only offers this on a live+startable tab
+    /// with an absent session, so `false` means a stale/racing click.
+    pub fn start_session(&self, id: &str) -> bool {
+        let Some(t) = self.tabs.iter().find(|t| t.id == id) else {
+            return false;
+        };
+        let Some(cmd) = t.spec.startup.as_ref() else {
+            return false;
+        };
+        match &t.slot {
+            TabSlot::Spawned(s) => {
+                s.send_text(&format!("{cmd}\n"));
+                true
+            }
+            TabSlot::Cold => false,
+        }
     }
 
     /// Apply a kept tab's in-place metadata (group/probe/kill) from a hot-reload —
@@ -513,5 +537,35 @@ mod tests {
         );
         assert_eq!(r.kill_target("t1"), None); // no kill command
         assert_eq!(r.kill_target("nope"), None); // unknown id
+    }
+
+    #[test]
+    fn has_cmd_flag_reflects_startup() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut s_with = spec("t0", "/tmp");
+        s_with.startup = Some("amux".into());
+        let _ = r.add(&s_with, false);
+        let _ = r.add(&spec("t1", "/tmp"), false); // startup: None
+        let dtos = r.tab_dtos();
+        assert!(dtos[0].has_cmd);
+        assert!(!dtos[1].has_cmd);
+    }
+
+    #[test]
+    fn start_session_noop_when_cold_no_cmd_or_unknown() {
+        // Declared tabs are cold (no ns_window deref). start_session sends nothing and reports false
+        // for: a cold tab (even with a startup cmd), a tab without a startup cmd, and an unknown id.
+        // The live-send path needs a real surface, so it isn't exercised here (same as focus/spawn).
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut with_cmd = spec("t0", "/tmp");
+        with_cmd.startup = Some("amux".into());
+        let _ = r.add(&with_cmd, false); // cold, has cmd
+        let _ = r.add(&spec("t1", "/tmp"), false); // cold, no cmd
+        assert!(!r.start_session("t0"), "cold tab: nothing to type into");
+        assert!(
+            !r.start_session("t1"),
+            "no startup command → nothing to send"
+        );
+        assert!(!r.start_session("nope"), "unknown id");
     }
 }

@@ -902,6 +902,13 @@ impl TerminalSurface for GhosttySurface {
         }
     }
 
+    fn send_text(&self, text: &str) {
+        // Length-delimited buffer (not a C string) → embedded NULs are fine and no CString needed.
+        unsafe {
+            ffi::ghostty_surface_text(self.surface, text.as_ptr() as *const c_char, text.len());
+        }
+    }
+
     fn close(self) {
         // Drop the key-state observers registered in new() before the view is freed, so the
         // notification center stops messaging a dangling view.

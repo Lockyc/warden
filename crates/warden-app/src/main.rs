@@ -325,6 +325,39 @@ fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     });
 }
 
+/// Restart the *session* tab `id` represents by re-typing its startup `cmd` into the live shell
+/// (see `Registry::start_session` — the runtime twin of spawn-time `initial_input`). No-op if the
+/// tab is cold or has no `cmd`. Unlike `kill_session` (synchronous), the started session appears
+/// **asynchronously** — the shell has to run the typed command — so an immediate probe would still
+/// read "absent". Instead we schedule a couple of delayed re-probes so the cyan presence dot lights
+/// promptly once the session is up; the poll timer (`probe_interval`) converges the rest, and
+/// `probe_interval = 0` tabs re-light on next focus. Same minimal-env PATH footgun as probes.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
+    use tauri::Manager;
+    let started = {
+        let m = state.lock();
+        m.windows
+            .get(window.label())
+            .map(|ws| ws.registry.start_session(&id))
+            .unwrap_or(false)
+    };
+    if !started {
+        return; // cold / no cmd / unknown — nothing typed, nothing to re-probe
+    }
+    let app = window.app_handle().clone();
+    let label = window.label().to_string();
+    // Off the UI thread (probes are slow `sh -c` calls). Re-probe at 1s and 3s to catch both fast
+    // and slower session starts without racing the launch; further drift is healed by the poll timer.
+    std::thread::spawn(move || {
+        for delay_ms in [1000u64, 2000] {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            probe::run_pass(&app, Some(&label));
+        }
+    });
+}
+
 /// Update the calling window's active-surface frame from a web-coordinate rect.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -638,6 +671,7 @@ fn main() {
             activate_tab,
             unload_tab,
             kill_session,
+            start_session,
             diagnostic_message,
             probe_now
         ])

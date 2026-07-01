@@ -373,6 +373,11 @@ extern "C" {
     // void ghostty_surface_set_focus(ghostty_surface_t, bool);
     pub fn ghostty_surface_set_focus(surface: ghostty_surface_t, focused: bool);
 
+    // void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
+    // Inject text into the surface as if typed — the runtime equivalent of the config's
+    // `initial_input`. Length-delimited (not a C string), so embedded NULs are fine.
+    pub fn ghostty_surface_text(surface: ghostty_surface_t, text: *const c_char, len: usize);
+
     // bool ghostty_surface_mouse_button(ghostty_surface_t, state_e, button_e, mods_e);
     pub fn ghostty_surface_mouse_button(
         surface: ghostty_surface_t,

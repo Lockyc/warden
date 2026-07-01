@@ -83,6 +83,10 @@ pub trait TerminalSurface {
     fn show(&self);
     fn hide(&self);
     fn focus(&self);
+    /// Inject text into the live surface as if typed (runtime equivalent of the spawn-time
+    /// `startup`/`initial_input`). Used to re-run a tab's command into its existing shell — e.g.
+    /// restarting a session whose probe reports it gone, without respawning the terminal.
+    fn send_text(&self, text: &str);
     fn close(self);
 }
 

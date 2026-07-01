@@ -113,6 +113,7 @@
             attention: badges.has(t.id) ? true : null,
             presence: t.has_probe ? (session.get(t.id) ?? "off") : null,
             killable: !!t.has_kill,
+            startable: !!t.has_cmd, // presence dot can restart a dead session by re-running `cmd`
             warn: !!t.warn,
           })),
         };
@@ -173,6 +174,11 @@
             onUnload: unloadTab,
             onKill(id) {
               invokeSafe("kill_session", { id });
+            },
+            onStart(id) {
+              // Restart a dead session: warden re-types the tab's `cmd` into the live shell, then
+              // re-probes so the cyan dot lights once it's up. No optimistic paint — wait for truth.
+              invokeSafe("start_session", { id });
             },
             onResize(width) {
               document.getElementById("sidebar").style.width = width + "px";
