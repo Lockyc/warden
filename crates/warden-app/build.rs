@@ -1,11 +1,17 @@
 fn main() {
     tauri_build::build();
 
-    // tauri-build does NOT emit rerun-if-changed for frontendDist ("ui"), and the
-    // assets are embedded by `generate_context!` in main.rs at compile time — so a
-    // frontend-only edit (e.g. index.html) would otherwise never re-embed unless a
-    // Rust file also changed. Force a rebuild on any frontend asset change.
-    println!("cargo:rerun-if-changed=ui");
+    // Materialize the shared chrome into ui/ (frontendDist) so generate_context! embeds it. The
+    // generated files are git-ignored — reproducible from the pinned chrome-core rev + this recipe,
+    // so a plain clone still builds (cargo fetches chrome-core; this writes it out).
+    std::fs::write("ui/chrome-core.css", chrome_core::SIDEBAR_CSS).expect("write chrome-core.css");
+    std::fs::write("ui/chrome-core.js", chrome_core::SIDEBAR_JS).expect("write chrome-core.js");
+
+    // tauri-build does NOT emit rerun-if-changed for frontendDist ("ui"), and the assets are
+    // embedded by `generate_context!` in main.rs at compile time — so a frontend-only edit would
+    // otherwise never re-embed unless a Rust file also changed. Watch the HAND-WRITTEN assets only:
+    // watching `ui` broadly would self-trigger a rerun every build, since build.rs writes the
+    // generated chrome-core.{css,js} into ui/.
     println!("cargo:rerun-if-changed=ui/index.html");
     println!("cargo:rerun-if-changed=ui/diagnostic.html");
 

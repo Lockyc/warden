@@ -1,5 +1,10 @@
 /target
 docs/superpowers/
+.superpowers/
+
+# Generated at build time from the pinned chrome-core crate (build.rs); reproducible, not tracked
+/crates/warden-app/ui/chrome-core.css
+/crates/warden-app/ui/chrome-core.js
 
 # Tauri generated
 crates/warden-app/gen/

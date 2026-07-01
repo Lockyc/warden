@@ -5,6 +5,9 @@ edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# The shared sidebar chrome, embedded as string consts; build.rs writes them into ui/ (the
+# frontendDist Tauri embeds). Pinned by rev — bump in lockstep with config-core + the toolchain.
+chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "c14dfdd853af13bd61fb49c5c972324d4a4df24a" }
 
 [dependencies]
 # macos-private-api: required for programmatic transparent windows (the
