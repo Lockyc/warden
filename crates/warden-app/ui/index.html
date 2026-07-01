@@ -1,431 +1,47 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8" /><title>warden</title>
+  <head>
+    <meta charset="utf-8" />
+    <title>warden</title>
+    <link rel="stylesheet" href="chrome-core.css" />
     <style>
+      /* Page shell only — the sidebar interior (banner, rows, dots, kill-confirm, error bar, resize)
+         lives in chrome-core. This keeps warden's window topology: a native libghostty surface
+         composited ABOVE the webview shows through #terminal-hole, so the sidebar is a normal DOM
+         column beside a transparent hole. The window is transparent → every painted surface here
+         must stay OPAQUE or it leaks the wallpaper. */
       html, body {
         margin: 0;
         height: 100%;
         background: transparent;
+        overflow: hidden;
         font-family: system-ui, sans-serif;
-        overflow: hidden;
       }
-      /* Chrome sizing tokens. The default set is "comfortable"; the chrome sets
-         data-density="compact" on <html> from the global config, swapping in the
-         condensed set below — the whole type + spacing scale moves as a unit, so the
-         proportion stays intact. render() applies the attribute on init + hot-reload. */
-      :root {
-        --title-font: 16px;
-        --title-pad: 10px 12px;
-        --group-font: 14px;
-        --group-pad: 14px 12px 6px;
-        --row-font: 14px;
-        --row-pad: 9px 12px;
-        --row-gap: 10px;
-        --tile-size: 20px;
-        --tile-font: 11px;
-        --dot-size: 9px;
-        --glyph-x: 11px;
-        --glyph-confirm: 13px;
-        --sidebar-w: 240px;
-      }
-      [data-density="compact"] {
-        --title-font: 14px;
-        --title-pad: 7px 10px;
-        --group-font: 12px;
-        --group-pad: 10px 9px 4px;
-        --row-font: 12px;
-        --row-pad: 6px 9px;
-        --row-gap: 8px;
-        --tile-size: 17px;
-        --tile-font: 10px;
-        --dot-size: 8px;
-        --glyph-x: 10px;
-        --glyph-confirm: 12px;
-        --sidebar-w: 200px;
-      }
-      /* Column root: the error bar (when shown) sits at the very top in normal
-         flow and PUSHES #app down, so the native terminal surface reflows below
-         it instead of being occluded by it (the NSView composites above the
-         WKWebView, so an absolutely-positioned overlay would be hidden). */
-      body {
-        display: flex;
-        flex-direction: column;
-      }
-      #error {
-        flex: none;
-        display: none;       /* shown on warden:error */
-        /* Full-width OPAQUE bar at y=0 (no transparent gap above — wallpaper must
-           not show through). The macOS traffic lights overlay its top-left, so
-           the text is inset past them via padding-left; text wraps if long. */
-        background: #7a1f1f;
-        color: #ffd;
-        padding: 6px 10px 6px 80px;
-        font-size: 0.85rem;
-        line-height: 1.3;
-        white-space: normal;
-      }
-      #app {
-        flex: 1;
-        min-height: 0;       /* allow the row to shrink when the banner appears */
-        display: flex;
-        flex-direction: row;
-      }
-      #sidebar {
-        width: var(--sidebar-w);
-        flex: none;
-        position: relative;  /* containing block for the resize handle */
-        display: flex;
-        flex-direction: column;
-        /* Top inset clears the traffic lights, which now overlay the sidebar's
-           top-left (full-size content view title bar). The banner + tabs sit below. */
-        padding-top: 28px;
-        /* The window drag region is wired via the `data-tauri-drag-region` HTML
-           attribute on #sidebar/#banner/#tab-list (below) — macOS WKWebView
-           ignores Chromium's `-webkit-app-region`, so that CSS isn't used here. */
-        /* Opaque dark base (JS overrides with the window tint composited over
-           this same base). MUST stay opaque: the window is transparent so a hole
-           can show the native surface — any alpha here leaks the wallpaper. */
-        background: #15191e;
-        /* The sidebar is chrome, not content — banner name and tab rows must not
-           be text-selectable (dragging across the chrome should never start a
-           selection). The terminal-hole is a native surface, unaffected by this. */
-        user-select: none;
-        -webkit-user-select: none;
-      }
-      /* Drag-to-resize handle on the sidebar's right edge. A thin strip that is
-         invisible until hover — the col-resize cursor is the affordance (matching
-         macOS sidebars). Deliberately WITHOUT data-tauri-drag-region so a
-         mousedown resizes instead of starting a window drag; spans full height,
-         including the traffic-light inset (those are top-LEFT, so no conflict). */
-      #sidebar-resize {
-        position: absolute;
-        top: 0;
-        right: 0;
-        width: 5px;
-        height: 100%;
-        cursor: col-resize;
-        z-index: 5;
-      }
-      #banner {
-        flex: none;
-        order: -1;          /* always first even if DOM order shifts */
-        padding: var(--title-pad);
-        font-size: var(--title-font);
-        font-weight: 700;
-        color: #fff;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        /* Fallback colour (neutral default); JS sets to the window colour */
-        background: #6b7280;
-      }
-      #tab-list {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        /* No horizontal padding: group headers run full-bleed (their separator line
-           spans the sidebar), while .tab rows inset themselves via their own margin
-           to read as rounded chips. */
-        padding: 8px 0;
-        gap: 2px;
-        overflow-y: auto;
-      }
-      /* Group section header (curator's grouped-tab idiom): a muted uppercase label
-         above each [[window.group]]'s rows. Loose (ungrouped) tabs render first with
-         no header. Deliberately NOT a .tab — so ⌘1–9 / cycle, which select `.tab`
-         rows, skip headers and keep mapping to visual tab position. */
-      .group-header {
-        flex: none;
-        /* Sticky section header (curator's idiom): pins to the top of the scroll while
-           its group is on screen, with a separator line dividing sections. The opaque
-           background must match the (window-tinted) sidebar so rows scroll invisibly
-           under it — render() sets it to the same tint; this is the pre-paint fallback. */
-        position: sticky;
-        top: 0;
-        z-index: 1;
-        background: #15191e;
-        border-top: 1px solid #313640;
-        padding: var(--group-pad);
-        font-size: var(--group-font);
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: #9aa4b2;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .group-header:first-child {
-        border-top: none;
-      }
-      .tab {
-        display: flex;
-        align-items: center;
-        gap: var(--row-gap);
-        margin: 0 6px;
-        padding: var(--row-pad);
-        border-radius: 5px;
-        cursor: pointer;
-        color: #ddd;
-        font-size: var(--row-font);
-        user-select: none;
-        transition: background 0.1s, color 0.1s;
-      }
-      .tab:hover:not(.active) {
-        background: #2a2a2a;
-      }
-      .tab.active {
-        color: #fff;
-        font-weight: 600;
-      }
-      /* Per-tab letter/colour tile (initial + title-hashed colour) — pure
-         presentation for at-a-glance scanning; ported from curator's chrome. */
-      .tab-icon {
-        flex: none;
-        width: var(--tile-size);
-        height: var(--tile-size);
-        border-radius: 5px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: var(--tile-font);
-        font-weight: 600;
-        color: #fff;
-      }
-      .tab-title {
-        flex: 1 1 auto;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      /* Live/cold indicator + unload control at the row's trailing edge (curator's
-         loaded-dot idiom). The visual dot is a var(--dot-size) ::before centred in a 16px box
-         (a comfortable hover/click target). A filled green dot = the terminal
-         surface is live (load_on_open, or focused once); a hollow ring = cold (never
-         opened, or unloaded — spawns fresh on next focus). Hovering a LIVE dot
-         swaps it for a red ✕: clicking kills that terminal (surface + PTY). Cold
-         dots are inert — nothing to kill. NB warden's unload genuinely ends the
-         session (a fresh shell respawns on focus); it is not curator's cheap
-         webview reload, hence it only acts on live tabs. */
-      .tab-dot {
-        flex: none;
-        width: 16px;
-        height: 16px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        line-height: 1;
-      }
-      .tab-dot.cold::before {
-        content: '';
-        width: var(--dot-size);
-        height: var(--dot-size);
-        border-radius: 50%;
-        box-sizing: border-box;
-        border: 1px solid rgba(238, 238, 238, 0.3);
-      }
-      .tab-dot.live {
-        cursor: pointer;
-      }
-      .tab-dot.live::before {
-        content: '';
-        width: var(--dot-size);
-        height: var(--dot-size);
-        border-radius: 50%;
-        background: #3fb950;
-      }
-      .tab-dot.live:hover::before {
-        display: none;
-      }
-      .tab-dot.live:hover::after {
-        content: '✕';
-        color: #f85149;
-        font-size: var(--glyph-x);
-        font-weight: 700;
-      }
-      /* Unread/attention badge: a tab raised a terminal notification (OSC 9/777) or
-         bell while it wasn't the visible tab. Amber so it reads as "needs attention"
-         and stays distinct from the green live dot and the red unload ✕. Sits just
-         left of the live/cold dot; cleared when you focus the tab. */
-      .tab-badge {
-        flex: none;
-        width: var(--dot-size);
-        height: var(--dot-size);
-        border-radius: 50%;
-        background: #f0883e;
-      }
-      /* Session-presence dot: a probe command for this tab reported a session
-         exists (filled) vs configured-but-absent (hollow ring). CYAN so it reads
-         as orthogonal to the green live/cold dot and amber unread badge. Sits
-         between the unread badge and the live/cold dot. When the tab also has a
-         `kill` command AND a session is present (.on.kill), clicking the dot puts
-         the WHOLE ROW into the red confirm state (⏻/↩ controls then appear). */
-      .tab-sess {
-        flex: none;
-        width: 16px;
-        height: 16px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        line-height: 1;
-      }
-      .tab-sess::before {
-        content: '';
-        width: var(--dot-size);
-        height: var(--dot-size);
-        border-radius: 50%;
-        box-sizing: border-box;
-      }
-      .tab-sess.off::before {
-        border: 1px solid rgba(86, 180, 233, 0.5);
-      }
-      .tab-sess.on::before {
-        background: #56b4e9;
-      }
-      /* Interactive only when killable (on + has-kill): a pointer cue. The actual
-         confirm is the full-row state below — no hover-✕ on the dot anymore. On hover
-         the dot gains a soft red halo, foreshadowing the red confirm it opens. */
-      .tab-sess.on.kill {
-        cursor: pointer;
-      }
-      .tab-sess.on.kill:hover::before {
-        box-shadow: 0 0 0 3px rgba(255, 91, 82, 0.22);
-      }
-      /* Whole-row kill confirmation: the row goes red, the trailing dots hide, and
-         ⏻ (terminate, in the cyan-dot slot under the cursor) + ↩ (cancel, in the
-         green-dot slot) appear. Tile + title stay visible. */
-      /* `!important`: paint() sets the ACTIVE row's background as an inline style
-         (the window-colour tint), which would otherwise beat this stylesheet rule
-         and suppress the red on the active tab — the common case (you arm the tab
-         you're looking at). Overriding it here keeps the inline tint underneath, so
-         removing `.confirming` reveals the active highlight again with no repaint. */
-      .tab.confirming {
-        background: #5a1f1f !important;
-        color: #ffffff;
-      }
-      .tab.confirming:hover {
-        background: #5a1f1f !important;
-      }
-      .tab.confirming .tab-badge,
-      .tab.confirming .tab-sess,
-      .tab.confirming .tab-dot {
-        display: none;
-      }
-      .tab-confirm-kill,
-      .tab-confirm-cancel {
-        flex: none;
-        width: 16px;
-        height: 16px;
-        display: none;            /* shown only while .confirming */
-        align-items: center;
-        justify-content: center;
-        line-height: 1;
-        cursor: pointer;
-        font-size: var(--glyph-confirm);
-        font-weight: 700;
-      }
-      .tab.confirming .tab-confirm-kill,
-      .tab.confirming .tab-confirm-cancel {
-        display: inline-flex;
-      }
-      /* Destructive choice reads destructive: ⏻ (terminate) bright red, ↩ (cancel)
-         muted grey. Reversed from a naive green-✓/red-✗ so the dangerous action looks
-         dangerous and the safe out recedes. */
-      .tab-confirm-kill   { color: #ff5b52; }                  /* ⏻ terminate (bright red on the maroon row) */
-      .tab-confirm-cancel { color: rgba(255, 255, 255, 0.5); } /* ↩ cancel (muted, recedes)               */
-      /* Hover = a rounded button chip: destructive ⏻ brightens over a red chip, safe ↩
-         brightens over a neutral chip. Click stays the scale-press — hover and press
-         read distinctly. */
-      .tab-confirm-kill:hover {
-        background: rgba(255, 91, 82, 0.2);
-        border-radius: 4px;
-        color: #ff7b73;
-      }
-      .tab-confirm-cancel:hover {
-        background: rgba(255, 255, 255, 0.14);
-        border-radius: 4px;
-        color: rgba(255, 255, 255, 0.95);
-      }
-      /* Confirm feedback: ⏻ presses (scale) and the row emits ONE brighter-red pulse,
-         ~180ms, added as `.killing` by the ⏻ click handler. The pulse is a layered
-         box-shadow overlay, NOT `background`: `.tab.confirming` sets
-         `background:#5a1f1f !important`, and important-author beats CSS animations in
-         the cascade — an animated background would be silently ignored. box-shadow
-         renders above the background (below content), so the tile + title stay visible.
-         The press animates `transform`, which nothing else sets. The kill itself fires
-         immediately on click; only the visual reset waits for this animation to end. */
-      .tab.killing {
-        animation: confirm-kill-pulse 180ms ease-out;
-      }
-      .tab.killing .tab-confirm-kill {
-        animation: confirm-kill-press 180ms ease-out;
-      }
-      @keyframes confirm-kill-pulse {
-        0%   { box-shadow: inset 0 0 0 9999px rgba(255, 91, 82, 0); }
-        35%  { box-shadow: inset 0 0 0 9999px rgba(255, 91, 82, 0.32); }
-        100% { box-shadow: inset 0 0 0 9999px rgba(255, 91, 82, 0); }
-      }
-      @keyframes confirm-kill-press {
-        0%   { transform: scale(1); }
-        30%  { transform: scale(0.8); }
-        100% { transform: scale(1); }
-      }
-      #terminal-hole {
-        flex: 1;
-        background: transparent;
-        position: relative;  /* containing block for the empty-state overlay */
-      }
-      /* Empty-state placeholder (curator's blank-screen idiom, re-interpreted).
-         Shown only when no tab is selected (active === null) — e.g. after the last
-         live tab is unloaded, or a zero-tab init/reload. Sits INSIDE the hole and
-         is composited BEHIND the native terminal surface (the NSView draws above
-         the webview), so a live tab naturally occludes it; we still toggle on
-         `active` so it can't bleed through a translucent terminal theme. OPAQUE:
-         the window is transparent, so a non-opaque fill would leak the wallpaper —
-         the whole point is to stop that leak when the hole has no surface. */
+      #app { height: 100%; display: flex; flex-direction: row; }
+      /* The chrome-core mount container. `padding-top` clears the traffic lights (full-size content
+         view — they overlay the sidebar's top-left); chrome-core adds `.cc-root` (opaque flex
+         column). Width is the density-aware token, overridden inline by the resize controller. */
+      #sidebar { width: var(--cc-sidebar-w, 240px); flex: none; padding-top: 28px; }
+      #terminal-hole { flex: 1; background: transparent; position: relative; }
+      /* Empty-state placeholder (warden's shield mark) — shown by the controller only when no tab is
+         selected, composited BEHIND the native surface (so a live tab occludes it). OPAQUE. */
       #empty-state {
         position: absolute;
         inset: 0;
-        display: none;            /* shown by paint() when active === null */
+        display: none;
         align-items: center;
         justify-content: center;
         background: #0e1516;
         user-select: none;
         -webkit-user-select: none;
       }
-      #empty-state svg {
-        width: 160px;
-        height: auto;
-        opacity: 0.9;
-      }
+      #empty-state svg { width: 160px; height: auto; opacity: 0.9; }
     </style>
   </head>
   <body>
-    <!-- Hot-reload error banner: hidden until a parse/empty-config event lands.
-         A full-width bar in NORMAL FLOW above #app — when shown it pushes #app
-         (and thus the native terminal surface) down rather than overlaying it,
-         since the NSView composites above the WKWebView and would occlude an
-         absolute overlay. OPAQUE (#7a1f1f): the window is transparent, so any
-         alpha would leak the wallpaper. Populated via textContent (never
-         innerHTML) — the error string never reaches the HTML parser. -->
-    <div id="error"></div>
     <div id="app">
-      <!-- data-tauri-drag-region: Tauri starts a window drag when the mousedown
-           target itself carries this attribute. The non-interactive sidebar
-           chrome drags; .tab elements (created without it) stay clickable; the
-           terminal-hole (native surface) is excluded. -->
-      <aside id="sidebar" data-tauri-drag-region>
-        <div id="banner" data-tauri-drag-region></div>
-        <div id="tab-list" data-tauri-drag-region></div>
-        <!-- Resize handle: NO data-tauri-drag-region, so a mousedown here resizes
-             the sidebar instead of starting a window drag (see #sidebar-resize). -->
-        <div id="sidebar-resize"></div>
-      </aside>
+      <aside id="sidebar" data-tauri-drag-region></aside>
       <div id="terminal-hole">
-        <!-- Blank background shown when no tab is selected (toggled by paint()).
-             warden's shield mark in muted grey — silhouette/chevrons/notch lifted
-             from assets/icon-app.svg's path geometry, recoloured (no tile/gradient)
-             so it reads "inactive". Behind the native terminal surface; see #empty-state. -->
         <div id="empty-state">
           <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
             <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
@@ -440,632 +56,232 @@
         </div>
       </div>
     </div>
+    <script src="chrome-core.js"></script>
     <script>
+      // warden's chrome controller: binds chrome-core's ChromeSidebar (the view) to warden's Tauri
+      // backend + libghostty native surface. The sidebar rendering lives in chrome-core; this maps
+      // callbacks→commands and events→setters, and keeps warden's content-area plumbing: the
+      // native-surface hole geometry (reportRect), the empty-state placeholder, per-window event
+      // filtering (forMe), and the first-probe handshake.
       const { invoke } = window.__TAURI__.core;
       const { listen } = window.__TAURI__.event;
-      // Fire-and-forget IPC: an unhandled invoke() rejection surfaces as an
-      // uncaught promise rejection that can silently wedge the chrome. Calls whose
-      // return value matters (init_tabs, unload_tab) handle errors inline; the rest
-      // route through here so a transient IPC failure just logs.
+
       function invokeSafe(cmd, args) {
-        return invoke(cmd, args).catch(err => {
-          console.error('warden: IPC ' + cmd + ' failed', err);
-        });
-      }
-      let windowColour = '#6b7280';
-      let active = null;
-      // This window's Tauri label, learned from the init DTO. Required to ignore
-      // per-window events addressed to a sibling window: emit_to does NOT reliably
-      // target one webview with the global listen (verified — an unguarded chord
-      // fired in every window), so refresh + the menu tab-nav events filter on it.
-      let myLabel = null;
-      // Tab ids with an unread notification/bell badge. A Set (not just DOM state) so
-      // a warden:refresh re-render restores the badges instead of dropping them.
-      const badges = new Set();
-      // Tab ids with a live session (per the probe). A Set so a warden:refresh
-      // re-render restores the dots instead of dropping them. Distinct from the
-      // live/cold dot (warden's own surface) and the unread badge.
-      const session = new Set();
-      let armedKill = null;          // id of the tab row currently in kill-confirm state, or null
-
-      /** Opaque dark base the sidebar composites the window tint over. Must
-          match the CSS #sidebar fallback so there's no flash before JS runs. */
-      const SIDEBAR_BASE = [21, 25, 30]; // #15191e
-
-      /** Sidebar width lower bound. The upper bound is computed against the live
-          window width so a narrow window can't have its terminal squeezed away (see
-          clampWidth). */
-      const SIDEBAR_MIN_WIDTH = 120;
-      /** The default sidebar width for the active density — read from the CSS
-          `--sidebar-w` token, which `data-density` switches (240 comfortable /
-          200 compact). First-run uses the CSS default directly; reset reads it here
-          so it follows the density. Falls back to 240 if the value can't be read. */
-      function defaultWidth() {
-        const v = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w'), 10);
-        return Number.isFinite(v) ? v : 240;
+        return invoke(cmd, args).catch((err) => console.error("warden: IPC " + cmd + " failed", err));
       }
 
-      /** Clamp a desired sidebar width into [min, min(400, 40% of window)]. */
-      function clampWidth(w) {
-        const max = Math.min(400, window.innerWidth * 0.4);
-        return Math.max(SIDEBAR_MIN_WIDTH, Math.min(w, max));
-      }
-      /** Apply a sidebar width (clamped) to the layout. */
-      function applyWidth(w) {
-        document.getElementById('sidebar').style.width = clampWidth(w) + 'px';
-      }
-      /** Per-window localStorage key for the persisted sidebar width. */
-      function widthKey() {
-        return 'warden:sidebar-width:' + myLabel;
-      }
-      /** Persist the current sidebar width (per window). No-op until myLabel is known. */
-      function persistWidth(w) {
-        if (myLabel) localStorage.setItem(widthKey(), String(Math.round(w)));
-      }
+      let myLabel = null; // this window's Tauri label — emit_to leaks to siblings, so filter on it
+      let sb = null;
+      let activeId = null; // controller mirror of the active tab, for the empty-state placeholder
+      const badges = new Set(); // tab ids with an unread notification/bell badge
+      const session = new Map(); // tab id → 'on'/'off' (probe presence), for probe-enabled tabs
 
-      /** First alphanumeric of a title, uppercased — the letter on the tab tile. */
-      function tileInitial(s) {
-        const m = (s || '').match(/[a-z0-9]/i);
-        return m ? m[0].toUpperCase() : '•';
-      }
-      /** Deterministic tile colour hashed from the title (stable per project). */
-      function tileColour(seed) {
-        let h = 0;
-        for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-        return 'hsl(' + (h % 360) + ', 45%, 45%)';
-      }
+      const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
 
-      /** Add/remove a tab's unread badge, keeping the `badges` set in sync so a
-          re-render restores it. Inserts the badge at the start of the trailing-dot
-          group (left of the session dot if any, else the live/cold dot). */
-      function setBadge(id, on) {
-        if (on) badges.add(id); else badges.delete(id);
-        const row = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]');
-        if (!row) return;
-        let b = row.querySelector('.tab-badge');
-        if (on && !b) {
-          b = document.createElement('span');
-          b.className = 'tab-badge';
-          // Keep the trailing-edge order [badge][session][live/cold]: land before the
-          // session dot when the tab has one (probe-enabled), else before the live/cold
-          // dot — matches render()'s append order so a dynamic badge doesn't sit in the
-          // wrong slot and jump on the next re-render.
-          row.insertBefore(b, row.querySelector('.tab-sess') || row.querySelector('.tab-dot'));
-        } else if (!on && b) {
-          b.remove();
-        }
-      }
-
-      /** Compute a session dot's class from session state + kill eligibility, so
-          render() and setSession() stay consistent. `hasKill` comes from the tab DTO
-          (gates whether the dot is clickable to start a kill confirm). */
-      function applySessClass(span, id, hasKill) {
-        const on = session.has(id);
-        let cls = 'tab-sess ' + (on ? 'on' : 'off');
-        if (on && hasKill) cls += ' kill';
-        span.className = cls;
-        span.dataset.kill = hasKill ? '1' : '';
-      }
-
-      // Document-level cancels while a row is in confirm state (attached on arm,
-      // removed on disarm). Escape cancels; a click outside the armed row cancels
-      // (and proceeds to its normal handler, e.g. selecting another tab).
-      function onArmKeydown(e) {
-        if (e.key === 'Escape') disarmKill();
-      }
-      function onArmOutsideClick(e) {
-        if (!armedKill) return;
-        const row = document.querySelector('.tab[data-id="' + CSS.escape(armedKill) + '"]');
-        if (row && row.contains(e.target)) return; // inside the armed row → ✓/✗ handle it
-        disarmKill();
-      }
-
-      function disarmKill() {
-        const prev = armedKill;
-        armedKill = null;
-        document.removeEventListener('keydown', onArmKeydown);
-        document.removeEventListener('click', onArmOutsideClick, true);
-        if (prev) {
-          const row = document.querySelector('.tab[data-id="' + CSS.escape(prev) + '"]');
-          if (row) row.classList.remove('confirming');
-        }
-      }
-
-      /** First click on a killable cyan dot puts that whole row into confirm state
-          (red, dots hidden, ✓/✗ shown). Confirm/cancel are the ✓/✗ handlers; this
-          only arms. Arming is a no-op if the row is already confirming. */
-      function clickKill(id, rowEl) {
-        if (armedKill === id) return;
-        disarmKill();                 // cancel any other confirming row (single-armed)
-        armedKill = id;
-        rowEl.classList.add('confirming');
-        // Added during this click's bubble phase, so the capture listener does NOT
-        // fire for the current click — only for the next one.
-        document.addEventListener('keydown', onArmKeydown);
-        document.addEventListener('click', onArmOutsideClick, true);
-      }
-
-      /** Update a tab's session dot from the probe result, keeping `session` in
-          sync so a re-render restores it. Only flips an already-rendered dot
-          (probe-enabled rows have one); no-op for rows without a probe. If the
-          confirming tab's session drops, cancel the confirm — nothing left to kill. */
-      function setSession(id, on) {
-        if (on) session.add(id); else session.delete(id);
-        if (!on && armedKill === id) disarmKill(); // session gone → nothing to kill
-        const row = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]');
-        if (!row) return;
-        const s = row.querySelector('.tab-sess');
-        if (s) applySessClass(s, id, s.dataset.kill === '1');
-      }
-
-      /** Set a tab dot's live/cold class + tooltip from one source of truth, so the
-          unload affordance and hover ✕ only appear on live tabs. */
-      function setDotLive(dot, live) {
-        dot.className = 'tab-dot ' + (live ? 'live' : 'cold');
-        dot.title = live ? 'Kill this terminal (respawns on next focus)' : '';
-      }
-
-      /** Parse a #rrggbb hex colour into an rgba(...) string. */
-      function hexToRgba(hex, alpha) {
-        const r = parseInt(hex.slice(1, 3), 16);
-        const g = parseInt(hex.slice(3, 5), 16);
-        const b = parseInt(hex.slice(5, 7), 16);
-        return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
-      }
-
-      /** Blend a #rrggbb colour over the opaque dark base at `ratio`, returning
-          an OPAQUE rgb(...) — the sidebar must never carry alpha (transparent
-          window: any alpha leaks the wallpaper through the chrome). */
-      function tintOverBase(hex, ratio) {
-        const c = [
-          parseInt(hex.slice(1, 3), 16),
-          parseInt(hex.slice(3, 5), 16),
-          parseInt(hex.slice(5, 7), 16),
-        ];
-        const ch = i => Math.round(SIDEBAR_BASE[i] * (1 - ratio) + c[i] * ratio);
-        return 'rgb(' + ch(0) + ',' + ch(1) + ',' + ch(2) + ')';
-      }
-
-      /** Report the terminal-hole's current CSS rect to the native layer. */
+      // Report the terminal-hole's CSS rect to the native layer so the libghostty surface tracks it.
       function reportRect() {
-        const r = document.getElementById('terminal-hole').getBoundingClientRect();
-        invokeSafe('set_hole_rect', { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
+        const r = document.getElementById("terminal-hole").getBoundingClientRect();
+        invokeSafe("set_hole_rect", { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
       }
 
-      /** Render a window snapshot ({ title, colour, tabs:[{id,title,warn,spawned,group}] }) into
-          the chrome. The single render path shared by init() (first paint) and
-          the warden:refresh listener (hot-reload), so the sidebar is rebuilt the
-          same way whether it's the initial DTO or a pushed reconcile snapshot. */
-      function render(dto) {
-        disarmKill(); // reset any pending confirm before rebuilding — no dangling listener / orphaned confirm row
-        const prevActive = active;
-        windowColour = dto.colour ?? '#6b7280';
-        // Whole-app density: the global config's token ("comfortable" | "compact"),
-        // applied to <html> so the CSS sizing variables switch. Every snapshot carries
-        // it, so a hot-reload that flips density restyles the chrome here — no relaunch.
-        document.documentElement.setAttribute('data-density', dto.density || 'comfortable');
+      // The empty-state shows when no tab is selected (the hole has no surface → would leak wallpaper).
+      function paintEmptyState() {
+        document.getElementById("empty-state").style.display = activeId === null ? "flex" : "none";
+      }
+      function setActiveId(id) {
+        activeId = id;
+        paintEmptyState();
+      }
 
-        // Drop badges for tabs that no longer exist (removed/renamed by a hot-reload), so a
-        // future tab that reuses the id doesn't inherit a stale unread dot.
-        const ids = new Set(dto.tabs.map(t => t.id));
-        badges.forEach(id => { if (!ids.has(id)) badges.delete(id); });
-        session.forEach(id => { if (!ids.has(id)) session.delete(id); });
+      // Map a warden window snapshot → chrome-core's DTO. Attention (notify) + presence (probe) are
+      // chrome-side state (Sets/Map), folded in here so a full update() restores them; killable +
+      // warn come from the snapshot. No `active` field — warden is component-authoritative (the
+      // component preserves selection + falls back to the first tab, firing onSelect to activate it).
+      function toComponentDto(dto) {
+        const ids = new Set(dto.tabs.map((t) => t.id));
+        badges.forEach((id) => { if (!ids.has(id)) badges.delete(id); });
+        session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
+        return {
+          title: dto.title,
+          colour: dto.colour ?? null,
+          density: dto.density || "comfortable",
+          tabs: dto.tabs.map((t) => ({
+            id: t.id,
+            title: t.title,
+            group: t.group ?? null,
+            live: t.spawned,
+            attention: badges.has(t.id) ? true : null,
+            presence: t.has_probe ? (session.get(t.id) ?? "off") : null,
+            killable: !!t.has_kill,
+            warn: !!t.warn,
+          })),
+        };
+      }
 
-        // Apply window identity: banner shows the name on the window colour;
-        // the sidebar gets a faint tint of the same colour.
-        const banner = document.getElementById('banner');
-        banner.textContent = dto.title;
-        banner.style.background = windowColour;
-        // Opaque tint composited over the dark base (no alpha — see tintOverBase).
-        document.getElementById('sidebar').style.background = tintOverBase(windowColour, 0.12);
-
-        const list = document.getElementById('tab-list');
-        list.innerHTML = '';
-        // Section the flat tab list by group. The DTO is already ordered loose-first
-        // then groups-contiguous (resolve guarantees it), so a header is emitted each
-        // time we enter a new named group; loose (group == null) tabs get no header.
-        let lastGroup;
-        dto.tabs.forEach((t) => {
-          const g = t.group ?? null;
-          if (g !== lastGroup && g !== null) {
-            const h = document.createElement('div');
-            h.className = 'group-header';
-            // Match the sticky header's opaque background to the window-tinted sidebar
-            // (same blend as #sidebar above) so rows scroll invisibly under it.
-            h.style.background = tintOverBase(windowColour, 0.12);
-            // textContent (not innerHTML): config group names never reach the HTML parser.
-            h.textContent = g;
-            list.appendChild(h);
-          }
-          lastGroup = g;
-
-          const el = document.createElement('div');
-          el.className = 'tab';
-          el.dataset.id = t.id;
-          el.onclick = () => select(t.id);
-
-          // Letter/colour tile derived from the title (no new data) — at-a-glance
-          // scanning. Mirrors curator's per-row favicon tile.
-          const icon = document.createElement('span');
-          icon.className = 'tab-icon';
-          icon.textContent = tileInitial(t.title);
-          icon.style.background = tileColour(t.title);
-          el.appendChild(icon);
-
-          const title = document.createElement('span');
-          title.className = 'tab-title';
-          // textContent (not innerHTML): config titles never reach the HTML parser.
-          title.textContent = t.title + (t.warn ? '  ⚠' : '');
-          el.appendChild(title);
-
-          // Restore an unread badge if this tab raised one while hidden (the Set
-          // survives re-renders). Sits between the title and the live/cold dot.
-          if (badges.has(t.id)) {
-            const b = document.createElement('span');
-            b.className = 'tab-badge';
-            el.appendChild(b);
-          }
-
-          // Session-presence dot (probe-enabled tabs). Filled if the probe last
-          // reported a session, hollow ring otherwise. When the tab also has a `kill`
-          // command and a session is present, clicking it puts the WHOLE ROW into the
-          // red confirm state (see clickKill) — the ⏻/↩ controls below do the rest.
-          if (t.has_probe) {
-            const s = document.createElement('span');
-            applySessClass(s, t.id, !!t.has_kill);
-            if (t.has_kill) {
-              s.addEventListener('click', (e) => {
-                if (!s.classList.contains('on')) return; // no session ⇒ nothing to kill
-                e.stopPropagation();                      // don't select the row
-                clickKill(t.id, el);                      // arm the ROW (el), not the dot
-              });
-            }
-            el.appendChild(s);
-          }
-
-          // Live/cold dot that doubles as the unload control. Filled if the surface
-          // is already spawned (load_on_open, or focused earlier this session), a
-          // hollow ring if cold. paint() upgrades the active row to live (active ⟹
-          // spawned). One handler per dot, gated on the live class at click time, so
-          // it still fires for a dot paint() flipped live after this render.
-          const dot = document.createElement('span');
-          setDotLive(dot, t.spawned);
-          dot.addEventListener('click', (e) => {
-            if (!dot.classList.contains('live')) return; // cold: nothing to kill
-            e.stopPropagation();                          // don't also select the row
-            unloadTab(t.id);
-          });
-          el.appendChild(dot);
-
-          // Full-row kill-confirm controls: ⏻ (terminate) in the cyan-dot slot (under
-          // the cursor after the arming click), ↩ (cancel) in the green-dot slot.
-          // Hidden until the row has `.confirming`. Only created for killable rows.
-          if (t.has_kill) {
-            const kill = document.createElement('span');
-            kill.className = 'tab-confirm-kill';
-            kill.textContent = '⏻';           // ⏻ power/terminate (no emoji form)
-            kill.title = 'terminate session';
-            kill.addEventListener('click', (e) => {
-              e.stopPropagation();
-              if (el.classList.contains('killing')) return; // a confirm is already animating
-              const id = armedKill;
-              if (!id) { disarmKill(); return; }
-              // Fire the kill IMMEDIATELY — the animation must not delay it. Then play
-              // the ~180ms press + red pulse on the row (it keeps `.confirming`, so it
-              // stays red with ⏻/↩ shown), and only disarm once the animation ends, so
-              // the destructive action has weight. The post-kill re-probe drops the
-              // cyan dot as usual after the session dies.
-              invoke('kill_session', { id }).catch(
-                (err) => console.error('warden: kill_session failed', err));
-              el.classList.add('killing');
-              const finish = () => {
-                el.removeEventListener('animationend', finish);
-                el.classList.remove('killing');
-                // Disarm only if this row is still the armed one — the user may have
-                // armed a different row mid-animation (which already disarmed this one).
-                if (armedKill === id) disarmKill();
-              };
-              el.addEventListener('animationend', finish);
-              setTimeout(finish, 250);             // fallback if animationend doesn't fire
-            });
-            const cancel = document.createElement('span');
-            cancel.className = 'tab-confirm-cancel';
-            cancel.textContent = '↩︎';   // ↩ back/undo; U+FE0E forces text (non-emoji) style
-            cancel.title = 'cancel';
-            cancel.addEventListener('click', (e) => {
-              e.stopPropagation();
-              disarmKill();
-            });
-            el.appendChild(kill);
-            el.appendChild(cancel);
-          }
-
-          if (t.warn) el.title = 'working directory does not exist';
-          list.appendChild(el);
-        });
-        // Keep the active tab if it survived; otherwise fall back to the first.
-        if (!dto.tabs.find(t => t.id === active)) active = dto.tabs[0]?.id ?? null;
-        paint();
-        // Explicit report after sidebar is fully styled and tabs rendered.
-        // The ResizeObserver below is the primary anti-overlap guard; this is
-        // belt-and-suspenders for the case where RO fires before render completes.
+      function applyDto(dto) {
+        sb.update(toComponentDto(dto));
+        if (!dto.tabs.length) setActiveId(null); // zero tabs → blank; the ≥1 case fires onSelect
         reportRect();
-        // If the shown tab was removed, `active` falls back to a new tab above —
-        // activate it so its surface actually shows (render otherwise only repaints
-        // the highlight, leaving the registry on the closed/old surface => blank).
-        // Unchanged active (e.g. a colour-only refresh) must NOT re-activate, so the
-        // user's current tab is preserved.
-        if (active && active !== prevActive) {
-          invokeSafe('activate_tab', { id: active });
+      }
+
+      // Unload a tab (dot ✕ or ⌘W): kill its surface+PTY → cold; the native layer activates a
+      // neighbour and returns its id so the highlight follows; killing the last tab leaves a blank.
+      async function unloadTab(id) {
+        let newActive;
+        try {
+          newActive = await invoke("unload_tab", { id });
+        } catch (err) {
+          console.error("warden: unload_tab failed", err); // PTY state unknown — leave the row as-is
+          return;
         }
+        sb.setLive(id, false);
+        if (newActive) {
+          sb.setActive(newActive);
+          badges.delete(newActive);
+          sb.setAttention(newActive, null); // now visible → clear its badge
+          setActiveId(newActive);
+        } else {
+          sb.setActive(null);
+          setActiveId(null);
+        }
+        reportRect();
       }
 
       async function init() {
-        // { label, title, colour, tabs:[{id,title,warn}] } | null (diagnostic window: Task 8)
         let dto;
         try {
-          dto = await invoke('init_tabs');
+          dto = await invoke("init_tabs");
         } catch (err) {
-          // Without the DTO the chrome can't render at all — surface the failure in
-          // the error banner instead of leaving a silent blank window.
-          console.error('warden: init_tabs failed', err);
-          const el = document.getElementById('error');
-          el.textContent = '⚠ failed to load window: ' + err;
-          el.style.display = 'block';
+          console.error("warden: init_tabs failed", err);
+          if (sb) sb.setError("⚠ failed to load window: " + err);
           return;
         }
-        if (!dto) return;
+        if (!dto) return; // diagnostic window
         myLabel = dto.label;
-        // Restore the persisted per-window sidebar width BEFORE first paint, so the
-        // sidebar doesn't visibly jump from the 160px CSS default to the stored width.
-        const stored = parseInt(localStorage.getItem(widthKey()), 10);
-        if (Number.isFinite(stored)) applyWidth(stored);
-        render(dto);
-        // A surface that failed to spawn while the window was being built (before
-        // this listener existed) rides in on the snapshot — show it in the banner.
-        // textContent (not innerHTML): the reason string never reaches the parser.
-        if (dto.error) {
-          const el = document.getElementById('error');
-          el.textContent = '⚠ ' + dto.error;
-          el.style.display = 'block';
-          reportRect();
-        }
-        // Ask for the first probe pass only AFTER the session-state listener is
-        // registered (listen() is async), so the first emit can't race ahead of it
-        // and be dropped. This is what populates the dots at startup — critical for
-        // probe_interval=0 (no timer to heal a lost emit) and removes the up-to-one-
-        // tick hollow-dot latency for every interval. Background windows that never
-        // get launch focus rely on this too.
-        try { await sessionListenReady; } catch (e) { /* listener still works; worst case a tick of latency */ }
-        invokeSafe('probe_now');
+
+        sb = window.ChromeSidebar.mount(
+          document.getElementById("sidebar"),
+          {
+            onSelect(id) {
+              // Focusing a tab clears its unread badge (it's now visible).
+              badges.delete(id);
+              sb.setAttention(id, null);
+              setActiveId(id);
+              invokeSafe("activate_tab", { id });
+              reportRect();
+            },
+            onUnload: unloadTab,
+            onKill(id) {
+              invokeSafe("kill_session", { id });
+            },
+            onResize(width) {
+              document.getElementById("sidebar").style.width = width + "px";
+              reportRect();
+            },
+          },
+          {
+            storageKey: "warden:sidebar-width:" + myLabel,
+            defaultWidth: sidebarDefault(),
+            minWidth: 120,
+            maxWidth: 400,
+            maxFraction: 0.4,
+          }
+        );
+
+        applyDto(dto);
+        if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
+
+        // Ask for the first probe pass only AFTER the session-state listener is registered, so the
+        // first emit can't race ahead of it. This populates the presence dots at startup.
+        try { await sessionListenReady; } catch (e) { /* listener still works */ }
+        invokeSafe("probe_now");
       }
 
-      // Hot-reload: the manager pushes a fresh snapshot to this window after a
-      // reconcile Update (colour/tab add/remove/reorder) so the sidebar rebuilds.
-      // Render only a well-formed snapshot addressed to this window: drop a payload
-      // with no `tabs` array (render() would throw on `.map`), and drop one whose
-      // label names a sibling — otherwise this window would relabel itself with
-      // another window's DTO (corrupting its name/colour/tabs and breaking clicks).
-      listen('warden:refresh', (e) => {
+      // Density-aware default sidebar width, read from chrome-core's `--cc-sidebar-w` token (240
+      // comfortable / 200 compact); the component's double-click reset uses this too.
+      function sidebarDefault() {
+        const v = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--cc-sidebar-w"), 10);
+        return Number.isFinite(v) ? v : 240;
+      }
+
+      // Hot-reload: the manager pushes a fresh snapshot after a reconcile. Drop a malformed payload
+      // or one addressed to a sibling window.
+      listen("warden:refresh", (e) => {
         const p = e.payload;
         if (!p || !Array.isArray(p.tabs)) return;
         if (myLabel && p.label && p.label !== myLabel) return;
-        render(p);
+        applyDto(p);
       });
 
-      // Hot-reload error banner: a parse error (or empty config) on save keeps the
-      // live windows up and shows the reason here; the next valid load clears it.
-      // textContent (not innerHTML) — the error string never reaches the HTML parser.
-      listen('warden:error', (e) => {
+      // Config error banner (parse error / no-window) — now sidebar-scoped via the component. A
+      // per-tab spawn error is {label,message} (own window only); a global config error is a bare
+      // string shown everywhere.
+      listen("warden:error", (e) => {
         const p = e.payload;
-        // Two shapes: a per-tab spawn error is scoped — {label, message} — and must show
-        // ONLY in its own window (emit broadcasts to all webviews); a global config error
-        // (parse / no-window, from the watcher) is a bare string shown in every window.
-        if (p && typeof p === 'object' && p.label && myLabel && p.label !== myLabel) return;
-        const msg = (p && typeof p === 'object') ? p.message : p;
-        const el = document.getElementById('error');
-        el.textContent = '⚠ ' + msg;
-        el.style.display = 'block';
-        // The banner now occupies a top strip, shrinking #app/#terminal-hole.
-        // The ResizeObserver should catch this, but report explicitly so the
-        // native surface reflows BELOW the banner immediately (no occlusion).
-        reportRect();
+        if (p && typeof p === "object" && p.label && myLabel && p.label !== myLabel) return;
+        const msg = p && typeof p === "object" ? p.message : p;
+        if (sb) sb.setError("⚠ " + msg);
       });
-      listen('warden:error-clear', () => {
-        document.getElementById('error').style.display = 'none';
-        // #app grows back; resize the surface to reclaim the reclaimed strip.
-        reportRect();
-      });
+      listen("warden:error-clear", () => { if (sb) sb.clearError(); });
 
-      // True iff this menu event is addressed to THIS window. emit_to does NOT reliably
-      // target a single webview here (it leaks to siblings — the same reason warden:refresh
-      // filters by label), so the menu stamps the focused window's label into every payload
-      // and we drop anything meant for a sibling. Without this, BOTH windows act on a chord.
-      const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
-
-      // Tab navigation (⌘⇧[ prev, ⌘⇧] next): the menu emits a direction (-1/+1) addressed to
-      // this window. Cycle ONLY through LOADED (live) tabs — landing on a cold tab would spawn
-      // it, which navigation must never do. A row is live iff its dot carries the `live` class
-      // (the same signal the unload click gates on); the active tab is always live, so it
-      // anchors the position. Step with wraparound and reuse select() (same path as a click →
-      // activate_tab + highlight).
-      listen('warden:cycle-tab', (e) => {
+      // Menu tab nav: cycle ONLY loaded tabs (⌘⇧[/]) and jump (⌘1–9). emit_to leaks → forMe filter.
+      listen("warden:cycle-tab", (e) => {
         if (!forMe(e)) return;
-        const ids = [...document.querySelectorAll('.tab')]
-          .filter(el => el.querySelector('.tab-dot.live'))
-          .map(el => el.dataset.id);
-        if (ids.length < 2) return; // 0 or 1 live tab — nowhere to cycle to
-        const dir = e.payload.dir < 0 ? -1 : 1;
-        const cur = ids.indexOf(active);
-        // Unknown active: step in from the end opposite the direction of travel.
-        const base = cur === -1 ? (dir > 0 ? -1 : 0) : cur;
-        const next = (base + dir + ids.length) % ids.length;
-        select(ids[next]);
+        sb.selectByOffset(e.payload.dir, { liveOnly: true });
       });
-
-      // Direct jump (⌘1–⌘9): the menu emits a 1-based position. Select the tab at that index;
-      // a position past the last tab is a no-op (e.g. ⌘7 with only 4 tabs).
-      listen('warden:select-tab', (e) => {
+      listen("warden:select-tab", (e) => {
         if (!forMe(e)) return;
-        const ids = [...document.querySelectorAll('.tab')].map(el => el.dataset.id);
-        const n = e.payload.n;
-        if (n >= 1 && n <= ids.length) select(ids[n - 1]);
+        sb.selectByIndex(e.payload.n);
       });
-
-      // ⌘W unloads the active tab (the menu emits this; same action as clicking a live dot).
-      listen('warden:unload-tab', (e) => {
+      // ⌘W unloads the active tab (same as clicking its live dot).
+      listen("warden:unload-tab", (e) => {
         if (!forMe(e)) return;
-        if (active) unloadTab(active);
+        if (activeId) unloadTab(activeId);
       });
 
-      // A tab raised an attention signal (terminal bell / OSC 9/777 desktop notification) while
-      // hidden — the native layer already suppressed it for the visible tab, so just badge it.
-      // emit_to leaks to siblings, so forMe drops a notify meant for another window (else a
-      // same-titled tab here would falsely badge). Payload carries the target label + tab id.
-      listen('warden:notify', (e) => {
+      // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).
+      listen("warden:notify", (e) => {
         if (!forMe(e)) return;
         const id = e.payload && e.payload.id;
-        if (id && id !== active) setBadge(id, true);
+        if (id && id !== activeId) {
+          badges.add(id);
+          sb.setAttention(id, true);
+        }
       });
-
-      // The user clicked a desktop-notification banner: the native layer already raised this
-      // window, so just select the tab that fired it (clears its badge too). Best-effort — a stale
-      // id (tab since unloaded/removed) has no row, so leave the active tab as-is. forMe drops a
-      // focus meant for a sibling window (emit_to leaks; same guard as warden:notify).
-      listen('warden:focus-tab', (e) => {
+      // A desktop-notification banner was clicked — the native layer raised this window; select the
+      // tab that fired it (which activates it + clears its badge via onSelect).
+      listen("warden:focus-tab", (e) => {
         if (!forMe(e)) return;
         const id = e.payload && e.payload.id;
-        if (id && document.querySelector('.tab[data-id="' + CSS.escape(id) + '"]')) select(id);
+        if (id) sb.select(id);
       });
-
-      // Probe results for this window's tabs. emit_to leaks to siblings, so forMe
-      // drops a payload meant for another window (same guard as warden:notify).
-      // The promise resolves once the backend has registered this listener — init()
-      // awaits it before asking for the first probe pass, so that emit can't be lost.
-      const sessionListenReady = listen('warden:session-state', (e) => {
+      // Probe results: light/clear the cyan presence dot per tab. Resolves once the backend has
+      // registered this listener, so init() can await it before the first probe_now.
+      const sessionListenReady = listen("warden:session-state", (e) => {
         if (!forMe(e)) return;
         const states = e.payload && e.payload.states;
         if (!states) return;
-        Object.entries(states).forEach(([id, on]) => setSession(id, !!on));
+        Object.entries(states).forEach(([id, on]) => {
+          session.set(id, on ? "on" : "off");
+          sb.setPresence(id, on ? "on" : "off");
+        });
       });
 
-      function paint() {
-        // Show the blank-background placeholder only when no tab is selected (the
-        // hole has no native surface, so it would otherwise leak the wallpaper).
-        document.getElementById('empty-state').style.display = active === null ? 'flex' : 'none';
-        document.querySelectorAll('.tab').forEach(el => {
-          const isActive = el.dataset.id === active;
-          el.classList.toggle('active', isActive);
-          el.style.background = isActive ? hexToRgba(windowColour, 0.28) : '';
-          // The active tab always has a live surface (activate spawns it), so its
-          // dot is live even if the last DTO snapshot was captured while it was
-          // still cold (e.g. a lazy tab activated by select() or render()).
-          if (isActive) {
-            const dot = el.querySelector('.tab-dot');
-            if (dot) setDotLive(dot, true);
-          }
-        });
-      }
-
-      async function select(id) {
-        disarmKill(); // cancel any pending arm when the user picks a different row
-        active = id;
-        setBadge(id, false); // focusing a tab clears its unread badge
-        paint();
-        // Report rect before activating — layout is stable at this point.
-        reportRect();
-        await invokeSafe('activate_tab', { id });
-      }
-
-      /** Kill a tab's terminal (surface + PTY). The tab goes cold; clicking it again
-          respawns a fresh shell (the normal lazy-spawn path). If the killed tab was
-          visible, the native layer activates a neighbour and returns its id so the
-          highlight follows; killing the last remaining tab leaves a blank hole. */
-      async function unloadTab(id) {
-        disarmKill(); // ⌘W can fire while a row is confirming (no DOM click to cancel it)
-        let newActive;
-        try {
-          newActive = await invoke('unload_tab', { id });
-        } catch (err) {
-          // The kill failed: PTY state is unknown, so leave the row as-is (still
-          // marked live) rather than lying about a terminal we didn't actually kill.
-          console.error('warden: unload_tab failed', err);
-          return;
-        }
-        const killed = document.querySelector('.tab[data-id="' + CSS.escape(id) + '"] .tab-dot');
-        if (killed) setDotLive(killed, false);
-        if (newActive) { active = newActive; setBadge(newActive, false); } // now visible → clear its badge
-        else if (active === id) active = null;
-        paint();      // move highlight to the neighbour; re-mark its dot live
-        reportRect(); // neighbour surface (or blank) geometry
-      }
-
-      // ResizeObserver: fires after the flex layout is calculated (including the
-      // 160 px sidebar), so the first IPC carries the correct hole geometry rather
-      // than the full-window rect. This is the primary guard against the startup
-      // overlap where the NSView frame is set before the sidebar has been laid out.
+      // The terminal surface tracks the hole: re-report on any layout change, and re-clamp the
+      // sidebar on window resize (a shrunk window must pull an over-wide sidebar back in).
       const ro = new ResizeObserver(() => reportRect());
-      ro.observe(document.getElementById('terminal-hole'));
-
-      // Re-clamp on window resize (a window shrunk below the current sidebar width
-      // must pull the sidebar back in), then report the surface rect.
-      window.addEventListener('resize', () => {
-        const cur = parseInt(getComputedStyle(document.getElementById('sidebar')).width, 10);
-        if (Number.isFinite(cur)) applyWidth(cur);
+      ro.observe(document.getElementById("terminal-hole"));
+      window.addEventListener("resize", () => {
+        const sidebar = document.getElementById("sidebar");
+        const cur = parseInt(getComputedStyle(sidebar).width, 10);
+        if (Number.isFinite(cur)) {
+          const max = Math.min(400, window.innerWidth * 0.4);
+          sidebar.style.width = Math.max(120, Math.min(cur, max)) + "px";
+        }
         reportRect();
       });
 
-      /** Wire the right-edge handle to resize the sidebar. Width is applied live
-          during the drag (the ResizeObserver above follows the hole, and we report
-          directly too so the native surface stays tight to the cursor); the final
-          width is persisted on mouseup. Double-click resets to the default. */
-      function initResize() {
-        const sidebar = document.getElementById('sidebar');
-        const handle = document.getElementById('sidebar-resize');
-        let startX = 0, startW = 0, dragging = false;
-        function onMove(e) {
-          if (!dragging) return;
-          // The terminal is a native NSView composited ABOVE the webview, so a mouseup
-          // released over it never reaches us and the drag would stick (resizing with no
-          // button held until the next clean click). If a move arrives with no button
-          // pressed, the release was swallowed — end the drag now. This is the guaranteed
-          // un-stick; the blur handler below ends it proactively when focus leaves first.
-          if (e.buttons === 0) { endDrag(); return; }
-          applyWidth(startW + (e.clientX - startX));
-          reportRect();
-        }
-        function endDrag() {
-          if (!dragging) return;
-          dragging = false;
-          window.removeEventListener('mousemove', onMove);
-          window.removeEventListener('mouseup', endDrag);
-          window.removeEventListener('blur', endDrag);
-          document.body.style.cursor = '';
-          persistWidth(parseInt(sidebar.style.width, 10));
-        }
-        handle.addEventListener('mousedown', (e) => {
-          e.preventDefault();
-          e.stopPropagation();   // never let a resize-drag bubble to data-tauri-drag-region
-          dragging = true;
-          startX = e.clientX;
-          startW = sidebar.getBoundingClientRect().width;
-          document.body.style.cursor = 'col-resize';
-          window.addEventListener('mousemove', onMove);
-          window.addEventListener('mouseup', endDrag);
-          // Releasing over the native terminal view hands it first responder and blurs
-          // the webview — end the drag then too (also covers ⌘-tab away mid-drag).
-          window.addEventListener('blur', endDrag);
-        });
-        handle.addEventListener('dblclick', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          applyWidth(defaultWidth());
-          reportRect();
-          persistWidth(defaultWidth());
-        });
-      }
-
-      window.addEventListener('load', () => { initResize(); init(); });
+      window.addEventListener("load", init);
     </script>
   </body>
 </html>
