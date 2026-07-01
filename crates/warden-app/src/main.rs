@@ -40,6 +40,9 @@ const MENU_WINDOW_CLOSE: &str = "window_close";
 const MENU_WINDOW_REOPEN_LAST: &str = "window_reopen_last";
 // Per-window items: id = this prefix + the window's Tauri label.
 const MENU_WINDOW_PREFIX: &str = "window_open_";
+// Config menu: open the config file in the default editor / reveal it in Finder.
+const MENU_CONFIG_EDIT: &str = "config_edit";
+const MENU_CONFIG_REVEAL: &str = "config_reveal";
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -178,9 +181,21 @@ fn build_app_menu(
     }
     let window_menu = window_menu.build()?;
 
+    // Config menu: open the config file in the default editor, or reveal it in Finder — so the
+    // user needn't memorise ~/.config/warden/config.toml. No accelerators (matches curator's
+    // Config submenu); the items act on the file, not a window (routed in on_menu_event).
+    let edit_cfg = MenuItemBuilder::with_id(MENU_CONFIG_EDIT, "Edit Config").build(app)?;
+    let reveal_cfg =
+        MenuItemBuilder::with_id(MENU_CONFIG_REVEAL, "Reveal Config in Finder").build(app)?;
+    let config_menu = SubmenuBuilder::new(app, "Config")
+        .item(&edit_cfg)
+        .item(&reveal_cfg)
+        .build()?;
+
     let menu = MenuBuilder::new(app)
         .item(&app_menu)
         .item(&tab_menu)
+        .item(&config_menu)
         .item(&window_menu)
         .build()?;
     app.set_menu(menu)?;
@@ -554,6 +569,23 @@ fn main() {
                     }
                 }
                 let _ = rebuild_menu(app);
+                return;
+            }
+
+            // Config menu acts on the config file, not a window — handle before the focused-window
+            // lookup (no window need be focused). `open` routes to the default editor; `open -R`
+            // reveals in Finder. config_path() is WARDEN_CONFIG else ~/.config/warden/config.toml.
+            if id == MENU_CONFIG_EDIT {
+                let _ = std::process::Command::new("open")
+                    .arg(warden_config::config_path())
+                    .spawn();
+                return;
+            }
+            if id == MENU_CONFIG_REVEAL {
+                let _ = std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(warden_config::config_path())
+                    .spawn();
                 return;
             }
 
