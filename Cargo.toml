@@ -2,10 +2,14 @@
 resolver = "2"
 members = ["crates/warden-config", "crates/warden-app"]
 
-# ── chrome-core local-dev override (managed by `just chrome-dev` / `just chrome-pin`) ──
-# Leave COMMENTED in git — an active path patch breaks fresh clones & CI. `just chrome-dev`
-# uncomments it to build against a local ../chrome-core (incl. uncommitted edits); `just chrome-pin`
-# re-pins the rev in crates/warden-app/Cargo.toml to ../chrome-core's HEAD and re-comments this.
-# `just gate` refuses to pass while it's active. Do not hand-edit these two lines — use the recipes.
-#PATCH#[patch."https://github.com/Lockyc/chrome-core"]
-#PATCH#chrome-core = { path = "../chrome-core" }
+# ── shared-core local-dev overrides (managed by `just chrome-dev`/`chrome-pin` + `config-dev`/`config-pin`) ──
+# Leave COMMENTED in git — an active path patch builds green for you but is unresolvable for every
+# other clone & CI. Each `*-dev` recipe uncomments only its own #PATCH:<core># lines to build against
+# the sibling ../<core> (incl. uncommitted edits); each `*-pin` re-pins the rev (chrome-core in
+# crates/warden-app/Cargo.toml, config-core in crates/warden-config/Cargo.toml) to that sibling's
+# pushed HEAD and re-comments. `just gate` AND .githooks/pre-commit refuse to pass while any is
+# active. Don't hand-edit these lines — use the recipes.
+#PATCH:chrome#[patch."https://github.com/Lockyc/chrome-core"]
+#PATCH:chrome#chrome-core = { path = "../chrome-core" }
+#PATCH:config#[patch."https://github.com/Lockyc/config-core"]
+#PATCH:config#config-core = { path = "../config-core" }

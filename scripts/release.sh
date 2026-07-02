@@ -14,6 +14,22 @@ TAG="v$VERSION"
 ZIP="warden-${VERSION}-macos.zip"
 APP="target/release/bundle/macos/warden.app"
 
+# The artifact must match the tag: build only from a clean tree whose HEAD *is* the tag. Otherwise
+# the notarized zip attached to $TAG could silently contain uncommitted or post-tag code — the one
+# thing a release artifact must never do (it's what everyone downloads as "v$VERSION").
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "release: working tree is dirty — commit or stash before building $TAG." >&2
+  exit 1
+fi
+if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  echo "release: tag $TAG does not exist — tag the release commit first (see CLAUDE.md › Releases)." >&2
+  exit 1
+fi
+if [ "$(git rev-parse "$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
+  echo "release: HEAD is not $TAG — check out the tagged commit before building the release artifact." >&2
+  exit 1
+fi
+
 # A release artifact MUST be signed + notarized — an unsigned zip is Gatekeeper-blocked on
 # other Macs, so refuse rather than ship one that looks official but won't open. (Contributors
 # building for local use go through `just build`/`just deploy`, which tolerate unsigned.)

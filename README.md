@@ -168,9 +168,11 @@ which curates **browser tabs** the way warden curates **terminals**. curator is 
 not a dependency of warden — it just draws from the same cores. (warden's embedded terminal is a
 separate, vendored third-party component; see the License note below.)
 
-If you want to iterate on the shared chrome, `just chrome-dev` builds warden against a sibling
+If you want to iterate on a shared core, `just chrome-dev` builds warden against a sibling
 `../chrome-core` checkout (including uncommitted edits) and `just chrome-pin` re-pins to its
-pushed commit afterward.
+pushed commit afterward; `just config-dev` / `just config-pin` are the same pair for
+`../config-core`. Never commit an active patch — `just gate` and a `.githooks/pre-commit` guard
+both refuse while one is live.
 
 ## License
 
