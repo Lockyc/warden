@@ -1,6 +1,7 @@
 mod ffi;
 mod geometry;
 mod plan;
+mod scanner;
 mod surface;
 
 #[cfg(not(target_os = "macos"))]
