@@ -535,16 +535,31 @@ fn extract_sentinel_path(output: &str) -> Option<String> {
 /// key window state by `sanitize_label(title)` in the *same* file — identical titles collide and
 /// the test window restores prod's size/position. Bounds belong to a (config, window) pair, so we
 /// scope the filename by a stable hash of the config path (canonicalized when it exists, so a
-/// symlinked path doesn't fork the state). Deterministic across runs: `DefaultHasher::new()` uses
-/// fixed seeds. Moving/renaming the config orphans its saved bounds — acceptable, since the path
-/// is otherwise stable (`config_path()`).
+/// symlinked path doesn't fork the state). The hash is `fnv1a_64` — a fixed, toolchain-independent
+/// algorithm — deliberately NOT `std`'s `DefaultHasher`, whose output isn't guaranteed stable
+/// across Rust releases: a `rust-toolchain.toml` bump could silently change the filename and reset
+/// every window to default bounds. Moving/renaming the config orphans its saved bounds —
+/// acceptable, since the path is otherwise stable (`config_path()`).
 fn window_state_filename() -> String {
-    use std::hash::{Hash, Hasher};
     let path = warden_config::config_path();
     let canonical = std::fs::canonicalize(&path).unwrap_or(path);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    canonical.hash(&mut h);
-    format!(".window-state-{:016x}.json", h.finish())
+    let hash = fnv1a_64(canonical.as_os_str().as_encoded_bytes());
+    format!(".window-state-{hash:016x}.json")
+}
+
+/// FNV-1a 64-bit hash. Small, deterministic, and — crucially — **stable across Rust toolchains**
+/// (unlike `std::hash::DefaultHasher`), so the value drives a persistent on-disk filename without
+/// risk of a toolchain bump changing it. Non-cryptographic; collision resistance is irrelevant
+/// here (the input is a single trusted config path).
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 fn main() {
@@ -924,6 +939,23 @@ mod tests {
             extract_sentinel_path(&out).as_deref(),
             Some("/opt/homebrew/bin:/usr/bin:/bin")
         );
+    }
+
+    #[test]
+    fn fnv1a_64_matches_known_vectors() {
+        // Canonical FNV-1a/64 test vectors — pins the algorithm so the window-state filename can
+        // never drift with the toolchain (the whole point of not using DefaultHasher).
+        assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a_64(b"foobar"), 0x8594_4171_f739_67e8);
+    }
+
+    #[test]
+    fn window_state_filename_shape_is_stable() {
+        // Same config path → same filename, every run (no per-run seed).
+        assert_eq!(window_state_filename(), window_state_filename());
+        assert!(window_state_filename().starts_with(".window-state-"));
+        assert!(window_state_filename().ends_with(".json"));
     }
 
     #[test]

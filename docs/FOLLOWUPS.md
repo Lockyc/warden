@@ -2,6 +2,10 @@
 
 Known, intentionally-deferred work. Each item is a conscious deferral, not an oversight — recorded here so it isn't lost. Remove an item when it's done.
 
+## Repo hygiene — all four repos (warden, curator, chrome-core, config-core)
+
+- **`.githooks/pre-push` bakes the private Forgejo host `git.lsjc.au` into public repos.** The tracked pre-push hook installs the doc-audit gate via `go install git.lsjc.au/lachlan/docaudit@latest` (lines ~4 & ~27), so a homelab-identifying hostname ships in every public clone, and the install hint points contributors at a host they can't reach. Impact is bounded — `core.hooksPath=.githooks` lives only in each repo's *local* config (not cloned), so a fresh clone doesn't activate the hook and no contributor is blocked; the exposure is purely the infra name. Decide (owner call): **(a)** untrack `.githooks/` and re-install locally via `docaudit install-hook` (recommended — it's opt-in per clone anyway); **(b)** publish `docaudit` publicly and swap the URL; **(c)** accept the exposure. Deferred pending that decision.
+
 ## To add in `warden-app` when needed
 
 These are trivial, zero-retrofit additions to make the moment `warden-app` needs them; deferred per YAGNI.
@@ -11,6 +15,14 @@ These are trivial, zero-retrofit additions to make the moment `warden-app` needs
 ## Watcher robustness (deferred to `warden-app`)
 
 - **No debounce / coalescing** in `Watcher` (`crates/warden-config/src/watch.rs`). The callback fires for every filesystem event matching the config file name. Editors that write in place (rather than atomic temp-file + rename) can produce a transient `load()` parse error (a partial read mid-write) and/or multiple callbacks per save. Atomic-save editors are unaffected. Debounce/coalescing is intentionally left to `warden-app`, which owns the reload UX and already keeps last-good config on a parse error. Also documented at the call site.
+
+## warden ↔ agentmux signal richness (deferred integration ideas)
+
+Two related deferrals about the seam between warden and agentmux. Both are conscious decisions, not gaps.
+
+- **Richer agent-state channel (deferred).** Today warden receives only two coarse signals per tab: an undifferentiated **amber attention badge** (OSC 777, fired by agentmux on both *permission-needed* and *done*, collapsed into one indicator) and a **binary presence dot** (probe exit 0/≠0). agentmux itself already computes distinct per-agent states — *working / needs-permission / waiting / done*. A future protocol addition (a richer escape carrying the state, or a structured presence channel) could let warden render "needs-you" **distinctly** from "done" instead of one amber dot for both. **Caveat to keep in mind before "fixing" this:** the mapping is **inherently lossy regardless of protocol richness** — many agentmux tabs (tmux windows) map onto a *single* warden tab (one libghostty terminal surface), so a warden tab necessarily aggregates N agents' states into one indicator. This N→1 collapse is structural, not a bug: don't later mistake the aggregation for something to "fix" by trying to surface per-agent state on a single terminal surface.
+
+- **Presence stays poll-based, by decision (not push).** We considered replacing warden's per-tab `amux --probe` polling with an **agentmux-pushed presence escape** (an OSC the agent emits on session start/stop) — lower latency, no periodic `sh -c` overhead. **Decision: keep polling.** Polling preserves warden's **generic, tool-agnostic seam** — warden reads only a probe command's *exit code* and encodes nothing about amux, tmux, sockets, or session naming (the command is entirely the user's; see the probe footguns in `CLAUDE.md`). A pushed presence escape would bake an agentmux-specific signal into warden's core, coupling the two. Recorded here as a **settled decision** so a future "optimize poll → push" isn't re-litigated: the polling cost is accepted as the price of the generic seam.
 
 ## Lower-priority / edge cases
 

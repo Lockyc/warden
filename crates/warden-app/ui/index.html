@@ -40,11 +40,15 @@
   </head>
   <body>
     <div id="app">
-      <!-- The window-move drag region is owned by chrome-core (stamped on the banner + tab-list per
-           the `windowDrag` DTO flag from `sidebar_drag`), not this wrapper — it's fully covered by
-           the component's children, so an attr here would be inert AND unconditional (ignoring the
-           toggle). Leave it off. -->
-      <aside id="sidebar"></aside>
+      <!-- The drag attr here is NOT inert: it covers the `padding-top: 28px` title-bar inset (the
+           traffic-light zone / native title bar), which is warden's page-shell concern and sits
+           ABOVE chrome-core's children — banner/list/group-headers cover only the content box, so
+           without this the title bar wouldn't move the window. It's intentionally always-on (a
+           macOS title bar always drags), independent of the toggleable sidebar-BODY drag chrome-core
+           stamps per the `windowDrag` DTO flag (from `sidebar_drag`). Since the banner + tab-list
+           (flex:1) fill the content box, this only ever catches the inset — the toggle still owns
+           the body. Don't drop it thinking it's covered by children. -->
+      <aside id="sidebar" data-tauri-drag-region></aside>
       <div id="terminal-hole">
         <div id="empty-state">
           <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
