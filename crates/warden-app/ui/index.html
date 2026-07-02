@@ -191,6 +191,13 @@
               document.getElementById("sidebar").style.width = width + "px";
               reportRect();
             },
+            onRescan() {
+              // Refresh control on a [[window.root]] section header: re-scan the
+              // window's roots so projects added/removed on disk appear/vanish.
+              // The component passes the group name; the backend rescans the whole
+              // config, so it's ignored here (forward-compat).
+              invokeSafe("rescan_root");
+            },
           },
           {
             storageKey: "warden:sidebar-width:" + myLabel,
