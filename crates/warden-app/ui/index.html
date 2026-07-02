@@ -189,6 +189,12 @@
             },
             onUnload: unloadTab,
             onKill(id) {
+              // Optimistic: drop the cyan dot immediately rather than waiting for the
+              // post-kill re-probe (a slow `sh -c` round-trip). A kill is near-certain;
+              // if it somehow failed, kill_session's re-probe re-lights the dot on return.
+              // Mirror it into `session` so a concurrent refresh's DTO stays off too.
+              session.set(id, "off");
+              sb.setPresence(id, "off");
               invokeSafe("kill_session", { id });
             },
             onStart(id) {
