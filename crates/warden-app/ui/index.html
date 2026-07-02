@@ -120,6 +120,11 @@
             id: t.id,
             title: t.title,
             group: t.group ?? null,
+            // A [[window.root]] section: tree = true makes chrome-core render the group as a
+            // collapsible folder tree, treePath = the folder segments between the root and the
+            // project. Forwarded from warden's TabDto (serde renames tree_path → treePath).
+            tree: !!t.tree,
+            treePath: t.treePath || [],
             live: t.spawned,
             attention: badges.has(t.id) ? true : null,
             presence: t.has_probe ? (session.get(t.id) ?? "off") : null,
