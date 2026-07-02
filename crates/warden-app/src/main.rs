@@ -925,9 +925,19 @@ fn main() {
                                     // ⇒ launcher recedes). Re-materializing there
                                     // would wrongly reopen every user-closed window.
                                     let in_diagnostic = wh.get_webview_window(DIAG_LABEL).is_some();
-                                    if in_diagnostic {
-                                        // Recovery: nothing live (launched into the
-                                        // diagnostic window). Materialize from the
+                                    // Recover (materialize, fresh-launch semantics that respect
+                                    // open_on_start) when in the diagnostic state OR when there is
+                                    // no baseline to reconcile against — an empty `last_good` means
+                                    // we never had a valid config (the diagnostic may have been
+                                    // manually closed, leaving zero surfaces). Reconciling from an
+                                    // empty baseline would emit Open for EVERY window, since
+                                    // `reconcile` deliberately ignores `open_on_start`, wrongly
+                                    // opening `open_on_start = false` windows. The launcher state
+                                    // always has a non-empty `last_good`, so it still reconciles.
+                                    let recover = in_diagnostic || m.last_good.windows.is_empty();
+                                    if recover {
+                                        // Recovery: no reconcile baseline (diagnostic state, or a
+                                        // manually-closed diagnostic). Materialize from the
                                         // already-scanned effective config and close the
                                         // diagnostic, rather than reconciling against an
                                         // empty last_good.
