@@ -16,6 +16,9 @@ pub struct TabDto {
     pub has_probe: bool,       // a session-probe command is configured for this tab
     pub has_kill: bool,        // a session-kill command is configured for this tab
     pub has_cmd: bool,         // a startup command is configured (→ presence dot can offer restart)
+    pub tree: bool,            // row belongs to a project-tree (root) section
+    #[serde(rename = "treePath")]
+    pub tree_path: Vec<String>, // folder segments between root and project
 }
 
 /// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
@@ -111,6 +114,8 @@ impl Registry {
                 has_probe: t.spec.probe.is_some(),
                 has_kill: t.spec.kill.is_some(),
                 has_cmd: t.spec.startup.is_some(),
+                tree: t.spec.tree,
+                tree_path: t.spec.tree_path.clone(),
             })
             .collect()
     }
@@ -352,6 +357,8 @@ mod tests {
             group: None,
             probe: None,
             kill: None,
+            tree: false,
+            tree_path: Vec::new(),
         }
     }
     fn spec_with_probe(id: &str, dir: &str, probe: Option<&str>) -> TabSpec {
@@ -364,6 +371,8 @@ mod tests {
             group: None,
             probe: probe.map(String::from),
             kill: None,
+            tree: false,
+            tree_path: Vec::new(),
         }
     }
 

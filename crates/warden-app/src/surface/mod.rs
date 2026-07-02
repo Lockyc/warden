@@ -65,6 +65,14 @@ pub struct TabSpec {
     /// `sh -c` when the user confirms killing this tab's session. `None` = no kill
     /// affordance. Opaque here — same shape as `probe`.
     pub kill: Option<String>,
+    /// True when this tab belongs to a project-tree (`[[window.root]]`) section —
+    /// i.e. its `group` names a root, not a plain `[[window.group]]`. Drives the
+    /// chrome's tree-vs-group sectioning.
+    pub tree: bool,
+    /// Folder segments between the owning root's dir and this tab's dir (project's
+    /// own dir name excluded). Empty for a non-tree tab, or a tree tab sitting
+    /// directly under its root.
+    pub tree_path: Vec<String>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

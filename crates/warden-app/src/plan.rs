@@ -69,21 +69,40 @@ pub fn unique_label(name: &str, taken: &HashSet<String>) -> String {
 /// Build a `WindowSpec` for one window under an already-chosen `label`.
 /// Tab id = `Tab::key` (the resolved title — the reconcile identity).
 pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
+    let root_dirs: HashMap<&str, &std::path::Path> = p
+        .roots
+        .iter()
+        .map(|r| (r.name.as_str(), r.dir.as_path()))
+        .collect();
     let tabs = p
         .tabs
         .iter()
-        .map(|t| TabPlan {
-            spec: TabSpec {
-                id: t.key.clone(),
-                title: t.title.clone(),
-                dir: t.dir.clone(),
-                shell: t.shell.clone(),
-                startup: t.startup.clone(),
-                group: t.group.clone(),
-                probe: t.probe.clone(),
-                kill: t.kill.clone(),
-            },
-            load_on_open: t.load_on_open,
+        .map(|t| {
+            let tree = t
+                .group
+                .as_deref()
+                .is_some_and(|g| root_dirs.contains_key(g));
+            let tree_path = t
+                .group
+                .as_deref()
+                .and_then(|g| root_dirs.get(g))
+                .map(|root_dir| crate::scanner::tree_path(root_dir, &t.dir))
+                .unwrap_or_default();
+            TabPlan {
+                spec: TabSpec {
+                    id: t.key.clone(),
+                    title: t.title.clone(),
+                    dir: t.dir.clone(),
+                    shell: t.shell.clone(),
+                    startup: t.startup.clone(),
+                    group: t.group.clone(),
+                    probe: t.probe.clone(),
+                    kill: t.kill.clone(),
+                    tree,
+                    tree_path,
+                },
+                load_on_open: t.load_on_open,
+            }
         })
         .collect();
     WindowSpec {
@@ -247,6 +266,11 @@ pub fn reconcile_ops(
                     group: t.group.clone(),
                     probe: t.probe.clone(),
                     kill: t.kill.clone(),
+                    // Hot-reload add path doesn't have the window's roots in scope
+                    // here (`u.add_tabs` is a flat `Tab` list); tree derivation is
+                    // out of scope for this construction site.
+                    tree: false,
+                    tree_path: Vec::new(),
                 },
                 load_on_open: t.load_on_open,
             })
@@ -407,6 +431,44 @@ colour = "#0f8a8a"
         assert!(w.tabs[0].load_on_open);
         assert_eq!(w.tabs[1].spec.id, "ops");
         assert!(!w.tabs[1].load_on_open);
+    }
+
+    #[test]
+    fn tree_tabs_get_tree_flag_and_relative_path() {
+        use warden_config::{Colour, Root, Tab, Window};
+        let root_dir = std::path::PathBuf::from("/r/Dev");
+        let win = Window {
+            title: "dev".into(),
+            colour: Colour { r: 0, g: 0, b: 0 },
+            width: 1500,
+            height: 1000,
+            tabs: vec![Tab {
+                key: "/r/Dev/gh/lockyc/warden".into(),
+                title: "warden".into(),
+                dir: "/r/Dev/gh/lockyc/warden".into(),
+                shell: "sh".into(),
+                startup: None,
+                load_on_open: false,
+                group: Some("Dev".into()),
+                probe: None,
+                kill: None,
+            }],
+            roots: vec![Root {
+                name: "Dev".into(),
+                dir: root_dir,
+                depth: 6,
+                shell: "sh".into(),
+                startup: None,
+                probe: None,
+                kill: None,
+            }],
+        };
+        let spec = window_to_spec(&win, "dev".into());
+        assert_eq!(
+            spec.tabs[0].spec.tree_path,
+            vec!["gh".to_string(), "lockyc".to_string()]
+        );
+        assert!(spec.tabs[0].spec.tree);
     }
 
     use warden_config::reconcile;
