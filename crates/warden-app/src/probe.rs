@@ -6,6 +6,8 @@ use crate::ManagerState;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::Sender;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -203,6 +205,38 @@ pub fn spawn_pass(app: AppHandle, only: Option<String>) {
     std::thread::spawn(move || run_pass(&app, only.as_deref()));
 }
 
+/// Scheduler bump channel sender, set once by `run_scheduler` at startup. Commands/events call
+/// `bump`/`bump_all` to push a window into a fast burst. A `OnceLock` (never re-set) so the sender
+/// lives for the whole process — the receiver end never disconnects.
+static BUMP_TX: OnceLock<Sender<String>> = OnceLock::new();
+
+/// Install the bump sender (idempotent-ish: only the first call wins). Called by `run_scheduler`.
+pub fn install_bump_tx(tx: Sender<String>) {
+    let _ = BUMP_TX.set(tx);
+}
+
+/// Enqueue a fast-burst request for one window by label. No-op if the scheduler isn't installed
+/// (unit tests, teardown) or the receiver is gone.
+pub fn bump(label: &str) {
+    if let Some(tx) = BUMP_TX.get() {
+        let _ = tx.send(label.to_string());
+    }
+}
+
+/// Bump every currently-live window — used by hot-reload/rescan, which can change multiple windows.
+pub fn bump_all(app: &AppHandle) {
+    let Some(state) = app.try_state::<ManagerState>() else {
+        return;
+    };
+    let labels: Vec<String> = {
+        let m = state.lock();
+        m.probe_targets(None).into_iter().map(|(l, _)| l).collect()
+    };
+    for l in labels {
+        bump(&l);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +334,11 @@ mod tests {
     fn advance_cap_with_zero_slow_goes_idle() {
         let (_, c) = advance(true, 0, CAP + Duration::from_secs(1), 0);
         assert!(matches!(c, Cadence::Idle));
+    }
+
+    #[test]
+    fn bump_before_install_is_a_noop() {
+        // bump() must never panic when no scheduler is installed (e.g. a command fires during teardown).
+        bump("nonexistent-window"); // no scheduler in a unit-test process → silent no-op
     }
 }
