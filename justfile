@@ -55,10 +55,9 @@ gate:
     cargo test --workspace
     cargo run -p warden-config --bin warden -- fmt --check examples/config.toml
 
-# ── shared chrome-core dev loop ─────────────────────────────────────────────────────────────────
-# Build warden against a LOCAL ../chrome-core checkout (incl. uncommitted edits) instead of the
-# pinned git rev — the fast loop for chrome work. Activates the (normally-commented) [patch] in
-# Cargo.toml, then `just run`. Run `just chrome-pin` before committing to re-pin + re-comment.
+# ── shared chrome-core dev loop (require the sibling ../chrome-core ghq checkout) ──
+
+# Build warden against local ../chrome-core (uncommitted edits included): activate the [patch], `just run`
 [group("chrome")]
 chrome-dev:
     #!/usr/bin/env bash
@@ -69,8 +68,7 @@ chrome-dev:
     echo "✓ chrome-core → local ../chrome-core (patch active). Iterate, then: just run"
     echo "  ⚠ NEVER commit an active patch — run 'just chrome-pin' first ('just gate' will block it)."
 
-# Re-pin chrome-core to ../chrome-core's pushed HEAD and deactivate the local patch. Run after you've
-# committed+pushed chrome-core so warden tracks the new rev. Refuses if chrome-core is dirty/unpushed.
+# Re-pin chrome-core to ../chrome-core's pushed HEAD + deactivate the patch (run after pushing chrome-core)
 [group("chrome")]
 chrome-pin:
     #!/usr/bin/env bash
