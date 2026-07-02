@@ -858,7 +858,17 @@ fn main() {
                                     let new_density = loaded.config.density;
                                     let old_drag = m.last_good.sidebar_drag;
                                     let new_drag = loaded.config.sidebar_drag;
-                                    if m.is_empty() {
+                                    // Recover (re-materialize) ONLY when we're
+                                    // actually in the diagnostic state — NOT merely
+                                    // when zero real windows exist, because the
+                                    // launcher state is also `is_empty()` and must
+                                    // take the reconcile path below (unchanged config
+                                    // ⇒ windows stay closed; an added window ⇒ opens
+                                    // ⇒ launcher recedes). Re-materializing there
+                                    // would wrongly reopen every user-closed window.
+                                    let in_diagnostic =
+                                        wh.get_webview_window(DIAG_LABEL).is_some();
+                                    if in_diagnostic {
                                         // Recovery: nothing live (launched into the
                                         // diagnostic window). Materialize from the
                                         // already-scanned effective config and close the
@@ -887,6 +897,12 @@ fn main() {
                                             m.refresh_all_chrome(&wh);
                                         }
                                     }
+                                    // Update the empty-surface (launcher/diagnostic)
+                                    // now that the live window set may have changed:
+                                    // recovery may have opened only some (or zero, if
+                                    // all `open_on_start = false`) windows; a reconcile
+                                    // may have closed the last one or opened the first.
+                                    m.sync_empty_surface(&wh);
                                     // Apply the (possibly changed) probe cadence while we still
                                     // hold the lock, then release it before any lock-free work.
                                     m.set_probe_interval(loaded.config.probe_interval);
@@ -917,6 +933,7 @@ fn main() {
                                     let st = wh.state::<ManagerState>();
                                     let mut m = st.lock();
                                     if m.is_empty() {
+                                        m.close_launcher(&wh);
                                         m.show_diagnostic(&wh, &msg);
                                     } else {
                                         drop(m);
@@ -930,6 +947,7 @@ fn main() {
                                     let st = wh.state::<ManagerState>();
                                     let mut m = st.lock();
                                     if m.is_empty() {
+                                        m.close_launcher(&wh);
                                         m.show_diagnostic(&wh, &msg);
                                     } else {
                                         drop(m);
