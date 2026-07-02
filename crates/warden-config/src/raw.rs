@@ -2,7 +2,12 @@ use serde::Deserialize;
 
 // `shell` and `cmd` cascade global → window → tab (nearest set level wins; see resolve.rs).
 // Both are optional at every level — a missing field inherits, an empty `cmd = ""` opts out.
+// `deny_unknown_fields` on every schema struct turns a mistyped key (e.g. `color` for `colour`,
+// `probe_intervall`) into a parse error surfaced via warden's error-banner path, instead of the key
+// being silently dropped. NOTE: this is incompatible with `#[serde(flatten)]` — none of these
+// structs flatten, so keep it that way (or this must be reworked).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawConfig {
     pub shell: Option<String>,
     pub cmd: Option<String>,
@@ -32,6 +37,7 @@ pub struct RawConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawWindow {
     pub title: String,
     pub colour: Option<String>,
@@ -53,6 +59,7 @@ pub struct RawWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawGroup {
     pub name: String,
     #[serde(default, rename = "tab")]
@@ -60,6 +67,7 @@ pub struct RawGroup {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawTab {
     pub title: Option<String>,
     pub dir: String,
@@ -160,5 +168,70 @@ colour = "#0f8a8a"
         assert_eq!(w.groups[0].tabs.len(), 2);
         assert_eq!(w.groups[1].name, "backend");
         assert_eq!(w.groups[1].tabs[0].dir, "~/dev/api");
+    }
+
+    #[test]
+    fn unknown_top_level_key_errors() {
+        // A mistyped global key (`probe_intervall`) must be a parse error, not silently dropped.
+        let err = parse("probe_intervall = 5\n").unwrap_err();
+        assert!(
+            err.to_string().contains("probe_intervall"),
+            "error should name the unknown key: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_window_key_errors() {
+        // `color` (vs `colour`) on a window is the classic footgun this guards against.
+        let err = parse(
+            r##"
+[[window]]
+title = "work"
+color = "#0f8a8a"
+"##,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("color"),
+            "error should name the unknown key: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_tab_key_errors() {
+        let err = parse(
+            r##"
+[[window]]
+title = "work"
+
+  [[window.tab]]
+  dir = "~/x"
+  laod_on_open = true
+"##,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("laod_on_open"),
+            "error should name the unknown key: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_group_key_errors() {
+        let err = parse(
+            r##"
+[[window]]
+title = "work"
+
+  [[window.group]]
+  name = "backend"
+  colour = "#fff"
+"##,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("colour"),
+            "error should name the unknown key: {err}"
+        );
     }
 }
