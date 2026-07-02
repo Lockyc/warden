@@ -26,7 +26,8 @@ pub struct Reconciliation {
 /// **What IS detected** (any of these triggers an emit):
 /// - `colour`: the window accent colour changed.
 /// - `add_tabs` / `remove_tabs`: tabs were added or removed, matched by
-///   `Tab::key` (the resolved title).
+///   `Tab::key` (the resolved title for a curated tab; the absolute project
+///   path for a tab discovered by a `[[window.root]]` scan).
 /// - `tab_order`: the order of kept tabs changed; on an emitted update
 ///   `tab_order` always carries the full new ordered key list so the consumer
 ///   can reorder the live tab strip without killing sessions.
@@ -70,9 +71,10 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///
 /// **What IS detected:**
 /// - Windows opened/closed, matched by `title`.
-/// - For a kept window: colour change, tab add/remove (by
-///   `Tab::key` = resolved title), tab reorder (via `tab_order`), and in-place
-///   metadata changes (`group`, `probe`, `kill`) via `set_meta`.
+/// - For a kept window: colour change, tab add/remove (by `Tab::key` — resolved
+///   title for a curated tab, absolute project path for a discovered one), tab
+///   reorder (via `tab_order`), and in-place metadata changes (`group`, `probe`,
+///   `kill`) via `set_meta`.
 ///
 /// **What is NOT detected:**
 /// - In-place edits to a kept tab whose title is unchanged. If a tab's `dir`,

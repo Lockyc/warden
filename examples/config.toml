@@ -14,6 +14,10 @@
 # renders as a labelled section in the sidebar. Loose [[window.tab]]s (no group) render first, in a
 # headerless section. See the "work" window below.
 #
+# A [[window.root]] auto-discovers git projects under a `dir` instead of listing tabs by hand —
+# each one becomes a tab in a collapsible tree section. Roots cascade shell/cmd/probe/kill just
+# like tabs (root -> window -> global, no tab level). See the commented example at the bottom.
+#
 # The `dir`s point at examples/projects/ (tracked mock dirs) so this demo validates warning-free
 # from the repo root. A real config uses absolute or ~/-prefixed paths to your actual projects.
 
@@ -42,6 +46,22 @@ probe_interval = 5
 # shells bare `tmux`, resolved via warden's login-PATH import; absolute paths stay the robust
 # fallback.) Only reachable on a tab that also sets `probe` (no probe ⇒ no dot to click).
 kill = '"$HOME/.agentmux/bin/amux" --kill'
+
+# [[window.root]] auto-discovers git projects under a dir and renders them as a collapsible
+# tree section — no per-tab config needed. Commented out here because examples/projects/ is
+# just tracked .gitkeep mock dirs (not real git repos), so the scanner would find nothing;
+# point `dir` at a real projects folder to try it, e.g.:
+#
+# [[window]]
+# title  = "projects"
+# colour = "#0f8a8a"
+#
+#   [[window.root]]
+#   name  = "Developer"
+#   dir   = "~/Developer"
+#   depth = 6                                    # optional; default 6 levels below `dir`
+#   probe = '"$HOME/.agentmux/bin/amux" --probe' # every discovered project gets a session dot
+#   kill  = '"$HOME/.agentmux/bin/amux" --kill'
 
 [[window]]
   title  = "personal"

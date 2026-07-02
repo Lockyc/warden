@@ -18,6 +18,13 @@ These are trivial, zero-retrofit additions to make the moment `warden-app` needs
 - **Soft degradation when `dirs::home_dir()` returns `None`** (HOME unset, e.g. some CI): `~/…` is left literal (later surfaces as a dir-missing warning) and `config_path()` falls back to a relative `.config/warden/config.toml`. Degenerate environments only.
 - **Tilde expansion handles only `~/`** (`resolve.rs`), not bare `~` or `~user`. Within current spec scope (examples only use `~/…`).
 
+## Project-tree roots (`[[window.root]]`) — deferred
+
+- **Live filesystem watcher for roots.** Rescanning currently happens on window open, on every config hot-reload, and via the manual refresh control (`rescan_root`) — there is no `notify`-based watch on a root's `dir`, so a project cloned or removed on disk doesn't surface until one of those triggers fires. Would mirror `crates/warden-config/src/watch.rs`'s approach, scoped per root.
+- **Non-`.git` project markers.** The scanner (`scanner.rs::is_git_root`) only recognizes a `.git` dir or file. Other project markers (`.hg`, `.jj`, a `package.json`/`Cargo.toml` at a dir's root, etc.) aren't discovered. Revisit if a non-git workflow needs auto-discovery.
+- **Per-discovered-project config overrides.** A discovered project has no per-tab config level (root → window → global only) — there's no way to override `shell`/`cmd`/`probe`/`kill`, exclude one project, or pin a `load_on_open` for a single discovered tab without promoting it to a curated `[[window.tab]]`. An override map keyed by path (or a per-root exclude list) would close this; deferred until a real need shows up.
+- **Nested roots / a root inside a group.** `[[window.root]]` currently sits at the window level only, alongside loose tabs and `[[window.group]]`s. A root scoped inside a `[[window.group]]` (so discovered projects nest under an existing group's section) or a root whose scan itself contains another declared root are both unimplemented.
+
 ## Test-isolation note (inert)
 
 - `config_path_respects_env` (`crates/warden-config/src/load.rs`) mutates the process-global `WARDEN_CONFIG`. Cleanup is panic-safe (removed before the assert), but if a second test that reads `config_path()`/`WARDEN_CONFIG` is ever added, serialize them (e.g. `serial_test`) or refactor `config_path` to take an injected override — Rust runs tests in parallel threads. Inert today (no other reader).

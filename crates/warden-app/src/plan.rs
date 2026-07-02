@@ -83,7 +83,8 @@ pub fn unique_label(name: &str, taken: &HashSet<String>) -> String {
 }
 
 /// Build a `WindowSpec` for one window under an already-chosen `label`.
-/// Tab id = `Tab::key` (the resolved title — the reconcile identity).
+/// Tab id = `Tab::key` — the reconcile identity: the resolved title for a curated
+/// tab, or the absolute project path for a discovered (`[[window.root]]`) tab.
 pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
     let root_dirs: HashMap<&str, &Path> = p
         .roots
