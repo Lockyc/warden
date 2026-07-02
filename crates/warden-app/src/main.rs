@@ -314,6 +314,11 @@ fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     let cmd = probe::substitute(&cmd, &dir, &title);
     let app = window.app_handle().clone();
     let label = window.label().to_string();
+    // Mark the kill in flight BEFORE the (slow) kill so any poll pass that runs while it
+    // executes force-reports this tab absent (see WindowManager::killing / run_pass) — the
+    // chrome dropped the dot optimistically and a poll observing the still-alive pre-kill
+    // session would otherwise re-light it (the off→on→off flicker).
+    state.lock().mark_killing(&label, &id);
     // Run the kill, then re-probe THIS window on the same thread so the order is
     // deterministic: the cyan presence dot drops only after the session is actually
     // gone. Off the UI thread (kill + probe are slow `sh -c` calls); the exit code of
@@ -322,6 +327,12 @@ fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     // `probe_interval = 0` there's no timer to heal a re-probe that ran before the kill.
     std::thread::spawn(move || {
         let _ = probe::run_probe(&cmd, &dir);
+        // Clear the mark BEFORE the reprobe so run_pass reports this tab's true post-kill
+        // state — absent normally, or present again if the kill genuinely failed (the dot
+        // re-lights). Other tabs still mid-kill stay suppressed.
+        if let Some(st) = app.try_state::<ManagerState>() {
+            st.lock().unmark_killing(&label, &id);
+        }
         probe::run_pass(&app, Some(&label));
     });
 }

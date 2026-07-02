@@ -91,6 +91,21 @@ pub fn run_pass(app: &AppHandle, only: Option<&str>) {
             let cmd = substitute(&probe, &dir, &title);
             states.insert(id, serde_json::Value::Bool(run_probe(&cmd, &dir)));
         }
+        // Force any tab with a kill in flight to "absent" — its probe above may have
+        // observed the still-alive pre-kill session (probes are slow; a kill can land
+        // mid-pass), and emitting `true` would re-light the dot the chrome just dropped
+        // optimistically (the off→on→off flicker). Checked here, at emit time, so a kill
+        // that arrives *during* this pass is still caught. `kill_session` unmarks the tab
+        // before its own reprobe, so the true post-kill state (absent, or present if the
+        // kill failed) still reaches the chrome. See WindowManager::killing.
+        {
+            let m = state.lock();
+            for (id, val) in states.iter_mut() {
+                if m.is_killing(&label, id) {
+                    *val = serde_json::Value::Bool(false);
+                }
+            }
+        }
         let _ = app.emit_to(
             label.as_str(),
             "warden:session-state",
