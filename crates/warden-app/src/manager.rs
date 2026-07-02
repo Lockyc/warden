@@ -22,8 +22,9 @@ const INITIAL_RECT: PixelRect = PixelRect {
 
 /// The single diagnostic window's Tauri label. Deliberately NOT a window
 /// label and never inserted into `WindowManager::windows`, so it is invisible
-/// to `is_empty()` and carries no `Destroyed`→last-window-quit handler: closing
-/// it alone never exits the app, and it never counts as a "live" window set.
+/// to `is_empty()` and carries no `Destroyed`→`sync_empty_surface` handler: closing
+/// it alone never shows the launcher or exits the app, and it never counts as a
+/// "live" window set.
 pub const DIAG_LABEL: &str = "warden-diagnostic";
 
 /// The single launcher window's Tauri label. Like `DIAG_LABEL`, this is NOT a

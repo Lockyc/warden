@@ -761,7 +761,8 @@ fn main() {
                     serde_json::json!({ "label": label }),
                 );
             } else if id == MENU_WINDOW_CLOSE {
-                // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, last-window-quit).
+                // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, then
+                // sync_empty_surface: shows the launcher if it was the last real window — no quit).
                 let _ = win.close();
             } else if let Some(n) = id
                 .strip_prefix(MENU_TAB_JUMP_PREFIX)
