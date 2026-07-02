@@ -39,7 +39,9 @@ clippy:
     cargo clippy --workspace -- -D warnings
 
 # Full pre-merge gate: format check (non-mutating), clippy, tests. Run before
-# committing/merging — nothing runs this automatically (no hook, no CI yet).
+# committing/merging. GitHub Actions CI (.github/workflows/ci.yml) runs the same
+# fmt/clippy/test on push + PR (config crate on ubuntu, whole workspace incl.
+# warden-app on macOS); this recipe is the local mirror, plus the `warden fmt --check`.
 [group("check")]
 gate:
     cargo fmt --all --check
