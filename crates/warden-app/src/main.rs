@@ -694,7 +694,18 @@ fn main() {
             // before the focused-window lookup (reopen-last needs no focused window).
             if id == MENU_WINDOW_REOPEN_LAST {
                 let st = app.state::<ManagerState>();
-                let reopened = { st.lock().reopen_last(app) };
+                let reopened = {
+                    let mut m = st.lock();
+                    let reopened = m.reopen_last(app);
+                    // Reopening takes the live set from zero→≥1, so close the launcher if
+                    // it was showing (⌘⇧T is reachable while the launcher is the front
+                    // surface). Same invariant `launcher_open_window` upholds — every
+                    // window-open path must sync, not just the launcher's own click.
+                    if reopened {
+                        m.sync_empty_surface(app);
+                    }
+                    reopened
+                };
                 if reopened {
                     let _ = rebuild_menu(app);
                 }
@@ -709,6 +720,11 @@ fn main() {
                     } else {
                         m.reopen_window(app, win_label);
                     }
+                    // Opening a closed window from the Window menu while the launcher is
+                    // showing (zero real windows) must close the launcher — the same
+                    // invariant `launcher_open_window` upholds. Harmless no-op on the
+                    // focus (already-open) path, since the launcher can't be showing then.
+                    m.sync_empty_surface(app);
                 }
                 let _ = rebuild_menu(app);
                 return;
