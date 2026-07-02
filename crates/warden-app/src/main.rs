@@ -372,9 +372,7 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
         let mut m = state.lock();
         let fresh = manager::effective_config(&m.raw_config);
         let recon = warden_config::reconcile(&m.last_good, &fresh);
-        let density = m.last_good.density.as_str().to_string();
-        let sidebar_drag = m.last_good.sidebar_drag;
-        m.apply(&app, &recon, &density, sidebar_drag);
+        m.apply(&app, &recon, &fresh);
         m.last_good = fresh;
     } // release the ManagerState lock before the lock-free probe pass
     // New discovered tabs may carry probes — refresh the session dots.
@@ -827,12 +825,7 @@ fn main() {
                                         let new_eff = manager::effective_config(&loaded.config);
                                         let recon =
                                             warden_config::reconcile(&m.last_good, &new_eff);
-                                        m.apply(
-                                            &wh,
-                                            &recon,
-                                            loaded.config.density.as_str(),
-                                            loaded.config.sidebar_drag,
-                                        );
+                                        m.apply(&wh, &recon, &new_eff);
                                         // Advance the reconcile baseline ONLY on a valid load.
                                         m.last_good = new_eff;
                                         m.raw_config = loaded.config.clone();

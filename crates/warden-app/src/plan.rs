@@ -4,7 +4,23 @@
 use crate::manager::DIAG_LABEL;
 use crate::surface::TabSpec;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use warden_config::{Config, Reconciliation, Window};
+
+/// Derive (tree, tree_path) for a tab from its window's roots (root name → dir).
+/// A tab whose `group` names a root is a tree row; tree_path = folder segments
+/// between that root's dir and the tab's dir (empty for a project directly under
+/// the root). A tab whose group is None or names a plain [[window.group]] → (false, []).
+pub fn derive_tree_meta(
+    root_dirs: &HashMap<&str, &Path>,
+    group: Option<&str>,
+    dir: &Path,
+) -> (bool, Vec<String>) {
+    match group.and_then(|g| root_dirs.get(g)) {
+        Some(root_dir) => (true, crate::scanner::tree_path(root_dir, dir)),
+        None => (false, Vec::new()),
+    }
+}
 
 /// A tab to materialize, plus its spawn policy. `load_on_open` drives lazy-vs-eager
 /// spawn in the registry (spec §3); the surface layer itself never sees it.
@@ -69,7 +85,7 @@ pub fn unique_label(name: &str, taken: &HashSet<String>) -> String {
 /// Build a `WindowSpec` for one window under an already-chosen `label`.
 /// Tab id = `Tab::key` (the resolved title — the reconcile identity).
 pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
-    let root_dirs: HashMap<&str, &std::path::Path> = p
+    let root_dirs: HashMap<&str, &Path> = p
         .roots
         .iter()
         .map(|r| (r.name.as_str(), r.dir.as_path()))
@@ -78,16 +94,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         .tabs
         .iter()
         .map(|t| {
-            let tree = t
-                .group
-                .as_deref()
-                .is_some_and(|g| root_dirs.contains_key(g));
-            let tree_path = t
-                .group
-                .as_deref()
-                .and_then(|g| root_dirs.get(g))
-                .map(|root_dir| crate::scanner::tree_path(root_dir, &t.dir))
-                .unwrap_or_default();
+            let (tree, tree_path) = derive_tree_meta(&root_dirs, t.group.as_deref(), &t.dir);
             TabPlan {
                 spec: TabSpec {
                     id: t.key.clone(),
@@ -228,6 +235,7 @@ pub enum WindowOp {
 /// assigned earlier in this same call.
 pub fn reconcile_ops(
     recon: &Reconciliation,
+    new_config: &Config,
     name_to_label: &HashMap<String, String>,
     taken: &HashSet<String>,
 ) -> Vec<WindowOp> {
@@ -253,26 +261,37 @@ pub fn reconcile_ops(
         let Some(label) = name_to_label.get(&u.title) else {
             continue;
         };
+        let root_dirs: HashMap<&str, &Path> = new_config
+            .windows
+            .iter()
+            .find(|w| w.title == u.title)
+            .map(|w| {
+                w.roots
+                    .iter()
+                    .map(|r| (r.name.as_str(), r.dir.as_path()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let add_tabs = u
             .add_tabs
             .iter()
-            .map(|t| TabPlan {
-                spec: TabSpec {
-                    id: t.key.clone(),
-                    title: t.title.clone(),
-                    dir: t.dir.clone(),
-                    shell: t.shell.clone(),
-                    startup: t.startup.clone(),
-                    group: t.group.clone(),
-                    probe: t.probe.clone(),
-                    kill: t.kill.clone(),
-                    // Hot-reload add path doesn't have the window's roots in scope
-                    // here (`u.add_tabs` is a flat `Tab` list); tree derivation is
-                    // out of scope for this construction site.
-                    tree: false,
-                    tree_path: Vec::new(),
-                },
-                load_on_open: t.load_on_open,
+            .map(|t| {
+                let (tree, tree_path) = derive_tree_meta(&root_dirs, t.group.as_deref(), &t.dir);
+                TabPlan {
+                    spec: TabSpec {
+                        id: t.key.clone(),
+                        title: t.title.clone(),
+                        dir: t.dir.clone(),
+                        shell: t.shell.clone(),
+                        startup: t.startup.clone(),
+                        group: t.group.clone(),
+                        probe: t.probe.clone(),
+                        kill: t.kill.clone(),
+                        tree,
+                        tree_path,
+                    },
+                    load_on_open: t.load_on_open,
+                }
             })
             .collect();
         ops.push(WindowOp::Update {
@@ -495,7 +514,7 @@ colour = "#0f8a8a"
   dir = "/tmp/alpha"
 "##);
         let r = reconcile(&old, &new);
-        let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
+        let ops = reconcile_ops(&r, &new, &name_label_map(&old), &taken(&old));
         assert_eq!(ops.len(), 1);
         match &ops[0] {
             WindowOp::Open(spec) => assert_eq!(spec.title, "work"),
@@ -515,7 +534,7 @@ colour = "#0f8a8a"
 "##);
         let new = cfg("");
         let r = reconcile(&old, &new);
-        let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
+        let ops = reconcile_ops(&r, &new, &name_label_map(&old), &taken(&old));
         assert_eq!(ops, vec![WindowOp::Close("work-zone".to_string())]);
     }
 
@@ -532,7 +551,7 @@ colour = "{C}"
         let old = cfg(&base.replace("{C}", "#0f8a8a"));
         let new = cfg(&base.replace("{C}", "#112233"));
         let r = reconcile(&old, &new);
-        let ops = reconcile_ops(&r, &name_label_map(&old), &taken(&old));
+        let ops = reconcile_ops(&r, &new, &name_label_map(&old), &taken(&old));
         assert_eq!(ops.len(), 1);
         match &ops[0] {
             WindowOp::Update { label, colour, .. } => {
@@ -707,5 +726,82 @@ colour = "#111111"
         let specs = window_specs(&c);
         assert_ne!(specs[0].label, DIAG_LABEL);
         assert_eq!(specs[0].label, "warden-diagnostic-2");
+    }
+
+    /// Regression: a tab added by a hot-reload reconcile (`WindowUpdate.add_tabs`) must
+    /// get the same tree/tree_path derivation as the initial `materialize` path
+    /// (`window_to_spec`). Before the fix, `reconcile_ops` had no roots in scope for
+    /// this construction site and hardcoded `tree: false, tree_path: vec![]`, so a
+    /// project discovered by a rescan/hot-reload rendered as a loose tab instead of
+    /// nested under its tree root.
+    #[test]
+    fn reconcile_add_tab_gets_tree_meta_from_new_config_roots() {
+        use warden_config::{Colour, Density, Root, Tab, TabDigitKeys, WindowUpdate};
+
+        let added = Tab {
+            key: "/r/Dev/gh/lockyc/warden".into(),
+            title: "warden".into(),
+            dir: "/r/Dev/gh/lockyc/warden".into(),
+            shell: "sh".into(),
+            startup: None,
+            load_on_open: false,
+            group: Some("Dev".into()),
+            probe: None,
+            kill: None,
+        };
+        let recon = Reconciliation {
+            open: Vec::new(),
+            close: Vec::new(),
+            update: vec![WindowUpdate {
+                title: "dev".into(),
+                colour: None,
+                add_tabs: vec![added],
+                remove_tabs: Vec::new(),
+                tab_order: vec!["/r/Dev/gh/lockyc/warden".into()],
+                set_meta: Vec::new(),
+            }],
+        };
+        let new_config = Config {
+            windows: vec![Window {
+                title: "dev".into(),
+                colour: Colour { r: 0, g: 0, b: 0 },
+                width: 1500,
+                height: 1000,
+                tabs: Vec::new(),
+                roots: vec![Root {
+                    name: "Dev".into(),
+                    dir: "/r/Dev".into(),
+                    depth: 6,
+                    shell: "sh".into(),
+                    startup: None,
+                    probe: None,
+                    kill: None,
+                }],
+            }],
+            format_on_save: false,
+            tab_digit_keys: TabDigitKeys::default(),
+            probe_interval: 5,
+            density: Density::default(),
+            sidebar_drag: true,
+            notify_debug: false,
+        };
+        let name_to_label: HashMap<String, String> = [("dev".to_string(), "dev".to_string())]
+            .into_iter()
+            .collect();
+        let taken: HashSet<String> = HashSet::new();
+
+        let ops = reconcile_ops(&recon, &new_config, &name_to_label, &taken);
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            WindowOp::Update { add_tabs, .. } => {
+                assert_eq!(add_tabs.len(), 1);
+                assert!(add_tabs[0].spec.tree, "added tree tab must be flagged tree");
+                assert_eq!(
+                    add_tabs[0].spec.tree_path,
+                    vec!["gh".to_string(), "lockyc".to_string()]
+                );
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
     }
 }

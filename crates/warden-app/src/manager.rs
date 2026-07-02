@@ -447,17 +447,16 @@ impl WindowManager {
     /// `WindowOp`s the reconciliation produces. Open builds a window; Close tears
     /// down its surfaces and closes the Tauri window; Update mutates the registry
     /// in place and pushes a fresh snapshot so the chrome rebuilds its sidebar.
-    /// `density`/`sidebar_drag` are the *new* config's global settings, stamped into
-    /// the refresh DTOs so a hot-reload that flips them updates the chrome (at apply
-    /// time `self.last_good` is still the old config — the caller swaps it after apply).
-    pub fn apply(
-        &mut self,
-        app: &AppHandle,
-        recon: &Reconciliation,
-        density: &str,
-        sidebar_drag: bool,
-    ) {
-        let ops = reconcile_ops(recon, &self.names, &self.taken_labels());
+    /// `new_config` is the *new* effective config (roots already expanded) — its
+    /// windows/roots are looked up by `reconcile_ops` to derive tree metadata for
+    /// tabs added by this reconcile, and its global settings (density, sidebar_drag)
+    /// are stamped into the refresh DTOs so a hot-reload that flips either updates the
+    /// chrome (at apply time `self.last_good` is still the old config — the caller
+    /// swaps it after apply).
+    pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, new_config: &Config) {
+        let ops = reconcile_ops(recon, new_config, &self.names, &self.taken_labels());
+        let density = new_config.density.as_str();
+        let sidebar_drag = new_config.sidebar_drag;
         for op in ops {
             match op {
                 WindowOp::Open(spec) => {
