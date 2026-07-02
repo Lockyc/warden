@@ -2,6 +2,10 @@
 
 Known, intentionally-deferred work. Each item is a conscious deferral, not an oversight — recorded here so it isn't lost. Remove an item when it's done.
 
+## Repo hygiene — all four repos (warden, curator, chrome-core, config-core)
+
+- **`.githooks/pre-push` bakes the private Forgejo host `git.lsjc.au` into public repos.** The tracked pre-push hook installs the doc-audit gate via `go install git.lsjc.au/lachlan/docaudit@latest` (lines ~4 & ~27), so a homelab-identifying hostname ships in every public clone, and the install hint points contributors at a host they can't reach. Impact is bounded — `core.hooksPath=.githooks` lives only in each repo's *local* config (not cloned), so a fresh clone doesn't activate the hook and no contributor is blocked; the exposure is purely the infra name. Decide (owner call): **(a)** untrack `.githooks/` and re-install locally via `docaudit install-hook` (recommended — it's opt-in per clone anyway); **(b)** publish `docaudit` publicly and swap the URL; **(c)** accept the exposure. Deferred pending that decision.
+
 ## To add in `warden-app` when needed
 
 These are trivial, zero-retrofit additions to make the moment `warden-app` needs them; deferred per YAGNI.
