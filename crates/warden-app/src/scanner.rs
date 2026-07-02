@@ -136,7 +136,10 @@ mod tests {
         fs::create_dir_all(&base.join("gh/empty")).unwrap(); // no repo → nothing
         let mut got = scan_root(&base, 6);
         got.sort();
-        assert_eq!(got, vec![base.join("gh/lockyc/warden"), base.join("gh/other/proj")]);
+        assert_eq!(
+            got,
+            vec![base.join("gh/lockyc/warden"), base.join("gh/other/proj")]
+        );
     }
 
     #[test]
@@ -144,7 +147,7 @@ mod tests {
         let base = tmp("depth");
         git(&base.join("a/b/c/deep")); // depth 4 below base
         git(&base.join(".hidden/repo")); // hidden dir skipped
-        assert!(scan_root(&base, 2).is_empty());     // too shallow to reach it
+        assert!(scan_root(&base, 2).is_empty()); // too shallow to reach it
         assert_eq!(scan_root(&base, 6), vec![base.join("a/b/c/deep")]);
     }
 

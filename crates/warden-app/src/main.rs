@@ -375,7 +375,7 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
         m.apply(&app, &recon, &fresh);
         m.last_good = fresh;
     } // release the ManagerState lock before the lock-free probe pass
-    // New discovered tabs may carry probes — refresh the session dots.
+      // New discovered tabs may carry probes — refresh the session dots.
     probe::spawn_pass(app, None);
 }
 
