@@ -151,6 +151,27 @@ cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # ch
 - `assets/` — icon masters (`icon.svg`, `icon-app.svg`), rendered PNGs, the macOS `warden.icns`, and `build-icons.sh` to regenerate the rasters from the SVGs.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 
+## Related projects
+
+warden is built on two shared library crates. Building it from source pulls them in
+automatically — they're pinned Git dependencies, resolved by a plain `cargo build` / `just run`
+with nothing extra to install:
+
+- **[chrome-core](https://github.com/Lockyc/chrome-core)** — the sidebar chrome (banner,
+  grouped tab rows, resize drag, density tokens). A build-dependency: its CSS/JS is
+  materialized into warden's bundled web assets at compile time.
+- **[config-core](https://github.com/Lockyc/config-core)** — the TOML config engine (parse,
+  validate, format, hot-reload diff) behind warden's config and `warden fmt`.
+
+Those same two cores are also shared with a **sibling app, [curator](https://github.com/Lockyc/curator)**,
+which curates **browser tabs** the way warden curates **terminals**. curator is a peer project,
+not a dependency of warden — it just draws from the same cores. (warden's embedded terminal is a
+separate, vendored third-party component; see the License note below.)
+
+If you want to iterate on the shared chrome, `just chrome-dev` builds warden against a sibling
+`../chrome-core` checkout (including uncommitted edits) and `just chrome-pin` re-pins to its
+pushed commit afterward.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
