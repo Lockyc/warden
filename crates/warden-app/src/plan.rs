@@ -186,6 +186,7 @@ pub struct WindowMenuEntry {
     pub label: String,
     pub title: String,
     pub open: bool,
+    pub colour: String, // "#rrggbb" — for launcher tiles; the app menu ignores it
 }
 
 /// Map the configured window specs (config order) to menu entries, tagging each
@@ -197,6 +198,7 @@ pub fn window_menu_entries(specs: &[WindowSpec], open: &HashSet<String>) -> Vec<
             label: s.label.clone(),
             title: s.title.clone(),
             open: open.contains(&s.label),
+            colour: s.colour.clone(),
         })
         .collect()
 }
@@ -369,6 +371,7 @@ title = "b"
         assert!(entries[0].open);
         assert_eq!(entries[1].label, "side");
         assert!(!entries[1].open);
+        assert_eq!(entries[0].colour, "#000000"); // from spec()'s colour
     }
 
     #[test]
