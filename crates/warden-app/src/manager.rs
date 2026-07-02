@@ -520,6 +520,13 @@ impl WindowManager {
                         // Apply in-place metadata (group/probe/kill) without respawning;
                         // the warden:refresh below pushes fresh DTOs (has_probe/has_kill
                         // recomputed) and the post-reload spawn_pass re-probes.
+                        // `set_meta` carries no `tree`/`tree_path` deliberately: tree-ness
+                        // never flips for a *kept* tab. A discovered tab's `group` always
+                        // names a root and its path key is derived from a stable `dir`
+                        // (a changed root `dir`/`depth` yields different path keys → add/
+                        // remove, not a kept tab), and a curated tab can't acquire a root's
+                        // name (disjoint section-name namespace). So the tab's original
+                        // `tree_path` stays valid across a metadata-only update.
                         for (id, meta) in &set_meta {
                             ws.registry.set_meta(
                                 id,

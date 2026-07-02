@@ -1393,6 +1393,88 @@ title = "dev"
     }
 
     #[test]
+    fn root_empty_dir_errors() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "dev"
+  [[window.root]]
+  dir = ""
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::EmptyRootDir {
+                window: "dev".into()
+            }
+        );
+    }
+
+    #[test]
+    fn root_empty_name_errors() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "dev"
+  [[window.root]]
+  name = ""
+  dir = "~/x"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::EmptyRootName {
+                window: "dev".into()
+            }
+        );
+    }
+
+    #[test]
+    fn root_missing_dir_warns_not_errors() {
+        let (cfg, warnings) = resolve_str(
+            r##"
+[[window]]
+title = "dev"
+  [[window.root]]
+  dir = "/no/such/warden-root-xyz"
+"##,
+        )
+        .unwrap();
+        // The root still resolves (the tree just scans nothing); a missing dir is a
+        // warning, mirroring a missing tab dir.
+        assert_eq!(cfg.windows[0].roots.len(), 1);
+        assert!(warnings
+            .iter()
+            .any(|w| w.message.contains("root dir does not exist")));
+    }
+
+    #[test]
+    fn root_vs_root_duplicate_name_errors() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "dev"
+  [[window.root]]
+  name = "dup"
+  dir = "~/a"
+  [[window.root]]
+  name = "dup"
+  dir = "~/b"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateSection {
+                window: "dev".into(),
+                name: "dup".into()
+            }
+        );
+    }
+
+    #[test]
     fn present_invalid_colour_still_errors() {
         let err = resolve(
             parse(
