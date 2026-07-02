@@ -171,6 +171,45 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_roots_dedup_to_one_tab_per_path() {
+        use warden_config::{Colour, Config, Density, Root, TabDigitKeys, Window};
+        let base = tmp("overlap");
+        git(&base.join("proj"));
+        let mk_root = |name: &str| Root {
+            name: name.into(),
+            dir: base.clone(),
+            depth: 6,
+            shell: "sh".into(),
+            startup: None,
+            probe: None,
+            kill: None,
+        };
+        // Two roots pointing at the SAME dir → the same project discovered twice.
+        let cfg = Config {
+            windows: vec![Window {
+                title: "w".into(),
+                colour: Colour { r: 0, g: 0, b: 0 },
+                width: 1500,
+                height: 1000,
+                tabs: Vec::new(),
+                roots: vec![mk_root("A"), mk_root("B")],
+            }],
+            format_on_save: false,
+            tab_digit_keys: TabDigitKeys::default(),
+            probe_interval: 5,
+            density: Density::default(),
+            sidebar_drag: true,
+            notify_debug: false,
+        };
+        let eff = crate::manager::effective_config(&cfg);
+        let tabs = &eff.windows[0].tabs;
+        // The project appears exactly once, under the FIRST root's section.
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].key, base.join("proj").to_string_lossy());
+        assert_eq!(tabs[0].group.as_deref(), Some("A"));
+    }
+
+    #[test]
     fn synthesizes_project_tabs_from_a_root() {
         use warden_config::Root;
         let base = tmp("syn");

@@ -40,6 +40,16 @@ pub fn effective_config(config: &Config) -> Config {
         for root in &window.roots {
             window.tabs.extend(crate::scanner::synthesize_tabs(root));
         }
+        // Dedup by key (curated tabs first, then roots in file order): two roots whose
+        // dirs overlap synthesize the SAME project (same absolute-path key) twice. A
+        // duplicate key isn't just a doubled row — reconcile matches by find-first, so
+        // the second copy (different group) never settles and re-emits a `set_meta`
+        // group-flip on every rescan/hot-reload. Keep the first occurrence so a project
+        // discovered by overlapping roots lands once, under the first root's section.
+        // (Curated keys are titles, unique by validation; discovered keys are paths — the
+        // two never collide, so this only ever drops a genuine overlapping-root duplicate.)
+        let mut seen = HashSet::new();
+        window.tabs.retain(|t| seen.insert(t.key.clone()));
     }
     eff
 }
