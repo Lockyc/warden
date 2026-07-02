@@ -85,9 +85,13 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///   window-state plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config are not applied to a live
 ///   window.
-/// - A window's `open_on_start` flag. It is a launch-only materialization gate,
-///   not a live-session concern, so changing it never produces an op — a window
-///   already open stays open; an already-closed one stays closed until reopened.
+/// - A window's `open_on_start` flag. It is a launch-only materialization gate
+///   (consulted solely by the app's `materialize`), NOT a live-session concern,
+///   so `reconcile` never consults it: changing it never produces an op, and a
+///   window newly *added* to the config (or renamed, which is close+open) is
+///   emitted as `open` and opens immediately **regardless of `open_on_start`** —
+///   the flag only suppresses auto-open at process launch. This is deliberate
+///   (launch-only scope); do not "fix" reconcile to gate `open` on the flag.
 ///
 /// **Window renames are destructive** — a rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
