@@ -1,3 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/warden-config", "crates/warden-app"]
+
+# ── chrome-core local-dev override (managed by `just chrome-dev` / `just chrome-pin`) ──
+# Leave COMMENTED in git — an active path patch breaks fresh clones & CI. `just chrome-dev`
+# uncomments it to build against a local ../chrome-core (incl. uncommitted edits); `just chrome-pin`
+# re-pins the rev in crates/warden-app/Cargo.toml to ../chrome-core's HEAD and re-comments this.
+# `just gate` refuses to pass while it's active. Do not hand-edit these two lines — use the recipes.
+#PATCH#[patch."https://github.com/Lockyc/chrome-core"]
+#PATCH#chrome-core = { path = "../chrome-core" }
