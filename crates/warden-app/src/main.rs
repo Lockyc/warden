@@ -445,6 +445,61 @@ fn diagnostic_message(state: tauri::State<ManagerState>) -> String {
     state.lock().diagnostic_msg.clone()
 }
 
+/// One launcher tile: a configured window + its colour + whether it's open now.
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, Clone)]
+struct LauncherEntryDto {
+    label: String,
+    title: String,
+    colour: String,
+    open: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn launcher_entries(m: &WindowManager) -> Vec<LauncherEntryDto> {
+    m.window_menu_entries()
+        .into_iter()
+        .map(|e| LauncherEntryDto {
+            label: e.label,
+            title: e.title,
+            colour: e.colour,
+            open: e.open,
+        })
+        .collect()
+}
+
+/// The launcher's window list — fetched once by `launcher.html` on load.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn list_windows(state: tauri::State<ManagerState>) -> Vec<LauncherEntryDto> {
+    launcher_entries(&state.lock())
+}
+
+/// Open (closed) or raise (open) the window `label` from the launcher, then update
+/// the empty-surface (the launcher recedes once a real window exists) and rebuild
+/// the Window menu. Mirrors the Window-menu `on_menu_event` open/focus path.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn launcher_open_window(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    label: String,
+) {
+    use tauri::Manager;
+    let app = window.app_handle().clone();
+    {
+        let mut m = state.lock();
+        if m.windows.contains_key(&label) {
+            m.focus_window(&label);
+        } else {
+            m.reopen_window(&app, &label);
+        }
+        // A real window now exists → `sync_empty_surface` closes the launcher.
+        m.sync_empty_surface(&app);
+    } // release the lock before rebuild_menu (non-reentrant mutex)
+    let _ = rebuild_menu(&app);
+}
+
 /// Remove tmux's `$TMUX`/`$TMUX_PANE` from warden-app's own environment so the shells it
 /// spawns never inherit them. tmux exports these into every process under a pane, and
 /// warden-app is routinely launched from inside a tmux session — e.g. the very agentmux
@@ -728,6 +783,8 @@ fn main() {
             start_session,
             rescan_root,
             diagnostic_message,
+            list_windows,
+            launcher_open_window,
             probe_now
         ])
         .setup(|app| {
@@ -903,6 +960,10 @@ fn main() {
                                     // all `open_on_start = false`) windows; a reconcile
                                     // may have closed the last one or opened the first.
                                     m.sync_empty_surface(&wh);
+                                    // If the launcher is still up (config valid but
+                                    // no window opened), its list may be stale (a
+                                    // window added/removed/renamed) — push a refresh.
+                                    m.refresh_launcher(&wh);
                                     // Apply the (possibly changed) probe cadence while we still
                                     // hold the lock, then release it before any lock-free work.
                                     m.set_probe_interval(loaded.config.probe_interval);

@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>warden</title>
+    <style>
+      html,body { margin:0; height:100%; font-family:system-ui;
+        background:#14110f; color:#e8e2da; }
+      #wrap { padding:1.5rem; box-sizing:border-box; }
+      h1 { font-size:.85rem; letter-spacing:.06em; text-transform:uppercase;
+        color:#9a938a; margin:0 0 1rem; font-weight:600; }
+      ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.5rem; }
+      li button { width:100%; display:flex; align-items:center; gap:.75rem;
+        background:#211d1a; border:1px solid #322c28; border-radius:8px;
+        padding:.7rem .85rem; color:inherit; font:inherit; text-align:left;
+        cursor:pointer; }
+      li button:hover { background:#2a2521; border-color:#4a423c; }
+      .swatch { width:14px; height:14px; border-radius:4px; flex:0 0 auto;
+        box-shadow:0 0 0 1px rgba(255,255,255,.08) inset; }
+      .title { flex:1 1 auto; }
+      .state { font-size:.72rem; color:#8a837a; }
+      .open .state { color:#6fae7a; }
+      .empty { color:#8a837a; font-size:.85rem; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <h1>warden — windows</h1>
+      <ul id="list"><li class="empty">loading…</li></ul>
+    </div>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const list = document.getElementById('list');
+
+      function render(entries) {
+        list.innerHTML = '';
+        if (!entries || entries.length === 0) {
+          const li = document.createElement('li');
+          li.className = 'empty';
+          li.textContent = 'No windows configured.';
+          list.appendChild(li);
+          return;
+        }
+        for (const e of entries) {
+          const li = document.createElement('li');
+          if (e.open) li.className = 'open';
+          const btn = document.createElement('button');
+          btn.innerHTML =
+            `<span class="swatch" style="background:${e.colour}"></span>` +
+            `<span class="title"></span>` +
+            `<span class="state">${e.open ? 'open' : 'open →'}</span>`;
+          btn.querySelector('.title').textContent = e.title;
+          btn.addEventListener('click', () => {
+            invoke('launcher_open_window', { label: e.label });
+          });
+          li.appendChild(btn);
+          list.appendChild(li);
+        }
+      }
+
+      invoke('list_windows').then(render);
+      // Re-render when the window set changes while the launcher is open.
+      window.__TAURI__.event.listen('warden:launcher-refresh', e => render(e.payload));
+    </script>
+  </body>
+</html>

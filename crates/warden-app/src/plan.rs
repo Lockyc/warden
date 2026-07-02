@@ -181,7 +181,7 @@ pub fn configured_specs(
 }
 
 /// One row of the Window menu: a configured window and whether it is currently open.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct WindowMenuEntry {
     pub label: String,
     pub title: String,

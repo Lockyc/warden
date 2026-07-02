@@ -233,8 +233,19 @@ impl WindowManager {
         }
     }
 
-    /// Push a fresh window list to an already-open launcher. Filled in in Task 7.
-    pub fn refresh_launcher(&self, _app: &AppHandle) {}
+    /// Push a fresh window list to an already-open launcher via
+    /// `warden:launcher-refresh`. No-op if the launcher isn't open. The payload is
+    /// `Vec<WindowMenuEntry>` (fields: label, title, open, colour) — the same keys
+    /// `list_windows` returns, which `launcher.html` reads.
+    pub fn refresh_launcher(&self, app: &AppHandle) {
+        if app.get_webview_window(LAUNCHER_LABEL).is_some() {
+            let _ = app.emit_to(
+                LAUNCHER_LABEL,
+                "warden:launcher-refresh",
+                self.window_menu_entries(),
+            );
+        }
+    }
 
     /// The single authority for what shows when there may be zero real windows.
     /// Real windows present → neither surface. Zero real windows + a valid config
