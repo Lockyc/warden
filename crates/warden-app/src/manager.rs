@@ -26,6 +26,13 @@ const INITIAL_RECT: PixelRect = PixelRect {
 /// it alone never exits the app, and it never counts as a "live" window set.
 pub const DIAG_LABEL: &str = "warden-diagnostic";
 
+/// The single launcher window's Tauri label. Like `DIAG_LABEL`, this is NOT a
+/// window label and is never inserted into `WindowManager::windows` — so it is
+/// invisible to `is_empty()` (which counts only *real* windows) and never counts
+/// as a live window. Shown by `sync_empty_surface` when zero real windows are open
+/// and the config is valid; it is warden's persistent-home surface.
+pub const LAUNCHER_LABEL: &str = "warden-launcher";
+
 /// One window's probe work-list: `(window label, its probe-enabled tabs)`.
 pub type WindowProbeTargets = (String, Vec<ProbeTarget>);
 
@@ -178,6 +185,56 @@ impl WindowManager {
             let _ = w.close();
         }
     }
+
+    /// Open (or refresh) the launcher window — warden's home surface when zero real
+    /// windows are open. Idempotent: if it's already open, push a fresh list via
+    /// `warden:launcher-refresh` (the page only fetches once on load), mirroring
+    /// `show_diagnostic`. The launcher's own close, when it's the last surface,
+    /// quits the app (its `on_window_event` below), so closing it == ⌘Q.
+    pub fn show_launcher(&mut self, app: &AppHandle) {
+        if app.get_webview_window(LAUNCHER_LABEL).is_none() {
+            // Bounds are throwaway — the plugin's `.skip_initial_state(LAUNCHER_LABEL)`
+            // (Step 3) keeps them from being persisted/restored like a real window.
+            let built = WebviewWindowBuilder::new(
+                app,
+                LAUNCHER_LABEL,
+                WebviewUrl::App("launcher.html".into()),
+            )
+            .title("warden")
+            .inner_size(520.0, 460.0)
+            .build();
+            if let Ok(w) = built {
+                // Closing the launcher while no real window exists is the explicit
+                // "I'm done" — quit. If a real window was opened first,
+                // `sync_empty_surface` already closed the launcher, so this fires
+                // only when the launcher truly is the last surface.
+                let app_for_event = app.clone();
+                w.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        if let Some(st) = app_for_event.try_state::<ManagerState>() {
+                            let empty = st.lock().is_empty();
+                            if empty {
+                                app_for_event.exit(0);
+                            }
+                        }
+                    }
+                });
+            }
+        } else {
+            self.refresh_launcher(app);
+        }
+    }
+
+    /// Close the launcher window if open (a real window opened, or recovery to a
+    /// diagnostic state). Safe no-op if it isn't open.
+    pub fn close_launcher(&mut self, app: &AppHandle) {
+        if let Some(w) = app.get_webview_window(LAUNCHER_LABEL) {
+            let _ = w.close();
+        }
+    }
+
+    /// Push a fresh window list to an already-open launcher. Filled in in Task 7.
+    pub fn refresh_launcher(&self, _app: &AppHandle) {}
 
     /// Update the shared probe-pass cadence (the poll thread reads it each tick).
     pub fn set_probe_interval(&self, secs: u64) {

@@ -22,7 +22,7 @@ mod probe;
 mod registry;
 
 #[cfg(target_os = "macos")]
-use manager::{InitDto, WindowManager, DIAG_LABEL};
+use manager::{InitDto, WindowManager, DIAG_LABEL, LAUNCHER_LABEL};
 
 use geometry::WebRect;
 
@@ -621,6 +621,7 @@ fn main() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .skip_initial_state(DIAG_LABEL)
+                .skip_initial_state(LAUNCHER_LABEL)
                 .with_filename(window_state_filename())
                 .build(),
         )
