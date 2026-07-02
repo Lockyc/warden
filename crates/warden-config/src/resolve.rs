@@ -153,11 +153,14 @@ pub fn resolve_with(
     let density = resolve_density(raw.density.as_deref())?;
 
     for (index, rp) in raw.windows.iter().enumerate() {
-        if rp.title.trim().is_empty() {
+        // Dedup on the trimmed title so a trailing-space typo collides rather than
+        // creating a distinct window; resolve_window stores it trimmed too (below).
+        let title = rp.title.trim();
+        if title.is_empty() {
             return Err(ResolveError::EmptyWindowTitle { index });
         }
-        if !seen_windows.insert(rp.title.clone()) {
-            return Err(ResolveError::DuplicateWindow(rp.title.clone()));
+        if !seen_windows.insert(title.to_string()) {
+            return Err(ResolveError::DuplicateWindow(title.to_string()));
         }
         windows.push(resolve_window(
             rp,
@@ -240,21 +243,24 @@ fn resolve_window(
     // (root-vs-root or cross-kind) reports `DuplicateSection`.
     let mut seen_sections = HashSet::new();
     for g in &rp.groups {
-        if g.name.trim().is_empty() {
+        // Dedup + tag tabs with the trimmed name so a trailing-space typo collides
+        // and Tab.group matches the section name the sidebar renders.
+        let group_name = g.name.trim();
+        if group_name.is_empty() {
             return Err(ResolveError::EmptyGroupName {
                 window: rp.title.clone(),
             });
         }
-        if !seen_sections.insert(g.name.clone()) {
+        if !seen_sections.insert(group_name.to_string()) {
             return Err(ResolveError::DuplicateGroup {
                 window: rp.title.clone(),
-                group: g.name.clone(),
+                group: group_name.to_string(),
             });
         }
         for rt in &g.tabs {
             tabs.push(resolve_tab(
                 rt,
-                Some(g.name.clone()),
+                Some(group_name.to_string()),
                 rp,
                 default_shell,
                 global_shell,
@@ -289,7 +295,7 @@ fn resolve_window(
     }
 
     Ok(Window {
-        title: rp.title.clone(),
+        title: rp.title.trim().to_string(),
         colour,
         width,
         height,
@@ -328,7 +334,13 @@ fn resolve_tab(
             });
         }
     }
-    let title = rt.title.clone().unwrap_or_else(|| basename(&dir));
+    // Store/dedup the trimmed title so a trailing-space typo collides (see the
+    // emptiness check above, which already trims); basename is whitespace-free.
+    let title = rt
+        .title
+        .as_deref()
+        .map(|t| t.trim().to_string())
+        .unwrap_or_else(|| basename(&dir));
     if !seen_titles.insert(title.clone()) {
         return Err(ResolveError::DuplicateTab {
             window: rp.title.clone(),
@@ -391,7 +403,8 @@ fn resolve_root(
                 window: rp.title.clone(),
             });
         }
-        Some(n) => n.to_string(),
+        // Store trimmed so a trailing-space typo collides in the section namespace.
+        Some(n) => n.trim().to_string(),
         None => basename(&dir),
     };
     let depth = rr.depth.unwrap_or(DEFAULT_ROOT_DEPTH);
@@ -1490,5 +1503,96 @@ colour = "not-a-colour"
         )
         .unwrap_err();
         assert!(matches!(err, ResolveError::BadColour { .. }));
+    }
+
+    // Titles/names are validated for emptiness after trimming, so they must also be
+    // deduped and stored trimmed — otherwise a trailing-space typo ("api" vs "api ")
+    // slips past uniqueness as a distinct key, and later fixing the space reads as a
+    // Tab::key change → the terminal/PTY is destroyed and respawned.
+
+    #[test]
+    fn window_titles_differing_only_by_whitespace_collide() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp"
+
+[[window]]
+title = "work "
+  [[window.tab]]
+  dir = "/tmp"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(err, ResolveError::DuplicateWindow("work".into()));
+    }
+
+    #[test]
+    fn tab_titles_differing_only_by_whitespace_collide() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  title = "api"
+  dir = "/tmp"
+  [[window.tab]]
+  title = "api "
+  dir = "/tmp"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateTab {
+                window: "work".into(),
+                title: "api".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_title_is_stored_trimmed() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "  work  "
+  [[window.tab]]
+  title = "  api  "
+  dir = "/tmp"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].title, "work");
+        assert_eq!(cfg.windows[0].tabs[0].title, "api");
+        assert_eq!(cfg.windows[0].tabs[0].key, "api");
+    }
+
+    #[test]
+    fn section_names_differing_only_by_whitespace_collide() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "work"
+  [[window.group]]
+  name = "backend"
+    [[window.group.tab]]
+    dir = "/tmp"
+  [[window.group]]
+  name = "backend "
+    [[window.group.tab]]
+    dir = "/tmp"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateGroup {
+                window: "work".into(),
+                group: "backend".into(),
+            }
+        );
     }
 }
