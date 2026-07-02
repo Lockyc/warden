@@ -66,8 +66,9 @@ kill = '"$HOME/.agentmux/bin/amux" --kill'
     cmd   = ""
 
 [[window]]
-  title  = "work"
-  colour = "#4063c4"
+  title         = "work"
+  colour        = "#4063c4"
+  open_on_start = false     # starts closed — open from the launcher
   [[window.tab]] # loose tab → renders before any group
     title        = "planning"
     dir          = "examples/projects/work/planning"

@@ -33,11 +33,12 @@ pub struct TabPlan {
 /// Everything needed to build one window window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
-    pub label: String,  // sanitized, unique — the Tauri window label
-    pub title: String,  // window title, verbatim — banner + window title
-    pub colour: String, // "#rrggbb" from Colour::hex()
-    pub width: f64,     // inner width in logical pixels
-    pub height: f64,    // inner height in logical pixels
+    pub label: String,       // sanitized, unique — the Tauri window label
+    pub title: String,       // window title, verbatim — banner + window title
+    pub colour: String,      // "#rrggbb" from Colour::hex()
+    pub width: f64,          // inner width in logical pixels
+    pub height: f64,         // inner height in logical pixels
+    pub open_on_start: bool, // false = start closed-but-configured (launcher/menu opens it)
     pub tabs: Vec<TabPlan>,
 }
 
@@ -119,6 +120,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         colour: p.colour.hex(),
         width: p.width as f64,
         height: p.height as f64,
+        open_on_start: p.open_on_start,
         tabs,
     }
 }
@@ -179,11 +181,12 @@ pub fn configured_specs(
 }
 
 /// One row of the Window menu: a configured window and whether it is currently open.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct WindowMenuEntry {
     pub label: String,
     pub title: String,
     pub open: bool,
+    pub colour: String, // "#rrggbb" — for launcher tiles; the app menu ignores it
 }
 
 /// Map the configured window specs (config order) to menu entries, tagging each
@@ -195,6 +198,7 @@ pub fn window_menu_entries(specs: &[WindowSpec], open: &HashSet<String>) -> Vec<
             label: s.label.clone(),
             title: s.title.clone(),
             open: open.contains(&s.label),
+            colour: s.colour.clone(),
         })
         .collect()
 }
@@ -324,8 +328,36 @@ mod tests {
             colour: "#000000".to_string(),
             width: 800.0,
             height: 600.0,
+            open_on_start: true,
             tabs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn window_specs_carry_open_on_start() {
+        let cfg = warden_config::resolve::resolve(
+            warden_config::raw::parse(
+                r##"
+[[window]]
+title = "a"
+open_on_start = false
+  [[window.tab]]
+  dir = "/tmp"
+
+[[window]]
+title = "b"
+  [[window.tab]]
+  dir = "/tmp"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
+        let specs = window_specs(&cfg);
+        assert_eq!(specs.len(), 2);
+        assert!(!specs[0].open_on_start, "explicit false carries through");
+        assert!(specs[1].open_on_start, "default true carries through");
     }
 
     #[test]
@@ -339,6 +371,7 @@ mod tests {
         assert!(entries[0].open);
         assert_eq!(entries[1].label, "side");
         assert!(!entries[1].open);
+        assert_eq!(entries[0].colour, "#000000"); // from spec()'s colour
     }
 
     #[test]
@@ -462,6 +495,7 @@ colour = "#0f8a8a"
             colour: Colour { r: 0, g: 0, b: 0 },
             width: 1500,
             height: 1000,
+            open_on_start: true,
             tabs: vec![Tab {
                 key: "/r/Dev/gh/lockyc/warden".into(),
                 title: "warden".into(),
@@ -768,6 +802,7 @@ colour = "#111111"
                 colour: Colour { r: 0, g: 0, b: 0 },
                 width: 1500,
                 height: 1000,
+                open_on_start: true,
                 tabs: Vec::new(),
                 roots: vec![Root {
                     name: "Dev".into(),

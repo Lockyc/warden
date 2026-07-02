@@ -65,6 +65,11 @@ pub struct Window {
     pub colour: Colour,
     pub width: u32,
     pub height: u32,
+    /// Whether this window materializes at launch. Default true. A `false` window
+    /// is configured but NOT built at startup — it starts closed-but-configured
+    /// (Window menu / launcher / reopen open it). Launch-only gate: consulted in
+    /// the app's `materialize`, and NOT diffed by `reconcile` (see reconcile.rs).
+    pub open_on_start: bool,
     pub tabs: Vec<Tab>,
     /// Project-tree roots for this window (`[[window.root]]`), in file order after any
     /// groups. Declarations only — the app scans each and synthesizes project tabs.

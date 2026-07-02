@@ -22,9 +22,17 @@ const INITIAL_RECT: PixelRect = PixelRect {
 
 /// The single diagnostic window's Tauri label. Deliberately NOT a window
 /// label and never inserted into `WindowManager::windows`, so it is invisible
-/// to `is_empty()` and carries no `Destroyed`→last-window-quit handler: closing
-/// it alone never exits the app, and it never counts as a "live" window set.
+/// to `is_empty()` and carries no `Destroyed`→`sync_empty_surface` handler: closing
+/// it alone never shows the launcher or exits the app, and it never counts as a
+/// "live" window set.
 pub const DIAG_LABEL: &str = "warden-diagnostic";
+
+/// The single launcher window's Tauri label. Like `DIAG_LABEL`, this is NOT a
+/// window label and is never inserted into `WindowManager::windows` — so it is
+/// invisible to `is_empty()` (which counts only *real* windows) and never counts
+/// as a live window. Shown by `sync_empty_surface` when zero real windows are open
+/// and the config is valid; it is warden's persistent-home surface.
+pub const LAUNCHER_LABEL: &str = "warden-launcher";
 
 /// One window's probe work-list: `(window label, its probe-enabled tabs)`.
 pub type WindowProbeTargets = (String, Vec<ProbeTarget>);
@@ -179,6 +187,87 @@ impl WindowManager {
         }
     }
 
+    /// Open (or refresh) the launcher window — warden's home surface when zero real
+    /// windows are open. Idempotent: if it's already open, push a fresh list via
+    /// `warden:launcher-refresh` (the page only fetches once on load), mirroring
+    /// `show_diagnostic`. The launcher's own close, when it's the last surface,
+    /// quits the app (its `on_window_event` below), so closing it == ⌘Q.
+    pub fn show_launcher(&mut self, app: &AppHandle) {
+        if app.get_webview_window(LAUNCHER_LABEL).is_none() {
+            // Bounds are throwaway — the plugin's `.skip_initial_state(LAUNCHER_LABEL)`
+            // (Step 3) keeps them from being persisted/restored like a real window.
+            let built = WebviewWindowBuilder::new(
+                app,
+                LAUNCHER_LABEL,
+                WebviewUrl::App("launcher.html".into()),
+            )
+            .title("warden")
+            .inner_size(520.0, 460.0)
+            .build();
+            if let Ok(w) = built {
+                // Closing the launcher while no real window exists is the explicit
+                // "I'm done" — quit. If a real window was opened first,
+                // `sync_empty_surface` already closed the launcher, so this fires
+                // only when the launcher truly is the last surface.
+                let app_for_event = app.clone();
+                w.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        if let Some(st) = app_for_event.try_state::<ManagerState>() {
+                            let empty = st.lock().is_empty();
+                            if empty {
+                                app_for_event.exit(0);
+                            }
+                        }
+                    }
+                });
+            }
+        } else {
+            self.refresh_launcher(app);
+        }
+    }
+
+    /// Close the launcher window if open (a real window opened, or recovery to a
+    /// diagnostic state). Safe no-op if it isn't open.
+    pub fn close_launcher(&mut self, app: &AppHandle) {
+        if let Some(w) = app.get_webview_window(LAUNCHER_LABEL) {
+            let _ = w.close();
+        }
+    }
+
+    /// Push a fresh window list to an already-open launcher via
+    /// `warden:launcher-refresh`. No-op if the launcher isn't open. The payload is
+    /// `Vec<WindowMenuEntry>` (fields: label, title, open, colour) — the same keys
+    /// `list_windows` returns, which `launcher.html` reads.
+    pub fn refresh_launcher(&self, app: &AppHandle) {
+        if app.get_webview_window(LAUNCHER_LABEL).is_some() {
+            let _ = app.emit_to(
+                LAUNCHER_LABEL,
+                "warden:launcher-refresh",
+                self.window_menu_entries(),
+            );
+        }
+    }
+
+    /// The single authority for what shows when there may be zero real windows.
+    /// Real windows present → neither surface. Zero real windows + a valid config
+    /// with ≥1 `[[window]]` → the launcher (warden's home). Zero real windows + no
+    /// configured windows → the diagnostic. Called after launch materialize, the
+    /// Destroyed handler, and every valid hot-reload; the error branches (parse
+    /// error / no-windows) call `show_diagnostic` directly instead, because the
+    /// diagnostic must win over the launcher when there is an error to convey.
+    pub fn sync_empty_surface(&mut self, app: &AppHandle) {
+        if !self.is_empty() {
+            self.close_launcher(app);
+            self.clear_diagnostic(app);
+        } else if !self.last_good.windows.is_empty() {
+            self.clear_diagnostic(app);
+            self.show_launcher(app);
+        } else {
+            self.close_launcher(app);
+            self.show_diagnostic(app, "config has no [[window]] entries");
+        }
+    }
+
     /// Update the shared probe-pass cadence (the poll thread reads it each tick).
     pub fn set_probe_interval(&self, secs: u64) {
         self.probe_interval.store(secs, Ordering::Relaxed);
@@ -275,9 +364,10 @@ impl WindowManager {
         };
 
         // On manual close (or any destroy), drop the window's state and reap its
-        // surfaces; quit when the last window window goes away. Idempotent with
-        // `apply`'s `WindowOp::Close` (which removes the state before closing the
-        // window): `HashMap::remove` returns `None` the second time and
+        // surfaces; `sync_empty_surface` shows the launcher (or diagnostic) once
+        // the last real window goes away — this handler no longer quits. Idempotent
+        // with `apply`'s `WindowOp::Close` (which removes the state before closing
+        // the window): `HashMap::remove` returns `None` the second time and
         // `close_all` drains, so there is no double-free.
         let app_for_event = app.clone();
         let label_for_event = spec.label.clone();
@@ -285,26 +375,28 @@ impl WindowManager {
             match event {
                 tauri::WindowEvent::Destroyed => {
                     if let Some(st) = app_for_event.try_state::<ManagerState>() {
-                        // Record this close so `⌘⇧T` can reopen it. Fires for manual
-                        // close AND hot-reload removal; a no-longer-configured label is
-                        // filtered out at reopen time, so pushing unconditionally is safe.
-                        let exited = {
+                        {
                             let mut m = st.lock();
+                            // Record this close so `⌘⇧T` can reopen it. Fires for
+                            // manual close AND hot-reload removal; a no-longer-
+                            // configured label is filtered at reopen time.
                             m.last_closed.retain(|l| l != &label_for_event);
                             m.last_closed.push(label_for_event.clone());
                             m.remove_window(&label_for_event);
-                            if m.is_empty() {
-                                app_for_event.exit(0);
-                                true
-                            } else {
-                                false
-                            }
-                        };
-                        // Refresh the Window menu's checkmarks/(closed) tags. Lock is
-                        // dropped above; rebuild_menu re-locks (non-reentrant mutex).
-                        if !exited {
-                            let _ = crate::rebuild_menu(&app_for_event);
+                            // Persistent home: last-window-close no longer quits —
+                            // it shows the launcher. ⌘Q is the only quit. With a
+                            // valid config, `sync_empty_surface` shows the launcher;
+                            // with no configured windows, the diagnostic. This also
+                            // fires for every window torn down during ⌘Q, including
+                            // the last one — verified on-device that native
+                            // `terminate:` wins that race, so no launcher is ever
+                            // presented; a `RunEvent`/`is_quitting` guard is not
+                            // needed unless that stops holding.
+                            m.sync_empty_surface(&app_for_event);
                         }
+                        // Refresh the Window menu's checkmarks/(closed) tags. Lock
+                        // dropped above; rebuild_menu re-locks (non-reentrant).
+                        let _ = crate::rebuild_menu(&app_for_event);
                     }
                 }
                 // Refresh this window's session dots when it gains focus — covers
@@ -341,13 +433,17 @@ impl WindowManager {
     /// (it would block the probe thread; mirrors probe.rs's snapshot-then-release rule).
     pub fn materialize_effective(&mut self, app: &AppHandle, config: Config, effective: Config) {
         self.set_probe_interval(config.probe_interval);
-        for spec in window_specs(&effective) {
+        for spec in window_specs(&effective)
+            .into_iter()
+            .filter(|s| s.open_on_start)
+        {
             let state = self.build_window(app, &spec);
             self.names.insert(spec.title.clone(), spec.label.clone());
             self.windows.insert(spec.label.clone(), state);
         }
         self.raw_config = config;
         self.last_good = effective;
+        self.sync_empty_surface(app);
     }
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {

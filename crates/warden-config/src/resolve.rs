@@ -212,6 +212,7 @@ fn resolve_window(
             height,
         });
     }
+    let open_on_start = rp.open_on_start.unwrap_or(true);
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
@@ -299,6 +300,7 @@ fn resolve_window(
         colour,
         width,
         height,
+        open_on_start,
         tabs,
         roots,
     })
@@ -1594,5 +1596,49 @@ title = "work"
                 group: "backend".into(),
             }
         );
+    }
+
+    #[test]
+    fn open_on_start_defaults_to_true() {
+        let cfg = resolve(
+            parse(
+                r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
+        assert!(cfg.windows[0].open_on_start);
+    }
+
+    #[test]
+    fn open_on_start_explicit_false_and_true() {
+        let cfg = resolve(
+            parse(
+                r##"
+[[window]]
+title = "a"
+open_on_start = false
+  [[window.tab]]
+  dir = "/tmp"
+
+[[window]]
+title = "b"
+open_on_start = true
+  [[window.tab]]
+  dir = "/tmp"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
+        assert!(!cfg.windows[0].open_on_start);
+        assert!(cfg.windows[1].open_on_start);
     }
 }

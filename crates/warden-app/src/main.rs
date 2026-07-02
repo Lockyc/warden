@@ -22,7 +22,7 @@ mod probe;
 mod registry;
 
 #[cfg(target_os = "macos")]
-use manager::{InitDto, WindowManager, DIAG_LABEL};
+use manager::{InitDto, WindowManager, DIAG_LABEL, LAUNCHER_LABEL};
 
 use geometry::WebRect;
 
@@ -445,6 +445,61 @@ fn diagnostic_message(state: tauri::State<ManagerState>) -> String {
     state.lock().diagnostic_msg.clone()
 }
 
+/// One launcher tile: a configured window + its colour + whether it's open now.
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, Clone)]
+struct LauncherEntryDto {
+    label: String,
+    title: String,
+    colour: String,
+    open: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn launcher_entries(m: &WindowManager) -> Vec<LauncherEntryDto> {
+    m.window_menu_entries()
+        .into_iter()
+        .map(|e| LauncherEntryDto {
+            label: e.label,
+            title: e.title,
+            colour: e.colour,
+            open: e.open,
+        })
+        .collect()
+}
+
+/// The launcher's window list — fetched once by `launcher.html` on load.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn list_windows(state: tauri::State<ManagerState>) -> Vec<LauncherEntryDto> {
+    launcher_entries(&state.lock())
+}
+
+/// Open (closed) or raise (open) the window `label` from the launcher, then update
+/// the empty-surface (the launcher recedes once a real window exists) and rebuild
+/// the Window menu. Mirrors the Window-menu `on_menu_event` open/focus path.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn launcher_open_window(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    label: String,
+) {
+    use tauri::Manager;
+    let app = window.app_handle().clone();
+    {
+        let mut m = state.lock();
+        if m.windows.contains_key(&label) {
+            m.focus_window(&label);
+        } else {
+            m.reopen_window(&app, &label);
+        }
+        // A real window now exists → `sync_empty_surface` closes the launcher.
+        m.sync_empty_surface(&app);
+    } // release the lock before rebuild_menu (non-reentrant mutex)
+    let _ = rebuild_menu(&app);
+}
+
 /// Remove tmux's `$TMUX`/`$TMUX_PANE` from warden-app's own environment so the shells it
 /// spawns never inherit them. tmux exports these into every process under a pane, and
 /// warden-app is routinely launched from inside a tmux session — e.g. the very agentmux
@@ -621,6 +676,7 @@ fn main() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
                 .skip_initial_state(DIAG_LABEL)
+                .skip_initial_state(LAUNCHER_LABEL)
                 .with_filename(window_state_filename())
                 .build(),
         )
@@ -638,7 +694,18 @@ fn main() {
             // before the focused-window lookup (reopen-last needs no focused window).
             if id == MENU_WINDOW_REOPEN_LAST {
                 let st = app.state::<ManagerState>();
-                let reopened = { st.lock().reopen_last(app) };
+                let reopened = {
+                    let mut m = st.lock();
+                    let reopened = m.reopen_last(app);
+                    // Reopening takes the live set from zero→≥1, so close the launcher if
+                    // it was showing (⌘⇧T is reachable while the launcher is the front
+                    // surface). Same invariant `launcher_open_window` upholds — every
+                    // window-open path must sync, not just the launcher's own click.
+                    if reopened {
+                        m.sync_empty_surface(app);
+                    }
+                    reopened
+                };
                 if reopened {
                     let _ = rebuild_menu(app);
                 }
@@ -653,6 +720,11 @@ fn main() {
                     } else {
                         m.reopen_window(app, win_label);
                     }
+                    // Opening a closed window from the Window menu while the launcher is
+                    // showing (zero real windows) must close the launcher — the same
+                    // invariant `launcher_open_window` upholds. Harmless no-op on the
+                    // focus (already-open) path, since the launcher can't be showing then.
+                    m.sync_empty_surface(app);
                 }
                 let _ = rebuild_menu(app);
                 return;
@@ -705,7 +777,8 @@ fn main() {
                     serde_json::json!({ "label": label }),
                 );
             } else if id == MENU_WINDOW_CLOSE {
-                // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, last-window-quit).
+                // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, then
+                // sync_empty_surface: shows the launcher if it was the last real window — no quit).
                 let _ = win.close();
             } else if let Some(n) = id
                 .strip_prefix(MENU_TAB_JUMP_PREFIX)
@@ -727,6 +800,8 @@ fn main() {
             start_session,
             rescan_root,
             diagnostic_message,
+            list_windows,
+            launcher_open_window,
             probe_now
         ])
         .setup(|app| {
@@ -857,9 +932,28 @@ fn main() {
                                     let new_density = loaded.config.density;
                                     let old_drag = m.last_good.sidebar_drag;
                                     let new_drag = loaded.config.sidebar_drag;
-                                    if m.is_empty() {
-                                        // Recovery: nothing live (launched into the
-                                        // diagnostic window). Materialize from the
+                                    // Recover (re-materialize) ONLY when we're
+                                    // actually in the diagnostic state — NOT merely
+                                    // when zero real windows exist, because the
+                                    // launcher state is also `is_empty()` and must
+                                    // take the reconcile path below (unchanged config
+                                    // ⇒ windows stay closed; an added window ⇒ opens
+                                    // ⇒ launcher recedes). Re-materializing there
+                                    // would wrongly reopen every user-closed window.
+                                    let in_diagnostic = wh.get_webview_window(DIAG_LABEL).is_some();
+                                    // Recover (materialize, fresh-launch semantics that respect
+                                    // open_on_start) when in the diagnostic state OR when there is
+                                    // no baseline to reconcile against — an empty `last_good` means
+                                    // we never had a valid config (the diagnostic may have been
+                                    // manually closed, leaving zero surfaces). Reconciling from an
+                                    // empty baseline would emit Open for EVERY window, since
+                                    // `reconcile` deliberately ignores `open_on_start`, wrongly
+                                    // opening `open_on_start = false` windows. The launcher state
+                                    // always has a non-empty `last_good`, so it still reconciles.
+                                    let recover = in_diagnostic || m.last_good.windows.is_empty();
+                                    if recover {
+                                        // Recovery: no reconcile baseline (diagnostic state, or a
+                                        // manually-closed diagnostic). Materialize from the
                                         // already-scanned effective config and close the
                                         // diagnostic, rather than reconciling against an
                                         // empty last_good.
@@ -886,6 +980,16 @@ fn main() {
                                             m.refresh_all_chrome(&wh);
                                         }
                                     }
+                                    // Update the empty-surface (launcher/diagnostic)
+                                    // now that the live window set may have changed:
+                                    // recovery may have opened only some (or zero, if
+                                    // all `open_on_start = false`) windows; a reconcile
+                                    // may have closed the last one or opened the first.
+                                    m.sync_empty_surface(&wh);
+                                    // If the launcher is still up (config valid but
+                                    // no window opened), its list may be stale (a
+                                    // window added/removed/renamed) — push a refresh.
+                                    m.refresh_launcher(&wh);
                                     // Apply the (possibly changed) probe cadence while we still
                                     // hold the lock, then release it before any lock-free work.
                                     m.set_probe_interval(loaded.config.probe_interval);
@@ -916,6 +1020,7 @@ fn main() {
                                     let st = wh.state::<ManagerState>();
                                     let mut m = st.lock();
                                     if m.is_empty() {
+                                        m.close_launcher(&wh);
                                         m.show_diagnostic(&wh, &msg);
                                     } else {
                                         drop(m);
@@ -929,6 +1034,7 @@ fn main() {
                                     let st = wh.state::<ManagerState>();
                                     let mut m = st.lock();
                                     if m.is_empty() {
+                                        m.close_launcher(&wh);
                                         m.show_diagnostic(&wh, &msg);
                                     } else {
                                         drop(m);
