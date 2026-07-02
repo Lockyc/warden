@@ -6,7 +6,6 @@
 
 **A curator for your terminals** — windows, projects, and (mostly) muxers all the way down.
 
-[![CI](https://github.com/Lockyc/warden/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/Lockyc/warden/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Lockyc/warden?sort=semver&label=release)](https://github.com/Lockyc/warden/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-CE412B?logo=rust&logoColor=white)
@@ -144,8 +143,6 @@ cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # ch
 `warden-app` materializes a window for each `[[window]]` and hot-reloads on save; edit the config while it's running to watch windows and tabs appear, disappear, and recolour live.
 
 `warden validate` prints the resolved windows/tabs and any warnings; exit code 0 (ok), 1 (load/parse/validation error), 2 (usage). `warden fmt` rewrites a config in warden's house TOML style — consistent indentation, aligned `=`, section spacing (`--check` reports without writing, for a CI gate); `format_on_save = true` applies the same formatting automatically on each clean save.
-
-**CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push to `dev`/`main` and on pull requests: `cargo fmt --all --check` plus `warden-config` clippy/tests on Linux, and the full-workspace clippy/tests (compiling the macOS-only `warden-app` against the vendored libghostty) on macOS. It mirrors `just gate`.
 
 ## Layout
 
