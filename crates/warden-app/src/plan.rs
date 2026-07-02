@@ -33,11 +33,11 @@ pub struct TabPlan {
 /// Everything needed to build one window window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
-    pub label: String,  // sanitized, unique — the Tauri window label
-    pub title: String,  // window title, verbatim — banner + window title
-    pub colour: String, // "#rrggbb" from Colour::hex()
-    pub width: f64,     // inner width in logical pixels
-    pub height: f64,    // inner height in logical pixels
+    pub label: String,       // sanitized, unique — the Tauri window label
+    pub title: String,       // window title, verbatim — banner + window title
+    pub colour: String,      // "#rrggbb" from Colour::hex()
+    pub width: f64,          // inner width in logical pixels
+    pub height: f64,         // inner height in logical pixels
     pub open_on_start: bool, // false = start closed-but-configured (launcher/menu opens it)
     pub tabs: Vec<TabPlan>,
 }

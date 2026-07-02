@@ -924,8 +924,7 @@ fn main() {
                                     // ⇒ windows stay closed; an added window ⇒ opens
                                     // ⇒ launcher recedes). Re-materializing there
                                     // would wrongly reopen every user-closed window.
-                                    let in_diagnostic =
-                                        wh.get_webview_window(DIAG_LABEL).is_some();
+                                    let in_diagnostic = wh.get_webview_window(DIAG_LABEL).is_some();
                                     if in_diagnostic {
                                         // Recovery: nothing live (launched into the
                                         // diagnostic window). Materialize from the
