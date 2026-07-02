@@ -42,6 +42,10 @@ pub struct InitDto {
     /// variables switch sizing. Carried per-window (it's global) so every window's
     /// snapshot — init and hot-reload refresh — applies the current mode.
     pub density: String,
+    /// Whether the sidebar chrome is a window-move drag handle, from the global
+    /// `sidebar_drag` config (default true). Carried per-window (it's global) so
+    /// every snapshot — init and hot-reload refresh — applies the current mode.
+    pub sidebar_drag: bool,
     pub tabs: Vec<TabDto>,
     /// A surface-spawn failure that happened while building this window, surfaced
     /// in the chrome's error banner on init. `None` = all tabs built cleanly. This
@@ -89,6 +93,7 @@ impl WindowManager {
                 tab_digit_keys: warden_config::TabDigitKeys::default(),
                 probe_interval: 5,
                 density: warden_config::Density::default(),
+                sidebar_drag: true,
                 notify_debug: false,
             },
             diagnostic_msg: String::new(),
@@ -272,6 +277,7 @@ impl WindowManager {
             title: ws.title.clone(),
             colour: ws.colour.clone(),
             density: self.last_good.density.as_str().to_string(),
+            sidebar_drag: self.last_good.sidebar_drag,
             tabs: ws.registry.tab_dtos(),
             error: ws.spawn_error.clone(),
         })
@@ -388,10 +394,10 @@ impl WindowManager {
     /// `WindowOp`s the reconciliation produces. Open builds a window; Close tears
     /// down its surfaces and closes the Tauri window; Update mutates the registry
     /// in place and pushes a fresh snapshot so the chrome rebuilds its sidebar.
-    /// `density` is the *new* config's density token, stamped into the refresh DTOs
-    /// so a hot-reload that flips density updates the chrome (at apply time
-    /// `self.last_good` is still the old config — the caller swaps it after apply).
-    pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, density: &str) {
+    /// `density`/`sidebar_drag` are the *new* config's global settings, stamped into
+    /// the refresh DTOs so a hot-reload that flips them updates the chrome (at apply
+    /// time `self.last_good` is still the old config — the caller swaps it after apply).
+    pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, density: &str, sidebar_drag: bool) {
         let ops = reconcile_ops(recon, &self.names, &self.taken_labels());
         for op in ops {
             match op {
@@ -478,6 +484,7 @@ impl WindowManager {
                             title: ws.title.clone(),
                             colour: ws.colour.clone(),
                             density: density.to_string(),
+                            sidebar_drag,
                             tabs: ws.registry.tab_dtos(),
                             // Refresh carries no spawn error; a hot-reload add
                             // failure is logged + retried-on-focus, not banner-pushed.

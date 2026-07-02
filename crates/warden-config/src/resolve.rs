@@ -164,6 +164,7 @@ pub fn resolve_with(
             tab_digit_keys,
             probe_interval: raw.probe_interval.unwrap_or(5),
             density,
+            sidebar_drag: raw.sidebar_drag.unwrap_or(true),
             notify_debug: raw.notify_debug.unwrap_or(false),
         },
         warnings,
@@ -468,6 +469,33 @@ colour = "#0f8a8a"
         )
         .unwrap_err();
         assert_eq!(err, ResolveError::BadDensity("roomy".to_string()));
+    }
+
+    #[test]
+    fn sidebar_drag_defaults_to_true() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.sidebar_drag);
+    }
+
+    #[test]
+    fn sidebar_drag_can_be_disabled() {
+        let (cfg, _) = resolve_str(
+            r##"
+sidebar_drag = false
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.sidebar_drag);
     }
 
     #[test]

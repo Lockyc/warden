@@ -14,6 +14,9 @@ pub struct Config {
     pub probe_interval: u64,
     /// Chrome sizing mode. Whole-app concern — no per-window cascade.
     pub density: Density,
+    /// Whether the sidebar chrome is a window-move drag handle. Default true.
+    /// Whole-app concern — no per-window cascade.
+    pub sidebar_drag: bool,
     /// Diagnostic: when true, warden-app traces the notification path to a log
     /// file. Default false. Opaque to the crate — a debug aid the app interprets.
     pub notify_debug: bool,

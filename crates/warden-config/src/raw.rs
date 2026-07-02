@@ -19,6 +19,9 @@ pub struct RawConfig {
     pub tab_digit_keys: Option<String>,
     // Chrome sizing: "comfortable" (default) or "compact". Validated in resolve.rs.
     pub density: Option<String>,
+    // Whether the sidebar chrome acts as a window-move drag handle (global only).
+    // Optional; a missing field resolves to true (drag on by default).
+    pub sidebar_drag: Option<bool>,
     // Diagnostic toggle: when true, warden-app appends a trace of the notification
     // path (signal type, target tab, banner post/accept, willPresent) to a log file.
     // Off by default; a debug aid for the macOS-26 banner-suppression issue (see

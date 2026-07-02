@@ -40,7 +40,11 @@
   </head>
   <body>
     <div id="app">
-      <aside id="sidebar" data-tauri-drag-region></aside>
+      <!-- The window-move drag region is owned by chrome-core (stamped on the banner + tab-list per
+           the `windowDrag` DTO flag from `sidebar_drag`), not this wrapper — it's fully covered by
+           the component's children, so an attr here would be inert AND unconditional (ignoring the
+           toggle). Leave it off. -->
+      <aside id="sidebar"></aside>
       <div id="terminal-hole">
         <div id="empty-state">
           <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
@@ -105,6 +109,9 @@
           title: dto.title,
           colour: dto.colour ?? null,
           density: dto.density || "comfortable",
+          // sidebar_drag (global config, default on): make the non-interactive chrome a
+          // window-move drag handle. Absent field defaults on, matching warden's default.
+          windowDrag: dto.sidebar_drag !== false,
           tabs: dto.tabs.map((t) => ({
             id: t.id,
             title: t.title,

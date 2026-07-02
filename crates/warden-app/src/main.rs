@@ -782,10 +782,13 @@ fn main() {
                                     let mut m = st.lock();
                                     // The app menu is global, not part of window reconcile;
                                     // rebuilt below from current state.
-                                    // Density is global too — a density-only edit yields an empty
-                                    // reconcile (no per-window op), so nudge every chrome below.
+                                    // Density + sidebar_drag are global too — a change to either
+                                    // alone yields an empty reconcile (no per-window op), so nudge
+                                    // every chrome below.
                                     let old_density = m.last_good.density;
                                     let new_density = loaded.config.density;
+                                    let old_drag = m.last_good.sidebar_drag;
+                                    let new_drag = loaded.config.sidebar_drag;
                                     if m.is_empty() {
                                         // Recovery: nothing live (launched into the
                                         // diagnostic window). Materialize from scratch
@@ -796,13 +799,18 @@ fn main() {
                                     } else {
                                         let recon =
                                             warden_config::reconcile(&m.last_good, &loaded.config);
-                                        m.apply(&wh, &recon, loaded.config.density.as_str());
+                                        m.apply(
+                                            &wh,
+                                            &recon,
+                                            loaded.config.density.as_str(),
+                                            loaded.config.sidebar_drag,
+                                        );
                                         // Advance the reconcile baseline ONLY on a valid load.
                                         m.last_good = loaded.config.clone();
-                                        // A density flip alone produces no per-window op, so
-                                        // apply() emitted nothing; re-push every window's snapshot
-                                        // (now carrying the new density) so each chrome restyles.
-                                        if old_density != new_density {
+                                        // A density/sidebar_drag flip alone produces no per-window
+                                        // op, so apply() emitted nothing; re-push every window's
+                                        // snapshot (now carrying the new globals) so each restyles.
+                                        if old_density != new_density || old_drag != new_drag {
                                             m.refresh_all_chrome(&wh);
                                         }
                                     }
