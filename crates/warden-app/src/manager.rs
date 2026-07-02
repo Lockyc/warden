@@ -236,6 +236,26 @@ impl WindowManager {
     /// Push a fresh window list to an already-open launcher. Filled in in Task 7.
     pub fn refresh_launcher(&self, _app: &AppHandle) {}
 
+    /// The single authority for what shows when there may be zero real windows.
+    /// Real windows present → neither surface. Zero real windows + a valid config
+    /// with ≥1 `[[window]]` → the launcher (warden's home). Zero real windows + no
+    /// configured windows → the diagnostic. Called after launch materialize, the
+    /// Destroyed handler, and every valid hot-reload; the error branches (parse
+    /// error / no-windows) call `show_diagnostic` directly instead, because the
+    /// diagnostic must win over the launcher when there is an error to convey.
+    pub fn sync_empty_surface(&mut self, app: &AppHandle) {
+        if !self.is_empty() {
+            self.close_launcher(app);
+            self.clear_diagnostic(app);
+        } else if !self.last_good.windows.is_empty() {
+            self.clear_diagnostic(app);
+            self.show_launcher(app);
+        } else {
+            self.close_launcher(app);
+            self.show_diagnostic(app, "config has no [[window]] entries");
+        }
+    }
+
     /// Update the shared probe-pass cadence (the poll thread reads it each tick).
     pub fn set_probe_interval(&self, secs: u64) {
         self.probe_interval.store(secs, Ordering::Relaxed);
@@ -332,9 +352,10 @@ impl WindowManager {
         };
 
         // On manual close (or any destroy), drop the window's state and reap its
-        // surfaces; quit when the last window window goes away. Idempotent with
-        // `apply`'s `WindowOp::Close` (which removes the state before closing the
-        // window): `HashMap::remove` returns `None` the second time and
+        // surfaces; `sync_empty_surface` shows the launcher (or diagnostic) once
+        // the last real window goes away — this handler no longer quits. Idempotent
+        // with `apply`'s `WindowOp::Close` (which removes the state before closing
+        // the window): `HashMap::remove` returns `None` the second time and
         // `close_all` drains, so there is no double-free.
         let app_for_event = app.clone();
         let label_for_event = spec.label.clone();
@@ -342,26 +363,23 @@ impl WindowManager {
             match event {
                 tauri::WindowEvent::Destroyed => {
                     if let Some(st) = app_for_event.try_state::<ManagerState>() {
-                        // Record this close so `⌘⇧T` can reopen it. Fires for manual
-                        // close AND hot-reload removal; a no-longer-configured label is
-                        // filtered out at reopen time, so pushing unconditionally is safe.
-                        let exited = {
+                        {
                             let mut m = st.lock();
+                            // Record this close so `⌘⇧T` can reopen it. Fires for
+                            // manual close AND hot-reload removal; a no-longer-
+                            // configured label is filtered at reopen time.
                             m.last_closed.retain(|l| l != &label_for_event);
                             m.last_closed.push(label_for_event.clone());
                             m.remove_window(&label_for_event);
-                            if m.is_empty() {
-                                app_for_event.exit(0);
-                                true
-                            } else {
-                                false
-                            }
-                        };
-                        // Refresh the Window menu's checkmarks/(closed) tags. Lock is
-                        // dropped above; rebuild_menu re-locks (non-reentrant mutex).
-                        if !exited {
-                            let _ = crate::rebuild_menu(&app_for_event);
+                            // Persistent home: last-window-close no longer quits —
+                            // it shows the launcher. ⌘Q is the only quit. With a
+                            // valid config, `sync_empty_surface` shows the launcher;
+                            // with no configured windows, the diagnostic.
+                            m.sync_empty_surface(&app_for_event);
                         }
+                        // Refresh the Window menu's checkmarks/(closed) tags. Lock
+                        // dropped above; rebuild_menu re-locks (non-reentrant).
+                        let _ = crate::rebuild_menu(&app_for_event);
                     }
                 }
                 // Refresh this window's session dots when it gains focus — covers
@@ -408,6 +426,7 @@ impl WindowManager {
         }
         self.raw_config = config;
         self.last_good = effective;
+        self.sync_empty_surface(app);
     }
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {
