@@ -29,6 +29,21 @@ pub const DIAG_LABEL: &str = "warden-diagnostic";
 /// One window's probe work-list: `(window label, its probe-enabled tabs)`.
 pub type WindowProbeTargets = (String, Vec<ProbeTarget>);
 
+/// Expand a config's project-tree roots into the effective tab set: for each window,
+/// append the scanner-synthesized project tabs for every `[[window.root]]` to `tabs`.
+/// This is what the whole pipeline (window_specs / reconcile / registry) consumes, so a
+/// discovered project is just a `Tab` and needs no special-casing downstream. Roots'
+/// tabs come after loose + grouped tabs, matching the "sections in file order" rule.
+pub fn effective_config(config: &Config) -> Config {
+    let mut eff = config.clone();
+    for window in &mut eff.windows {
+        for root in &window.roots {
+            window.tabs.extend(crate::scanner::synthesize_tabs(root));
+        }
+    }
+    eff
+}
+
 #[derive(serde::Serialize, Clone)]
 pub struct InitDto {
     /// The Tauri window label this snapshot describes. The chrome records it on

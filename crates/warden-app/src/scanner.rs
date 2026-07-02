@@ -5,6 +5,7 @@
 //! that synthesizes project tabs (see plan.rs / manager.rs).
 
 use std::path::{Path, PathBuf};
+use warden_config::{Root, Tab};
 
 /// True if `dir` is a git root (`.git` dir or file present).
 fn is_git_root(dir: &Path) -> bool {
@@ -82,6 +83,33 @@ pub fn tree_path(root_dir: &Path, project: &Path) -> Vec<String> {
     segs
 }
 
+/// Discover the root's projects and turn each into a synthetic `Tab`. Identity is the
+/// absolute project path (unique even across same-named projects); the display title is
+/// the basename. `group` = the root's name so the existing group-sectioning places these
+/// rows under a labelled section. Cascade values (shell/cmd/probe/kill) come from the root.
+pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
+    scan_root(&root.dir, root.depth)
+        .into_iter()
+        .map(|path| {
+            let title = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            Tab {
+                key: path.to_string_lossy().into_owned(),
+                title,
+                dir: path,
+                shell: root.shell.clone(),
+                startup: root.startup.clone(),
+                load_on_open: false,
+                group: Some(root.name.clone()),
+                probe: root.probe.clone(),
+                kill: root.kill.clone(),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +165,32 @@ mod tests {
             vec!["gh".to_string(), "lockyc".to_string()]
         );
         assert!(tree_path(&root, &PathBuf::from("/r/Developer/loose")).is_empty());
+    }
+
+    #[test]
+    fn synthesizes_project_tabs_from_a_root() {
+        use warden_config::Root;
+        let base = tmp("syn");
+        git(&base.join("gh/lockyc/warden"));
+        git(&base.join("solo"));
+        let root = Root {
+            name: "Developer".into(),
+            dir: base.clone(),
+            depth: 6,
+            shell: "gsh -l".into(),
+            startup: Some("run".into()),
+            probe: Some("p".into()),
+            kill: None,
+        };
+        let mut tabs = synthesize_tabs(&root);
+        tabs.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(tabs.len(), 2);
+        let warden = tabs.iter().find(|t| t.title == "warden").unwrap();
+        assert_eq!(warden.key, base.join("gh/lockyc/warden").to_string_lossy());
+        assert_eq!(warden.group.as_deref(), Some("Developer"));
+        assert_eq!(warden.shell, "gsh -l");
+        assert_eq!(warden.startup.as_deref(), Some("run"));
+        assert_eq!(warden.probe.as_deref(), Some("p"));
+        assert!(!warden.load_on_open);
     }
 }

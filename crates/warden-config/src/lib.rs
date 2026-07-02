@@ -12,7 +12,7 @@ pub mod watch;
 // `warden_config::{Colour, ColourError, format_file, format_str}` unchanged.
 pub use config_core::{format_file, format_str, Colour, ColourError};
 pub use load::{config_path, load, load_with, LoadError, Loaded};
-pub use model::{Config, Density, Tab, TabDigitKeys, Warning, Window};
+pub use model::{Config, Density, Root, Tab, TabDigitKeys, Warning, Window};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, WindowUpdate};
 pub use resolve::ResolveError;
 pub use watch::Watcher;
