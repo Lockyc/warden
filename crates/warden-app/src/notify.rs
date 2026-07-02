@@ -57,9 +57,13 @@ static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 /// (see docs/notifications.md): the trace proves warden's side is correct so the suspect is the OS.
 static NOTIFY_DEBUG: AtomicBool = AtomicBool::new(false);
 
-/// Where the `notify_debug` trace is written. `/tmp` is fine — a fresh log per boot is exactly what
-/// the reboot-and-retry workflow wants.
-const NOTIFY_DEBUG_LOG: &str = "/tmp/warden-notify-dbg.log";
+/// Where the `notify_debug` trace is written: under the per-user temp dir (`$TMPDIR`, per-user on
+/// macOS) rather than a world-shared `/tmp` path, so another local user can't read the traced
+/// notification text or pre-plant a symlink to redirect our appends into a file they own. A fresh
+/// log per boot is exactly what the reboot-and-retry workflow wants.
+fn notify_debug_log() -> std::path::PathBuf {
+    std::env::temp_dir().join("warden-notify-dbg.log")
+}
 
 /// Append a line to the trace log — a no-op unless `notify_debug` is enabled. Best-effort: a failed
 /// open is silently ignored (diagnostics must never affect the notification path).
@@ -68,10 +72,16 @@ fn dbglog(msg: &str) {
         return;
     }
     use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    // O_NOFOLLOW (macOS value) refuses to open through a symlink planted at the path; 0600 keeps the
+    // trace unreadable to other local users. warden-app is macOS-only, so the literal flag is safe.
+    const O_NOFOLLOW: i32 = 0x0100;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(NOTIFY_DEBUG_LOG)
+        .mode(0o600)
+        .custom_flags(O_NOFOLLOW)
+        .open(notify_debug_log())
     {
         let _ = writeln!(f, "{msg}");
     }
