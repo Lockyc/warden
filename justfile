@@ -8,9 +8,16 @@ export PATH := env_var('HOME') + "/.cargo/bin:" + env_var('PATH')
 default:
     @just --list
 
+# git-init the mock example project dirs into real repos so the demo config's [[window.root]]
+# tree section has projects to discover. Idempotent (git init is safe to re-run); the created
+# .git dirs are git-ignored. Run automatically by `just run`.
+[group("dev")]
+seed-examples:
+    @for d in "{{justfile_directory()}}"/examples/projects/*/*/; do git -C "$d" init -q; done
+
 # Run the app against the repo's demo config (never touches your real ~/.config/warden config)
 [group("dev")]
-run:
+run: seed-examples
     WARDEN_CONFIG="{{justfile_directory()}}/examples/config.toml" cargo run -p warden-app
 
 # Validate a config and print the resolved window/tab tree + warnings (defaults to the demo).

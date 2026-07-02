@@ -16,10 +16,12 @@
 #
 # A [[window.root]] auto-discovers git projects under a `dir` instead of listing tabs by hand —
 # each one becomes a tab in a collapsible tree section. Roots cascade shell/cmd/probe/kill just
-# like tabs (root -> window -> global, no tab level). See the commented example at the bottom.
+# like tabs (root -> window -> global, no tab level). See the "projects" window at the bottom.
 #
 # The `dir`s point at examples/projects/ (tracked mock dirs) so this demo validates warning-free
-# from the repo root. A real config uses absolute or ~/-prefixed paths to your actual projects.
+# from the repo root. `just run` first `git init`s those mock dirs (`just seed-examples`) so the
+# "projects" window's tree has real repos to discover. A real config uses absolute or ~/-prefixed
+# paths to your actual projects.
 
 shell          = "fish -l"     # global default shell for every tab
 cmd            = "amux"        # global default: launch agentmux in each tab (shell stays live on exit)
@@ -46,22 +48,6 @@ probe_interval = 5
 # shells bare `tmux`, resolved via warden's login-PATH import; absolute paths stay the robust
 # fallback.) Only reachable on a tab that also sets `probe` (no probe ⇒ no dot to click).
 kill = '"$HOME/.agentmux/bin/amux" --kill'
-
-# [[window.root]] auto-discovers git projects under a dir and renders them as a collapsible
-# tree section — no per-tab config needed. Commented out here because examples/projects/ is
-# just tracked .gitkeep mock dirs (not real git repos), so the scanner would find nothing;
-# point `dir` at a real projects folder to try it, e.g.:
-#
-# [[window]]
-# title  = "projects"
-# colour = "#0f8a8a"
-#
-#   [[window.root]]
-#   name  = "Developer"
-#   dir   = "~/Developer"
-#   depth = 6                                    # optional; default 6 levels below `dir`
-#   probe = '"$HOME/.agentmux/bin/amux" --probe' # every discovered project gets a session dot
-#   kill  = '"$HOME/.agentmux/bin/amux" --kill'
 
 [[window]]
   title  = "personal"
@@ -105,3 +91,16 @@ kill = '"$HOME/.agentmux/bin/amux" --kill'
       title = "mobile"
       dir   = "examples/projects/work/mobile"
       shell = "zsh"
+
+# A project-tree window: instead of listing tabs, point a [[window.root]] at a dir and warden
+# discovers every git project under it, rendering them as a collapsible tree (folders collapse,
+# each git repo is a tab). Here it scans examples/projects/ → a "personal" and a "work" folder,
+# each holding the mock repos `just seed-examples` created. shell/cmd/probe/kill cascade from the
+# globals, so every discovered project spawns fish + amux and gets a session dot. Your own config
+# points `dir` at ~/Developer (or wherever your repos live).
+[[window]]
+  title  = "projects"
+  colour = "#8a5cf6"
+
+  [[window.root]]
+    dir = "examples/projects" # name defaults to the dir's basename ("projects")

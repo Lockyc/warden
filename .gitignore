@@ -11,3 +11,7 @@ crates/warden-app/gen/
 
 # Release artifacts built by scripts/release.sh (uploaded to GitHub, not tracked)
 /warden-*-macos.zip
+
+# `just seed-examples` git-inits the mock example project dirs into real repos so the
+# [[window.root]] tree demo has something to discover — those local .git dirs aren't tracked.
+examples/projects/**/.git/
