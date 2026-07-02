@@ -314,6 +314,25 @@ impl WindowManager {
         self.windows.keys().cloned().collect()
     }
 
+    /// Specs for every configured window (config order), with labels **consistent
+    /// with the live window set** — the single source of truth for the Window menu
+    /// and every reopen path.
+    ///
+    /// An open window keeps its **actual live label** (from `self.names`); a live
+    /// Tauri window can't be relabeled, so the menu/reopen mapping has to match it.
+    /// Closed-but-configured windows get a deterministic fresh label that avoids
+    /// every already-assigned label. Recomputing labels purely from config order
+    /// (`window_specs`) instead diverges from a live window's label whenever two
+    /// titles sanitize to the same base and were introduced in an order that made
+    /// `reconcile_ops` (which seeds from live labels) suffix a different one — which
+    /// made the menu raise the wrong window, reopen build a duplicate, and `⌘⇧T`
+    /// miss the closed window. Pinning open windows here removes that divergence.
+    /// Pure logic lives in `plan::configured_specs` (unit-tested); this just supplies
+    /// the live state (title→label map + the in-use label set).
+    fn configured_specs(&self) -> Vec<WindowSpec> {
+        crate::plan::configured_specs(&self.last_good, &self.names, &self.taken_labels())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.windows.is_empty()
     }
@@ -331,10 +350,10 @@ impl WindowManager {
     }
 
     /// Menu rows for every configured window, tagged open/closed. Derived live
-    /// from `last_good` (deterministic labels via `window_specs`) and the live
-    /// `windows` keyset — nothing persisted.
+    /// from `last_good` + the live window set via `configured_specs` (labels pinned
+    /// to live windows) — nothing persisted.
     pub fn window_menu_entries(&self) -> Vec<crate::plan::WindowMenuEntry> {
-        let specs = window_specs(&self.last_good);
+        let specs = self.configured_specs();
         let open: HashSet<String> = self.windows.keys().cloned().collect();
         crate::plan::window_menu_entries(&specs, &open)
     }
@@ -353,7 +372,8 @@ impl WindowManager {
         if self.windows.contains_key(label) {
             return false;
         }
-        let Some(spec) = window_specs(&self.last_good)
+        let Some(spec) = self
+            .configured_specs()
             .into_iter()
             .find(|s| s.label == label)
         else {
@@ -369,7 +389,8 @@ impl WindowManager {
     /// Reopen the most-recently-closed reopenable window (`⌘⇧T`). Returns whether
     /// a window was reopened.
     pub fn reopen_last(&mut self, app: &AppHandle) -> bool {
-        let configured: HashSet<String> = window_specs(&self.last_good)
+        let configured: HashSet<String> = self
+            .configured_specs()
             .into_iter()
             .map(|s| s.label)
             .collect();
@@ -382,7 +403,8 @@ impl WindowManager {
 
     /// Whether `⌘⇧T` / "Reopen Last Closed" has a reopenable target right now.
     pub fn has_reopen_target(&self) -> bool {
-        let configured: HashSet<String> = window_specs(&self.last_good)
+        let configured: HashSet<String> = self
+            .configured_specs()
             .into_iter()
             .map(|s| s.label)
             .collect();
@@ -397,7 +419,13 @@ impl WindowManager {
     /// `density`/`sidebar_drag` are the *new* config's global settings, stamped into
     /// the refresh DTOs so a hot-reload that flips them updates the chrome (at apply
     /// time `self.last_good` is still the old config — the caller swaps it after apply).
-    pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, density: &str, sidebar_drag: bool) {
+    pub fn apply(
+        &mut self,
+        app: &AppHandle,
+        recon: &Reconciliation,
+        density: &str,
+        sidebar_drag: bool,
+    ) {
         let ops = reconcile_ops(recon, &self.names, &self.taken_labels());
         for op in ops {
             match op {

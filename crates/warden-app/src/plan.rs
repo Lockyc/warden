@@ -114,6 +114,43 @@ pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
         .collect()
 }
 
+/// Specs for every configured window (config order) with labels **consistent with
+/// the live window set** — the source of truth the Window menu and reopen paths use.
+///
+/// An open window (its title present in `live_names`) keeps its **actual live label**:
+/// a live Tauri window can't be relabeled, so the mapping must match it. A closed
+/// window gets a deterministic fresh label via `unique_label`, avoiding every live
+/// label (`live_labels`) ∪ the diagnostic reservation ∪ labels assigned earlier here.
+///
+/// This exists because recomputing labels purely from config order (`window_specs`)
+/// diverges from a live window's label whenever two titles sanitize to the same base
+/// and the colliding pair was introduced in an order that made `reconcile_ops` (which
+/// seeds from live labels) suffix the *other* one — which made the Window menu raise
+/// the wrong window, reopen rebuild a duplicate, and `⌘⇧T` miss the closed window.
+pub fn configured_specs(
+    config: &Config,
+    live_names: &HashMap<String, String>,
+    live_labels: &HashSet<String>,
+) -> Vec<WindowSpec> {
+    let mut taken: HashSet<String> = live_labels.clone();
+    taken.insert(DIAG_LABEL.to_string());
+    config
+        .windows
+        .iter()
+        .map(|w| {
+            let label = match live_names.get(&w.title) {
+                Some(live) => live.clone(),
+                None => {
+                    let l = unique_label(&w.title, &taken);
+                    taken.insert(l.clone());
+                    l
+                }
+            };
+            window_to_spec(w, label)
+        })
+        .collect()
+}
+
 /// One row of the Window menu: a configured window and whether it is currently open.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowMenuEntry {
@@ -508,6 +545,88 @@ colour = "#222222"
         // the "-2" suffix via unique_label.
         assert_eq!(specs[0].label, "a-b");
         assert_eq!(specs[1].label, "a-b-2");
+    }
+
+    fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(t, l)| (t.to_string(), l.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn configured_specs_pins_open_windows_to_their_live_labels() {
+        // The divergence scenario: two titles both sanitize to "a-b". At runtime the
+        // window titled "a b" was hot-reload-opened *after* "a-b" already held the
+        // base label, so reconcile_ops suffixed it "a-b-2". window_specs (config order,
+        // "a b" first) would instead give "a b" the base "a-b" — the disagreement that
+        // corrupted the menu. configured_specs must keep the live labels.
+        let c = cfg(r##"
+[[window]]
+title = "a b"
+colour = "#111111"
+  [[window.tab]]
+  title = "t1"
+  dir = "/tmp/t1"
+[[window]]
+title = "a-b"
+colour = "#222222"
+  [[window.tab]]
+  title = "t2"
+  dir = "/tmp/t2"
+"##);
+        // Live state: both windows open, on the labels reconcile_ops actually assigned.
+        let live_names = map(&[("a b", "a-b-2"), ("a-b", "a-b")]);
+        let live_labels = set(&["a-b-2", "a-b"]);
+        let specs = configured_specs(&c, &live_names, &live_labels);
+        // Pinned to the LIVE labels (not window_specs' config-order assignment).
+        assert_eq!(specs[0].title, "a b");
+        assert_eq!(specs[0].label, "a-b-2");
+        assert_eq!(specs[1].title, "a-b");
+        assert_eq!(specs[1].label, "a-b");
+    }
+
+    #[test]
+    fn configured_specs_assigns_closed_windows_avoiding_live_labels() {
+        // Same config, but the "a-b" window is closed (absent from live state) while
+        // "a b" stays open on its live "a-b-2". The closed window must get a fresh
+        // label that avoids the live one — and it resolves to the same label it held
+        // when open, so ⌘⇧T / reopen (which match against last_closed) line up.
+        let c = cfg(r##"
+[[window]]
+title = "a b"
+colour = "#111111"
+  [[window.tab]]
+  title = "t1"
+  dir = "/tmp/t1"
+[[window]]
+title = "a-b"
+colour = "#222222"
+  [[window.tab]]
+  title = "t2"
+  dir = "/tmp/t2"
+"##);
+        let live_names = map(&[("a b", "a-b-2")]);
+        let live_labels = set(&["a-b-2"]);
+        let specs = configured_specs(&c, &live_names, &live_labels);
+        assert_eq!(specs[0].label, "a-b-2"); // open → pinned live
+        assert_eq!(specs[1].label, "a-b"); // closed → fresh, avoids live "a-b-2"
+    }
+
+    #[test]
+    fn configured_specs_reserves_diagnostic_label_for_closed_windows() {
+        let c = cfg(r##"
+[[window]]
+title = "warden diagnostic"
+colour = "#111111"
+  [[window.tab]]
+  title = "t1"
+  dir = "/tmp/t1"
+"##);
+        // No live windows: the sole window is "closed" and must not grab DIAG_LABEL.
+        let specs = configured_specs(&c, &HashMap::new(), &HashSet::new());
+        assert_ne!(specs[0].label, DIAG_LABEL);
+        assert_eq!(specs[0].label, "warden-diagnostic-2");
     }
 
     #[test]
