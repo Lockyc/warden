@@ -359,6 +359,28 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     });
 }
 
+/// Re-scan every project-tree root of the focused window's config and reconcile:
+/// projects that appeared/vanished on disk surface as tab add/remove, without a
+/// config-file edit. Diffs the freshly-expanded config against what's on screen
+/// (`last_good`), so it is NOT a no-op when disk changed.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
+    use tauri::Manager;
+    let app = window.app_handle().clone();
+    {
+        let mut m = state.lock();
+        let fresh = manager::effective_config(&m.raw_config);
+        let recon = warden_config::reconcile(&m.last_good, &fresh);
+        let density = m.last_good.density.as_str().to_string();
+        let sidebar_drag = m.last_good.sidebar_drag;
+        m.apply(&app, &recon, &density, sidebar_drag);
+        m.last_good = fresh;
+    } // release the ManagerState lock before the lock-free probe pass
+    // New discovered tabs may carry probes — refresh the session dots.
+    probe::spawn_pass(app, None);
+}
+
 /// Update the calling window's active-surface frame from a web-coordinate rect.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -673,6 +695,7 @@ fn main() {
             unload_tab,
             kill_session,
             start_session,
+            rescan_root,
             diagnostic_message,
             probe_now
         ])
@@ -798,8 +821,12 @@ fn main() {
                                         m.materialize(&wh, loaded.config.clone());
                                         m.clear_diagnostic(&wh);
                                     } else {
+                                        // Reconcile against the EFFECTIVE (root-expanded) configs
+                                        // so a project appearing/vanishing on disk since last load
+                                        // surfaces as a tab add/remove. Re-scans on every reload.
+                                        let new_eff = manager::effective_config(&loaded.config);
                                         let recon =
-                                            warden_config::reconcile(&m.last_good, &loaded.config);
+                                            warden_config::reconcile(&m.last_good, &new_eff);
                                         m.apply(
                                             &wh,
                                             &recon,
@@ -807,7 +834,8 @@ fn main() {
                                             loaded.config.sidebar_drag,
                                         );
                                         // Advance the reconcile baseline ONLY on a valid load.
-                                        m.last_good = loaded.config.clone();
+                                        m.last_good = new_eff;
+                                        m.raw_config = loaded.config.clone();
                                         // A density/sidebar_drag flip alone produces no per-window
                                         // op, so apply() emitted nothing; re-push every window's
                                         // snapshot (now carrying the new globals) so each restyles.

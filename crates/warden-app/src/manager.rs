@@ -83,6 +83,11 @@ pub struct WindowManager {
     pub windows: HashMap<String, WindowState>, // key = Tauri label
     pub names: HashMap<String, String>,        // window title -> label
     pub last_good: Config,
+    /// The RAW config as loaded (roots UNexpanded). `last_good` is its expanded
+    /// form (`effective_config(&raw_config)`, i.e. with discovered project tabs
+    /// appended); `raw_config` is retained so `rescan_root` can re-expand + re-scan
+    /// without a config-file change.
+    pub raw_config: Config,
     /// The message shown by the diagnostic window; fetched by its page via the
     /// `diagnostic_message` command. Empty when no diagnostic is showing.
     pub diagnostic_msg: String,
@@ -99,18 +104,23 @@ pub struct WindowManager {
 
 impl WindowManager {
     pub fn new() -> Self {
+        // `last_good` (effective) and `raw_config` (raw) start identical and empty;
+        // clone rather than duplicate the literal so a new Config field can't drift
+        // between them.
+        let empty = Config {
+            windows: Vec::new(),
+            format_on_save: false,
+            tab_digit_keys: warden_config::TabDigitKeys::default(),
+            probe_interval: 5,
+            density: warden_config::Density::default(),
+            sidebar_drag: true,
+            notify_debug: false,
+        };
         WindowManager {
             windows: HashMap::new(),
             names: HashMap::new(),
-            last_good: Config {
-                windows: Vec::new(),
-                format_on_save: false,
-                tab_digit_keys: warden_config::TabDigitKeys::default(),
-                probe_interval: 5,
-                density: warden_config::Density::default(),
-                sidebar_drag: true,
-                notify_debug: false,
-            },
+            raw_config: empty.clone(),
+            last_good: empty,
             diagnostic_msg: String::new(),
             probe_interval: Arc::new(AtomicU64::new(5)),
             last_closed: Vec::new(),
@@ -275,15 +285,21 @@ impl WindowManager {
         }
     }
 
-    /// Materialize every window as a window. Sets `last_good = config`.
+    /// Materialize every window as a window. Expands `config`'s project-tree
+    /// roots via `effective_config` before building; `raw_config` keeps the
+    /// unexpanded config for later re-scans (`rescan_root`), while `last_good`
+    /// (the reconcile baseline) holds the expanded form so a reopened window
+    /// still carries its discovered project tabs.
     pub fn materialize(&mut self, app: &AppHandle, config: Config) {
+        let effective = effective_config(&config);
         self.set_probe_interval(config.probe_interval);
-        for spec in window_specs(&config) {
+        for spec in window_specs(&effective) {
             let state = self.build_window(app, &spec);
             self.names.insert(spec.title.clone(), spec.label.clone());
             self.windows.insert(spec.label.clone(), state);
         }
-        self.last_good = config;
+        self.raw_config = config;
+        self.last_good = effective;
     }
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {
