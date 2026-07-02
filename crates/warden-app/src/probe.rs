@@ -15,6 +15,53 @@ use tauri::{AppHandle, Emitter, Manager};
 /// and the tab treated as absent.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Fast-burst probe interval — the cadence a window polls at while it is "hot" (a key moment
+/// just fired) and its session state hasn't settled yet.
+pub(crate) const FAST: Duration = Duration::from_millis(400);
+/// Scheduler wake granularity — it wakes on a bump OR at least this often to service due windows.
+pub(crate) const TICK: Duration = Duration::from_millis(200);
+/// Ceiling on a single burst: a flapping/nondeterministic probe never "settles", so without this it
+/// would pin the poll thread Fast forever. After CAP the window drops to the slow floor regardless.
+pub(crate) const CAP: Duration = Duration::from_secs(20);
+/// Consecutive unchanged passes that count as "settled" (~AGREE_TARGET * FAST of agreement).
+pub(crate) const AGREE_TARGET: u32 = 3;
+
+/// The cadence a window should adopt after a probe pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Cadence {
+    /// Keep bursting at [`FAST`] — state hasn't settled and the burst hasn't hit [`CAP`].
+    Fast,
+    /// Settled (or capped): poll at the slow floor after this delay.
+    Slow(Duration),
+    /// Settled (or capped) with `probe_interval == 0`: event-driven only, no steady poll.
+    Idle,
+}
+
+/// Pure fast-until-stable transition. Given whether this pass's states changed vs the previous pass,
+/// the running agreement count, how long the current burst has run, and the slow-floor seconds,
+/// return the new agreement count and the cadence to adopt next. Settling requires
+/// [`AGREE_TARGET`] consecutive unchanged passes; a burst is force-ended at [`CAP`] so a flapping
+/// signal can't burst forever. `slow_secs == 0` maps a settled/capped window to [`Cadence::Idle`].
+pub(crate) fn advance(
+    changed: bool,
+    agree: u32,
+    elapsed: Duration,
+    slow_secs: u64,
+) -> (u32, Cadence) {
+    let agree = if changed { 0 } else { agree + 1 };
+    let settled = agree >= AGREE_TARGET;
+    let capped = elapsed >= CAP;
+    if settled || capped {
+        if slow_secs == 0 {
+            (agree, Cadence::Idle)
+        } else {
+            (agree, Cadence::Slow(Duration::from_secs(slow_secs)))
+        }
+    } else {
+        (agree, Cadence::Fast)
+    }
+}
+
 /// Substitute the per-tab tokens into a probe command. `{dir}` → working
 /// directory, `{title}` → tab title. Other text is left verbatim.
 pub fn substitute(probe: &str, dir: &Path, title: &str) -> String {
@@ -175,5 +222,47 @@ mod tests {
             start.elapsed() < PROBE_TIMEOUT + Duration::from_secs(2),
             "probe should return around the timeout, not wait out the sleep"
         );
+    }
+
+    #[test]
+    fn advance_settles_after_agree_target_unchanged_passes() {
+        // Two agreeing passes are not enough; the third (agree reaches AGREE_TARGET) settles.
+        let (a1, c1) = advance(false, 0, Duration::from_millis(400), 5);
+        assert_eq!(a1, 1);
+        assert!(matches!(c1, Cadence::Fast));
+        let (a2, c2) = advance(false, a1, Duration::from_millis(800), 5);
+        assert_eq!(a2, 2);
+        assert!(matches!(c2, Cadence::Fast));
+        let (a3, c3) = advance(false, a2, Duration::from_millis(1200), 5);
+        assert_eq!(a3, 3);
+        assert!(matches!(c3, Cadence::Slow(d) if d == Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn advance_change_resets_agreement_and_stays_fast() {
+        let (a, c) = advance(true, 2, Duration::from_millis(1200), 5);
+        assert_eq!(a, 0);
+        assert!(matches!(c, Cadence::Fast));
+    }
+
+    #[test]
+    fn advance_settled_with_zero_slow_goes_idle() {
+        // probe_interval == 0 → event-driven only: after settling, Idle (no steady poll).
+        let (_, c) = advance(false, AGREE_TARGET - 1, Duration::from_millis(1200), 0);
+        assert!(matches!(c, Cadence::Idle));
+    }
+
+    #[test]
+    fn advance_caps_a_flapping_signal_to_slow() {
+        // Never agrees (changed every pass) but the burst exceeded CAP → drop out of Fast anyway.
+        let (a, c) = advance(true, 0, CAP + Duration::from_secs(1), 5);
+        assert_eq!(a, 0);
+        assert!(matches!(c, Cadence::Slow(d) if d == Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn advance_cap_with_zero_slow_goes_idle() {
+        let (_, c) = advance(true, 0, CAP + Duration::from_secs(1), 0);
+        assert!(matches!(c, Cadence::Idle));
     }
 }
