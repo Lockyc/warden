@@ -94,7 +94,9 @@ notify_debug = true   # global; default false
 
 It is read **once at launch** (a hot-reload change needs a restart), and only adds logging — the
 production notification path is byte-for-byte unchanged when it's off (no completion handler is even
-attached). When on, warden appends a trace to **`/tmp/warden-notify-dbg.log`**: the signal type, the
+attached). When on, warden appends a trace to **`$TMPDIR/warden-notify-dbg.log`** (the per-user temp
+dir, e.g. `/var/folders/…/T/` — not world-shared `/tmp`, so another local user can't read the traced
+notification text; see `notify_debug_log` in `notify.rs`): the signal type, the
 target tab and its visible/hidden state, whether `show_banner` posted, whether usernoted accepted,
 and whether `willPresent` fired. A reproduction that shows all of those succeeding while no banner
 appears on screen is the signature of the OS-side suppression above — and the proof to *not* edit
