@@ -319,6 +319,10 @@ const _: () = assert!(std::mem::size_of::<ghostty_surface_config_s>() == 120);
 const _: () = assert!(std::mem::size_of::<ghostty_runtime_config_s>() == 64);
 const _: () = assert!(std::mem::size_of::<ghostty_target_s>() == 16);
 const _: () = assert!(std::mem::size_of::<ghostty_action_s>() == 32);
+// ghostty_input_key_s is passed by value to forward_key's ghostty_surface_key — a header
+// bump that shifts `text`/`unshifted_codepoint`'s offsets would silently corrupt every
+// keystroke, so guard its size too (3×enum + keycode = 16, ptr 16..24, u32+bool → 32).
+const _: () = assert!(std::mem::size_of::<ghostty_input_key_s>() == 32);
 
 // --- Published C API (minimal: init/app, surface new/free, set_size, set_content_scale, key, focus) ---
 extern "C" {

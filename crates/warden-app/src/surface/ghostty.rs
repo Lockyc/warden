@@ -733,6 +733,9 @@ pub struct GhosttySurface {
     host_view: Retained<WardenHostView>,
     window: Retained<NSWindow>,
     surface: ffi::ghostty_surface_t,
+    /// Set once teardown has run (via `close()` or `Drop`), so the two paths can't
+    /// double-free the libghostty surface or double-remove the notification observer.
+    closed: bool,
 }
 
 // SAFETY: see module docs — Tauri-state affordance only; main-thread access.
@@ -864,6 +867,7 @@ impl GhosttySurface {
                 host_view,
                 window,
                 surface,
+                closed: false,
             })
         }
     }
@@ -932,7 +936,22 @@ impl TerminalSurface for GhosttySurface {
         }
     }
 
-    fn close(self) {
+    fn close(mut self) {
+        self.teardown();
+        // `self` drops here; `Drop` sees `closed == true` and no-ops.
+    }
+}
+
+impl GhosttySurface {
+    /// Idempotent teardown shared by `close()` and the `Drop` safety net. Guarded by
+    /// `closed` so the two paths can't double-free the surface or double-remove the
+    /// observer. Must run before the `Retained` fields drop (releasing their retains),
+    /// which they do right after — matching the original `close()` ordering.
+    fn teardown(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
         // Drop the key-state observers registered in new() before the view is freed, so the
         // notification center stops messaging a dangling view.
         unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.host_view) };
@@ -949,6 +968,24 @@ impl TerminalSurface for GhosttySurface {
             // (a dangling pointer after the free) is never read again.
             ffi::ghostty_surface_free(self.surface);
             self.host_view.removeFromSuperview();
+        }
+    }
+}
+
+impl Drop for GhosttySurface {
+    /// Safety net: every Registry teardown path calls `close()`, but a surface dropped
+    /// *without* it (e.g. a future `Vec` op on the tab registry, or `ManagerState` teardown
+    /// at process exit) would otherwise leak the libghostty surface/PTY and leave a dangling
+    /// notification observer the center keeps messaging — a latent use-after-free. `teardown`
+    /// is idempotent (guarded by `closed`), so this is a no-op after `close()`.
+    fn drop(&mut self) {
+        if !self.closed {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "warden: GhosttySurface dropped without close() — tearing down in Drop (bug: a \
+                 registry path bypassed close())"
+            );
+            self.teardown();
         }
     }
 }
