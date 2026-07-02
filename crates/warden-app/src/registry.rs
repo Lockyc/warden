@@ -142,12 +142,12 @@ impl Registry {
             .map(|k| (t.spec.dir.clone(), t.title.clone(), k.clone()))
     }
 
-    /// Restart tab `id`'s session by re-typing its startup command into the **live** shell
-    /// (newline-terminated, exactly as `initial_input` delivers it at spawn) — the runtime twin of
-    /// how the tab launched. Preserves the terminal/scrollback (no respawn). Returns `false` (no-op)
-    /// when the tab is unknown, has no startup command, or is cold — a cold tab has no shell to type
-    /// into and is (re)started by activating it. The chrome only offers this on a live+startable tab
-    /// with an absent session, so `false` means a stale/racing click.
+    /// Restart tab `id`'s session by typing its startup command into the **live** shell and
+    /// submitting it (`TerminalSurface::run_command` — text inject + a real Enter keypress) — the
+    /// runtime twin of how the tab launched. Preserves the terminal/scrollback (no respawn). Returns
+    /// `false` (no-op) when the tab is unknown, has no startup command, or is cold — a cold tab has
+    /// no shell to type into and is (re)started by activating it. The chrome only offers this on a
+    /// live+startable tab with an absent session, so `false` means a stale/racing click.
     pub fn start_session(&self, id: &str) -> bool {
         let Some(t) = self.tabs.iter().find(|t| t.id == id) else {
             return false;
@@ -157,7 +157,7 @@ impl Registry {
         };
         match &t.slot {
             TabSlot::Spawned(s) => {
-                s.send_text(&format!("{cmd}\n"));
+                s.run_command(cmd);
                 true
             }
             TabSlot::Cold => false,

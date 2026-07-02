@@ -902,10 +902,33 @@ impl TerminalSurface for GhosttySurface {
         }
     }
 
-    fn send_text(&self, text: &str) {
-        // Length-delimited buffer (not a C string) → embedded NULs are fine and no CString needed.
+    fn run_command(&self, cmd: &str) {
         unsafe {
-            ffi::ghostty_surface_text(self.surface, text.as_ptr() as *const c_char, text.len());
+            // 1) Inject the command text. Length-delimited buffer (not a C string) → embedded NULs
+            //    are fine and no CString needed. This lands like a paste, so it must NOT include the
+            //    newline: a shell in bracketed-paste mode would insert it literally, not run the line.
+            ffi::ghostty_surface_text(self.surface, cmd.as_ptr() as *const c_char, cmd.len());
+            // 2) Submit with a real Enter key event (macOS virtual keycode 36, unshifted codepoint
+            //    CR) — Ghostty's key encoder turns this into the correct submit bytes for the
+            //    surface's current keyboard mode, which a bare `\n` can't. PRESS does the encoding;
+            //    RELEASE mirrors a real keypress.
+            let enter = |action| ffi::ghostty_input_key_s {
+                action,
+                mods: ffi::GHOSTTY_MODS_NONE,
+                consumed_mods: ffi::GHOSTTY_MODS_NONE,
+                keycode: 36, // kVK_Return
+                text: ptr::null(),
+                unshifted_codepoint: 0x0d, // CR — what the Return key reports
+                composing: false,
+            };
+            ffi::ghostty_surface_key(
+                self.surface,
+                enter(ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS),
+            );
+            ffi::ghostty_surface_key(
+                self.surface,
+                enter(ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE),
+            );
         }
     }
 

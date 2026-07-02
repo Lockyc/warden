@@ -83,10 +83,12 @@ pub trait TerminalSurface {
     fn show(&self);
     fn hide(&self);
     fn focus(&self);
-    /// Inject text into the live surface as if typed (runtime equivalent of the spawn-time
-    /// `startup`/`initial_input`). Used to re-run a tab's command into its existing shell — e.g.
-    /// restarting a session whose probe reports it gone, without respawning the terminal.
-    fn send_text(&self, text: &str);
+    /// Type `cmd` into the live shell and submit it — inject the command text, then a real Enter
+    /// keypress. Used to re-run a tab's command in its existing shell (e.g. restart a session whose
+    /// probe reports it gone) without respawning. The Enter must be a synthesized *key event*, not a
+    /// trailing `"\n"` in the text: text injection lands as a paste, and a shell in bracketed-paste
+    /// mode inserts the newline literally instead of running the line.
+    fn run_command(&self, cmd: &str);
     fn close(self);
 }
 
