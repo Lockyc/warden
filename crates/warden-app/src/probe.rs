@@ -3,6 +3,7 @@
 //! design — warden knows nothing about tmux/amux; the command lives in config.
 
 use crate::ManagerState;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -115,6 +116,41 @@ pub fn run_probe(cmd: &str, dir: &Path) -> bool {
             Err(_) => return false,
         }
     }
+}
+
+/// Probe one window's tabs and emit its `warden:session-state`, returning the per-tab result map.
+/// Snapshots the work-list under the manager lock, then releases it BEFORE running the (slow)
+/// probes — never hold the mutex across `sh -c`. Returns an empty map for an unknown/closed label
+/// or a window with no probe-enabled tabs (the caller settles that to Idle/Slow trivially).
+pub(crate) fn probe_window(app: &AppHandle, label: &str) -> BTreeMap<String, bool> {
+    let Some(state) = app.try_state::<ManagerState>() else {
+        return BTreeMap::new();
+    };
+    // (label, Vec<(id, dir, title, probe)>) — lock held only for the snapshot.
+    let per_window = {
+        let m = state.lock();
+        m.probe_targets(Some(label))
+    };
+    let mut result = BTreeMap::new();
+    for (_lbl, tabs) in per_window {
+        for (id, dir, title, probe) in tabs {
+            let cmd = substitute(&probe, &dir, &title);
+            result.insert(id, run_probe(&cmd, &dir));
+        }
+    }
+    if result.is_empty() {
+        return result; // nothing to emit; caller compares empty==empty → settles
+    }
+    let mut states = serde_json::Map::new();
+    for (id, on) in &result {
+        states.insert(id.clone(), serde_json::Value::Bool(*on));
+    }
+    let _ = app.emit_to(
+        label,
+        "warden:session-state",
+        serde_json::json!({ "label": label, "states": states }),
+    );
+    result
 }
 
 /// Synchronously probe one window (`Some(label)`) or all (`None`) and emit a
