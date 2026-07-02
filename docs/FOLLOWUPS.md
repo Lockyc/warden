@@ -16,6 +16,14 @@ These are trivial, zero-retrofit additions to make the moment `warden-app` needs
 
 - **No debounce / coalescing** in `Watcher` (`crates/warden-config/src/watch.rs`). The callback fires for every filesystem event matching the config file name. Editors that write in place (rather than atomic temp-file + rename) can produce a transient `load()` parse error (a partial read mid-write) and/or multiple callbacks per save. Atomic-save editors are unaffected. Debounce/coalescing is intentionally left to `warden-app`, which owns the reload UX and already keeps last-good config on a parse error. Also documented at the call site.
 
+## warden ↔ agentmux signal richness (deferred integration ideas)
+
+Two related deferrals about the seam between warden and agentmux. Both are conscious decisions, not gaps.
+
+- **Richer agent-state channel (deferred).** Today warden receives only two coarse signals per tab: an undifferentiated **amber attention badge** (OSC 777, fired by agentmux on both *permission-needed* and *done*, collapsed into one indicator) and a **binary presence dot** (probe exit 0/≠0). agentmux itself already computes distinct per-agent states — *working / needs-permission / waiting / done*. A future protocol addition (a richer escape carrying the state, or a structured presence channel) could let warden render "needs-you" **distinctly** from "done" instead of one amber dot for both. **Caveat to keep in mind before "fixing" this:** the mapping is **inherently lossy regardless of protocol richness** — many agentmux tabs (tmux windows) map onto a *single* warden tab (one libghostty terminal surface), so a warden tab necessarily aggregates N agents' states into one indicator. This N→1 collapse is structural, not a bug: don't later mistake the aggregation for something to "fix" by trying to surface per-agent state on a single terminal surface.
+
+- **Presence stays poll-based, by decision (not push).** We considered replacing warden's per-tab `amux --probe` polling with an **agentmux-pushed presence escape** (an OSC the agent emits on session start/stop) — lower latency, no periodic `sh -c` overhead. **Decision: keep polling.** Polling preserves warden's **generic, tool-agnostic seam** — warden reads only a probe command's *exit code* and encodes nothing about amux, tmux, sockets, or session naming (the command is entirely the user's; see the probe footguns in `CLAUDE.md`). A pushed presence escape would bake an agentmux-specific signal into warden's core, coupling the two. Recorded here as a **settled decision** so a future "optimize poll → push" isn't re-litigated: the polling cost is accepted as the price of the generic seam.
+
 ## Lower-priority / edge cases
 
 - **`warden validate` exit code does not distinguish "ok" from "ok with warnings"** (`crates/warden-config/src/bin/warden.rs`) — both exit 0. Not spec-mandated; revisit if a CI consumer needs to gate on nonexistent-dir warnings.
