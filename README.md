@@ -111,6 +111,9 @@ Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
 
 With [`just`](https://github.com/casey/just) (run `just` to list recipes):
 
+`just run` launches against [`examples/config.toml`](examples/config.toml), whose tabs point at the
+mock project tree documented in [`examples/projects/README.md`](examples/projects/README.md).
+
 ```sh
 just run          # launch the app against examples/config.toml (never touches your real config)
 just validate     # validate the demo config (pass a path to validate another)
@@ -154,4 +157,4 @@ MIT — see [`LICENSE`](LICENSE).
 The vendored libghostty binary (`crates/warden-app/vendor/`) is third-party code
 distributed under its own MIT license (Ghostty); see
 [`crates/warden-app/vendor/LICENSE-ghostty`](crates/warden-app/vendor/LICENSE-ghostty)
-and `PROVENANCE.md` in that directory.
+and [`PROVENANCE.md`](crates/warden-app/vendor/PROVENANCE.md) in that directory.
