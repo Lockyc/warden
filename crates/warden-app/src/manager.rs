@@ -341,7 +341,10 @@ impl WindowManager {
     /// (it would block the probe thread; mirrors probe.rs's snapshot-then-release rule).
     pub fn materialize_effective(&mut self, app: &AppHandle, config: Config, effective: Config) {
         self.set_probe_interval(config.probe_interval);
-        for spec in window_specs(&effective) {
+        for spec in window_specs(&effective)
+            .into_iter()
+            .filter(|s| s.open_on_start)
+        {
             let state = self.build_window(app, &spec);
             self.names.insert(spec.title.clone(), spec.label.clone());
             self.windows.insert(spec.label.clone(), state);

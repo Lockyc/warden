@@ -38,6 +38,7 @@ pub struct WindowSpec {
     pub colour: String, // "#rrggbb" from Colour::hex()
     pub width: f64,     // inner width in logical pixels
     pub height: f64,    // inner height in logical pixels
+    pub open_on_start: bool, // false = start closed-but-configured (launcher/menu opens it)
     pub tabs: Vec<TabPlan>,
 }
 
@@ -119,6 +120,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         colour: p.colour.hex(),
         width: p.width as f64,
         height: p.height as f64,
+        open_on_start: p.open_on_start,
         tabs,
     }
 }
@@ -324,8 +326,36 @@ mod tests {
             colour: "#000000".to_string(),
             width: 800.0,
             height: 600.0,
+            open_on_start: true,
             tabs: Vec::new(),
         }
+    }
+
+    #[test]
+    fn window_specs_carry_open_on_start() {
+        let cfg = warden_config::resolve::resolve(
+            warden_config::raw::parse(
+                r##"
+[[window]]
+title = "a"
+open_on_start = false
+  [[window.tab]]
+  dir = "/tmp"
+
+[[window]]
+title = "b"
+  [[window.tab]]
+  dir = "/tmp"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
+        let specs = window_specs(&cfg);
+        assert_eq!(specs.len(), 2);
+        assert!(!specs[0].open_on_start, "explicit false carries through");
+        assert!(specs[1].open_on_start, "default true carries through");
     }
 
     #[test]
