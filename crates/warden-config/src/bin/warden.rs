@@ -42,6 +42,22 @@ fn main() {
                                 group
                             );
                         }
+                        // Roots are declarations the app expands at runtime (the CLI does
+                        // no scanning), so print the root + its resolved cascade rather
+                        // than discovered projects — otherwise a roots-only window looks
+                        // deceptively empty.
+                        for r in &p.roots {
+                            println!(
+                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?}",
+                                r.name,
+                                r.dir.display(),
+                                r.depth,
+                                r.shell,
+                                r.startup,
+                                r.probe,
+                                r.kill
+                            );
+                        }
                     }
                     for w in &loaded.warnings {
                         eprintln!("warning [{}]: {}", w.window, w.message);
