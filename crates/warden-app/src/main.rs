@@ -368,9 +368,15 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
 fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
     use tauri::Manager;
     let app = window.app_handle().clone();
+    // Clone the raw config under a brief lock, then run the recursive scan OFF the
+    // lock so it never stalls the background probe thread; re-lock only to apply.
+    // Sync `#[tauri::command]`s run on the main thread (as does hot-reload), and we
+    // don't yield the main thread between the two locks, so no other writer can
+    // interleave — `last_good`/`raw_config` are unchanged when we re-lock.
+    let raw = state.lock().raw_config.clone();
+    let fresh = manager::effective_config(&raw);
     {
         let mut m = state.lock();
-        let fresh = manager::effective_config(&m.raw_config);
         let recon = warden_config::reconcile(&m.last_good, &fresh);
         m.apply(&app, &recon, &fresh);
         m.last_good = fresh;
@@ -760,9 +766,10 @@ fn main() {
                     let app_poll = handle.clone();
                     std::thread::spawn(move || loop {
                         let secs = interval.load(Ordering::Relaxed);
-                        if secs > 0 {
-                            probe::run_pass(&app_poll, None);
-                        }
+                        // Wait one interval BEFORE the first pass, not after — launch
+                        // dots come from each window's `probe_now` (see below), so an
+                        // immediate pass here would just spawn every probe once with
+                        // no listener yet registered to receive the result (dropped).
                         // secs == 0 → idle; still slice-sleep so re-enabling is responsive.
                         let target = if secs > 0 { secs } else { SLICE };
                         let mut slept = 0;
@@ -770,6 +777,11 @@ fn main() {
                             let chunk = std::cmp::min(SLICE, target - slept);
                             std::thread::sleep(Duration::from_secs(chunk));
                             slept += chunk;
+                        }
+                        // Probe only if still enabled after the wait (a mid-wait 0→N flip
+                        // breaks the loop above and lands here promptly; N→0 skips).
+                        if interval.load(Ordering::Relaxed) > 0 {
+                            probe::run_pass(&app_poll, None);
                         }
                     });
                 }
@@ -815,6 +827,14 @@ fn main() {
                             use tauri::{Emitter, Manager};
                             match res {
                                 Ok(loaded) if !loaded.config.windows.is_empty() => {
+                                    // Expand `[[window.root]]`s into the EFFECTIVE config
+                                    // (recursive git-project scan) BEFORE taking the lock —
+                                    // the walk is slow and must never run under the
+                                    // ManagerState mutex, or it stalls the background probe
+                                    // thread for its whole duration (mirrors probe.rs's
+                                    // snapshot-then-release discipline). We're on the main
+                                    // thread here, so no other writer interleaves.
+                                    let new_eff = manager::effective_config(&loaded.config);
                                     let st = wh.state::<ManagerState>();
                                     let mut m = st.lock();
                                     // The app menu is global, not part of window reconcile;
@@ -828,16 +848,20 @@ fn main() {
                                     let new_drag = loaded.config.sidebar_drag;
                                     if m.is_empty() {
                                         // Recovery: nothing live (launched into the
-                                        // diagnostic window). Materialize from scratch
-                                        // and close the diagnostic, rather than
-                                        // reconciling against an empty last_good.
-                                        m.materialize(&wh, loaded.config.clone());
+                                        // diagnostic window). Materialize from the
+                                        // already-scanned effective config and close the
+                                        // diagnostic, rather than reconciling against an
+                                        // empty last_good.
+                                        m.materialize_effective(
+                                            &wh,
+                                            loaded.config.clone(),
+                                            new_eff,
+                                        );
                                         m.clear_diagnostic(&wh);
                                     } else {
                                         // Reconcile against the EFFECTIVE (root-expanded) configs
                                         // so a project appearing/vanishing on disk since last load
                                         // surfaces as a tab add/remove. Re-scans on every reload.
-                                        let new_eff = manager::effective_config(&loaded.config);
                                         let recon =
                                             warden_config::reconcile(&m.last_good, &new_eff);
                                         m.apply(&wh, &recon, &new_eff);
@@ -872,16 +896,33 @@ fn main() {
                                     probe::spawn_pass(wh.clone(), None);
                                 }
                                 Ok(_) => {
-                                    // Valid TOML but no windows: keep live windows up,
-                                    // surface the error banner rather than tearing down.
-                                    let _ = wh.emit(
-                                        "warden:error",
-                                        "config has no [[window]] entries".to_string(),
-                                    );
+                                    // Valid TOML but no windows. If live windows exist,
+                                    // keep them up and surface the error banner; if we're
+                                    // already in the diagnostic state (no live windows),
+                                    // there's no banner — route it to the diagnostic so a
+                                    // second bad save doesn't leave the launch text stale.
+                                    let msg = "config has no [[window]] entries".to_string();
+                                    let st = wh.state::<ManagerState>();
+                                    let mut m = st.lock();
+                                    if m.is_empty() {
+                                        m.show_diagnostic(&wh, &msg);
+                                    } else {
+                                        drop(m);
+                                        let _ = wh.emit("warden:error", msg);
+                                    }
                                 }
                                 Err(e) => {
-                                    // Keep last_good; surface the parse error in the banner.
-                                    let _ = wh.emit("warden:error", e.to_string());
+                                    // Keep last_good; surface the parse error in the banner,
+                                    // or in the diagnostic when no live window can show one.
+                                    let msg = e.to_string();
+                                    let st = wh.state::<ManagerState>();
+                                    let mut m = st.lock();
+                                    if m.is_empty() {
+                                        m.show_diagnostic(&wh, &msg);
+                                    } else {
+                                        drop(m);
+                                        let _ = wh.emit("warden:error", msg);
+                                    }
                                 }
                             }
                         });

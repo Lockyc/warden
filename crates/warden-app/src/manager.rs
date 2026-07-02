@@ -137,12 +137,14 @@ impl WindowManager {
         }
     }
 
-    /// Open (or update) the single diagnostic window with `message`. Used at
-    /// launch when the config is missing/invalid/empty, and during hot-reload
-    /// recovery this window is closed by `clear_diagnostic`. Idempotent: if the
-    /// window already exists, only the message is refreshed (the page re-fetches
-    /// it on its own load; an already-open window keeps its stale text, which is
-    /// acceptable since the banner path covers live edits).
+    /// Open (or update) the single diagnostic window with `message`. Used at launch
+    /// when the config is missing/invalid/empty, and during hot-reload while still in
+    /// the diagnostic state (no live windows) — a *subsequent* bad save must replace
+    /// the shown text, not leave the launch message stale, since there's no banner in
+    /// the diagnostic state to cover it. On first open the page fetches the message via
+    /// the `diagnostic_message` command; for an already-open window we push it via
+    /// `warden:diagnostic` (the page listens and updates), because the page only fetches
+    /// once on load. Cleared by `clear_diagnostic` on recovery to a valid config.
     pub fn show_diagnostic(&mut self, app: &AppHandle, message: &str) {
         self.diagnostic_msg = message.to_string();
         if app.get_webview_window(DIAG_LABEL).is_none() {
@@ -154,6 +156,9 @@ impl WindowManager {
             .title("warden")
             .inner_size(560.0, 320.0)
             .build();
+        } else {
+            // Already open: the page won't re-fetch, so push the new text to it.
+            let _ = app.emit("warden:diagnostic", message.to_string());
         }
     }
 
@@ -302,6 +307,14 @@ impl WindowManager {
     /// still carries its discovered project tabs.
     pub fn materialize(&mut self, app: &AppHandle, config: Config) {
         let effective = effective_config(&config);
+        self.materialize_effective(app, config, effective);
+    }
+
+    /// Materialize from an **already-scanned** effective config. Split out so a caller
+    /// holding the `ManagerState` lock can run the recursive root scan (`effective_config`)
+    /// *before* locking and pass the result in — the scan must never run under the lock
+    /// (it would block the probe thread; mirrors probe.rs's snapshot-then-release rule).
+    pub fn materialize_effective(&mut self, app: &AppHandle, config: Config, effective: Config) {
         self.set_probe_interval(config.probe_interval);
         for spec in window_specs(&effective) {
             let state = self.build_window(app, &spec);

@@ -16,7 +16,12 @@
     </div>
     <script>
       const { invoke } = window.__TAURI__.core;
-      invoke('diagnostic_message').then(m => { document.getElementById('msg').textContent = m; });
+      const msg = document.getElementById('msg');
+      // Fetched once on load…
+      invoke('diagnostic_message').then(m => { msg.textContent = m; });
+      // …and updated live when a later bad save changes it (the diagnostic state has
+      // no error banner, so show_diagnostic pushes the new text here instead).
+      window.__TAURI__.event.listen('warden:diagnostic', e => { msg.textContent = e.payload; });
     </script>
   </body>
 </html>
