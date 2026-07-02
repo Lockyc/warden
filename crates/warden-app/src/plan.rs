@@ -462,6 +462,7 @@ colour = "#0f8a8a"
             colour: Colour { r: 0, g: 0, b: 0 },
             width: 1500,
             height: 1000,
+            open_on_start: true,
             tabs: vec![Tab {
                 key: "/r/Dev/gh/lockyc/warden".into(),
                 title: "warden".into(),
@@ -768,6 +769,7 @@ colour = "#111111"
                 colour: Colour { r: 0, g: 0, b: 0 },
                 width: 1500,
                 height: 1000,
+                open_on_start: true,
                 tabs: Vec::new(),
                 roots: vec![Root {
                     name: "Dev".into(),

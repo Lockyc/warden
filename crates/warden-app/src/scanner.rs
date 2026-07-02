@@ -191,6 +191,7 @@ mod tests {
                 colour: Colour { r: 0, g: 0, b: 0 },
                 width: 1500,
                 height: 1000,
+                open_on_start: true,
                 tabs: Vec::new(),
                 roots: vec![mk_root("A"), mk_root("B")],
             }],

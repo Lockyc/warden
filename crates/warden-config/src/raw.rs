@@ -43,6 +43,7 @@ pub struct RawWindow {
     pub colour: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub open_on_start: Option<bool>,
     pub shell: Option<String>,
     pub cmd: Option<String>,
     pub probe: Option<String>,

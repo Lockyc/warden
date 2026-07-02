@@ -85,6 +85,9 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///   window-state plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config are not applied to a live
 ///   window.
+/// - A window's `open_on_start` flag. It is a launch-only materialization gate,
+///   not a live-session concern, so changing it never produces an op — a window
+///   already open stays open; an already-closed one stays closed until reopened.
 ///
 /// **Window renames are destructive** — a rename appears as `close(old) +
 /// open(new)`, killing and recreating that window's PTYs (including
