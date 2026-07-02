@@ -386,7 +386,12 @@ impl WindowManager {
                             // Persistent home: last-window-close no longer quits —
                             // it shows the launcher. ⌘Q is the only quit. With a
                             // valid config, `sync_empty_surface` shows the launcher;
-                            // with no configured windows, the diagnostic.
+                            // with no configured windows, the diagnostic. This also
+                            // fires for every window torn down during ⌘Q, including
+                            // the last one — verified on-device that native
+                            // `terminate:` wins that race, so no launcher is ever
+                            // presented; a `RunEvent`/`is_quitting` guard is not
+                            // needed unless that stops holding.
                             m.sync_empty_surface(&app_for_event);
                         }
                         // Refresh the Window menu's checkmarks/(closed) tags. Lock
