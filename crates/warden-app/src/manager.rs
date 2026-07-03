@@ -399,10 +399,10 @@ impl WindowManager {
                         let _ = crate::rebuild_menu(&app_for_event);
                     }
                 }
-                // Refresh this window's session dots when it gains focus — covers
-                // `probe_interval = 0` (no timer) and keeps a just-focused window current.
+                // Focus → fast-burst this window's session dots so a just-focused window is current
+                // within a burst pass (covers `probe_interval = 0`, which never steady-polls).
                 tauri::WindowEvent::Focused(true) => {
-                    crate::probe::spawn_pass(app_for_event.clone(), Some(label_for_event.clone()));
+                    crate::probe::bump(&label_for_event);
                 }
                 _ => {}
             }
