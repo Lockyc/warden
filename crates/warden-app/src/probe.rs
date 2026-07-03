@@ -145,7 +145,7 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
             if now < s.next_due {
                 continue;
             }
-            let new = probe_window(&app, label);
+            let new = probe_window(&app, label, &s.prev);
             let changed = new != s.prev;
             let (agree, cadence) =
                 advance(changed, s.agree, now.duration_since(s.burst_start), slow);
@@ -158,6 +158,16 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
             };
         }
     }
+}
+
+/// Whether tab `id`'s freshly-probed `on` differs from the previous pass's value — i.e. whether
+/// this pass must re-emit its dot. A tab absent from `prev` (never probed, or a fresh window)
+/// counts as changed, so the first pass populates every dot. Emitting only changed tabs is what
+/// lets a killed/started tab's dot update within one probe instead of after the whole window's
+/// sequential pass (O(tabs): a `[[window.root]]` over a big tree is seconds), and keeps a settled
+/// window's pass silent instead of re-emitting all N states every tick.
+fn presence_changed(prev: &BTreeMap<String, bool>, id: &str, on: bool) -> bool {
+    prev.get(id).copied() != Some(on)
 }
 
 /// Substitute the per-tab tokens into a probe command. `{dir}` → working
@@ -215,11 +225,37 @@ pub fn run_probe(cmd: &str, dir: &Path) -> bool {
     }
 }
 
-/// Probe one window's tabs and emit its `warden:session-state`, returning the per-tab result map.
-/// Snapshots the work-list under the manager lock, then releases it BEFORE running the (slow)
-/// probes — never hold the mutex across `sh -c`. Returns an empty map for an unknown/closed label
-/// or a window with no probe-enabled tabs (the caller settles that to Idle/Slow trivially).
-pub(crate) fn probe_window(app: &AppHandle, label: &str) -> BTreeMap<String, bool> {
+/// Emit one tab's presence to its window's chrome as a single-tab `warden:session-state`. The
+/// payload shape is identical to a multi-tab emit (`{label, states}`), just one entry — the chrome
+/// iterates whatever's in `states`, so a partial map updates exactly that dot. Stamped with `label`
+/// and filtered by the chrome's `forMe()` (the `emit_to`-leaks footgun, same as `warden:refresh`).
+fn emit_one(app: &AppHandle, label: &str, id: &str, on: bool) {
+    let mut states = serde_json::Map::new();
+    states.insert(id.to_string(), serde_json::Value::Bool(on));
+    let _ = app.emit_to(
+        label,
+        "warden:session-state",
+        serde_json::json!({ "label": label, "states": states }),
+    );
+}
+
+/// Probe one window's tabs and emit `warden:session-state` **per tab, the moment each probe
+/// returns** (and only when it changed vs `prev` — the previous pass's result), returning the full
+/// per-tab result map for the scheduler's settle-diff. Snapshots the work-list under the manager
+/// lock, then releases it BEFORE running the (slow) probes — never hold the mutex across `sh -c`.
+/// Returns an empty map for an unknown/closed label or a window with no probe-enabled tabs (the
+/// caller settles that to Idle/Slow trivially).
+///
+/// Emitting incrementally (rather than one batch after the whole pass) is what makes a killed or
+/// started tab's dot update within a single probe (~0.1s) instead of waiting out the rest of the
+/// window's **sequential** pass — a `[[window.root]]` over a large tree makes that pass seconds
+/// long, which is exactly the "the dot takes ages to clear after I kill the session" lag. The
+/// `changed`-only guard keeps a settled window's pass silent instead of re-emitting all N states.
+pub(crate) fn probe_window(
+    app: &AppHandle,
+    label: &str,
+    prev: &BTreeMap<String, bool>,
+) -> BTreeMap<String, bool> {
     let Some(state) = app.try_state::<ManagerState>() else {
         return BTreeMap::new();
     };
@@ -232,28 +268,26 @@ pub(crate) fn probe_window(app: &AppHandle, label: &str) -> BTreeMap<String, boo
     for (_lbl, tabs) in per_window {
         for (id, dir, title, probe) in tabs {
             let cmd = substitute(&probe, &dir, &title);
-            result.insert(id, run_probe(&cmd, &dir));
+            let on = run_probe(&cmd, &dir);
+            // Emit this dot as soon as its own probe finishes — don't wait for the rest of the
+            // pass. Only when it actually changed, so a stable window's pass is silent.
+            if presence_changed(prev, &id, on) {
+                emit_one(app, label, &id, on);
+            }
+            result.insert(id, on);
         }
     }
     if result.is_empty() {
-        return result; // nothing to emit; caller compares empty==empty → settles
+        return result; // nothing emitted; caller compares empty==empty → settles
     }
     // Persist this pass so a (re)opened window's init/refresh DTO paints its dots from the
     // last-known state — the chrome's `warden:session-state` listener isn't alive yet when a
-    // freshly-built webview opens, so the emit below would be dropped for it. See PresenceCache.
+    // freshly-built webview opens, so the per-tab emits above would be dropped for it. See
+    // PresenceCache.
     {
         let mut m = state.lock();
         m.presence_cache.record(label, &result);
     }
-    let mut states = serde_json::Map::new();
-    for (id, on) in &result {
-        states.insert(id.clone(), serde_json::Value::Bool(*on));
-    }
-    let _ = app.emit_to(
-        label,
-        "warden:session-state",
-        serde_json::json!({ "label": label, "states": states }),
-    );
     result
 }
 
@@ -386,6 +420,28 @@ mod tests {
     fn advance_cap_with_zero_slow_goes_idle() {
         let (_, c) = advance(true, 0, CAP + Duration::from_secs(1), 0);
         assert!(matches!(c, Cadence::Idle));
+    }
+
+    #[test]
+    fn presence_changed_detects_transitions_and_first_sight() {
+        let mut prev = BTreeMap::new();
+        prev.insert("a".to_string(), true);
+        prev.insert("b".to_string(), false);
+        // Unchanged → no re-emit (a settled window's pass stays silent).
+        assert!(!presence_changed(&prev, "a", true));
+        assert!(!presence_changed(&prev, "b", false));
+        // Transitions → re-emit. The kill case is present→absent; start is absent→present.
+        assert!(
+            presence_changed(&prev, "a", false),
+            "kill (present→absent) must emit"
+        );
+        assert!(
+            presence_changed(&prev, "b", true),
+            "start (absent→present) must emit"
+        );
+        // Never-probed tab (fresh window / newly-added tab) → emit so the first pass populates it.
+        assert!(presence_changed(&prev, "c", false));
+        assert!(presence_changed(&prev, "c", true));
     }
 
     #[test]
