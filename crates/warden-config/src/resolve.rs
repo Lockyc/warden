@@ -132,7 +132,7 @@ fn basename(p: &Path) -> String {
 /// Must match the scanner's discovered-tab key (`path.to_string_lossy()`, never trailing-
 /// slashed) so a curated tab and a same-dir discovered project share one key and the curated
 /// one shadows the discovered one in `effective_config`.
-fn normalize_dir_key(dir: &std::path::Path) -> String {
+fn normalize_dir_key(dir: &Path) -> String {
     let s = dir.to_string_lossy();
     let trimmed = s.strip_suffix('/').filter(|t| !t.is_empty()).unwrap_or(&s);
     trimmed.to_string()

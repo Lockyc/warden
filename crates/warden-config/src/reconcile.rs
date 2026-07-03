@@ -29,8 +29,8 @@ pub struct Reconciliation {
 /// **What IS detected** (any of these triggers an emit):
 /// - `colour`: the window accent colour changed.
 /// - `add_tabs` / `remove_tabs`: tabs were added or removed, matched by
-///   `Tab::key` (the resolved title for a curated tab; the absolute project
-///   path for a tab discovered by a `[[window.root]]` scan).
+///   `Tab::key` (the `id`-else-normalized-`dir` for a curated tab; the absolute
+///   project path for a tab discovered by a `[[window.root]]` scan).
 /// - `tab_order`: the order of kept tabs changed; on an emitted update
 ///   `tab_order` always carries the full new ordered key list so the consumer
 ///   can reorder the live tab strip without killing sessions.
@@ -80,8 +80,8 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///
 /// **What IS detected:**
 /// - Windows opened/closed, matched by `title`.
-/// - For a kept window: colour change, tab add/remove (by `Tab::key` — resolved
-///   title for a curated tab, absolute project path for a discovered one), tab
+/// - For a kept window: colour change, tab add/remove (by `Tab::key` —
+///   `id`-else-normalized-`dir` for a curated tab, absolute project path for a discovered one), tab
 ///   reorder (via `tab_order`), in-place metadata changes (the display `title`,
 ///   `group`, `probe`, `kill`) via `set_meta`, and a kept tab's terminal-spec
 ///   change (`dir`/`shell`/`cmd`/`load_on_open`) via `respawn_tabs` (respawn in
@@ -564,6 +564,47 @@ colour = "#0f8a8a"
         assert_eq!(u.set_meta[0].0, "/tmp/a");
         assert_eq!(u.set_meta[0].1.title, "renamed");
         assert!(u.respawn_tabs.is_empty() && u.add_tabs.is_empty() && u.remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn title_and_dir_change_together_emit_both_set_meta_and_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  id = "a"
+  title = "alpha"
+  dir = "/tmp/a"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  id = "a"
+  title = "renamed"
+  dir = "/tmp/a-new"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        // title change → set_meta (relabel), dir change (id-pinned, same key) → respawn
+        assert_eq!(u.set_meta.len(), 1);
+        assert_eq!(u.set_meta[0].0, "a");
+        assert_eq!(u.set_meta[0].1.title, "renamed");
+        assert_eq!(
+            u.respawn_tabs
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a"]
+        );
+        assert_eq!(
+            u.respawn_tabs[0].dir,
+            std::path::PathBuf::from("/tmp/a-new")
+        );
+        assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
     }
 
     #[test]
