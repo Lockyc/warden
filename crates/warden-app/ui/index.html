@@ -189,17 +189,15 @@
             },
             onUnload: unloadTab,
             onKill(id) {
-              // Optimistic: drop the cyan dot immediately rather than waiting for the
-              // post-kill re-probe (a slow `sh -c` round-trip). A kill is near-certain;
-              // if it somehow failed, kill_session's re-probe re-lights the dot on return.
-              // Mirror it into `session` so a concurrent refresh's DTO stays off too.
-              session.set(id, "off");
-              sb.setPresence(id, "off");
+              // No optimistic drop: the presence dot tracks `warden:session-state` only. kill_session
+              // runs the kill then bumps the scheduler's fast burst, which converges the dot
+              // monotonically (lit ~0.4–1s during teardown, then drops once — no off→on→off flicker).
+              // A failed kill leaves the session present, so the dot correctly stays lit.
               invokeSafe("kill_session", { id });
             },
             onStart(id) {
               // Restart a dead session: warden re-types the tab's `cmd` into the live shell, then
-              // re-probes so the cyan dot lights once it's up. No optimistic paint — wait for truth.
+              // bumps the scheduler so the cyan dot lights once it's up. No optimistic paint — wait for truth.
               invokeSafe("start_session", { id });
             },
             onResize(width) {

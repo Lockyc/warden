@@ -109,8 +109,9 @@ pub struct WindowManager {
     /// The message shown by the diagnostic window; fetched by its page via the
     /// `diagnostic_message` command. Empty when no diagnostic is showing.
     pub diagnostic_msg: String,
-    /// Seconds between background probe passes; shared with the poll thread so a
-    /// hot-reload can change cadence live. 0 = focus/refresh-only (no timer).
+    /// The presence scheduler's slow-floor cadence in seconds; shared as an `Arc` with
+    /// `probe::run_scheduler` so a hot-reload changes it live. 0 = event-driven only
+    /// (burst on triggers, then Idle — no steady polling between events).
     pub probe_interval: Arc<AtomicU64>,
     /// Tauri labels of windows the user has closed, most-recent last (MRU stack).
     /// Drives `⌘⇧T` (Reopen Last Closed). Deduped on push so a repeated close
@@ -118,14 +119,6 @@ pub struct WindowManager {
     /// (`reopen_window` / `reopen_last`). Stale entries (closed-then-deleted, or
     /// already reopened) are filtered at reopen time.
     pub last_closed: Vec<String>,
-    /// `(window label, tab id)` pairs with a session-kill in flight. While a tab is
-    /// here, `probe::run_pass` force-reports it **absent** (see `is_killing`) so a
-    /// periodic poll that observed the still-alive pre-kill session can't re-light the
-    /// cyan dot after the chrome's optimistic drop — the off→on→off flicker. Marked in
-    /// `kill_session` before the (slow) kill, cleared by its thread after the kill so
-    /// the post-kill reprobe reports the true state (absent, or present if the kill
-    /// genuinely failed → dot re-lights).
-    pub killing: HashSet<(String, String)>,
 }
 
 impl WindowManager {
@@ -150,7 +143,6 @@ impl WindowManager {
             diagnostic_msg: String::new(),
             probe_interval: Arc::new(AtomicU64::new(5)),
             last_closed: Vec::new(),
-            killing: HashSet::new(),
         }
     }
 
@@ -268,29 +260,13 @@ impl WindowManager {
         }
     }
 
-    /// Update the shared probe-pass cadence (the poll thread reads it each tick).
+    /// Update the shared probe-pass cadence (the scheduler reads it each tick).
     pub fn set_probe_interval(&self, secs: u64) {
         self.probe_interval.store(secs, Ordering::Relaxed);
     }
 
-    /// Mark tab `id` in window `label` as having a session-kill in flight.
-    pub fn mark_killing(&mut self, label: &str, id: &str) {
-        self.killing.insert((label.to_string(), id.to_string()));
-    }
-
-    /// Clear the kill-in-flight mark (after the kill completes and its reprobe runs).
-    pub fn unmark_killing(&mut self, label: &str, id: &str) {
-        self.killing.remove(&(label.to_string(), id.to_string()));
-    }
-
-    /// True while a kill is in flight for `(label, id)`. `probe::run_pass` consults
-    /// this to force the tab absent so an in-flight poll can't re-light the dot.
-    pub fn is_killing(&self, label: &str, id: &str) -> bool {
-        self.killing.contains(&(label.to_string(), id.to_string()))
-    }
-
     /// Probe work-lists grouped by window label. `only = Some(label)` restricts to
-    /// one window (focus trigger); `None` = every window (timer/refresh).
+    /// one window; `None` = every window (the scheduler's per-tick reconcile / `bump_all`).
     pub fn probe_targets(&self, only: Option<&str>) -> Vec<WindowProbeTargets> {
         self.windows
             .iter()
@@ -399,10 +375,10 @@ impl WindowManager {
                         let _ = crate::rebuild_menu(&app_for_event);
                     }
                 }
-                // Refresh this window's session dots when it gains focus — covers
-                // `probe_interval = 0` (no timer) and keeps a just-focused window current.
+                // Focus → fast-burst this window's session dots so a just-focused window is current
+                // within a burst pass (covers `probe_interval = 0`, which never steady-polls).
                 tauri::WindowEvent::Focused(true) => {
-                    crate::probe::spawn_pass(app_for_event.clone(), Some(label_for_event.clone()));
+                    crate::probe::bump(&label_for_event);
                 }
                 _ => {}
             }
@@ -663,7 +639,7 @@ impl WindowManager {
                         }
                         // Apply in-place metadata (group/probe/kill) without respawning;
                         // the warden:refresh below pushes fresh DTOs (has_probe/has_kill
-                        // recomputed) and the post-reload spawn_pass re-probes.
+                        // recomputed) and the post-reload bump_all fast-bursts every window.
                         // `set_meta` carries no `tree`/`tree_path` deliberately: tree-ness
                         // never flips for a *kept* tab. A discovered tab's `group` always
                         // names a root and its path key is derived from a stable `dir`
@@ -718,19 +694,5 @@ mod tests {
         assert_eq!(m.probe_interval.load(Ordering::Relaxed), 5);
         m.set_probe_interval(0);
         assert_eq!(m.probe_interval.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn killing_marks_are_per_window_tab_and_clear() {
-        let mut m = WindowManager::new();
-        assert!(!m.is_killing("win", "alpha"));
-        m.mark_killing("win", "alpha");
-        assert!(m.is_killing("win", "alpha"));
-        // Scoped to the exact (label, id): a same-named tab in another window,
-        // and a different tab in the same window, are unaffected.
-        assert!(!m.is_killing("other", "alpha"));
-        assert!(!m.is_killing("win", "beta"));
-        m.unmark_killing("win", "alpha");
-        assert!(!m.is_killing("win", "alpha"));
     }
 }
