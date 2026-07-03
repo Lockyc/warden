@@ -572,6 +572,37 @@ mod tests {
     }
 
     #[test]
+    fn respawn_sequence_replaces_spec_for_same_id() {
+        // `manager.rs`'s `WindowOp::Update` respawn step is exactly this sequence —
+        // `remove(id)` then `add(&new_spec, ..)` — applied to a kept tab whose terminal
+        // spec (e.g. `dir`) changed but whose id (identity) is unchanged. Prove it swaps
+        // the underlying spec in place, with no stray duplicate entry left behind. This
+        // is the smallest real unit that proves the respawn mechanic without an
+        // AppHandle/WindowManager::apply (which needs a live Tauri app).
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec_with_probe("t0", "/tmp/old", Some("probe-cmd")), false);
+        let _ = r.add(&spec_with_probe("t1", "/tmp/other", Some("probe-cmd")), false);
+
+        r.remove("t0");
+        let _ = r.add(&spec_with_probe("t0", "/tmp/new", Some("probe-cmd")), false);
+
+        let dtos = r.tab_dtos();
+        assert_eq!(dtos.len(), 2, "respawn must not leave a stray duplicate entry");
+
+        let targets = r.probe_targets();
+        let t0_dir = targets.iter().find(|t| t.0 == "t0").unwrap().1.clone();
+        assert_eq!(
+            t0_dir,
+            PathBuf::from("/tmp/new"),
+            "respawn must replace the spec (new dir), not keep the stale one"
+        );
+        assert!(
+            !r.is_spawned("t0"),
+            "load_on_open=false respawn stays cold until next activate"
+        );
+    }
+
+    #[test]
     fn start_session_noop_when_cold_no_cmd_or_unknown() {
         // Declared tabs are cold (no ns_window deref). start_session sends nothing and reports false
         // for: a cold tab (even with a startup cmd), a tab without a startup cmd, and an unknown id.

@@ -92,14 +92,13 @@ pub fn effective_config(config: &Config) -> Config {
         for root in &window.roots {
             window.tabs.extend(crate::scanner::synthesize_tabs(root));
         }
-        // Dedup by key (curated tabs first, then roots in file order): two roots whose
-        // dirs overlap synthesize the SAME project (same absolute-path key) twice. A
-        // duplicate key isn't just a doubled row — reconcile matches by find-first, so
-        // the second copy (different group) never settles and re-emits a `set_meta`
-        // group-flip on every rescan/hot-reload. Keep the first occurrence so a project
-        // discovered by overlapping roots lands once, under the first root's section.
-        // (Curated keys are titles, unique by validation; discovered keys are paths — the
-        // two never collide, so this only ever drops a genuine overlapping-root duplicate.)
+        // Dedup by key (curated tabs first, then roots in file order), keeping the FIRST
+        // occurrence. Two cases collapse here:
+        //  - Overlapping roots synthesizing the same project (same path key) → land once.
+        //  - A curated tab and a `[[window.root]]`-discovered project at the SAME dir now
+        //    share a key (curated key = normalized dir; discovered key = path), so the
+        //    curated tab shadows the discovered one. Intended: no "same repo twice" and no
+        //    curated-vs-discovered key collision (reconcile matches find-first).
         let mut seen = HashSet::new();
         window.tabs.retain(|t| seen.insert(t.key.clone()));
     }
@@ -667,11 +666,13 @@ impl WindowManager {
                     remove_tabs,
                     order,
                     set_meta,
-                    // Not yet applied — a later change wires respawn-in-place
-                    // (remove+add by id) into this match arm.
-                    respawn_tabs: _,
+                    respawn_tabs,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
+                        // Captured before any mutation below, so a respawn that hits the
+                        // currently-visible tab can be re-activated once its surface is
+                        // rebuilt (see the reactivate step after `reorder`).
+                        let was_active = ws.registry.active_tab().map(str::to_string);
                         // Skip no-op updates (e.g. a config save that changes nothing
                         // visible). `order` still carries the unchanged tab sequence; a
                         // metadata change always carries `set_meta`, so it is never
@@ -683,6 +684,7 @@ impl WindowManager {
                             && remove_tabs.is_empty()
                             && order == current_order
                             && set_meta.is_empty()
+                            && respawn_tabs.is_empty()
                         {
                             continue;
                         }
@@ -699,6 +701,20 @@ impl WindowManager {
                             if let Err(e) = ws.registry.add(&tp.spec, tp.load_on_open) {
                                 eprintln!(
                                     "warden: surface spawn failed for tab {:?}: {e}",
+                                    tp.spec.title
+                                );
+                            }
+                        }
+                        // Respawn kept tabs whose terminal spec changed: tear down and
+                        // rebuild by the same id (identity is stable). A cold tab just gets
+                        // a fresh spec and lazy-spawns on next focus; a load_on_open tab
+                        // respawns eagerly. The previously-active tab is re-activated below
+                        // so a visible respawn shows its new surface immediately.
+                        for tp in &respawn_tabs {
+                            ws.registry.remove(&tp.spec.id);
+                            if let Err(e) = ws.registry.add(&tp.spec, tp.load_on_open) {
+                                eprintln!(
+                                    "warden: surface respawn failed for tab {:?}: {e}",
                                     tp.spec.title
                                 );
                             }
@@ -723,6 +739,17 @@ impl WindowManager {
                             );
                         }
                         ws.registry.reorder(&order);
+                        // If the on-screen tab was respawned, it went cold — re-activate it
+                        // so its new surface spawns and shows in place (no blank placeholder).
+                        // Runs BEFORE tab_dtos below so the re-activated surface's spawned
+                        // state is reflected in the refresh snapshot.
+                        if let Some(active) = &was_active {
+                            if respawn_tabs.iter().any(|tp| &tp.spec.id == active) {
+                                if let Err(e) = ws.registry.activate(active) {
+                                    eprintln!("warden: reactivate after respawn failed: {e}");
+                                }
+                            }
+                        }
                         // Patch presence from the persistent cache (disjoint field from
                         // `self.windows` borrowed via `ws`, so this borrows cleanly) so a
                         // hot-reload refresh keeps the dots lit instead of blanking them

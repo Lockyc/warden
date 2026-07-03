@@ -213,6 +213,73 @@ mod tests {
     }
 
     #[test]
+    fn curated_tab_shadows_same_dir_discovered_project() {
+        use warden_config::{Colour, Config, Density, Root, Tab, TabDigitKeys, Window};
+        let base = tmp("shadow");
+        let proj = base.join("proj");
+        git(&proj);
+        let root = Root {
+            name: "Developer".into(),
+            dir: base.clone(),
+            depth: 6,
+            shell: "sh".into(),
+            startup: None,
+            probe: None,
+            kill: None,
+        };
+        // A curated tab with no explicit `id`, whose `dir` is the SAME project the root
+        // discovers: its key collapses to the normalized dir (`resolve.rs::normalize_dir_key`),
+        // which equals the discovered tab's path key exactly — the collision `effective_config`
+        // resolves by keeping the curated tab (first in `window.tabs`, before roots' synthesized
+        // tabs are appended).
+        let curated = Tab {
+            id: None,
+            key: proj.to_string_lossy().into_owned(),
+            title: "curated-title".into(),
+            dir: proj.clone(),
+            shell: "fish -l".into(),
+            startup: None,
+            load_on_open: false,
+            group: None,
+            probe: None,
+            kill: None,
+        };
+        let cfg = Config {
+            windows: vec![Window {
+                title: "w".into(),
+                colour: Colour { r: 0, g: 0, b: 0 },
+                width: 1500,
+                height: 1000,
+                open_on_start: true,
+                tabs: vec![curated],
+                roots: vec![root],
+            }],
+            format_on_save: false,
+            tab_digit_keys: TabDigitKeys::default(),
+            probe_interval: 5,
+            density: Density::default(),
+            sidebar_drag: true,
+            auto_update: true,
+            notify_debug: false,
+        };
+        let eff = crate::manager::effective_config(&cfg);
+        let tabs = &eff.windows[0].tabs;
+        assert_eq!(
+            tabs.len(),
+            1,
+            "curated tab + same-dir discovered project must collapse to one row"
+        );
+        assert_eq!(
+            tabs[0].title, "curated-title",
+            "the curated tab shadows the discovered project, not the other way round"
+        );
+        assert_eq!(
+            tabs[0].group, None,
+            "shadowing keeps the curated tab's own (loose) grouping, not the root's section"
+        );
+    }
+
+    #[test]
     fn synthesizes_project_tabs_from_a_root() {
         use warden_config::Root;
         let base = tmp("syn");
