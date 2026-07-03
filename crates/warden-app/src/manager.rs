@@ -716,6 +716,7 @@ impl WindowManager {
                         for (id, meta) in &set_meta {
                             ws.registry.set_meta(
                                 id,
+                                meta.title.clone(),
                                 meta.group.clone(),
                                 meta.probe.clone(),
                                 meta.kill.clone(),

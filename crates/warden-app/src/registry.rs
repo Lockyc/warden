@@ -175,19 +175,22 @@ impl Registry {
         }
     }
 
-    /// Apply a kept tab's in-place metadata (group/probe/kill) from a hot-reload —
+    /// Apply a kept tab's in-place metadata (title/group/probe/kill) from a hot-reload —
     /// presentation + externally-run commands only, NEVER the surface/PTY. A config
-    /// edit to group/probe/kill on a kept tab takes effect live without respawn:
-    /// sidebar re-sections for group, new probe/kill picked up on the next poll/kill.
-    /// No-op if `id` is unknown.
+    /// edit to title/group/probe/kill on a kept tab takes effect live without respawn:
+    /// the row relabels, sidebar re-sections for group, new probe/kill picked up on
+    /// the next poll/kill. No-op if `id` is unknown.
     pub fn set_meta(
         &mut self,
         id: &str,
+        title: String,
         group: Option<String>,
         probe: Option<String>,
         kill: Option<String>,
     ) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
+            t.title = title.clone();
+            t.spec.title = title;
             t.spec.group = group;
             t.spec.probe = probe;
             t.spec.kill = kill;
@@ -431,18 +434,20 @@ mod tests {
         assert!(!r.tab_dtos()[0].has_probe && !r.tab_dtos()[0].has_kill);
         r.set_meta(
             "t0",
+            "Renamed".to_string(),
             Some("backend".into()),
             Some("probe-x".into()),
             Some("kill-y".into()),
         );
         let d = &r.tab_dtos()[0];
+        assert_eq!(d.title, "Renamed", "title relabeled in place");
         assert_eq!(d.group.as_deref(), Some("backend"));
         assert!(d.has_probe, "probe applied in place");
         assert!(d.has_kill, "kill applied in place");
         // No respawn — a cold tab stays cold.
         assert!(!r.is_spawned("t0"));
         // Unknown id is a no-op (doesn't panic).
-        r.set_meta("nope", None, None, None);
+        r.set_meta("nope", "x".to_string(), None, None, None);
     }
 
     #[test]
