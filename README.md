@@ -92,11 +92,6 @@ A window has its own colour + title banner; its tabs are project terminals. `wid
 `warden.app` to `/Applications`. Release builds are signed with Developer ID and notarized,
 so they open without a Gatekeeper block. macOS only.
 
-Once installed, warden **updates itself**: it checks for a new release on launch (or via
-**warden ▸ Check for Updates…**) and offers a one-click "Update & Relaunch" (set
-`auto_update = false` to suppress the launch check). Re-installing is only needed to bootstrap
-the first updater-capable version.
-
 **Guided (Claude Code):** run `/warden:install` — it checks prerequisites
 (Xcode Command Line Tools, Rust, the Tauri CLI), builds warden from source, installs
 it to `/Applications`, and seeds your config.
@@ -114,6 +109,21 @@ from the example if you don't already have one. Re-run it any time to update
 
 Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
 ([rustup](https://rustup.rs)). The installer installs the Tauri CLI itself if missing.
+
+## Updates
+
+warden updates itself — no reinstall. On launch (and via **warden ▸ Check for Updates…**)
+it checks GitHub for a newer release; when one exists the sidebar shows an *Update available:
+v X* bar with a one-click **Update & Relaunch**.
+
+- **Confirm-to-install** — nothing installs silently; you approve each update, and the bar's
+  **×** dismisses it for the session.
+- **Signed** — each update is verified against warden's own minisign key before it installs,
+  independent of Apple notarization.
+- **Opt out** with `auto_update = false` (the **Check for Updates…** menu item still works).
+
+Apple Silicon only. Re-running the installer (or downloading the `.zip`) is needed only to
+bootstrap the first updater-capable version — **0.6.0** — after which updates land in-app.
 
 ## Build & use
 

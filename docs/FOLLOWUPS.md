@@ -23,6 +23,12 @@ Two related deferrals about the seam between warden and agentmux. Both are consc
   2. **Generic seam.** Polling also keeps warden **tool-agnostic** — it reads only a probe command's *exit code* and encodes nothing about amux/tmux/sockets/naming (the command is entirely the user's; see the probe footguns in `CLAUDE.md`). A pushed escape would bake an agentmux-specific signal into warden's core.
   Recorded as a **settled decision** so a future "optimize poll → push" isn't re-litigated. If push is ever added it must be an **augmentation on top of poll** (poll remains the cold-start source of truth; push only lowers live-change latency) — **never a replacement**.
 
+## Release signing — source the updater-key password from the macOS Keychain
+
+`just release` (`scripts/release.sh`) needs two updater-signing env vars beside the Apple creds: `TAURI_SIGNING_PRIVATE_KEY` (the contents/path of `~/.tauri/warden-updater.key`, which lives on disk mode-600) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The **password** is the friction: it lives only in the vault, so every release requires a manual vault-unlock step to hand it to the build env — a round-trip that makes cutting a release non-self-service.
+
+**Intended change:** store the updater-key password in the **macOS Keychain** (a generic password item) and have the release path read it non-interactively — `security find-generic-password -s warden-updater-key -w` — so `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is populated with no vault paste, exactly as `APPLE_PASSWORD` is already sourced for notarization (via `_notary_pw` in the shell config). This keeps the secret out of shell rc / plaintext while removing the per-release friction. The vault copy stays the canonical backup (per the personal-vault store rule); the Keychain is the build-machine convenience mirror. Wire it either into `scripts/release.sh` (fall back to the env var if the Keychain item is absent, so a contributor without it isn't blocked) or a thin `just release` wrapper that exports it before delegating.
+
 ## Lower-priority / edge cases
 
 - **`warden validate` exit code does not distinguish "ok" from "ok with warnings"** (`crates/warden-config/src/bin/warden.rs`) — both exit 0. Not spec-mandated; revisit if a CI consumer needs to gate on nonexistent-dir warnings.
