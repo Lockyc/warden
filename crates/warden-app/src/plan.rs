@@ -796,6 +796,7 @@ colour = "#111111"
                 remove_tabs: Vec::new(),
                 tab_order: vec!["/r/Dev/gh/lockyc/warden".into()],
                 set_meta: Vec::new(),
+                respawn_tabs: Vec::new(),
             }],
         };
         let new_config = Config {

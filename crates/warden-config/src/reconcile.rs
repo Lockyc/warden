@@ -1,16 +1,19 @@
 use crate::model::{Config, Tab, Window};
 use crate::Colour;
 
-/// The in-place, non-respawn metadata of a kept tab — fields a consumer can apply
-/// to a *live* tab without killing its PTY: `group` (sidebar sectioning) and the
+/// The in-place, non-respawn metadata of a kept tab — fields a consumer can apply to a *live*
+/// tab without killing its PTY: its display `title`, `group` (sidebar sectioning), and the
 /// externally-run `probe`/`kill` commands. Never the terminal itself. Carried by
-/// `WindowUpdate.set_meta` when any of these changed for a kept tab (keyed by
-/// `Tab::key`).
+/// `WindowUpdate.set_meta` when any of these changed for a kept tab (keyed by `Tab::key`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabMeta {
     pub group: Option<String>,
     pub probe: Option<String>,
     pub kill: Option<String>,
+    /// New display title for the kept tab. Applied as a live relabel — the chrome
+    /// re-renders the row without respawning its terminal. Always carried (it's the
+    /// tab's current title), so a metadata update always relabels to the current title.
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,15 +34,15 @@ pub struct Reconciliation {
 /// - `tab_order`: the order of kept tabs changed; on an emitted update
 ///   `tab_order` always carries the full new ordered key list so the consumer
 ///   can reorder the live tab strip without killing sessions.
-/// - `set_meta`: a kept tab's in-place metadata (`group`, `probe`, or `kill`)
-///   changed. Each entry is `(key, TabMeta)` carrying the new values; the consumer
-///   applies them WITHOUT respawning (presentation + externally-run commands).
+/// - `set_meta`: a kept tab's in-place metadata (the display `title`, `group`,
+///   `probe`, or `kill`) changed. Each entry is `(key, TabMeta)` carrying the new
+///   values; the consumer applies them WITHOUT respawning (presentation +
+///   externally-run commands).
+/// - `respawn_tabs`: a kept tab's terminal spec (`dir`, `shell`, `cmd`, or
+///   `load_on_open`) changed. The consumer tears down and respawns that tab in
+///   place, carrying its new full `Tab`.
 ///
 /// **What is NOT detected:**
-/// - In-place edits to a kept tab whose title is unchanged. Changing a tab's
-///   `dir`, `cmd`, `shell`, or `load_on_open` while keeping its `title` the same
-///   produces no op — the tab appears identical to the reconciler. The consumer
-///   must close and reopen the tab to pick up such field-level edits.
 /// - A kept window's `width` or `height` change. Window size is owned by the
 ///   window-state plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config have no effect on a live
@@ -55,11 +58,17 @@ pub struct WindowUpdate {
     pub add_tabs: Vec<Tab>,
     pub remove_tabs: Vec<String>,
     pub tab_order: Vec<String>,
-    /// In-place metadata changes for kept tabs (keyed by `Tab::key`): `group`,
-    /// `probe`, or `kill` differ. The consumer applies them WITHOUT respawning —
-    /// presentation + externally-run commands, never the PTY. Empty when no kept
-    /// tab's metadata changed.
+    /// In-place metadata changes for kept tabs (keyed by `Tab::key`): `title`,
+    /// `group`, `probe`, or `kill` differ. The consumer applies them WITHOUT
+    /// respawning — presentation + externally-run commands, never the PTY. Empty
+    /// when no kept tab's metadata changed.
     pub set_meta: Vec<(String, TabMeta)>,
+    /// Kept tabs (same `key`) whose terminal spec changed — `dir`, `shell`, `startup`
+    /// (`cmd`), or `load_on_open` differ. The consumer tears down and respawns each in
+    /// place (a terminal cannot migrate its cwd/session). Carries the new full `Tab`.
+    /// Empty when no kept tab's terminal spec changed. (A kept tab whose *dir* changed
+    /// with NO explicit `id` changes key instead and rides `add_tabs`/`remove_tabs`.)
+    pub respawn_tabs: Vec<Tab>,
 }
 
 fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
@@ -73,14 +82,12 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 /// - Windows opened/closed, matched by `title`.
 /// - For a kept window: colour change, tab add/remove (by `Tab::key` — resolved
 ///   title for a curated tab, absolute project path for a discovered one), tab
-///   reorder (via `tab_order`), and in-place metadata changes (`group`, `probe`,
-///   `kill`) via `set_meta`.
+///   reorder (via `tab_order`), in-place metadata changes (the display `title`,
+///   `group`, `probe`, `kill`) via `set_meta`, and a kept tab's terminal-spec
+///   change (`dir`/`shell`/`cmd`/`load_on_open`) via `respawn_tabs` (respawn in
+///   place).
 ///
 /// **What is NOT detected:**
-/// - In-place edits to a kept tab whose title is unchanged. If a tab's `dir`,
-///   `cmd`, `shell`, or `load_on_open` changes but its `title` stays the same,
-///   no update is emitted — the tab appears identical to the reconciler. The
-///   consumer must close and reopen the tab to pick up such field-level edits.
 /// - A kept window's `width` or `height` change. Window size is owned by the
 ///   window-state plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config are not applied to a live
@@ -140,36 +147,43 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     .collect();
                 let order_changed = kept_old != kept_new;
                 let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
-                // In-place metadata diff for kept tabs (group/probe/kill). Carries the
-                // new values so the consumer applies them without respawning. Matches a
-                // kept tab by key; emits only when at least one metadata field differs.
-                let set_meta: Vec<(String, TabMeta)> = np
-                    .tabs
-                    .iter()
-                    .filter_map(|nt| {
-                        op.tabs
-                            .iter()
-                            .find(|ot| ot.key == nt.key)
-                            .filter(|ot| {
-                                ot.group != nt.group || ot.probe != nt.probe || ot.kill != nt.kill
-                            })
-                            .map(|_| {
-                                (
-                                    nt.key.clone(),
-                                    TabMeta {
-                                        group: nt.group.clone(),
-                                        probe: nt.probe.clone(),
-                                        kill: nt.kill.clone(),
-                                    },
-                                )
-                            })
-                    })
-                    .collect();
+                // Kept-tab in-place diffs. Two independent signals per kept tab:
+                //  - metadata (title/group/probe/kill) → live apply, no respawn.
+                //  - terminal spec (dir/shell/startup/load_on_open) → respawn in place.
+                let mut set_meta: Vec<(String, TabMeta)> = Vec::new();
+                let mut respawn_tabs: Vec<Tab> = Vec::new();
+                for nt in &np.tabs {
+                    if let Some(ot) = op.tabs.iter().find(|ot| ot.key == nt.key) {
+                        if ot.title != nt.title
+                            || ot.group != nt.group
+                            || ot.probe != nt.probe
+                            || ot.kill != nt.kill
+                        {
+                            set_meta.push((
+                                nt.key.clone(),
+                                TabMeta {
+                                    group: nt.group.clone(),
+                                    probe: nt.probe.clone(),
+                                    kill: nt.kill.clone(),
+                                    title: nt.title.clone(),
+                                },
+                            ));
+                        }
+                        if ot.dir != nt.dir
+                            || ot.shell != nt.shell
+                            || ot.startup != nt.startup
+                            || ot.load_on_open != nt.load_on_open
+                        {
+                            respawn_tabs.push(nt.clone());
+                        }
+                    }
+                }
                 if colour.is_some()
                     || !add_tabs.is_empty()
                     || !remove_tabs.is_empty()
                     || order_changed
                     || !set_meta.is_empty()
+                    || !respawn_tabs.is_empty()
                 {
                     update.push(WindowUpdate {
                         title: np.title.clone(),
@@ -178,6 +192,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                         remove_tabs,
                         tab_order,
                         set_meta,
+                        respawn_tabs,
                     });
                 }
             }
@@ -267,9 +282,9 @@ colour = "#0f8a8a"
                 .iter()
                 .map(|t| t.key.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ops"]
+            vec!["/tmp/ops"]
         );
-        assert_eq!(u.remove_tabs, vec!["alpha".to_string()]);
+        assert_eq!(u.remove_tabs, vec!["/tmp/alpha".to_string()]);
         assert_eq!(u.colour, None);
     }
 
@@ -304,7 +319,10 @@ colour = "#0f8a8a"
             "expected exactly one WindowUpdate for a tab reorder"
         );
         let u = &r.update[0];
-        assert_eq!(u.tab_order, vec!["beta".to_string(), "alpha".to_string()]);
+        assert_eq!(
+            u.tab_order,
+            vec!["/tmp/beta".to_string(), "/tmp/alpha".to_string()]
+        );
         assert!(u.add_tabs.is_empty(), "no tabs added");
         assert!(u.remove_tabs.is_empty(), "no tabs removed");
         assert_eq!(u.colour, None, "no colour change");
@@ -323,17 +341,16 @@ colour = "#0f8a8a"
         assert!(r.update.is_empty(), "a rename is never an in-place update");
     }
 
-    /// Regression test locking the documented limitation: a kept tab whose
-    /// `title` (and therefore `key`) is unchanged but whose `dir` differs is
-    /// invisible to the reconciler. No update is emitted; the consumer must
-    /// close and reopen the tab to pick up such field-level edits.
+    /// A kept tab (identity pinned by an explicit `id`) whose `dir` changes emits a
+    /// `respawn_tabs` entry — the tab restarts in the new dir without add/remove.
     #[test]
-    fn in_place_tab_field_edit_is_not_detected() {
+    fn dir_change_on_id_pinned_tab_emits_respawn() {
         let old = cfg(r##"
 [[window]]
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
+  id = "a"
   title = "alpha"
   dir = "/tmp/alpha"
 "##);
@@ -342,14 +359,25 @@ colour = "#0f8a8a"
 title = "work"
 colour = "#0f8a8a"
   [[window.tab]]
+  id = "a"
   title = "alpha"
   dir = "/tmp/alpha-new"
 "##);
         let r = reconcile(&old, &new);
-        assert!(
-            r.update.is_empty(),
-            "in-place tab field edits (dir change with same title) must not emit an update"
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert_eq!(
+            u.respawn_tabs
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a"]
         );
+        assert_eq!(
+            u.respawn_tabs[0].dir,
+            std::path::PathBuf::from("/tmp/alpha-new")
+        );
+        assert!(u.add_tabs.is_empty() && u.remove_tabs.is_empty());
     }
 
     #[test]
@@ -380,11 +408,12 @@ colour = "#0f8a8a"
         assert_eq!(
             u.set_meta,
             vec![(
-                "api".to_string(),
+                "/tmp/api".to_string(),
                 TabMeta {
                     group: Some("new-name".to_string()),
                     probe: None,
-                    kill: None
+                    kill: None,
+                    title: "api".to_string(),
                 }
             )]
         );
@@ -417,11 +446,12 @@ colour = "#0f8a8a"
         assert_eq!(
             r.update[0].set_meta,
             vec![(
-                "api".to_string(),
+                "/tmp/api".to_string(),
                 TabMeta {
                     group: Some("backend".to_string()),
                     probe: None,
-                    kill: None
+                    kill: None,
+                    title: "api".to_string(),
                 }
             )]
         );
@@ -456,11 +486,12 @@ colour = "#0f8a8a"
         assert_eq!(
             r.update[0].set_meta,
             vec![(
-                "api".to_string(),
+                "/tmp/api".to_string(),
                 TabMeta {
                     group: None,
                     probe: Some("probe-new".to_string()),
-                    kill: None
+                    kill: None,
+                    title: "api".to_string(),
                 }
             )]
         );
@@ -496,15 +527,106 @@ colour = "#0f8a8a"
         assert_eq!(
             r.update[0].set_meta,
             vec![(
-                "api".to_string(),
+                "/tmp/api".to_string(),
                 TabMeta {
                     group: None,
                     probe: None,
-                    kill: Some("kill-new".to_string())
+                    kill: Some("kill-new".to_string()),
+                    title: "api".to_string(),
                 }
             )]
         );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn title_change_relabels_via_set_meta_no_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/a"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "renamed"
+  dir = "/tmp/a"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert_eq!(u.set_meta.len(), 1);
+        assert_eq!(u.set_meta[0].0, "/tmp/a");
+        assert_eq!(u.set_meta[0].1.title, "renamed");
+        assert!(u.respawn_tabs.is_empty() && u.add_tabs.is_empty() && u.remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn dir_change_without_id_is_add_remove_not_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/a"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/b"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert_eq!(
+            u.add_tabs
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/tmp/b"]
+        );
+        assert_eq!(u.remove_tabs, vec!["/tmp/a".to_string()]);
+        assert!(u.respawn_tabs.is_empty());
+    }
+
+    #[test]
+    fn cmd_change_on_kept_dir_tab_emits_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  dir = "/tmp/a"
+  cmd = "old"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  dir = "/tmp/a"
+  cmd = "new"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(
+            r.update[0]
+                .respawn_tabs
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/tmp/a"]
+        );
+        assert!(r.update[0].set_meta.is_empty());
     }
 
     #[test]
