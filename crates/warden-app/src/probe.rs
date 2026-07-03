@@ -3,11 +3,12 @@
 //! design — warden knows nothing about tmux/amux; the command lives in config.
 
 use crate::ManagerState;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::Sender;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -62,6 +63,100 @@ pub(crate) fn advance(
         }
     } else {
         (agree, Cadence::Fast)
+    }
+}
+
+/// Per-window schedule state owned by the scheduler thread (never shared/locked).
+struct WindowSchedule {
+    next_due: Instant,
+    prev: BTreeMap<String, bool>,
+    agree: u32,
+    burst_start: Instant,
+}
+
+/// A `next_due` far enough in the future to mean "Idle — only a bump wakes this window".
+fn idle_due(now: Instant) -> Instant {
+    now + Duration::from_secs(365 * 24 * 3600)
+}
+
+/// Background presence-probe scheduler. Owns per-window `WindowSchedule`s; wakes on a `bump` or every
+/// [`TICK`]. On a bump a window goes Fast (probe asap, reset agreement + burst clock); each due window
+/// is probed, its result diffed against the previous pass, and `advance` decides the next cadence
+/// (Fast until the state settles for [`AGREE_TARGET`] passes or the burst hits [`CAP`], then the slow
+/// floor `interval`, or Idle when `interval == 0`). This is the ONLY probe driver — no other code
+/// spawns probe passes; triggers `bump` instead. Run inside a dedicated thread.
+pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
+    let (tx, rx) = mpsc::channel::<String>();
+    install_bump_tx(tx);
+    let mut sched: HashMap<String, WindowSchedule> = HashMap::new();
+
+    loop {
+        // Block until a bump arrives or TICK elapses, then drain any other queued bumps.
+        let first = rx.recv_timeout(TICK);
+        let now = Instant::now();
+        let mut bumps: Vec<String> = Vec::new();
+        if let Ok(l) = first {
+            bumps.push(l);
+        }
+        while let Ok(l) = rx.try_recv() {
+            bumps.push(l);
+        }
+        let slow = interval.load(Ordering::Relaxed);
+
+        // Apply bumps: window goes hot (probe immediately, fresh burst).
+        for label in bumps {
+            let s = sched.entry(label).or_insert_with(|| WindowSchedule {
+                next_due: now,
+                prev: BTreeMap::new(),
+                agree: 0,
+                burst_start: now,
+            });
+            s.next_due = now;
+            s.agree = 0;
+            s.burst_start = now;
+        }
+
+        // Reconcile the schedule map against currently-live windows: drop closed ones, and add
+        // newly-opened ones in a slow/idle state (their first Fast burst comes from the chrome's
+        // probe_now bump once its listener is ready — avoids the emit-before-listener race).
+        let live: Vec<String> = app
+            .try_state::<ManagerState>()
+            .map(|st| {
+                let m = st.lock();
+                m.probe_targets(None).into_iter().map(|(l, _)| l).collect()
+            })
+            .unwrap_or_default();
+        sched.retain(|l, _| live.contains(l));
+        for l in &live {
+            sched.entry(l.clone()).or_insert_with(|| WindowSchedule {
+                next_due: if slow > 0 {
+                    now + Duration::from_secs(slow)
+                } else {
+                    idle_due(now)
+                },
+                prev: BTreeMap::new(),
+                agree: 0,
+                burst_start: now,
+            });
+        }
+
+        // Probe every due window and advance its cadence.
+        for (label, s) in sched.iter_mut() {
+            if now < s.next_due {
+                continue;
+            }
+            let new = probe_window(&app, label);
+            let changed = new != s.prev;
+            let (agree, cadence) =
+                advance(changed, s.agree, now.duration_since(s.burst_start), slow);
+            s.prev = new;
+            s.agree = agree;
+            s.next_due = match cadence {
+                Cadence::Fast => now + FAST,
+                Cadence::Slow(d) => now + d,
+                Cadence::Idle => idle_due(now),
+            };
+        }
     }
 }
 
