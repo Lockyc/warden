@@ -165,7 +165,13 @@
             treePath: t.treePath || [],
             live: t.spawned,
             attention: badges.has(t.id) ? true : null,
-            presence: t.has_probe ? (session.get(t.id) ?? "off") : null,
+            // Live probe events (the `session` Map) win; else the snapshot's last-known
+            // presence (`t.presence`: true/false/null from the backend PresenceCache) so a
+            // just-opened window paints its dots on the FIRST render instead of hollow-until-
+            // first-probe; else "off". Only meaningful for probe-enabled tabs.
+            presence: t.has_probe
+              ? (session.get(t.id) ?? (t.presence == null ? "off" : t.presence ? "on" : "off"))
+              : null,
             killable: !!t.has_kill,
             startable: !!t.has_cmd, // presence dot can restart a dead session by re-running `cmd`
             warn: !!t.warn,

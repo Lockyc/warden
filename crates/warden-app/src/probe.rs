@@ -238,6 +238,13 @@ pub(crate) fn probe_window(app: &AppHandle, label: &str) -> BTreeMap<String, boo
     if result.is_empty() {
         return result; // nothing to emit; caller compares empty==empty → settles
     }
+    // Persist this pass so a (re)opened window's init/refresh DTO paints its dots from the
+    // last-known state — the chrome's `warden:session-state` listener isn't alive yet when a
+    // freshly-built webview opens, so the emit below would be dropped for it. See PresenceCache.
+    {
+        let mut m = state.lock();
+        m.presence_cache.record(label, &result);
+    }
     let mut states = serde_json::Map::new();
     for (id, on) in &result {
         states.insert(id.clone(), serde_json::Value::Bool(*on));

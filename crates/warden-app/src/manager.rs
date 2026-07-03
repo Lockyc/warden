@@ -37,6 +37,50 @@ pub const LAUNCHER_LABEL: &str = "warden-launcher";
 /// One window's probe work-list: `(window label, its probe-enabled tabs)`.
 pub type WindowProbeTargets = (String, Vec<ProbeTarget>);
 
+/// Last-known session presence per tab, keyed window-label → tab-id → present?.
+///
+/// Owned by the `WindowManager` and **deliberately outliving the per-window Registry**:
+/// the presence dot's only live source is an async `warden:session-state` event, which a
+/// freshly-built webview isn't yet listening for, so on window open/reopen the first probe
+/// emits are dropped and the dots stay hollow until the chrome finishes booting and
+/// re-drives a probe. This cache breaks that: the scheduler records every probe pass here,
+/// and `init_dto`/refresh patch each `TabDto.presence` from it, so a (re)opened window
+/// paints its dots on the FIRST render from the last-known state (self-correcting — the
+/// live burst overwrites any staleness within a pass). Surviving close/reopen is the whole
+/// point: a reopen rebuilds the Registry from scratch, so a Registry-local cache would be
+/// empty exactly when it's needed.
+#[derive(Default)]
+pub struct PresenceCache {
+    by_window: HashMap<String, HashMap<String, bool>>,
+}
+
+impl PresenceCache {
+    /// Record a window's probe-pass results (tab id → present). An empty map (a window with
+    /// no probe-enabled tabs, or an unknown/closed label) records nothing — no empty entry.
+    pub fn record(&mut self, label: &str, results: &std::collections::BTreeMap<String, bool>) {
+        if results.is_empty() {
+            return;
+        }
+        let m = self.by_window.entry(label.to_string()).or_default();
+        for (id, on) in results {
+            m.insert(id.clone(), *on);
+        }
+    }
+
+    /// Fill each tab's `presence` from the cache; a tab the cache has never seen is left
+    /// as-is (`None` from `tab_dtos` → hollow "unknown" until the first probe lands).
+    pub fn patch(&self, label: &str, tabs: &mut [TabDto]) {
+        let Some(m) = self.by_window.get(label) else {
+            return;
+        };
+        for t in tabs.iter_mut() {
+            if let Some(&on) = m.get(&t.id) {
+                t.presence = Some(on);
+            }
+        }
+    }
+}
+
 /// Expand a config's project-tree roots into the effective tab set: for each window,
 /// append the scanner-synthesized project tabs for every `[[window.root]]` to `tabs`.
 /// This is what the whole pipeline (window_specs / reconcile / registry) consumes, so a
@@ -117,6 +161,11 @@ pub struct WindowManager {
     /// `probe::run_scheduler` so a hot-reload changes it live. 0 = event-driven only
     /// (burst on triggers, then Idle — no steady polling between events).
     pub probe_interval: Arc<AtomicU64>,
+    /// Last-known session presence per tab, surviving window close/reopen so a (re)opened
+    /// window's `init_dto`/refresh paints its cyan dots from the initial snapshot instead of
+    /// waiting for the first post-boot probe emit (see `PresenceCache`). Written by the
+    /// scheduler each probe pass (`probe::probe_window`), read when building DTOs.
+    pub presence_cache: PresenceCache,
     /// Tauri labels of windows the user has closed, most-recent last (MRU stack).
     /// Drives `⌘⇧T` (Reopen Last Closed). Deduped on push so a repeated close
     /// moves the label to the end rather than growing duplicates. Pruned at reopen
@@ -147,6 +196,7 @@ impl WindowManager {
             last_good: empty,
             diagnostic_msg: String::new(),
             probe_interval: Arc::new(AtomicU64::new(5)),
+            presence_cache: PresenceCache::default(),
             last_closed: Vec::new(),
         }
     }
@@ -428,15 +478,21 @@ impl WindowManager {
     }
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {
-        self.windows.get(label).map(|ws| InitDto {
-            label: label.to_string(),
-            title: ws.title.clone(),
-            colour: ws.colour.clone(),
-            density: self.last_good.density.as_str().to_string(),
-            sidebar_drag: self.last_good.sidebar_drag,
-            auto_update: self.last_good.auto_update,
-            tabs: ws.registry.tab_dtos(),
-            error: ws.spawn_error.clone(),
+        self.windows.get(label).map(|ws| {
+            // Patch presence from the persistent cache so a (re)opened window paints its
+            // cyan dots on the first render, not after the chrome boots + re-probes.
+            let mut tabs = ws.registry.tab_dtos();
+            self.presence_cache.patch(label, &mut tabs);
+            InitDto {
+                label: label.to_string(),
+                title: ws.title.clone(),
+                colour: ws.colour.clone(),
+                density: self.last_good.density.as_str().to_string(),
+                sidebar_drag: self.last_good.sidebar_drag,
+                auto_update: self.last_good.auto_update,
+                tabs,
+                error: ws.spawn_error.clone(),
+            }
         })
     }
 
@@ -663,6 +719,12 @@ impl WindowManager {
                             );
                         }
                         ws.registry.reorder(&order);
+                        // Patch presence from the persistent cache (disjoint field from
+                        // `self.windows` borrowed via `ws`, so this borrows cleanly) so a
+                        // hot-reload refresh keeps the dots lit instead of blanking them
+                        // until the next probe pass re-emits.
+                        let mut tabs = ws.registry.tab_dtos();
+                        self.presence_cache.patch(&label, &mut tabs);
                         // Push the new snapshot so the chrome rebuilds the sidebar.
                         // Target THIS window by label: `Emitter::emit` (on a window
                         // OR the app handle) is a global broadcast in Tauri 2.11.3 —
@@ -678,7 +740,7 @@ impl WindowManager {
                             density: density.to_string(),
                             sidebar_drag,
                             auto_update,
-                            tabs: ws.registry.tab_dtos(),
+                            tabs,
                             // Refresh carries no spawn error; a hot-reload add
                             // failure is logged + retried-on-focus, not banner-pushed.
                             error: None,
@@ -702,5 +764,67 @@ mod tests {
         assert_eq!(m.probe_interval.load(Ordering::Relaxed), 5);
         m.set_probe_interval(0);
         assert_eq!(m.probe_interval.load(Ordering::Relaxed), 0);
+    }
+
+    fn dto(id: &str) -> TabDto {
+        TabDto {
+            id: id.to_string(),
+            title: id.to_string(),
+            warn: false,
+            spawned: false,
+            group: None,
+            has_probe: true,
+            has_kill: false,
+            has_cmd: false,
+            tree: false,
+            tree_path: Vec::new(),
+            presence: None,
+        }
+    }
+
+    #[test]
+    fn presence_cache_patches_recorded_tabs_and_survives_relookup() {
+        use std::collections::BTreeMap;
+        let mut cache = PresenceCache::default();
+        // A window's probe pass: t0 present, t1 absent.
+        let mut results = BTreeMap::new();
+        results.insert("t0".to_string(), true);
+        results.insert("t1".to_string(), false);
+        cache.record("work", &results);
+
+        // A freshly-built window's DTOs (all presence: None) get patched from the cache —
+        // this is what lets a reopened window paint its dots on first render.
+        let mut tabs = vec![dto("t0"), dto("t1"), dto("t2")];
+        cache.patch("work", &mut tabs);
+        assert_eq!(tabs[0].presence, Some(true), "t0 recorded present");
+        assert_eq!(tabs[1].presence, Some(false), "t1 recorded absent");
+        assert_eq!(tabs[2].presence, None, "t2 never probed → left unknown");
+
+        // A window the cache has never seen leaves everything untouched.
+        let mut other = vec![dto("t0")];
+        cache.patch("personal", &mut other);
+        assert_eq!(other[0].presence, None, "different window → no cross-talk");
+    }
+
+    #[test]
+    fn presence_cache_record_ignores_empty_and_overwrites() {
+        use std::collections::BTreeMap;
+        let mut cache = PresenceCache::default();
+        // Empty pass (no probe-enabled tabs / closed window) creates no entry.
+        cache.record("work", &BTreeMap::new());
+        let mut tabs = vec![dto("t0")];
+        cache.patch("work", &mut tabs);
+        assert_eq!(tabs[0].presence, None, "empty pass records nothing");
+
+        // A later pass with a value, then a newer pass, keeps the newest (present→absent).
+        let mut r1 = BTreeMap::new();
+        r1.insert("t0".to_string(), true);
+        cache.record("work", &r1);
+        let mut r2 = BTreeMap::new();
+        r2.insert("t0".to_string(), false);
+        cache.record("work", &r2);
+        let mut tabs = vec![dto("t0")];
+        cache.patch("work", &mut tabs);
+        assert_eq!(tabs[0].presence, Some(false), "newest result wins");
     }
 }
