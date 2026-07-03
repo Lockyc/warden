@@ -109,8 +109,9 @@ pub struct WindowManager {
     /// The message shown by the diagnostic window; fetched by its page via the
     /// `diagnostic_message` command. Empty when no diagnostic is showing.
     pub diagnostic_msg: String,
-    /// Seconds between background probe passes; shared with the poll thread so a
-    /// hot-reload can change cadence live. 0 = focus/refresh-only (no timer).
+    /// The presence scheduler's slow-floor cadence in seconds; shared as an `Arc` with
+    /// `probe::run_scheduler` so a hot-reload changes it live. 0 = event-driven only
+    /// (burst on triggers, then Idle — no steady polling between events).
     pub probe_interval: Arc<AtomicU64>,
     /// Tauri labels of windows the user has closed, most-recent last (MRU stack).
     /// Drives `⌘⇧T` (Reopen Last Closed). Deduped on push so a repeated close
@@ -259,13 +260,13 @@ impl WindowManager {
         }
     }
 
-    /// Update the shared probe-pass cadence (the poll thread reads it each tick).
+    /// Update the shared probe-pass cadence (the scheduler reads it each tick).
     pub fn set_probe_interval(&self, secs: u64) {
         self.probe_interval.store(secs, Ordering::Relaxed);
     }
 
     /// Probe work-lists grouped by window label. `only = Some(label)` restricts to
-    /// one window (focus trigger); `None` = every window (timer/refresh).
+    /// one window; `None` = every window (the scheduler's per-tick reconcile / `bump_all`).
     pub fn probe_targets(&self, only: Option<&str>) -> Vec<WindowProbeTargets> {
         self.windows
             .iter()

@@ -12,10 +12,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
-/// Per-probe deadline. Probes run sequentially on the poll thread, so one wedged command (a hung
+/// Per-probe deadline. Probes run sequentially on the scheduler thread, so one wedged command (a hung
 /// `tmux`, a probe that blocks on I/O) would otherwise freeze every window's presence dot until it
 /// returns. Bounded here: long enough for a healthy `amux --probe` (sub-second), short enough that
-/// a stuck probe can't stall the poll for more than a few seconds. On timeout the child is killed
+/// a stuck probe can't stall the scheduler pass for more than a few seconds. On timeout the child is killed
 /// and the tab treated as absent.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -25,7 +25,7 @@ pub(crate) const FAST: Duration = Duration::from_millis(400);
 /// Scheduler wake granularity — it wakes on a bump OR at least this often to service due windows.
 pub(crate) const TICK: Duration = Duration::from_millis(200);
 /// Ceiling on a single burst: a flapping/nondeterministic probe never "settles", so without this it
-/// would pin the poll thread Fast forever. After CAP the window drops to the slow floor regardless.
+/// would pin the scheduler Fast forever. After CAP the window drops to the slow floor regardless.
 pub(crate) const CAP: Duration = Duration::from_secs(20);
 /// Consecutive unchanged passes that count as "settled" (~AGREE_TARGET * FAST of agreement).
 pub(crate) const AGREE_TARGET: u32 = 3;
