@@ -581,13 +581,20 @@ mod tests {
         // AppHandle/WindowManager::apply (which needs a live Tauri app).
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec_with_probe("t0", "/tmp/old", Some("probe-cmd")), false);
-        let _ = r.add(&spec_with_probe("t1", "/tmp/other", Some("probe-cmd")), false);
+        let _ = r.add(
+            &spec_with_probe("t1", "/tmp/other", Some("probe-cmd")),
+            false,
+        );
 
         r.remove("t0");
         let _ = r.add(&spec_with_probe("t0", "/tmp/new", Some("probe-cmd")), false);
 
         let dtos = r.tab_dtos();
-        assert_eq!(dtos.len(), 2, "respawn must not leave a stray duplicate entry");
+        assert_eq!(
+            dtos.len(),
+            2,
+            "respawn must not leave a stray duplicate entry"
+        );
 
         let targets = r.probe_targets();
         let t0_dir = targets.iter().find(|t| t.0 == "t0").unwrap().1.clone();
