@@ -7,7 +7,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 # The shared sidebar chrome, embedded as string consts; build.rs writes them into ui/ (the
 # frontendDist Tauri embeds). Pinned by rev — bump in lockstep with config-core + the toolchain.
-chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "8ccd060518de2ce1887782767b6a45eb4259b5b4" }
+chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "87ac08f5e2362a468ffb5efb7bdf5d3f50915232" }
 
 [dependencies]
 # macos-private-api: required for programmatic transparent windows (the
@@ -16,6 +16,9 @@ chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "8ccd060518
 tauri = { version = "2", features = ["macos-private-api"] }
 # Persist each window's size + position across launches, keyed by Tauri label.
 tauri-plugin-window-state = "2"
+# In-app updates: check GitHub releases, download+verify (minisign), install and relaunch.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 warden-config = { path = "../warden-config" }

@@ -44,6 +44,8 @@ const MENU_WINDOW_PREFIX: &str = "window_open_";
 // Config menu: open the config file in the default editor / reveal it in Finder.
 const MENU_CONFIG_EDIT: &str = "config_edit";
 const MENU_CONFIG_REVEAL: &str = "config_reveal";
+// warden submenu: manually check for a new release (emits warden:check-update to the focused chrome).
+const MENU_CHECK_UPDATES: &str = "check_updates";
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -101,8 +103,12 @@ fn build_app_menu(
     let close_window = MenuItemBuilder::with_id(MENU_WINDOW_CLOSE, "Close Window")
         .accelerator("Shift+Cmd+KeyW")
         .build(app)?;
+    let check_updates =
+        MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for Updates…").build(app)?;
     let app_menu = SubmenuBuilder::new(app, "warden")
         .minimize()
+        .item(&check_updates)
+        .separator()
         .item(&close_window)
         .separator()
         .quit()
@@ -668,6 +674,9 @@ fn main() {
                 .with_filename(window_state_filename())
                 .build(),
         )
+        // In-app updates: the chrome checks on launch (gated on auto_update) + via the menu.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
         // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
         // reliable per-window target here (it leaks to siblings — the same reason warden:refresh
@@ -764,6 +773,9 @@ fn main() {
                     "warden:unload-tab",
                     serde_json::json!({ "label": label }),
                 );
+            } else if id == MENU_CHECK_UPDATES {
+                // Manual update check → the focused window's chrome runs it (ignores auto_update).
+                let _ = app.emit_to(label.as_str(), "warden:check-update", ());
             } else if id == MENU_WINDOW_CLOSE {
                 // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, then
                 // sync_empty_surface: shows the launcher if it was the last real window — no quit).

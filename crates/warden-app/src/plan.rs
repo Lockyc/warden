@@ -819,6 +819,7 @@ colour = "#111111"
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
+            auto_update: true,
             notify_debug: false,
         };
         let name_to_label: HashMap<String, String> = [("dev".to_string(), "dev".to_string())]

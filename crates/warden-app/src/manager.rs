@@ -79,6 +79,10 @@ pub struct InitDto {
     /// `sidebar_drag` config (default true). Carried per-window (it's global) so
     /// every snapshot — init and hot-reload refresh — applies the current mode.
     pub sidebar_drag: bool,
+    /// Whether warden checks for a new release on launch, from the global
+    /// `auto_update` config (default true). Carried per-window (it's global); the
+    /// chrome gates its launch-time update check on it (the menu check ignores it).
+    pub auto_update: bool,
     pub tabs: Vec<TabDto>,
     /// A surface-spawn failure that happened while building this window, surfaced
     /// in the chrome's error banner on init. `None` = all tabs built cleanly. This
@@ -133,6 +137,7 @@ impl WindowManager {
             probe_interval: 5,
             density: warden_config::Density::default(),
             sidebar_drag: true,
+            auto_update: true,
             notify_debug: false,
         };
         WindowManager {
@@ -429,6 +434,7 @@ impl WindowManager {
             colour: ws.colour.clone(),
             density: self.last_good.density.as_str().to_string(),
             sidebar_drag: self.last_good.sidebar_drag,
+            auto_update: self.last_good.auto_update,
             tabs: ws.registry.tab_dtos(),
             error: ws.spawn_error.clone(),
         })
@@ -577,6 +583,7 @@ impl WindowManager {
         let ops = reconcile_ops(recon, new_config, &self.names, &self.taken_labels());
         let density = new_config.density.as_str();
         let sidebar_drag = new_config.sidebar_drag;
+        let auto_update = new_config.auto_update;
         for op in ops {
             match op {
                 WindowOp::Open(spec) => {
@@ -670,6 +677,7 @@ impl WindowManager {
                             colour: ws.colour.clone(),
                             density: density.to_string(),
                             sidebar_drag,
+                            auto_update,
                             tabs: ws.registry.tab_dtos(),
                             // Refresh carries no spawn error; a hot-reload add
                             // failure is logged + retried-on-focus, not banner-pushed.

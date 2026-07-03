@@ -200,6 +200,7 @@ mod tests {
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
+            auto_update: true,
             notify_debug: false,
         };
         let eff = crate::manager::effective_config(&cfg);

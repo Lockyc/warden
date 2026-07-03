@@ -180,6 +180,7 @@ pub fn resolve_with(
             probe_interval: raw.probe_interval.unwrap_or(5),
             density,
             sidebar_drag: raw.sidebar_drag.unwrap_or(true),
+            auto_update: raw.auto_update.unwrap_or(true),
             notify_debug: raw.notify_debug.unwrap_or(false),
         },
         warnings,
@@ -610,6 +611,33 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert!(!cfg.sidebar_drag);
+    }
+
+    #[test]
+    fn auto_update_defaults_to_true() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.auto_update);
+    }
+
+    #[test]
+    fn auto_update_can_be_disabled() {
+        let (cfg, _) = resolve_str(
+            r##"
+auto_update = false
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.auto_update);
     }
 
     #[test]

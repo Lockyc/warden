@@ -84,6 +84,44 @@
       const badges = new Set(); // tab ids with an unread notification/bell badge
       const session = new Map(); // tab id → 'on'/'off' (probe presence), for probe-enabled tabs
 
+      // ── In-app updater ────────────────────────────────────────────────────────
+      // The update bar UI lives in chrome-core; this controller runs the actual check/download/
+      // relaunch (chrome-core stays Tauri-agnostic), via the withGlobalTauri plugin globals.
+      const updater = window.__TAURI__.updater;
+      const proc = window.__TAURI__.process;
+      let pendingUpdate = null; // the Update object from a successful check(), awaiting confirm
+      let updateDismissed = false; // set by the bar's × — suppresses auto re-surfacing this session
+
+      // `announce` = surface "up to date" / errors (menu path); the launch path passes false so it
+      // stays silent on miss/offline. A found update shows unless dismissed this session — except on
+      // the menu path, which re-surfaces it (and clears the dismissal).
+      async function checkForUpdate(announce) {
+        try {
+          const update = await updater.check();
+          if (update) {
+            pendingUpdate = update;
+            if (announce) updateDismissed = false;
+            if (announce || !updateDismissed) sb.setUpdate({ version: update.version, notes: update.body });
+          } else if (announce) {
+            sb.setError("You're up to date.");
+            setTimeout(() => sb.clearError(), 4000);
+          }
+        } catch (e) {
+          if (announce) sb.setError("⚠ Couldn't check for updates: " + e);
+        }
+      }
+
+      async function installUpdate() {
+        if (!pendingUpdate) return;
+        try {
+          await pendingUpdate.downloadAndInstall();
+          await proc.relaunch();
+        } catch (e) {
+          sb.clearUpdate();
+          sb.setError("⚠ Update failed: " + e);
+        }
+      }
+
       const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
 
       // Report the terminal-hole's CSS rect to the native layer so the libghostty surface tracks it.
@@ -211,6 +249,13 @@
               // config, so it's ignored here (forward-compat).
               invokeSafe("rescan_root");
             },
+            onUpdate() {
+              installUpdate();
+            },
+            onUpdateDismiss() {
+              // × on the update bar — don't auto-surface again this session (menu check overrides).
+              updateDismissed = true;
+            },
           },
           {
             storageKey: "warden:sidebar-width:" + myLabel,
@@ -223,6 +268,10 @@
 
         applyDto(dto);
         if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
+
+        // Silently check for a newer release on launch (unless auto_update is off); a hit shows the
+        // update bar. The manual Check-for-Updates menu path always runs regardless.
+        if (dto.auto_update !== false) checkForUpdate(false);
 
         // Ask for the first probe pass only AFTER the session-state listener is registered, so the
         // first emit can't race ahead of it. This populates the presence dots at startup.
@@ -256,6 +305,8 @@
         if (sb) sb.setError("⚠ " + msg);
       });
       listen("warden:error-clear", () => { if (sb) sb.clearError(); });
+      // Menu "Check for Updates…" → check now and announce the result (up-to-date / error / banner).
+      listen("warden:check-update", () => checkForUpdate(true));
 
       // Menu tab nav: cycle ONLY loaded tabs (⌘⇧[/]) and jump (⌘1–9). emit_to leaks → forMe filter.
       listen("warden:cycle-tab", (e) => {
