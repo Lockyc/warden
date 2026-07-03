@@ -667,6 +667,9 @@ impl WindowManager {
                     remove_tabs,
                     order,
                     set_meta,
+                    // Not yet applied — a later change wires respawn-in-place
+                    // (remove+add by id) into this match arm.
+                    respawn_tabs: _,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
                         // Skip no-op updates (e.g. a config save that changes nothing

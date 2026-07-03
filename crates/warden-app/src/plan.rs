@@ -5,7 +5,7 @@ use crate::manager::DIAG_LABEL;
 use crate::surface::TabSpec;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use warden_config::{Config, Reconciliation, Window};
+use warden_config::{Config, Reconciliation, Tab, Window};
 
 /// Derive (tree, tree_path) for a tab from its window's roots (root name → dir).
 /// A tab whose `group` names a root is a tree row; tree_path = folder segments
@@ -28,6 +28,28 @@ pub fn derive_tree_meta(
 pub struct TabPlan {
     pub spec: TabSpec,
     pub load_on_open: bool,
+}
+
+/// Build a `TabPlan` for one resolved `Tab` given its window's root dirs. The single
+/// site that maps a `warden_config::Tab` to the app's `TabPlan`/`TabSpec` — used by
+/// `window_to_spec` and by `reconcile_ops` for both added and respawned tabs.
+pub fn tab_to_plan(root_dirs: &HashMap<&str, &Path>, t: &Tab) -> TabPlan {
+    let (tree, tree_path) = derive_tree_meta(root_dirs, t.group.as_deref(), &t.dir);
+    TabPlan {
+        spec: TabSpec {
+            id: t.key.clone(),
+            title: t.title.clone(),
+            dir: t.dir.clone(),
+            shell: t.shell.clone(),
+            startup: t.startup.clone(),
+            group: t.group.clone(),
+            probe: t.probe.clone(),
+            kill: t.kill.clone(),
+            tree,
+            tree_path,
+        },
+        load_on_open: t.load_on_open,
+    }
 }
 
 /// Everything needed to build one window window.
@@ -92,28 +114,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         .iter()
         .map(|r| (r.name.as_str(), r.dir.as_path()))
         .collect();
-    let tabs = p
-        .tabs
-        .iter()
-        .map(|t| {
-            let (tree, tree_path) = derive_tree_meta(&root_dirs, t.group.as_deref(), &t.dir);
-            TabPlan {
-                spec: TabSpec {
-                    id: t.key.clone(),
-                    title: t.title.clone(),
-                    dir: t.dir.clone(),
-                    shell: t.shell.clone(),
-                    startup: t.startup.clone(),
-                    group: t.group.clone(),
-                    probe: t.probe.clone(),
-                    kill: t.kill.clone(),
-                    tree,
-                    tree_path,
-                },
-                load_on_open: t.load_on_open,
-            }
-        })
-        .collect();
+    let tabs = p.tabs.iter().map(|t| tab_to_plan(&root_dirs, t)).collect();
     WindowSpec {
         label,
         title: p.title.clone(),
@@ -232,6 +233,8 @@ pub enum WindowOp {
         // In-place metadata for kept tabs whose group/probe/kill changed —
         // applied live (sidebar re-section + new probe/kill) without respawning.
         set_meta: Vec<(String, warden_config::TabMeta)>,
+        // Kept tabs whose terminal spec changed — respawn in place (remove+add by id).
+        respawn_tabs: Vec<TabPlan>,
     },
 }
 
@@ -277,27 +280,15 @@ pub fn reconcile_ops(
                     .collect()
             })
             .unwrap_or_default();
-        let add_tabs = u
+        let add_tabs: Vec<TabPlan> = u
             .add_tabs
             .iter()
-            .map(|t| {
-                let (tree, tree_path) = derive_tree_meta(&root_dirs, t.group.as_deref(), &t.dir);
-                TabPlan {
-                    spec: TabSpec {
-                        id: t.key.clone(),
-                        title: t.title.clone(),
-                        dir: t.dir.clone(),
-                        shell: t.shell.clone(),
-                        startup: t.startup.clone(),
-                        group: t.group.clone(),
-                        probe: t.probe.clone(),
-                        kill: t.kill.clone(),
-                        tree,
-                        tree_path,
-                    },
-                    load_on_open: t.load_on_open,
-                }
-            })
+            .map(|t| tab_to_plan(&root_dirs, t))
+            .collect();
+        let respawn_tabs: Vec<TabPlan> = u
+            .respawn_tabs
+            .iter()
+            .map(|t| tab_to_plan(&root_dirs, t))
             .collect();
         ops.push(WindowOp::Update {
             label: label.clone(),
@@ -306,6 +297,7 @@ pub fn reconcile_ops(
             remove_tabs: u.remove_tabs.clone(),
             order: u.tab_order.clone(),
             set_meta: u.set_meta.clone(),
+            respawn_tabs,
         });
     }
 
@@ -479,10 +471,12 @@ colour = "#0f8a8a"
         assert_eq!(w.title, "work");
         assert_eq!(w.colour, "#0f8a8a");
         assert_eq!(w.tabs.len(), 2);
-        assert_eq!(w.tabs[0].spec.id, "alpha");
+        // No explicit `id` set on either tab, so key (and thus TabSpec.id) is the
+        // normalized dir, not the title (Task 1: id-else-dir identity).
+        assert_eq!(w.tabs[0].spec.id, "/tmp/alpha");
         assert_eq!(w.tabs[0].spec.title, "alpha");
         assert!(w.tabs[0].load_on_open);
-        assert_eq!(w.tabs[1].spec.id, "ops");
+        assert_eq!(w.tabs[1].spec.id, "/tmp/ops");
         assert!(!w.tabs[1].load_on_open);
     }
 
@@ -839,6 +833,42 @@ colour = "#111111"
                 assert_eq!(
                     add_tabs[0].spec.tree_path,
                     vec!["gh".to_string(), "lockyc".to_string()]
+                );
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    /// A kept tab identified by an explicit `id` whose `dir` changes must respawn
+    /// (remove+add by id under the surface), carried via `WindowUpdate.respawn_tabs`
+    /// — not treated as a plain add/remove (which is what happens when identity is
+    /// dir-derived and the dir itself changes).
+    #[test]
+    fn respawn_tab_maps_to_tabplan_with_new_dir() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  id = "a"
+  dir = "/tmp/a"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  id = "a"
+  dir = "/tmp/a-new"
+"##);
+        let r = reconcile(&old, &new);
+        let ops = reconcile_ops(&r, &new, &name_label_map(&old), &taken(&old));
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            WindowOp::Update { respawn_tabs, .. } => {
+                assert_eq!(respawn_tabs.len(), 1);
+                assert_eq!(respawn_tabs[0].spec.id, "a");
+                assert_eq!(
+                    respawn_tabs[0].spec.dir,
+                    std::path::PathBuf::from("/tmp/a-new")
                 );
             }
             other => panic!("expected Update, got {other:?}"),
