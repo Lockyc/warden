@@ -57,6 +57,7 @@ Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `
 shell = "fish -l"            # global default shell (omit → your login shell, run as login)
 format_on_save = true        # optional; rewrite this file tidy on each clean save (default off)
 density = "compact"          # optional; "comfortable" (default) or "compact" (condensed chrome)
+auto_update = false          # optional; check for a new release on launch (default true; menu check stays)
 
 [[window]]                   # a native macOS window
 title  = "work"
@@ -90,6 +91,11 @@ A window has its own colour + title banner; its tabs are project terminals. `wid
 [latest release](https://github.com/Lockyc/warden/releases/latest), unzip, and move
 `warden.app` to `/Applications`. Release builds are signed with Developer ID and notarized,
 so they open without a Gatekeeper block. macOS only.
+
+Once installed, warden **updates itself**: it checks for a new release on launch (or via
+**warden ▸ Check for Updates…**) and offers a one-click "Update & Relaunch" (set
+`auto_update = false` to suppress the launch check). Re-installing is only needed to bootstrap
+the first updater-capable version.
 
 **Guided (Claude Code):** run `/warden:install` — it checks prerequisites
 (Xcode Command Line Tools, Rust, the Tauri CLI), builds warden from source, installs

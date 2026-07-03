@@ -15,3 +15,6 @@ crates/warden-app/gen/
 # `just seed-examples` git-inits the mock example project dirs into real repos so the
 # [[window.root]] tree demo has something to discover — those local .git dirs aren't tracked.
 examples/projects/**/.git/
+
+# Generated updater manifest (scripts/gen-latest-json.sh, for a release upload)
+/latest.json

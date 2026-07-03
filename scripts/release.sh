@@ -40,6 +40,15 @@ if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
   exit 1
 fi
 
+# The updater key signs the .app.tar.gz that existing installs download + verify. Without it the
+# createUpdaterArtifacts build produces no .sig and latest.json can't be formed — so refuse rather
+# than publish a release existing users can't auto-update to.
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  echo "release: TAURI_SIGNING_PRIVATE_KEY is unset — no updater signature would be produced." >&2
+  echo "         Set TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) from the warden updater key before releasing." >&2
+  exit 1
+fi
+
 # The release must exist (notes published) before we attach to it.
 if ! gh release view "$TAG" >/dev/null 2>&1; then
   echo "release: GitHub release $TAG not found — run 'gh release create $TAG' first." >&2
@@ -57,4 +66,16 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 echo "→ uploading $ZIP to release $TAG"
 gh release upload "$TAG" "$ZIP" --clobber
 
-echo "✓ attached $ZIP to $TAG"
+# Updater artifacts: the signed .app.tar.gz (+ .sig) existing installs download, and the manifest
+# the updater fetches from the releases/latest/download/ alias. createUpdaterArtifacts + the signing
+# env above produce the tarball + .sig during the build.
+TARBALL="target/release/bundle/macos/warden.app.tar.gz"
+[ -f "$TARBALL" ] && [ -f "$TARBALL.sig" ] || {
+  echo "release: updater artifacts missing at ${TARBALL} (+ .sig) — is createUpdaterArtifacts on + the signing env set?" >&2
+  exit 1
+}
+echo "→ generating latest.json + uploading updater artifacts to $TAG"
+bash scripts/gen-latest-json.sh "$VERSION" latest.json
+gh release upload "$TAG" "$TARBALL" "$TARBALL.sig" latest.json --clobber
+
+echo "✓ attached $ZIP + updater artifacts (warden.app.tar.gz, .sig, latest.json) to $TAG"
