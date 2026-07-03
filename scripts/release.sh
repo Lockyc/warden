@@ -56,7 +56,10 @@ if ! gh release view "$TAG" >/dev/null 2>&1; then
 fi
 
 echo "→ building + notarizing warden $VERSION (cargo tauri build) …"
-( cd crates/warden-app && cargo tauri build )
+# createUpdaterArtifacts is enabled here via --config, NOT in the committed tauri.conf.json: baking
+# it in makes every `cargo tauri build` demand TAURI_SIGNING_PRIVATE_KEY, which breaks keyless
+# from-source builds (install.sh / just build / just deploy). Release-only, so those stay keyless.
+( cd crates/warden-app && cargo tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}' )
 [ -d "$APP" ] || { echo "release: bundle not found at $APP" >&2; exit 1; }
 
 echo "→ zipping $APP → $ZIP (ditto, preserves the stapled notarization ticket)"

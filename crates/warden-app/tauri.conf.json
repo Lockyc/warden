@@ -15,7 +15,6 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": true,
     "targets": "app",
     "icon": ["icons/icon.icns"]
   },
