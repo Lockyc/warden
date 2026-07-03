@@ -250,56 +250,6 @@ pub(crate) fn probe_window(app: &AppHandle, label: &str) -> BTreeMap<String, boo
     result
 }
 
-/// Synchronously probe one window (`Some(label)`) or all (`None`) and emit a
-/// label-stamped `warden:session-state` per window. Snapshots the work-list
-/// under the manager lock, then releases it BEFORE running the (slow) probes.
-pub fn run_pass(app: &AppHandle, only: Option<&str>) {
-    let Some(state) = app.try_state::<ManagerState>() else {
-        return;
-    };
-    // (label, Vec<(id, dir, title, probe)>) snapshot — lock held only here.
-    let per_window = {
-        let m = state.lock();
-        m.probe_targets(only)
-    };
-    for (label, tabs) in per_window {
-        if tabs.is_empty() {
-            continue;
-        }
-        let mut states = serde_json::Map::new();
-        for (id, dir, title, probe) in tabs {
-            let cmd = substitute(&probe, &dir, &title);
-            states.insert(id, serde_json::Value::Bool(run_probe(&cmd, &dir)));
-        }
-        // Force any tab with a kill in flight to "absent" — its probe above may have
-        // observed the still-alive pre-kill session (probes are slow; a kill can land
-        // mid-pass), and emitting `true` would re-light the dot the chrome just dropped
-        // optimistically (the off→on→off flicker). Checked here, at emit time, so a kill
-        // that arrives *during* this pass is still caught. `kill_session` unmarks the tab
-        // before its own reprobe, so the true post-kill state (absent, or present if the
-        // kill failed) still reaches the chrome. See WindowManager::killing.
-        {
-            let m = state.lock();
-            for (id, val) in states.iter_mut() {
-                if m.is_killing(&label, id) {
-                    *val = serde_json::Value::Bool(false);
-                }
-            }
-        }
-        let _ = app.emit_to(
-            label.as_str(),
-            "warden:session-state",
-            serde_json::json!({ "label": label, "states": states }),
-        );
-    }
-}
-
-/// Run `run_pass` on a detached thread (for the focus/refresh one-shots, which
-/// must not block the main thread). `sh -c` is fine off-thread; AppHandle is Send.
-pub fn spawn_pass(app: AppHandle, only: Option<String>) {
-    std::thread::spawn(move || run_pass(&app, only.as_deref()));
-}
-
 /// Scheduler bump channel sender, set once by `run_scheduler` at startup. Commands/events call
 /// `bump`/`bump_all` to push a window into a fast burst. A `OnceLock` (never re-set) so the sender
 /// lives for the whole process — the receiver end never disconnects.

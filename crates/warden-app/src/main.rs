@@ -237,11 +237,9 @@ fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) ->
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn probe_now(window: tauri::WebviewWindow) {
-    use tauri::Manager;
-    probe::spawn_pass(
-        window.app_handle().clone(),
-        Some(window.label().to_string()),
-    );
+    // The chrome calls this once its `warden:session-state` listener is registered, so the first
+    // burst can't race the listener. Enqueue a bump → the scheduler fast-probes this window now.
+    probe::bump(window.label());
 }
 
 /// Activate tab `id` within the calling window's registry.
@@ -272,6 +270,9 @@ fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
             }),
         );
     }
+    // A just-activated tab may have a session that changed while it was cold/backgrounded — fast-burst
+    // this window so its dot is current within a pass rather than up to a slow-poll stale.
+    probe::bump(window.label());
 }
 
 /// Kill tab `id`'s terminal (surface + PTY) in the calling window; it goes cold and
@@ -294,14 +295,12 @@ fn unload_tab(
 /// its configured `kill` command via `sh -c`, cwd = the tab's dir, fire-and-forget on a
 /// detached thread (exit code ignored — warden has no response to a failed kill, and must
 /// not block the UI thread). Does NOT unload warden's terminal surface: a live tab stays
-/// live. No-op if the tab has no `kill` set. After the kill completes, re-probe this window
-/// so the cyan presence dot drops once the session is actually gone (the poll loop would
-/// also re-converge, but this makes it prompt). Same minimal-env PATH footgun as probes —
-/// see scrub note + CLAUDE.md.
+/// live. No-op if the tab has no `kill` set. After the kill completes, bump this window so
+/// the scheduler fast-bursts and the cyan presence dot drops promptly once the session is
+/// actually gone. Same minimal-env PATH footgun as probes — see scrub note + CLAUDE.md.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
-    use tauri::Manager;
     let target = {
         let m = state.lock();
         m.windows
@@ -312,42 +311,28 @@ fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
         return; // unknown tab or no kill command configured
     };
     let cmd = probe::substitute(&cmd, &dir, &title);
-    let app = window.app_handle().clone();
     let label = window.label().to_string();
-    // Mark the kill in flight BEFORE the (slow) kill so any poll pass that runs while it
-    // executes force-reports this tab absent (see WindowManager::killing / run_pass) — the
-    // chrome dropped the dot optimistically and a poll observing the still-alive pre-kill
-    // session would otherwise re-light it (the off→on→off flicker).
-    state.lock().mark_killing(&label, &id);
-    // Run the kill, then re-probe THIS window on the same thread so the order is
-    // deterministic: the cyan presence dot drops only after the session is actually
-    // gone. Off the UI thread (kill + probe are slow `sh -c` calls); the exit code of
-    // the kill is ignored (fire-and-forget — warden has no response to a failed kill).
-    // Sequencing (not racing a separate spawn_pass) matters because with
-    // `probe_interval = 0` there's no timer to heal a re-probe that ran before the kill.
+    // Run the kill fire-and-forget off the UI thread, then bump this window so the scheduler's fast
+    // burst catches the absent→ transition the moment teardown lands. No optimistic drop and no
+    // killing-suppression flag: the dot tracks `warden:session-state` and converges monotonically
+    // (stays lit ~0.4–1s while `amux --kill` tears down, then drops once — no off→on→off flicker).
+    // A genuinely-failed kill leaves the session present, so the dot correctly stays lit.
     std::thread::spawn(move || {
         let _ = probe::run_probe(&cmd, &dir);
-        // Clear the mark BEFORE the reprobe so run_pass reports this tab's true post-kill
-        // state — absent normally, or present again if the kill genuinely failed (the dot
-        // re-lights). Other tabs still mid-kill stay suppressed.
-        if let Some(st) = app.try_state::<ManagerState>() {
-            st.lock().unmark_killing(&label, &id);
-        }
-        probe::run_pass(&app, Some(&label));
+        probe::bump(&label);
     });
 }
 
 /// Restart the *session* tab `id` represents by re-typing its startup `cmd` into the live shell
 /// (see `Registry::start_session` — the runtime twin of spawn-time `initial_input`). No-op if the
-/// tab is cold or has no `cmd`. Unlike `kill_session` (synchronous), the started session appears
-/// **asynchronously** — the shell has to run the typed command — so an immediate probe would still
-/// read "absent". Instead we schedule a couple of delayed re-probes so the cyan presence dot lights
-/// promptly once the session is up; the poll timer (`probe_interval`) converges the rest, and
+/// tab is cold or has no `cmd`. Unlike `kill_session` (a single bump), the started session appears
+/// **asynchronously** — the shell has to run the typed command — so a single burst can settle
+/// "absent" before it comes up. Instead we bump now and again at ~1s/~3s so the scheduler's fast
+/// burst re-arms and catches the session once it lands; the slow poll heals any later drift, and
 /// `probe_interval = 0` tabs re-light on next focus. Same minimal-env PATH footgun as probes.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
-    use tauri::Manager;
     let started = {
         let m = state.lock();
         m.windows
@@ -358,14 +343,17 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     if !started {
         return; // cold / no cmd / unknown — nothing typed, nothing to re-probe
     }
-    let app = window.app_handle().clone();
     let label = window.label().to_string();
-    // Off the UI thread (probes are slow `sh -c` calls). Re-probe at 1s and 3s to catch both fast
-    // and slower session starts without racing the launch; further drift is healed by the poll timer.
+    // The started session appears asynchronously — the shell has to run the typed `cmd` — and a
+    // single burst can settle on "stably absent" before it comes up. So re-bump at ~1s and ~3s to
+    // re-arm the scheduler's fast burst and catch a slow start; the slow poll heals any later drift,
+    // and `probe_interval = 0` tabs light on the next event. (Delayed *bumps*, not reprobes — the
+    // scheduler is the only prober.) This is the one trigger that needs more than a single bump.
+    probe::bump(&label);
     std::thread::spawn(move || {
-        for delay_ms in [1000u64, 2000] {
+        for delay_ms in [1000u64, 3000] {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            probe::run_pass(&app, Some(&label));
+            probe::bump(&label);
         }
     });
 }
@@ -391,9 +379,9 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
         let recon = warden_config::reconcile(&m.last_good, &fresh);
         m.apply(&app, &recon, &fresh);
         m.last_good = fresh;
-    } // release the ManagerState lock before the lock-free probe pass
-      // New discovered tabs may carry probes — refresh the session dots.
-    probe::spawn_pass(app, None);
+    } // release the ManagerState lock before the lock-free bump
+      // New discovered tabs may carry probes — fast-burst every window so their dots populate now.
+    probe::bump_all(&app);
 }
 
 /// Update the calling window's active-surface frame from a web-coordinate rect.
@@ -837,39 +825,15 @@ fn main() {
                 // through it. `notify_debug` (config, default false) gates the diagnostic trace.
                 notify::init(handle.clone(), notify_debug);
 
-                // Background session-probe poll loop. Reads the shared interval each
-                // tick so a hot-reload can change cadence (0 = focus/refresh-only).
+                // Background presence-probe scheduler — the single probe driver. Per-window
+                // fast-until-stable bursts on key moments (tab activate, window focus/open, session
+                // start/kill, hot-reload/rescan), decaying to the slow floor (`probe_interval`) or
+                // Idle when it's 0. Triggers call `probe::bump`; nothing else spawns probe passes.
                 {
-                    use std::sync::atomic::Ordering;
-                    use std::time::Duration;
-                    // Wait in ≤3s slices, bailing the moment the interval changes, so a
-                    // hot-reload that shortens a long cadence (e.g. 60→5) or toggles the
-                    // timer on/off is picked up within a few seconds — not after the old
-                    // sleep elapses. This is what makes the cadence genuinely live.
-                    const SLICE: u64 = 3;
                     let st = handle.state::<ManagerState>();
                     let interval = st.lock().probe_interval.clone();
-                    let app_poll = handle.clone();
-                    std::thread::spawn(move || loop {
-                        let secs = interval.load(Ordering::Relaxed);
-                        // Wait one interval BEFORE the first pass, not after — launch
-                        // dots come from each window's `probe_now` (see below), so an
-                        // immediate pass here would just spawn every probe once with
-                        // no listener yet registered to receive the result (dropped).
-                        // secs == 0 → idle; still slice-sleep so re-enabling is responsive.
-                        let target = if secs > 0 { secs } else { SLICE };
-                        let mut slept = 0;
-                        while slept < target && interval.load(Ordering::Relaxed) == secs {
-                            let chunk = std::cmp::min(SLICE, target - slept);
-                            std::thread::sleep(Duration::from_secs(chunk));
-                            slept += chunk;
-                        }
-                        // Probe only if still enabled after the wait (a mid-wait 0→N flip
-                        // breaks the loop above and lands here promptly; N→0 skips).
-                        if interval.load(Ordering::Relaxed) > 0 {
-                            probe::run_pass(&app_poll, None);
-                        }
-                    });
+                    let app_sched = handle.clone();
+                    std::thread::spawn(move || probe::run_scheduler(app_sched, interval));
                 }
                 // No launch-time probe pass here: each window's chrome calls the
                 // `probe_now` command once its `warden:session-state` listener is
@@ -1007,8 +971,8 @@ fn main() {
                                     // Clear any stale error banner.
                                     let _ = wh.emit("warden:error-clear", ());
                                     // Refresh the session dots now that cadence/config may have changed
-                                    // (lock already released, so the spawned pass can lock freely).
-                                    probe::spawn_pass(wh.clone(), None);
+                                    // (lock already released, so the bump can lock freely).
+                                    probe::bump_all(&wh);
                                 }
                                 Ok(_) => {
                                     // Valid TOML but no windows. If live windows exist,
