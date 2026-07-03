@@ -497,6 +497,7 @@ colour = "#0f8a8a"
             height: 1000,
             open_on_start: true,
             tabs: vec![Tab {
+                id: None,
                 key: "/r/Dev/gh/lockyc/warden".into(),
                 title: "warden".into(),
                 dir: "/r/Dev/gh/lockyc/warden".into(),
@@ -774,6 +775,7 @@ colour = "#111111"
         use warden_config::{Colour, Density, Root, Tab, TabDigitKeys, WindowUpdate};
 
         let added = Tab {
+            id: None,
             key: "/r/Dev/gh/lockyc/warden".into(),
             title: "warden".into(),
             dir: "/r/Dev/gh/lockyc/warden".into(),

@@ -47,8 +47,8 @@ fn cascade<'a>(
 pub enum ResolveError {
     #[error("duplicate window title: {0:?}")]
     DuplicateWindow(String),
-    #[error("window {window:?} has duplicate tab title: {title:?}")]
-    DuplicateTab { window: String, title: String },
+    #[error("window {window:?} has two tabs with the same identity: {identity:?} (give one an `id` to disambiguate, or change its dir)")]
+    DuplicateTabIdentity { window: String, identity: String },
     #[error("window {window:?} has a tab with an empty dir")]
     EmptyDir { window: String },
     #[error("window {window:?} has invalid colour")]
@@ -125,6 +125,17 @@ fn basename(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| p.to_string_lossy().into_owned())
+}
+
+/// Render a resolved dir to its identity string: the lossy path with any single trailing
+/// separator stripped (so `~/a` and `~/a/` are one identity) — except a bare root `/`.
+/// Must match the scanner's discovered-tab key (`path.to_string_lossy()`, never trailing-
+/// slashed) so a curated tab and a same-dir discovered project share one key and the curated
+/// one shadows the discovered one in `effective_config`.
+fn normalize_dir_key(dir: &std::path::Path) -> String {
+    let s = dir.to_string_lossy();
+    let trimmed = s.strip_suffix('/').filter(|t| !t.is_empty()).unwrap_or(&s);
+    trimmed.to_string()
 }
 
 /// Resolve with the built-in [`DEFAULT_SHELL`] as the unset-`shell` fallback. Convenience
@@ -218,11 +229,11 @@ fn resolve_window(
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
     // presentation only — so every tab resolves identically (tab → window → global)
-    // and just carries its group name. Title uniqueness is window-wide (shared
-    // `seen_titles` across loose + grouped tabs), matching `Tab::key`.
+    // and just carries its group name. Identity uniqueness (id-else-dir) is window-wide
+    // (shared `seen_keys` across loose + grouped tabs); titles may repeat.
     let total: usize = rp.tabs.len() + rp.groups.iter().map(|g| g.tabs.len()).sum::<usize>();
     let mut tabs = Vec::with_capacity(total);
-    let mut seen_titles = HashSet::new();
+    let mut seen_keys = HashSet::new();
 
     for rt in &rp.tabs {
         tabs.push(resolve_tab(
@@ -234,7 +245,7 @@ fn resolve_window(
             global_cmd,
             global_probe,
             global_kill,
-            &mut seen_titles,
+            &mut seen_keys,
             warnings,
         )?);
     }
@@ -269,7 +280,7 @@ fn resolve_window(
                 global_cmd,
                 global_probe,
                 global_kill,
-                &mut seen_titles,
+                &mut seen_keys,
                 warnings,
             )?);
         }
@@ -309,7 +320,8 @@ fn resolve_window(
 
 /// Resolve one raw tab into a `Tab`, tagged with `group` (`None` = loose/ungrouped).
 /// Shared by the loose-tab and grouped-tab passes so both validate and cascade
-/// identically; `seen_titles` is threaded in to enforce window-wide title uniqueness.
+/// identically; `seen_keys` is threaded in to enforce window-wide identity (id-else-dir)
+/// uniqueness.
 #[allow(clippy::too_many_arguments)]
 fn resolve_tab(
     rt: &crate::raw::RawTab,
@@ -320,7 +332,7 @@ fn resolve_tab(
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
     global_kill: Option<&str>,
-    seen_titles: &mut HashSet<String>,
+    seen_keys: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
     let dir_str = rt.dir.trim();
@@ -337,17 +349,25 @@ fn resolve_tab(
             });
         }
     }
-    // Store/dedup the trimmed title so a trailing-space typo collides (see the
-    // emptiness check above, which already trims); basename is whitespace-free.
+    // Title is a pure display label now — trimmed, defaulting to the dir basename, and NOT
+    // deduplicated (titles may repeat window-wide).
     let title = rt
         .title
         .as_deref()
         .map(|t| t.trim().to_string())
         .unwrap_or_else(|| basename(&dir));
-    if !seen_titles.insert(title.clone()) {
-        return Err(ResolveError::DuplicateTab {
+    // Identity: explicit non-empty `id`, else the normalized dir. Empty `id = ""` = unset.
+    let id = rt
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let key = id.clone().unwrap_or_else(|| normalize_dir_key(&dir));
+    if !seen_keys.insert(key.clone()) {
+        return Err(ResolveError::DuplicateTabIdentity {
             window: rp.title.clone(),
-            title,
+            identity: key,
         });
     }
     if !dir.exists() {
@@ -367,7 +387,8 @@ fn resolve_tab(
     let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
     let kill = cascade(rt.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
     Ok(Tab {
-        key: title.clone(),
+        id,
+        key,
         title,
         dir,
         shell,
@@ -653,7 +674,7 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert_eq!(cfg.windows[0].tabs[0].title, "alpha");
-        assert_eq!(cfg.windows[0].tabs[0].key, "alpha");
+        assert_eq!(cfg.windows[0].tabs[0].key, "/tmp/alpha");
     }
 
     #[test]
@@ -828,8 +849,10 @@ colour = "#000000"
     }
 
     #[test]
-    fn duplicate_tab_title_is_error() {
-        let err = resolve_str(
+    fn duplicate_tab_title_with_different_dirs_is_no_longer_an_error() {
+        // Titles are a pure display label now — two tabs may share a title as long
+        // as their identities (id-else-dir) differ.
+        let (cfg, _w) = resolve_str(
             r##"
 [[window]]
 title = "work"
@@ -842,23 +865,19 @@ colour = "#000000"
   dir = "/tmp/b"
 "##,
         )
-        .unwrap_err();
-        assert_eq!(
-            err,
-            ResolveError::DuplicateTab {
-                window: "work".into(),
-                title: "same".into()
-            }
-        );
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].title, "same");
+        assert_eq!(cfg.windows[0].tabs[1].title, "same");
+        assert_eq!(cfg.windows[0].tabs[0].key, "/tmp/a");
+        assert_eq!(cfg.windows[0].tabs[1].key, "/tmp/b");
     }
 
     #[test]
-    fn duplicate_title_via_basename_collision_is_error() {
+    fn same_basename_over_different_dirs_is_no_longer_an_error() {
         // Two tabs in different dirs but the same basename and no explicit title both
-        // default to that basename → DuplicateTab. Surprising-but-correct: titles are
-        // unique window-wide and the default title is the dir basename. Pins it so the
-        // default-title rule can't silently start tolerating collisions.
-        let err = resolve_str(
+        // default to that basename — that's fine now: identity is the dir, not the
+        // title, so the shared default title doesn't collide.
+        let (cfg, _w) = resolve_str(
             r##"
 [[window]]
 title = "work"
@@ -869,14 +888,11 @@ colour = "#000000"
   dir = "/b/alpha"
 "##,
         )
-        .unwrap_err();
-        assert_eq!(
-            err,
-            ResolveError::DuplicateTab {
-                window: "work".into(),
-                title: "alpha".into()
-            }
-        );
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].title, "alpha");
+        assert_eq!(cfg.windows[0].tabs[1].title, "alpha");
+        assert_eq!(cfg.windows[0].tabs[0].key, "/a/alpha");
+        assert_eq!(cfg.windows[0].tabs[1].key, "/b/alpha");
     }
 
     #[test]
@@ -1063,9 +1079,10 @@ colour = "#000000"
     }
 
     #[test]
-    fn duplicate_title_across_loose_and_group_is_error() {
-        // Title uniqueness is window-wide: a loose tab and a grouped tab can't share a title.
-        let err = resolve_str(
+    fn duplicate_title_across_loose_and_group_is_no_longer_an_error() {
+        // A loose tab and a grouped tab may share a title now — identity is window-wide
+        // id-else-dir, and titles aren't part of it.
+        let (cfg, _w) = resolve_str(
             r##"
 [[window]]
 title = "work"
@@ -1080,14 +1097,11 @@ colour = "#000000"
     dir = "/tmp/b"
 "##,
         )
-        .unwrap_err();
-        assert_eq!(
-            err,
-            ResolveError::DuplicateTab {
-                window: "work".into(),
-                title: "same".into()
-            }
-        );
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].title, "same");
+        assert_eq!(cfg.windows[0].tabs[1].title, "same");
+        assert_eq!(cfg.windows[0].tabs[0].key, "/tmp/a");
+        assert_eq!(cfg.windows[0].tabs[1].key, "/tmp/b");
     }
 
     #[test]
@@ -1289,16 +1303,16 @@ colour = "#0f8a8a"
 kill = "win-kill"
 
   [[window.tab]]
-  dir = "/tmp"
+  dir = "/tmp/a"
   title = "inherits-window"
 
   [[window.tab]]
-  dir = "/tmp"
+  dir = "/tmp/b"
   title = "own-kill"
   kill = "tab-kill {title}"
 
   [[window.tab]]
-  dir = "/tmp"
+  dir = "/tmp/c"
   title = "opts-out"
   kill = ""
 
@@ -1535,10 +1549,11 @@ colour = "not-a-colour"
         assert!(matches!(err, ResolveError::BadColour { .. }));
     }
 
-    // Titles/names are validated for emptiness after trimming, so they must also be
-    // deduped and stored trimmed — otherwise a trailing-space typo ("api" vs "api ")
+    // Window titles are validated for emptiness after trimming, so they must also be
+    // deduped and stored trimmed — otherwise a trailing-space typo ("work" vs "work ")
     // slips past uniqueness as a distinct key, and later fixing the space reads as a
-    // Tab::key change → the terminal/PTY is destroyed and respawned.
+    // Window title change → destructive (close+reopen). Tab titles are trimmed the same
+    // way for display, but no longer feed identity — see the dir-collision test below.
 
     #[test]
     fn window_titles_differing_only_by_whitespace_collide() {
@@ -1560,7 +1575,9 @@ title = "work "
     }
 
     #[test]
-    fn tab_titles_differing_only_by_whitespace_collide() {
+    fn tabs_sharing_a_dir_without_id_collide_regardless_of_title() {
+        // Both tabs resolve to the same dir "/tmp", so their identity (id-else-dir)
+        // collides — independent of the (here-irrelevant) title whitespace difference.
         let err = resolve_str(
             r##"
 [[window]]
@@ -1576,9 +1593,9 @@ title = "work"
         .unwrap_err();
         assert_eq!(
             err,
-            ResolveError::DuplicateTab {
+            ResolveError::DuplicateTabIdentity {
                 window: "work".into(),
-                title: "api".into(),
+                identity: "/tmp".into(),
             }
         );
     }
@@ -1597,7 +1614,7 @@ title = "  work  "
         .unwrap();
         assert_eq!(cfg.windows[0].title, "work");
         assert_eq!(cfg.windows[0].tabs[0].title, "api");
-        assert_eq!(cfg.windows[0].tabs[0].key, "api");
+        assert_eq!(cfg.windows[0].tabs[0].key, "/tmp");
     }
 
     #[test]
@@ -1668,5 +1685,97 @@ open_on_start = true
         .0;
         assert!(!cfg.windows[0].open_on_start);
         assert!(cfg.windows[1].open_on_start);
+    }
+
+    #[test]
+    fn identity_is_dir_when_no_id_and_titles_may_repeat() {
+        // Two tabs, same title, different dirs → both resolve (titles no longer unique),
+        // keys are the normalized dirs.
+        let (cfg, _w) = resolve(
+            parse(
+                r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  title = "same"
+  dir = "/tmp/a"
+  [[window.tab]]
+  title = "same"
+  dir = "/tmp/b"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let keys: Vec<&str> = cfg.windows[0].tabs.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, vec!["/tmp/a", "/tmp/b"]);
+        assert_eq!(cfg.windows[0].tabs[0].id, None);
+    }
+
+    #[test]
+    fn duplicate_dir_without_id_is_an_error() {
+        let err = resolve(
+            parse(
+                r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [[window.tab]]
+  dir = "/tmp/a"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateTabIdentity {
+                window: "w".into(),
+                identity: "/tmp/a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_ids_disambiguate_a_shared_dir() {
+        let (cfg, _w) = resolve(
+            parse(
+                r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  id = "server"
+  dir = "/tmp/a"
+  [[window.tab]]
+  id = "shell"
+  dir = "/tmp/a"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let keys: Vec<&str> = cfg.windows[0].tabs.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, vec!["server", "shell"]);
+    }
+
+    #[test]
+    fn empty_id_falls_back_to_dir() {
+        let (cfg, _w) = resolve(
+            parse(
+                r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  id = ""
+  dir = "/tmp/a/"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // empty id = unset; trailing slash normalized away.
+        assert_eq!(cfg.windows[0].tabs[0].key, "/tmp/a");
+        assert_eq!(cfg.windows[0].tabs[0].id, None);
     }
 }

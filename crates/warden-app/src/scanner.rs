@@ -96,6 +96,7 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
             Tab {
+                id: None,
                 key: path.to_string_lossy().into_owned(),
                 title,
                 dir: path,

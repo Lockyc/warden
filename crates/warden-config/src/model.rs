@@ -103,6 +103,10 @@ pub struct Root {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tab {
+    /// Explicit stable identity if the config set one (`id`), else `None` (identity is the
+    /// dir). Carried so the formatter/round-trip preserve it. NOT the reconcile key itself —
+    /// that is `key` (= `id` when set, else the normalized dir).
+    pub id: Option<String>,
     pub key: String,
     pub title: String,
     pub dir: PathBuf,
@@ -117,7 +121,7 @@ pub struct Tab {
     pub load_on_open: bool,
     /// The name of the `[[window.group]]` this tab belongs to, or `None` for a loose
     /// (ungrouped) tab. Purely presentational — the chrome sections the sidebar by it;
-    /// it carries no behaviour and is not part of `key` (identity stays the title).
+    /// it carries no behaviour and is not part of `key` (identity is `id`-else-dir).
     pub group: Option<String>,
     /// Optional session-presence probe command for this tab (cascaded
     /// tab→window→global). `None` = no probe (the tab shows no session dot).

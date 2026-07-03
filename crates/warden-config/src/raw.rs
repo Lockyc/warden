@@ -90,6 +90,12 @@ pub struct RawRoot {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawTab {
+    /// Optional stable identity for this tab, independent of `title`/`dir`. When set
+    /// (non-empty), it IS the tab's reconcile identity — letting two tabs share a `dir`
+    /// and letting `dir`/`title` both change while staying "the same tab". Empty (`id = ""`)
+    /// is treated as unset (identity falls back to `dir`), mirroring the `shell`/`cmd`
+    /// empty-is-unset convention.
+    pub id: Option<String>,
     pub title: Option<String>,
     pub dir: String,
     pub shell: Option<String>,
