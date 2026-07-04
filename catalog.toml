@@ -1,0 +1,6 @@
+name    = "warden"
+summary = "Curated terminals — a macOS console of grouped project tabs over embedded libghostty surfaces"
+kind    = "app"
+status  = "active"
+tags    = ["terminals", "console", "sidebar", "macos"]
+stack   = ["rust", "tauri", "libghostty"]
