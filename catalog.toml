@@ -4,3 +4,7 @@ kind    = "app"
 status  = "active"
 tags    = ["terminals", "console", "sidebar", "macos"]
 stack   = ["rust", "tauri", "libghostty"]
+
+[[provides]]
+name    = "terminals"
+summary = "A macOS console of grouped project terminals over embedded libghostty surfaces"
