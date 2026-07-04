@@ -183,17 +183,22 @@ impl Registry {
     pub fn set_meta(
         &mut self,
         id: &str,
-        title: String,
-        group: Option<String>,
-        probe: Option<String>,
-        kill: Option<String>,
+        meta: &warden_config::TabMeta,
+        tree: bool,
+        tree_path: Vec<String>,
     ) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
-            t.title = title.clone();
-            t.spec.title = title;
-            t.spec.group = group;
-            t.spec.probe = probe;
-            t.spec.kill = kill;
+            t.title = meta.title.clone();
+            t.spec.title = meta.title.clone();
+            t.spec.group = meta.group.clone();
+            t.spec.probe = meta.probe.clone();
+            t.spec.kill = meta.kill.clone();
+            // Tree-ness can flip on a kept tab when its group moves between a root
+            // section and a plain group (curated↔discovered shadowing) — recomputed
+            // upstream in `reconcile_ops`, so it must be applied here too, not left
+            // stale from the prior render.
+            t.spec.tree = tree;
+            t.spec.tree_path = tree_path;
         }
     }
 
@@ -434,20 +439,36 @@ mod tests {
         assert!(!r.tab_dtos()[0].has_probe && !r.tab_dtos()[0].has_kill);
         r.set_meta(
             "t0",
-            "Renamed".to_string(),
-            Some("backend".into()),
-            Some("probe-x".into()),
-            Some("kill-y".into()),
+            &warden_config::TabMeta {
+                title: "Renamed".to_string(),
+                group: Some("backend".into()),
+                probe: Some("probe-x".into()),
+                kill: Some("kill-y".into()),
+            },
+            true,
+            vec!["gh".into(), "lockyc".into()],
         );
         let d = &r.tab_dtos()[0];
         assert_eq!(d.title, "Renamed", "title relabeled in place");
         assert_eq!(d.group.as_deref(), Some("backend"));
         assert!(d.has_probe, "probe applied in place");
         assert!(d.has_kill, "kill applied in place");
+        assert!(d.tree, "tree-ness applied in place");
+        assert_eq!(d.tree_path, vec!["gh".to_string(), "lockyc".to_string()]);
         // No respawn — a cold tab stays cold.
         assert!(!r.is_spawned("t0"));
         // Unknown id is a no-op (doesn't panic).
-        r.set_meta("nope", "x".to_string(), None, None, None);
+        r.set_meta(
+            "nope",
+            &warden_config::TabMeta {
+                title: "x".to_string(),
+                group: None,
+                probe: None,
+                kill: None,
+            },
+            false,
+            Vec::new(),
+        );
     }
 
     #[test]

@@ -232,10 +232,26 @@ pub enum WindowOp {
         order: Vec<String>,       // full new tab id order
         // In-place metadata for kept tabs whose group/probe/kill changed —
         // applied live (sidebar re-section + new probe/kill) without respawning.
-        set_meta: Vec<(String, warden_config::TabMeta)>,
+        set_meta: Vec<MetaPlan>,
         // Kept tabs whose terminal spec changed — respawn in place (remove+add by id).
         respawn_tabs: Vec<TabPlan>,
     },
+}
+
+/// A kept tab's in-place metadata for a hot-reload, ready to apply to a live tab. Wraps
+/// the crate's `TabMeta` (title/group/probe/kill) and adds the app-side `tree`/`tree_path`
+/// **recomputed from the new config's roots**. This recompute is load-bearing: a kept tab
+/// (same `Tab::key`) can flip between a project-tree (root) section and a plain group when a
+/// curated tab shadows — or stops shadowing — a same-dir discovered project (its normalized
+/// dir key equals the discovery's path key, so `reconcile` sees a kept tab with a changed
+/// `group`, i.e. `set_meta`, not add/remove). `TabMeta` is crate-pure and can't carry
+/// tree-ness, so it's derived here alongside the `add_tabs`/`respawn_tabs` derivation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetaPlan {
+    pub id: String,
+    pub meta: warden_config::TabMeta,
+    pub tree: bool,
+    pub tree_path: Vec<String>,
 }
 
 /// Map a reconciliation (by window name) to window ops (by Tauri label).
@@ -269,10 +285,8 @@ pub fn reconcile_ops(
         let Some(label) = name_to_label.get(&u.title) else {
             continue;
         };
-        let root_dirs: HashMap<&str, &Path> = new_config
-            .windows
-            .iter()
-            .find(|w| w.title == u.title)
+        let win = new_config.windows.iter().find(|w| w.title == u.title);
+        let root_dirs: HashMap<&str, &Path> = win
             .map(|w| {
                 w.roots
                     .iter()
@@ -290,13 +304,34 @@ pub fn reconcile_ops(
             .iter()
             .map(|t| tab_to_plan(&root_dirs, t))
             .collect();
+        // Recompute each kept tab's tree/tree_path from the NEW config's roots + its
+        // (new) group — the same derivation `tab_to_plan` runs for adds/respawns. A
+        // shadow flip (curated tab appears/disappears at a discovered project's dir)
+        // is a set_meta group change on a kept key, so its tree-ness must follow the
+        // new group, not linger from the old one.
+        let set_meta: Vec<MetaPlan> = u
+            .set_meta
+            .iter()
+            .map(|(id, meta)| {
+                let (tree, tree_path) = win
+                    .and_then(|w| w.tabs.iter().find(|t| &t.key == id))
+                    .map(|t| derive_tree_meta(&root_dirs, meta.group.as_deref(), &t.dir))
+                    .unwrap_or((false, Vec::new()));
+                MetaPlan {
+                    id: id.clone(),
+                    meta: meta.clone(),
+                    tree,
+                    tree_path,
+                }
+            })
+            .collect();
         ops.push(WindowOp::Update {
             label: label.clone(),
             colour: u.colour.map(|c| c.hex()),
             add_tabs,
             remove_tabs: u.remove_tabs.clone(),
             order: u.tab_order.clone(),
-            set_meta: u.set_meta.clone(),
+            set_meta,
             respawn_tabs,
         });
     }
@@ -837,6 +872,110 @@ colour = "#111111"
             }
             other => panic!("expected Update, got {other:?}"),
         }
+    }
+
+    /// Regression: a `[[window.root]]`-discovered project (tree row, `group` = root name)
+    /// that a curated tab then shadows at the same `dir` (moving it into a plain group) is a
+    /// KEPT tab — same `Tab::key` — so reconcile emits a `set_meta` group change, not add/
+    /// remove. Its `tree`/`tree_path` must be recomputed from the new group and cleared;
+    /// leaving them stale rendered the shadowed project as its own tree section under the
+    /// curated group's name (a "TOOLS" tree row instead of a plain TOOLS group tab).
+    #[test]
+    fn reconcile_shadow_transition_clears_stale_tree_meta_via_set_meta() {
+        use warden_config::{Colour, Density, Root, Tab, TabDigitKeys};
+
+        let key = "/r/Dev/gh/lockyc/mycelium".to_string();
+        let root = Root {
+            name: "Developer".into(),
+            dir: "/r/Dev".into(),
+            depth: 6,
+            shell: "sh".into(),
+            startup: None,
+            probe: None,
+            kill: None,
+        };
+        let mk_window = |tabs: Vec<Tab>| Window {
+            title: "w".into(),
+            colour: Colour { r: 0, g: 0, b: 0 },
+            width: 1500,
+            height: 1000,
+            open_on_start: true,
+            tabs,
+            roots: vec![root.clone()],
+        };
+        let mk_cfg = |tabs: Vec<Tab>| Config {
+            windows: vec![mk_window(tabs)],
+            format_on_save: false,
+            tab_digit_keys: TabDigitKeys::default(),
+            probe_interval: 5,
+            density: Density::default(),
+            sidebar_drag: true,
+            auto_update: true,
+            notify_debug: false,
+        };
+
+        // OLD: the project is only discovered by the root → a tree row under "Developer".
+        let discovered = Tab {
+            id: None,
+            key: key.clone(),
+            title: "mycelium".into(),
+            dir: key.clone().into(),
+            shell: "sh".into(),
+            startup: None,
+            load_on_open: false,
+            group: Some("Developer".into()),
+            probe: None,
+            kill: None,
+        };
+        let old = mk_cfg(vec![discovered]);
+
+        // NEW: a curated tab in the "tools" group at the SAME dir shadows the discovery
+        // (same key). Its group is a plain [[window.group]], not a root → not a tree row.
+        let curated = Tab {
+            id: None,
+            key: key.clone(),
+            title: "mycelium".into(),
+            dir: key.clone().into(),
+            shell: "sh".into(),
+            startup: None,
+            load_on_open: false,
+            group: Some("tools".into()),
+            probe: None,
+            kill: None,
+        };
+        let new = mk_cfg(vec![curated]);
+
+        let recon = warden_config::reconcile(&old, &new);
+        // Same key + changed group ⇒ a kept-tab metadata update, not add/remove.
+        assert_eq!(recon.update.len(), 1, "expected one window update");
+        assert!(
+            recon.update[0].add_tabs.is_empty() && recon.update[0].remove_tabs.is_empty(),
+            "shadow transition must be a kept tab, not add/remove"
+        );
+
+        let name_to_label: HashMap<String, String> =
+            [("w".to_string(), "w".to_string())].into_iter().collect();
+        let ops = reconcile_ops(&recon, &new, &name_to_label, &HashSet::new());
+        let WindowOp::Update { set_meta, .. } = ops
+            .iter()
+            .find(|o| matches!(o, WindowOp::Update { .. }))
+            .expect("expected an Update op")
+        else {
+            unreachable!()
+        };
+        let m = set_meta
+            .iter()
+            .find(|m| m.id == key)
+            .expect("set_meta must carry the shadowed tab");
+        assert_eq!(m.meta.group.as_deref(), Some("tools"));
+        assert!(
+            !m.tree,
+            "shadowed project is now a plain group tab — tree must be cleared"
+        );
+        assert!(
+            m.tree_path.is_empty(),
+            "cleared tree row must have no tree_path"
+        );
     }
 
     /// A kept tab identified by an explicit `id` whose `dir` changes must respawn

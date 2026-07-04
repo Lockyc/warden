@@ -719,24 +719,20 @@ impl WindowManager {
                                 );
                             }
                         }
-                        // Apply in-place metadata (group/probe/kill) without respawning;
-                        // the warden:refresh below pushes fresh DTOs (has_probe/has_kill
-                        // recomputed) and the post-reload bump_all fast-bursts every window.
-                        // `set_meta` carries no `tree`/`tree_path` deliberately: tree-ness
-                        // never flips for a *kept* tab. A discovered tab's `group` always
-                        // names a root and its path key is derived from a stable `dir`
-                        // (a changed root `dir`/`depth` yields different path keys → add/
-                        // remove, not a kept tab), and a curated tab can't acquire a root's
-                        // name (disjoint section-name namespace). So the tab's original
-                        // `tree_path` stays valid across a metadata-only update.
-                        for (id, meta) in &set_meta {
-                            ws.registry.set_meta(
-                                id,
-                                meta.title.clone(),
-                                meta.group.clone(),
-                                meta.probe.clone(),
-                                meta.kill.clone(),
-                            );
+                        // Apply in-place metadata (group/probe/kill + recomputed
+                        // tree/tree_path) without respawning; the warden:refresh below
+                        // pushes fresh DTOs (has_probe/has_kill recomputed) and the
+                        // post-reload bump_all fast-bursts every window. Tree-ness CAN
+                        // flip for a *kept* tab: a curated tab whose normalized dir key
+                        // equals a `[[window.root]]` discovery's path key shadows it, so
+                        // reconcile sees the same key move between the root section
+                        // (tree) and the curated group (not) — a set_meta, not add/
+                        // remove. `reconcile_ops` recomputes `tree`/`tree_path` from the
+                        // new group; applying them here keeps the shadowed row from
+                        // rendering as a stale tree row (or vice-versa).
+                        for m in &set_meta {
+                            ws.registry
+                                .set_meta(&m.id, &m.meta, m.tree, m.tree_path.clone());
                         }
                         ws.registry.reorder(&order);
                         // If the on-screen tab was respawned, it went cold — re-activate it
