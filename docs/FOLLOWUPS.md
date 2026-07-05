@@ -29,6 +29,10 @@ Two related deferrals about the seam between warden and agentmux. Both are consc
 
 **Intended change:** store the updater-key password in the **macOS Keychain** (a generic password item) and have the release path read it non-interactively — `security find-generic-password -s warden-updater-key -w` — so `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is populated with no vault paste, exactly as `APPLE_PASSWORD` is already sourced for notarization (via `_notary_pw` in the shell config). This keeps the secret out of shell rc / plaintext while removing the per-release friction. The vault copy stays the canonical backup (per the personal-vault store rule); the Keychain is the build-machine convenience mirror. Wire it either into `scripts/release.sh` (fall back to the env var if the Keychain item is absent, so a contributor without it isn't blocked) or a thin `just release` wrapper that exports it before delegating.
 
+## Release manifest — stamp `pub_date` into `latest.json`
+
+`scripts/gen-latest-json.sh` emits the updater manifest without a `pub_date` field, so every release's `latest.json` ships without one (confirmed on v0.6.1). The `tauri-plugin-updater` client does **not** require it — updates work fine without it — so this is cosmetic: `pub_date` only surfaces as update metadata (e.g. a "released on" line a UI could show). Adding it is a one-liner in the generator, which already runs on the release machine where `date` is available: stamp an RFC 3339 UTC timestamp (`date -u +%Y-%m-%dT%H:%M:%SZ`) into the JSON's top-level `pub_date`. Low priority; do it if a future update UI wants to show the release date.
+
 ## Lower-priority / edge cases
 
 - **`warden validate` exit code does not distinguish "ok" from "ok with warnings"** (`crates/warden-config/src/bin/warden.rs`) — both exit 0. Not spec-mandated; revisit if a CI consumer needs to gate on nonexistent-dir warnings.
