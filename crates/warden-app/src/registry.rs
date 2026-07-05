@@ -332,15 +332,12 @@ impl Registry {
 }
 
 /// Index of the tab to activate after the tab at `idx` is killed, given each tab's live
-/// (spawned) state. Prefer the immediate next tab **if it is live** (natural forward motion),
-/// else the nearest live tab to the left (the one you usually came from), else the nearest live
-/// tab to the right. `None` ⇒ nothing live to show — the caller leaves the hole blank rather
-/// than spawning a cold tab just to fill it. Pure index logic, so it's unit-testable without
-/// real surfaces (which `add(.., true)` can't fabricate against a null `ns_window`).
+/// (spawned) state. Lean **up** the list: take the nearest live tab to the left (the one you
+/// usually came from), else the nearest live tab to the right. `None` ⇒ nothing live to show —
+/// the caller leaves the hole blank rather than spawning a cold tab just to fill it. Pure index
+/// logic, so it's unit-testable without real surfaces (which `add(.., true)` can't fabricate
+/// against a null `ns_window`).
 fn pick_live_neighbour(idx: usize, live: &[bool]) -> Option<usize> {
-    if live.get(idx + 1).copied().unwrap_or(false) {
-        return Some(idx + 1);
-    }
     if let Some(p) = (0..idx).rev().find(|&i| live[i]) {
         return Some(p);
     }
@@ -491,31 +488,25 @@ mod tests {
     }
 
     #[test]
-    fn pick_live_neighbour_prefers_next_when_live() {
-        // killed@1; next@2 is live → take it (forward motion).
-        assert_eq!(pick_live_neighbour(1, &[true, false, true, true]), Some(2));
-    }
-
-    #[test]
-    fn pick_live_neighbour_falls_back_to_previous_when_next_cold() {
-        // killed@1; next@2 cold; previous@0 live → previous (don't wake the cold next).
-        assert_eq!(pick_live_neighbour(1, &[true, false, false]), Some(0));
+    fn pick_live_neighbour_prefers_previous_when_live() {
+        // killed@2; previous@1 is live → take it (lean up), even though next@3 is also live.
+        assert_eq!(pick_live_neighbour(2, &[false, true, true, true]), Some(1));
     }
 
     #[test]
     fn pick_live_neighbour_prefers_nearest_live_left_over_right() {
-        // killed@2; next@3 cold; live to the left (@1) and far right (@4) → left wins.
+        // killed@3; nearest live left is @1 (@2 cold), live far right @4 → left wins.
         assert_eq!(
-            pick_live_neighbour(2, &[false, true, false, false, true]),
+            pick_live_neighbour(3, &[false, true, false, false, true]),
             Some(1)
         );
     }
 
     #[test]
     fn pick_live_neighbour_uses_right_when_nothing_live_left() {
-        // killed@0; next@1 cold; nothing to the left; live@3 → scan right to it.
+        // killed@1; nothing live to the left (@0 cold); live@3 → scan right to it.
         assert_eq!(
-            pick_live_neighbour(0, &[false, false, false, true]),
+            pick_live_neighbour(1, &[false, false, false, true]),
             Some(3)
         );
     }
