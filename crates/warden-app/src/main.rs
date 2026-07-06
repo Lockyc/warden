@@ -242,9 +242,18 @@ fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) ->
 /// up-to-one-tick hollow-dot latency at startup for every interval.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn probe_now(window: tauri::WebviewWindow) {
-    // The chrome calls this once its `warden:session-state` listener is registered, so the first
-    // burst can't race the listener. Enqueue a bump → the scheduler fast-probes this window now.
+fn probe_now(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
+    use tauri::Manager;
+    // The chrome calls this once its `warden:session-state` listener is registered. Two deliveries,
+    // together race-proof:
+    //  1. Replay the last-known presence from the cache NOW. A probe pass that finished between this
+    //     window's build (when `init_dto` snapshotted an empty cache → hollow dots) and the listener
+    //     registering had its live per-tab emits dropped, and — `prev` populated — no later pass
+    //     re-emits, so those dots would be stuck dark (the "launchpad dot never lights" bug, worst
+    //     for a tab whose session pre-existed so its state never changes after that lost first pass).
+    //  2. Bump so a live burst refreshes anything that changed since.
+    let snapshot = state.lock().presence_cache.snapshot(window.label());
+    probe::emit_presence_snapshot(window.app_handle(), window.label(), &snapshot);
     probe::bump(window.label());
 }
 

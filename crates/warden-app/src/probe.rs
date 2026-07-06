@@ -251,18 +251,39 @@ pub fn run_probe(cmd: &str, dir: &Path) -> bool {
     }
 }
 
-/// Emit one tab's presence to its window's chrome as a single-tab `warden:session-state`. The
-/// payload shape is identical to a multi-tab emit (`{label, states}`), just one entry — the chrome
-/// iterates whatever's in `states`, so a partial map updates exactly that dot. Stamped with `label`
-/// and filtered by the chrome's `forMe()` (the `emit_to`-leaks footgun, same as `warden:refresh`).
-fn emit_one(app: &AppHandle, label: &str, id: &str, on: bool) {
-    let mut states = serde_json::Map::new();
-    states.insert(id.to_string(), serde_json::Value::Bool(on));
+/// Emit a `warden:session-state` carrying `states` (tab id → present) for one window. The chrome
+/// iterates whatever's in `states`, so a partial map (even one entry) updates exactly those dots.
+/// Stamped with `label` and filtered by the chrome's `forMe()` (the `emit_to`-leaks footgun, same
+/// as `warden:refresh`). No-op on an empty map (nothing to say).
+fn emit_states(app: &AppHandle, label: &str, states: serde_json::Map<String, serde_json::Value>) {
+    if states.is_empty() {
+        return;
+    }
     let _ = app.emit_to(
         label,
         "warden:session-state",
         serde_json::json!({ "label": label, "states": states }),
     );
+}
+
+/// Emit one tab's presence as a single-entry `warden:session-state` (see `emit_states`).
+fn emit_one(app: &AppHandle, label: &str, id: &str, on: bool) {
+    let mut states = serde_json::Map::new();
+    states.insert(id.to_string(), serde_json::Value::Bool(on));
+    emit_states(app, label, states);
+}
+
+/// Replay a window's last-known presence (`id → present`) to its chrome as one batched
+/// `warden:session-state`. Called by `probe_now` the moment the chrome's listener is ready, so
+/// state a pre-listener probe pass emitted-and-lost (with `prev` now populated, no live pass
+/// re-emits it) is still delivered — otherwise those dots stay stuck at their hollow build-time
+/// state. See `PresenceCache::snapshot`.
+pub fn emit_presence_snapshot(app: &AppHandle, label: &str, states: &BTreeMap<String, bool>) {
+    let map = states
+        .iter()
+        .map(|(id, on)| (id.clone(), serde_json::Value::Bool(*on)))
+        .collect();
+    emit_states(app, label, map);
 }
 
 /// Reorder `work` so the bumped tab `priority` is probed **first**. A trigger that acts on one tab

@@ -67,6 +67,24 @@ hollow until the first probe records) — strictly no worse than pre-cache. **Do
 cache to the Registry (empty exactly when a reopen needs it) or clear it on window close
 (that defeats the reopen-paint).
 
+**`probe_now` replays the cache snapshot — the listener-race the first-render seed can't
+cover.** `init_dto` seeds `TabDto.presence` from the cache at **build** time, when a
+first-ever window's cache is still empty. A probe pass can then finish in the gap **between**
+that build and the chrome's `session-state` listener registering: its per-tab emits are
+dropped (no listener yet), and — `prev` now populated — **no later pass re-emits** them
+(`changed == false` forever). So a tab whose state never changes after that lost pass — most
+sharply one whose **session pre-existed launch**, `true` from the very first probe — stays
+stuck at its hollow build-time dot. The fix: `probe_now` (called by the chrome the instant its
+listener *is* ready) reads `PresenceCache::snapshot(label)` and emits it as one batched
+`warden:session-state` **before** bumping — replaying the last-known state to the now-ready
+listener. Race-proof either way: a pass already recorded → the snapshot delivers it; no pass
+yet → the snapshot is empty and the paired bump's pass emits with the listener up. This gap
+was invisible while probe passes were slow (sequential) — the pass was still emitting when the
+listener came up, so most emits landed; the concurrent sweep finishes inside the gap, making
+the loss reliable, which is what surfaced it. **Don't** drop the `probe_now` snapshot expecting
+the live burst alone to paint first state — the burst it triggers is `changed`-gated against a
+`prev` the lost pass already filled.
+
 ### Probe execution details
 
 Probe `exit 0 = session present`; cwd = the tab's dir; tokens `{dir}`/`{title}` are

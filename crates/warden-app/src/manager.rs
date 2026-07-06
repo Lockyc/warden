@@ -67,6 +67,19 @@ impl PresenceCache {
         }
     }
 
+    /// The last-known presence for a window's tabs (id → present), for replaying to a chrome
+    /// whose `session-state` listener has just come up. Empty if no pass has recorded this window
+    /// yet. Distinct from `patch` (which seeds `init_dto` at build): a probe pass that finishes
+    /// *between* build and the listener registering drops its live per-tab emits, and — `prev` now
+    /// populated — no later pass re-emits, so the dots would be stuck at their pre-pass (hollow)
+    /// state; `probe_now` replays this snapshot at the handshake to close that gap.
+    pub fn snapshot(&self, label: &str) -> std::collections::BTreeMap<String, bool> {
+        self.by_window
+            .get(label)
+            .map(|m| m.iter().map(|(id, on)| (id.clone(), *on)).collect())
+            .unwrap_or_default()
+    }
+
     /// Fill each tab's `presence` from the cache; a tab the cache has never seen is left
     /// as-is (`None` from `tab_dtos` → hollow "unknown" until the first probe lands).
     pub fn patch(&self, label: &str, tabs: &mut [TabDto]) {
@@ -831,6 +844,27 @@ mod tests {
         let mut other = vec![dto("t0")];
         cache.patch("personal", &mut other);
         assert_eq!(other[0].presence, None, "different window → no cross-talk");
+    }
+
+    #[test]
+    fn presence_cache_snapshot_returns_recorded_state_for_handshake_replay() {
+        use std::collections::BTreeMap;
+        let mut cache = PresenceCache::default();
+        assert!(
+            cache.snapshot("work").is_empty(),
+            "no pass yet → empty snapshot (probe_now falls back to the bump)"
+        );
+        let mut results = BTreeMap::new();
+        results.insert("t0".to_string(), true);
+        results.insert("t1".to_string(), false);
+        cache.record("work", &results);
+        // The snapshot is exactly what probe_now replays to a just-ready listener — including the
+        // `true` a lost first-pass emit left stuck (t0), which is the whole point of the replay.
+        assert_eq!(cache.snapshot("work"), results);
+        assert!(
+            cache.snapshot("other").is_empty(),
+            "different window → no cross-talk"
+        );
     }
 
     #[test]
