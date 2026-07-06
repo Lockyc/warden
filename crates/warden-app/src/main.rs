@@ -277,8 +277,9 @@ fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
         );
     }
     // A just-activated tab may have a session that changed while it was cold/backgrounded — fast-burst
-    // this window so its dot is current within a pass rather than up to a slow-poll stale.
-    probe::bump(window.label());
+    // this window so its dot is current within a pass rather than up to a slow-poll stale. Probe this
+    // tab first so its dot settles immediately even in a wide window.
+    probe::bump_tab(window.label(), &id);
 }
 
 /// Kill tab `id`'s terminal (surface + PTY) in the calling window; it goes cold and
@@ -325,7 +326,9 @@ fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     // A genuinely-failed kill leaves the session present, so the dot correctly stays lit.
     std::thread::spawn(move || {
         let _ = probe::run_probe(&cmd, &dir);
-        probe::bump(&label);
+        // Probe THIS tab first in the burst so its dot clears within one probe, not after every
+        // other tab in a wide window's sweep.
+        probe::bump_tab(&label, &id);
     });
 }
 
@@ -355,11 +358,13 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     // re-arm the scheduler's fast burst and catch a slow start; the slow poll heals any later drift,
     // and `probe_interval = 0` tabs light on the next event. (Delayed *bumps*, not reprobes — the
     // scheduler is the only prober.) This is the one trigger that needs more than a single bump.
-    probe::bump(&label);
+    // Each bump names this tab so it's probed first in the burst (its dot lights as soon as the
+    // session comes up, not after the rest of a wide window's sweep).
+    probe::bump_tab(&label, &id);
     std::thread::spawn(move || {
         for delay_ms in [1000u64, 3000] {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            probe::bump(&label);
+            probe::bump_tab(&label, &id);
         }
     });
 }

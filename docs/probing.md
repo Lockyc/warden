@@ -12,22 +12,35 @@ kill-dot-flicker and `emit_to`-leaks footguns stay in CLAUDE.md's *Conventions &
 The scheduler (`probe::run_scheduler`, spawned once in `main.rs` setup — see *the scheduler
 is the single probe driver* below) owns a per-window schedule; each due window is probed
 via `probe_window`, which snapshots that window's probe work-list under the `ManagerState`
-lock, then **releases the lock before** running `sh -c` (probes are slow; never hold the
+lock, then **releases the lock before** running any `sh -c` (probes are slow; never hold the
 mutex across them).
 
-Results emit via `warden:session-state` stamped with the window `label` and filtered by the
-chrome's `forMe()` — the same `emit_to`-leaks footgun as `warden:refresh` (see CLAUDE.md) —
-**per tab, the moment each tab's probe returns, and only when it changed vs the previous
-pass** (`presence_changed` + `emit_one` in `probe.rs`), NOT one batch after the whole
-window's pass. This is load-bearing: a window's pass is **sequential** and O(tabs), so a
-`[[window.root]]` over a big tree (e.g. `~/Developer` → dozens of discovered project tabs)
-makes a single pass *seconds* long. A batched end-of-pass emit instead traps the
-killed/started tab's new state behind every *other* tab's probe (the visible "dot takes
-ages to clear after kill" lag). The `changed`-only guard also means a **settled window's
-pass emits nothing**, while the full result map is still recorded into `PresenceCache`
-every pass. **Don't** revert to a single end-of-pass emit, and **don't** add a targeted
-one-shot reprobe of the killed tab to "clear it faster" — that violates
-scheduler-is-the-only-prober; per-tab emit is the in-scheduler fix.
+The window's tabs are then probed **concurrently** on a bounded pool (`sweep` in `probe.rs`,
+capped at `MAX_PROBE_CONCURRENCY`), not one at a time: workers pull from a shared cursor, so
+a window's pass costs ~`ceil(tabs / concurrency)` probe times in wall-clock, **not the sum**.
+This is load-bearing: a `[[window.root]]` over a big tree (e.g. `~/Developer` → dozens of
+discovered project tabs) used to make a single *sequential* pass *seconds* long, so a killed
+tab's dot only cleared once its probe ran in list order — the "dot takes ages to clear after
+kill" lag. Concurrency collapses that to a couple of waves (~0.1–0.2s). Keep the pool
+**bounded** — an unbounded sweep would fork a hundred `sh -c` children at once on a wide root.
+
+Two things ride on top of the concurrent sweep, both load-bearing:
+
+- **The just-bumped tab is probed first.** A tab-specific trigger (kill/start/activate) calls
+  `bump_tab(label, id)`, which stashes that tab as the window's `priority`; `order_work` moves
+  it to the head of the work-list so it's claimed in the **first** wave regardless of its list
+  position — its dot updates in ~one probe. This is **not** a one-shot reprobe (still one
+  driver, still the normal pass); it's just ordering, so it doesn't violate
+  scheduler-is-the-only-prober. A whole-window bump (`bump`/`bump_all`, e.g. hot-reload/rescan/
+  focus) sets no priority and keeps natural list order.
+- **Emit is per-tab, changed-only, `label`-stamped.** Each worker emits `warden:session-state`
+  (stamped with the window `label`, filtered by the chrome's `forMe()` — the same
+  `emit_to`-leaks footgun as `warden:refresh`, see CLAUDE.md) the instant *its own* probe
+  returns, and only when it **changed vs the previous pass** (`presence_changed` + `emit_one`).
+  So a **settled window's pass emits nothing**, while the full result map is still recorded into
+  `PresenceCache` every pass. **Don't** revert to a single end-of-pass emit (it would trap the
+  killed tab's new state behind the slowest worker), and **don't** serialize the sweep back to
+  one-at-a-time.
 
 `probe_interval` is shared as an `Arc<AtomicU64>` (the scheduler's slow floor) so a
 hot-reload changes cadence live — the reload hook pairs the new floor with a `bump_all`, so
@@ -60,29 +73,32 @@ Probe `exit 0 = session present`; cwd = the tab's dir; tokens `{dir}`/`{title}` 
 substituted **raw** (not shell-quoted), so quote them in the command (`'… "{dir}"'`) when a
 path/title may contain spaces or `sh` metacharacters — otherwise the probe word-splits and
 silently reports "no session"; stdout/stderr are discarded so a chatty probe can't spam
-warden. Due windows are probed **sequentially** on the scheduler thread (never the UI
-thread), each bounded by a per-probe timeout (`probe.rs::PROBE_TIMEOUT`, a few seconds): a
-wedged probe (e.g. a hung tmux) is killed and reported absent rather than freezing every
-window's dot — but a slow-but-under-timeout probe still stalls that tick's pass, so keep
-probe commands fast. A **spawn/exec failure** (broken command — wrong path, missing binary)
+warden. A window's tabs are probed **concurrently** on a bounded worker pool off the UI
+thread (never on it), and due windows are serviced one after another within a scheduler tick.
+Each probe is bounded by a per-probe timeout (`probe.rs::PROBE_TIMEOUT`, a few seconds): a
+wedged probe (e.g. a hung tmux) is killed and reported absent rather than tying up its pool
+slot forever — but enough slow-but-under-timeout probes can still starve the pool and stall
+that tick's pass, so keep probe commands fast. A **spawn/exec failure** (broken command — wrong path, missing binary)
 is distinguished from a clean non-zero exit and logged via `eprintln!` (still "no dot", just
 diagnosable) so a misconfigured probe isn't a silent permanently-hollow dot. Keep warden
 tmux/amux-agnostic — the command is the user's, warden only reads its exit code.
 
 ## The scheduler is the single probe driver — never reintroduce a one-shot reprobe
 
-Every trigger (`activate_tab`, window focus, `probe_now`, `kill_session`, `start_session`,
-hot-reload, `rescan_root`) calls `probe::bump`/`bump_all` to push a window into a fast
-burst; none of them call `probe_window`/`run_probe` directly or run their own reprobe loop.
-Burst state (`WindowSchedule` in `probe.rs`) is tracked **per window, deliberately** — one
-window's flapping probe shouldn't force every other window's dots into fast polling too.
-`CAP` bounds a burst that never settles (a flapping/nondeterministic probe): **don't**
-remove it, or a bad probe command pins the scheduler at `FAST` forever. There is **no
-optimistic dot-clear** by design (see CLAUDE.md's kill-flicker footgun) — re-adding a
-chrome-side clear, even a "helpful" one, reintroduces the flicker once a stale pass can land
-mid-teardown. `probe_interval = 0` means **event-driven-then-idle** — burst on every
-trigger, then no steady polling until the next one — not "no probing"; don't read a `0`
-floor as disabling presence checks.
+Every trigger pushes a window into a fast burst via a `bump`, and **none** call
+`probe_window`/`run_probe` directly or run their own reprobe loop. Two bump flavours:
+`bump`/`bump_all` (whole window — `probe_now`, window focus, hot-reload, `rescan_root`) and
+`bump_tab(label, id)` (a specific tab just changed — `kill_session`, `start_session`,
+`activate_tab`), which additionally names the tab to probe first that pass (see the
+priority-first note above). Burst state (`WindowSchedule` in `probe.rs`) is tracked **per
+window, deliberately** — one window's flapping probe shouldn't force every other window's
+dots into fast polling too. `CAP` bounds a burst that never settles (a flapping/
+nondeterministic probe): **don't** remove it, or a bad probe command pins the scheduler at
+`FAST` forever. There is **no optimistic dot-clear** by design (see CLAUDE.md's kill-flicker
+footgun) — re-adding a chrome-side clear, even a "helpful" one, reintroduces the flicker once
+a stale pass can land mid-teardown. `probe_interval = 0` means **event-driven-then-idle** —
+burst on every trigger, then no steady polling until the next one — not "no probing"; don't
+read a `0` floor as disabling presence checks.
 
 `run_scheduler` must be spawned **exactly once** per process (`main.rs` setup does this,
 right after `ManagerState` is managed). Spawning a second one won't crash, but it's far
