@@ -91,6 +91,7 @@
       const proc = window.__TAURI__.process;
       let pendingUpdate = null; // the Update object from a successful check(), awaiting confirm
       let updateDismissed = false; // set by the bar's × — suppresses auto re-surfacing this session
+      const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // re-check every 6h (warden is long-running)
 
       // `announce` = surface "up to date" / errors (menu path); the launch path passes false so it
       // stays silent on miss/offline. A found update shows unless dismissed this session — except on
@@ -275,9 +276,15 @@
         applyDto(dto);
         if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
 
-        // Silently check for a newer release on launch (unless auto_update is off); a hit shows the
-        // update bar. The manual Check-for-Updates menu path always runs regardless.
-        if (dto.auto_update !== false) checkForUpdate(false);
+        // Silently check for a newer release on launch (unless auto_update is off), then re-check
+        // every 6h so a long-running window eventually surfaces a release. The timer is armed once
+        // at launch — toggling auto_update takes effect next launch (intentionally not hot-reloaded).
+        // A background tick reuses checkForUpdate(false): silent on miss/offline, and it respects the
+        // session dismissal so it won't re-nag a bar the user ×'d. The manual menu path runs regardless.
+        if (dto.auto_update !== false) {
+          checkForUpdate(false);
+          setInterval(() => checkForUpdate(false), UPDATE_CHECK_INTERVAL_MS);
+        }
 
         // Ask for the first probe pass only AFTER the session-state listener is registered, so the
         // first emit can't race ahead of it. This populates the presence dots at startup.
