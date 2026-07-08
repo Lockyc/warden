@@ -53,7 +53,7 @@ clippy:
 # Full pre-merge gate: fmt-check, clippy, tests, config fmt-check, active-[patch] guard
 [group("check")]
 gate:
-    @grep -qE '^\[patch\.' Cargo.toml && { echo "✗ active [patch] in Cargo.toml — run 'just chrome-pin' / 'just config-pin' before committing"; exit 1; } || true
+    @grep -qE '^\[patch\.' Cargo.toml && { echo "✗ active [patch] in Cargo.toml — run 'just chrome-pin' / 'just config-pin' / 'just shell-pin' before committing"; exit 1; } || true
     cargo fmt --all --check
     cargo clippy --workspace -- -D warnings
     cargo test --workspace
@@ -129,6 +129,39 @@ config-pin:
     ! grep -qE '^\[patch\."https://github.com/Lockyc/config-core"\]$' Cargo.toml || { echo "✗ config-pin: config-core [patch] still active after re-comment — check Cargo.toml"; exit 1; }
     cargo update -p config-core
     echo "✓ pinned config-core → $rev (patch deactivated). Commit Cargo.toml + $dep + Cargo.lock."
+
+# ── shared shell-core dev loop (mirrors chrome-*; shell-core is git-pinned in warden-app) ──
+
+# Build warden against local ../shell-core (uncommitted edits included): activate the [patch], `just run`
+[group("shell")]
+shell-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+    [ -d ../shell-core ] || { echo "✗ ../shell-core not found — ghq get github.com/Lockyc/shell-core"; exit 1; }
+    tmp=$(mktemp); sed 's/^#PATCH:shell#//' Cargo.toml > "$tmp" && mv "$tmp" Cargo.toml
+    echo "✓ shell-core → local ../shell-core (patch active). Iterate, then: just run"
+    echo "  ⚠ NEVER commit an active patch — run 'just shell-pin' first ('just gate' will block it)."
+
+# Re-pin shell-core to ../shell-core's pushed HEAD + deactivate the patch (run after pushing shell-core)
+[group("shell")]
+shell-pin:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+    cc=../shell-core
+    [ -d "$cc" ] || { echo "✗ $cc not found"; exit 1; }
+    [ -z "$(git -C "$cc" status --porcelain)" ] || { echo "✗ shell-core has uncommitted changes — commit + push it first"; exit 1; }
+    git -C "$cc" fetch -q origin
+    rev=$(git -C "$cc" rev-parse HEAD)
+    git -C "$cc" branch -r --contains "$rev" | grep -q origin/ || { echo "✗ shell-core HEAD ($rev) isn't pushed — push it first"; exit 1; }
+    dep=crates/warden-app/Cargo.toml
+    tmp=$(mktemp); sed -E 's|(shell-core = \{ git = "https://github.com/Lockyc/shell-core", rev = ")[0-9a-f]+|\1'"$rev"'|g' "$dep" > "$tmp" && mv "$tmp" "$dep"
+    grep -qF "rev = \"$rev\"" "$dep" || { echo "✗ shell-pin: failed to write rev into $dep — dep line shape changed, re-pin by hand"; exit 1; }
+    tmp=$(mktemp); sed -E 's|^\[patch\."https://github.com/Lockyc/shell-core"\]$|#PATCH:shell#&|; s|^shell-core = \{ path = "\.\./shell-core" \}$|#PATCH:shell#&|' Cargo.toml > "$tmp" && mv "$tmp" Cargo.toml
+    ! grep -qE '^\[patch\."https://github.com/Lockyc/shell-core"\]$' Cargo.toml || { echo "✗ shell-pin: shell-core [patch] still active after re-comment — check Cargo.toml"; exit 1; }
+    cargo update -p shell-core
+    echo "✓ pinned shell-core → $rev (patch deactivated). Commit Cargo.toml + Cargo.lock."
 
 # Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)
 [group("dist")]

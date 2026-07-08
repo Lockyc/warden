@@ -3340,6 +3340,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "shell-core"
+version = "0.1.0"
+source = "git+https://github.com/Lockyc/shell-core?rev=ca4e728aa275c2b7582234f9722fdae8818cae51#ca4e728aa275c2b7582234f9722fdae8818cae51"
+dependencies = [
+ "tauri",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "tauri-plugin-window-state",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4513,6 +4524,7 @@ dependencies = [
  "objc2-user-notifications 0.2.2",
  "serde",
  "serde_json",
+ "shell-core",
  "tauri",
  "tauri-build",
  "tauri-plugin-process",

@@ -7,6 +7,13 @@ fn main() {
     std::fs::write("ui/chrome-core.css", chrome_core::SIDEBAR_CSS).expect("write chrome-core.css");
     std::fs::write("ui/chrome-core.js", chrome_core::SIDEBAR_JS).expect("write chrome-core.js");
 
+    // Materialize the shared release scripts into repo-root scripts/ from the pinned shell-core rev
+    // (git-ignored; the tracked scripts/tooling.env supplies warden's params) and stamp the build
+    // (BUILD_GIT_SHA/BUILD_DATE → About). Same embed-and-materialize pattern as chrome-core above.
+    shell_core::materialize_scripts(std::path::Path::new("../../scripts"))
+        .expect("materialize shell-core scripts");
+    shell_core::build_stamp();
+
     // tauri-build does NOT emit rerun-if-changed for frontendDist ("ui"), and the assets are
     // embedded by `generate_context!` in main.rs at compile time — so a frontend-only edit would
     // otherwise never re-embed unless a Rust file also changed. Watch the HAND-WRITTEN assets only:

@@ -6,6 +6,12 @@ docs/superpowers/
 /crates/warden-app/ui/chrome-core.css
 /crates/warden-app/ui/chrome-core.js
 
+# Generated at build time from the pinned shell-core crate (build.rs); reproducible, not tracked.
+# The tracked scripts/tooling.env supplies the per-app params. Edit these in shell-core, not here.
+/scripts/release.sh
+/scripts/gen-latest-json.sh
+/scripts/install-app.sh
+
 # Tauri generated
 crates/warden-app/gen/
 

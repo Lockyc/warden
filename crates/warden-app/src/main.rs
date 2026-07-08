@@ -97,15 +97,30 @@ fn build_app_menu(
     entries: Vec<crate::plan::WindowMenuEntry>,
     reopen_available: bool,
 ) -> tauri::Result<()> {
-    use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+    use tauri::menu::{
+        AboutMetadataBuilder, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
+    };
     use warden_config::TabDigitKeys;
 
+    // About box carries the build stamp (shell_core::build_stamp → BUILD_GIT_SHA/BUILD_DATE) so a
+    // glance confirms the installed app matches a given commit.
+    let about_meta = AboutMetadataBuilder::new()
+        .name(Some("warden"))
+        .version(Some(env!("CARGO_PKG_VERSION")))
+        .short_version(Some(env!("BUILD_GIT_SHA")))
+        .comments(Some(format!(
+            "commit {} · built {}",
+            env!("BUILD_GIT_SHA"),
+            env!("BUILD_DATE"),
+        )))
+        .build();
     let close_window = MenuItemBuilder::with_id(MENU_WINDOW_CLOSE, "Close Window")
         .accelerator("Shift+Cmd+KeyW")
         .build(app)?;
     let check_updates =
         MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for Updates…").build(app)?;
     let app_menu = SubmenuBuilder::new(app, "warden")
+        .about(Some(about_meta))
         .minimize()
         .item(&check_updates)
         .separator()
@@ -669,28 +684,16 @@ fn main() {
         }
     }
 
-    tauri::Builder::default()
-        // Persist each window's size + position (+ maximized) across launches, keyed by
-        // Tauri label *within a per-config state file* (see window_state_filename) so two configs
-        // that share a window title don't share bounds. Saving is automatic (on close/exit);
-        // restore is triggered explicitly in manager.rs::build_window since warden's windows are
-        // built at runtime, not from tauri.conf.json. The transient diagnostic window is excluded
-        // — its bounds are throwaway and must not bleed into a real window that reuses nothing.
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION
-                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
-                )
-                .skip_initial_state(DIAG_LABEL)
-                .skip_initial_state(LAUNCHER_LABEL)
-                .with_filename(window_state_filename())
-                .build(),
-        )
-        // In-app updates: the chrome checks on launch (gated on auto_update) + via the menu.
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+    // Register the shell-core plugins (window-state + updater + process) — the set every sibling
+    // app installs identically. Window-state persists each window's size/position/maximized keyed by
+    // Tauri label *within a per-config state file* (window_state_filename) so two configs sharing a
+    // window title don't share bounds; restore is explicit in manager.rs::build_window (runtime-built
+    // windows). The transient diagnostic + launcher windows are excluded from state restore.
+    shell_core::register_plugins(
+        tauri::Builder::default(),
+        window_state_filename(),
+        &[DIAG_LABEL, LAUNCHER_LABEL],
+    )
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
         // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
         // reliable per-window target here (it leaks to siblings — the same reason warden:refresh
