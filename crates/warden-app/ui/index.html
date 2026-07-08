@@ -84,44 +84,11 @@
       const badges = new Set(); // tab ids with an unread notification/bell badge
       const session = new Map(); // tab id → 'on'/'off' (probe presence), for probe-enabled tabs
 
-      // ── In-app updater ────────────────────────────────────────────────────────
-      // The update bar UI lives in chrome-core; this controller runs the actual check/download/
-      // relaunch (chrome-core stays Tauri-agnostic), via the withGlobalTauri plugin globals.
-      const updater = window.__TAURI__.updater;
-      const proc = window.__TAURI__.process;
-      let pendingUpdate = null; // the Update object from a successful check(), awaiting confirm
-      let updateDismissed = false; // set by the bar's × — suppresses auto re-surfacing this session
-      const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // re-check every 6h (warden is long-running)
-
-      // `announce` = surface "up to date" / errors (menu path); the launch path passes false so it
-      // stays silent on miss/offline. A found update shows unless dismissed this session — except on
-      // the menu path, which re-surfaces it (and clears the dismissal).
-      async function checkForUpdate(announce) {
-        try {
-          const update = await updater.check();
-          if (update) {
-            pendingUpdate = update;
-            if (announce) updateDismissed = false;
-            if (announce || !updateDismissed) sb.setUpdate({ version: update.version, notes: update.body });
-          } else if (announce) {
-            sb.setError("You're up to date.");
-            setTimeout(() => sb.clearError(), 4000);
-          }
-        } catch (e) {
-          if (announce) sb.setError("⚠ Couldn't check for updates: " + e);
-        }
-      }
-
-      async function installUpdate() {
-        if (!pendingUpdate) return;
-        try {
-          await pendingUpdate.downloadAndInstall();
-          await proc.relaunch();
-        } catch (e) {
-          sb.clearUpdate();
-          sb.setError("⚠ Update failed: " + e);
-        }
-      }
+      // In-app updates are a chrome-core capability (check / install / relaunch + the 6h re-check
+      // cadence); see chrome-core's dividing-line decision. This controller only passes warden's
+      // `auto_update` gate (below, `autoUpdate` in the mount config) and forwards the menu event to
+      // sb.checkForUpdateNow(). warden keeps its own updater *identity* — endpoint, pubkey, plugin
+      // registration — in tauri.conf.json / Rust.
 
       const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
 
@@ -256,13 +223,6 @@
               // config, so it's ignored here (forward-compat).
               invokeSafe("rescan_root");
             },
-            onUpdate() {
-              installUpdate();
-            },
-            onUpdateDismiss() {
-              // × on the update bar — don't auto-surface again this session (menu check overrides).
-              updateDismissed = true;
-            },
           },
           {
             storageKey: "warden:sidebar-width:" + myLabel,
@@ -270,21 +230,15 @@
             minWidth: 120,
             maxWidth: 400,
             maxFraction: 0.4,
+            // chrome-core's self-updater gate: run the launch + 6h checks when warden's config allows.
+            autoUpdate: dto.auto_update !== false,
           }
         );
 
         applyDto(dto);
         if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
 
-        // Silently check for a newer release on launch (unless auto_update is off), then re-check
-        // every 6h so a long-running window eventually surfaces a release. The timer is armed once
-        // at launch — toggling auto_update takes effect next launch (intentionally not hot-reloaded).
-        // A background tick reuses checkForUpdate(false): silent on miss/offline, and it respects the
-        // session dismissal so it won't re-nag a bar the user ×'d. The manual menu path runs regardless.
-        if (dto.auto_update !== false) {
-          checkForUpdate(false);
-          setInterval(() => checkForUpdate(false), UPDATE_CHECK_INTERVAL_MS);
-        }
+        // (The launch + 6h update checks are armed by chrome-core from the `autoUpdate` mount config.)
 
         // Ask for the first probe pass only AFTER the session-state listener is registered, so the
         // first emit can't race ahead of it. This populates the presence dots at startup.
@@ -318,8 +272,8 @@
         if (sb) sb.setError("⚠ " + msg);
       });
       listen("warden:error-clear", () => { if (sb) sb.clearError(); });
-      // Menu "Check for Updates…" → check now and announce the result (up-to-date / error / banner).
-      listen("warden:check-update", () => checkForUpdate(true));
+      // Menu "Check for Updates…" → chrome-core checks now + announces (up-to-date / error / banner).
+      listen("warden:check-update", () => sb && sb.checkForUpdateNow());
 
       // Menu tab nav: cycle ONLY loaded tabs (⌘⇧[/]) and jump (⌘1–9). emit_to leaks → forMe filter.
       listen("warden:cycle-tab", (e) => {
