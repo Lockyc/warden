@@ -57,7 +57,7 @@ Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `
 shell = "fish -l"            # global default shell (omit → your login shell, run as login)
 format_on_save = true        # optional; rewrite this file tidy on each clean save (default off)
 density = "compact"          # optional; "comfortable" (default) or "compact" (condensed chrome)
-auto_update = false          # optional; check for a new release on launch (default true; menu check stays)
+auto_update = false          # optional; check for a new release on launch + every 6h (default true; menu check stays)
 
 [[window]]                   # a native macOS window
 title  = "work"
@@ -112,9 +112,9 @@ Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
 
 ## Updates
 
-warden updates itself — no reinstall. On launch (and via **warden ▸ Check for Updates…**)
-it checks GitHub for a newer release; when one exists the sidebar shows an *Update available:
-v X* bar with a one-click **Update & Relaunch**.
+warden updates itself — no reinstall. On launch, every 6 hours while open (warden is long-running),
+and via **warden ▸ Check for Updates…**, it checks GitHub for a newer release; when one exists the
+sidebar shows an *Update available: v X* bar with a one-click **Update & Relaunch**.
 
 - **Confirm-to-install** — nothing installs silently; you approve each update, and the bar's
   **×** dismisses it for the session.
