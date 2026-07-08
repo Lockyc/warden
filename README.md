@@ -170,7 +170,7 @@ cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # ch
 
 ## Related projects
 
-warden is built on two shared library crates. Building it from source pulls them in
+warden is built on three shared library crates. Building it from source pulls them in
 automatically — they're pinned Git dependencies, resolved by a plain `cargo build` / `just run`
 with nothing extra to install:
 
@@ -179,17 +179,20 @@ with nothing extra to install:
   materialized into warden's bundled web assets at compile time.
 - **[config-core](https://github.com/Lockyc/config-core)** — the TOML config engine (parse,
   validate, format, hot-reload diff) behind warden's config and `warden fmt`.
+- **[shell-core](https://github.com/Lockyc/shell-core)** — the shared release tooling + a sliver
+  of Tauri runtime setup. `build.rs` materializes the release scripts (git-ignored) and stamps the
+  build; the app registers window-state/updater/process via its `register_plugins`.
 
-Those same two cores are also shared with a **sibling app, [curator](https://github.com/Lockyc/curator)**,
+Those same cores are also shared with a **sibling app, [curator](https://github.com/Lockyc/curator)**,
 which curates **browser tabs** the way warden curates **terminals**. curator is a peer project,
 not a dependency of warden — it just draws from the same cores. (warden's embedded terminal is a
 separate, vendored third-party component; see the License note below.)
 
 If you want to iterate on a shared core, `just chrome-dev` builds warden against a sibling
 `../chrome-core` checkout (including uncommitted edits) and `just chrome-pin` re-pins to its
-pushed commit afterward; `just config-dev` / `just config-pin` are the same pair for
-`../config-core`. Never commit an active patch — `just gate` and a `.githooks/pre-commit` guard
-both refuse while one is live.
+pushed commit afterward; `just config-dev` / `just config-pin` and `just shell-dev` / `just shell-pin`
+are the same pair for `../config-core` and `../shell-core`. Never commit an active patch — `just gate`
+and a `.githooks/pre-commit` guard both refuse while one is live.
 
 ## License
 
