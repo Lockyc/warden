@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use warden_config::{config_path, format_file, format_str, load_with};
+use warden_config::{config_path, fmt_cli, load_with};
 
 /// The shell warden defaults an unset tab to — the user's login shell, run as a login shell,
 /// like a terminal. `$SHELL` (falling back to the macOS default), with `-l`. Detected here in
@@ -78,38 +78,10 @@ fn main() {
                     p => path = Some(PathBuf::from(p)),
                 }
             }
+            // `fmt` is schema-free (tidy any well-formed TOML), so it's the shared config-core
+            // implementation both apps delegate to — only the default config path is warden's.
             let path = path.unwrap_or_else(config_path);
-            let original = match std::fs::read_to_string(&path) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-            };
-            // Refuse to "format" a non-TOML file: taplo error-recovers and would
-            // return it unchanged, falsely reporting success. Check *syntax* only
-            // (a schema-agnostic parse) — `fmt` tidies any well-formed TOML, so a
-            // valid file that's merely missing a warden field must still format.
-            if let Err(e) = original.parse::<toml::Table>() {
-                eprintln!("error: {} is not valid TOML: {e}", path.display());
-                std::process::exit(1);
-            }
-            if check {
-                if format_str(&original) != original {
-                    eprintln!("would reformat: {}", path.display());
-                    std::process::exit(1);
-                }
-                println!("ok: {} already formatted", path.display());
-            } else {
-                match format_file(&path) {
-                    Ok(true) => println!("formatted: {}", path.display()),
-                    Ok(false) => println!("ok: {} already formatted", path.display()),
-                    Err(e) => {
-                        eprintln!("error: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
+            std::process::exit(fmt_cli(check, &path));
         }
         _ => {
             eprintln!("usage: warden <validate|fmt> [--check] [path]");

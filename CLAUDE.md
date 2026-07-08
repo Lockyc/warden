@@ -41,7 +41,7 @@ model.rs     clean resolved types: Config / Window / Tab / Warning
 reconcile.rs reconcile(old, new) → Reconciliation (open/close windows, per-window colour/tab-add-remove/tab-reorder/set_meta relabel/respawn_tabs) for hot-reload
 load.rs      load(path) = read+parse+resolve; config_path() (WARDEN_CONFIG override else ~/.config/warden/config.toml); LoadError
 watch.rs     Watcher — notify-based parent-dir file watcher; fires load() on change
-(fmt + colour live in the shared config-core crate — re-exported at warden-config's root as format_str/format_file + Colour/ColourError; see Config formatting footgun)
+(fmt + colour live in the shared config-core crate — re-exported at warden-config's root as format_str/format_file + Colour/ColourError; the `warden fmt` subcommand itself delegates to config-core's shared `fmt_cli` — `bin/warden.rs` only resolves the default path — so `warden fmt` + `curator fmt` are one implementation, while `warden validate` stays here (warden's own schema); see Config formatting footgun)
 bin/warden.rs  `warden validate [path]` + `warden fmt [--check] [path]` CLI
 ```
 
