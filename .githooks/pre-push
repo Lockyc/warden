@@ -27,4 +27,4 @@ if ! bin="$(docaudit_bin)"; then
   echo "  install it: go install github.com/lockyc/docaudit@latest" >&2
   exit 1
 fi
-exec "$bin" --checks orphans,broken,untracked .
+exec "$bin" .
