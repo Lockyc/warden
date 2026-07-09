@@ -143,6 +143,14 @@ that is the same for warden, curator, and any future sibling app.
   so it has no such gate). See shell-core's CLAUDE.md for the full dividing line.
 - Dev loop: **`just shell-dev`** / **`just shell-pin`** (rev in `crates/warden-app/Cargo.toml`, scoped
   `#PATCH:shell#`), mirroring the chrome-/config- pairs.
+- **Follow-up — a scriptable "open window by title" entry point belongs here (shared).** Nothing outside the
+  app can open/raise a specific window today: it's GUI-only (Window menu, launcher, notification), and a
+  second `open -a warden --args …` is silently dropped — there's no `tauri-plugin-single-instance`,
+  `tauri-plugin-deep-link`, or CLI-arg handling. Build the entry point **in shell-core** so warden, curator,
+  and future siblings inherit one implementation (same shape as `register_plugins`): single-instance argv
+  (`--window <title>`) or a `<scheme>://window/<title>` deep link, forwarded to the already-running instance
+  and mapped title → open-or-focus. Driver: warden's `work` window is `open_on_start = false`, so
+  `~/.scripts/work_startup.sh` has no command to open it on demand — this closes that gap.
 
 ## Deferred work
 
