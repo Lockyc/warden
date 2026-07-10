@@ -694,364 +694,359 @@ fn main() {
         window_state_filename(),
         &[DIAG_LABEL, LAUNCHER_LABEL],
     )
-        // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
-        // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
-        // reliable per-window target here (it leaks to siblings — the same reason warden:refresh
-        // carries a label, see manager.rs), so every payload carries the focused window's `label`
-        // and the chrome ignores events not addressed to it. Close Window (⌘⇧W) closes it
-        // directly. Unknown IDs (e.g. predefined Quit/Minimize, which self-handle) are ignored.
-        .on_menu_event(|app, event| {
-            use tauri::{Emitter, Manager};
-            let id = event.id().as_ref();
+    // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
+    // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
+    // reliable per-window target here (it leaks to siblings — the same reason warden:refresh
+    // carries a label, see manager.rs), so every payload carries the focused window's `label`
+    // and the chrome ignores events not addressed to it. Close Window (⌘⇧W) closes it
+    // directly. Unknown IDs (e.g. predefined Quit/Minimize, which self-handle) are ignored.
+    .on_menu_event(|app, event| {
+        use tauri::{Emitter, Manager};
+        let id = event.id().as_ref();
 
-            // Window menu acts on the manager/app, not the focused window — handle it
-            // before the focused-window lookup (reopen-last needs no focused window).
-            if id == MENU_WINDOW_REOPEN_LAST {
-                let st = app.state::<ManagerState>();
-                let reopened = {
-                    let mut m = st.lock();
-                    let reopened = m.reopen_last(app);
-                    // Reopening takes the live set from zero→≥1, so close the launcher if
-                    // it was showing (⌘⇧T is reachable while the launcher is the front
-                    // surface). Same invariant `launcher_open_window` upholds — every
-                    // window-open path must sync, not just the launcher's own click.
-                    if reopened {
-                        m.sync_empty_surface(app);
-                    }
-                    reopened
-                };
+        // Window menu acts on the manager/app, not the focused window — handle it
+        // before the focused-window lookup (reopen-last needs no focused window).
+        if id == MENU_WINDOW_REOPEN_LAST {
+            let st = app.state::<ManagerState>();
+            let reopened = {
+                let mut m = st.lock();
+                let reopened = m.reopen_last(app);
+                // Reopening takes the live set from zero→≥1, so close the launcher if
+                // it was showing (⌘⇧T is reachable while the launcher is the front
+                // surface). Same invariant `launcher_open_window` upholds — every
+                // window-open path must sync, not just the launcher's own click.
                 if reopened {
-                    let _ = rebuild_menu(app);
-                }
-                return;
-            }
-            if let Some(win_label) = id.strip_prefix(MENU_WINDOW_PREFIX) {
-                let st = app.state::<ManagerState>();
-                {
-                    let mut m = st.lock();
-                    if m.windows.contains_key(win_label) {
-                        m.focus_window(win_label);
-                    } else {
-                        m.reopen_window(app, win_label);
-                    }
-                    // Opening a closed window from the Window menu while the launcher is
-                    // showing (zero real windows) must close the launcher — the same
-                    // invariant `launcher_open_window` upholds. Harmless no-op on the
-                    // focus (already-open) path, since the launcher can't be showing then.
                     m.sync_empty_surface(app);
                 }
-                let _ = rebuild_menu(app);
-                return;
-            }
-
-            // Config menu acts on the config file, not a window — handle before the focused-window
-            // lookup (no window need be focused). `open` routes to the default editor; `open -R`
-            // reveals in Finder. config_path() is WARDEN_CONFIG else ~/.config/warden/config.toml.
-            if id == MENU_CONFIG_EDIT {
-                let _ = std::process::Command::new("open")
-                    .arg(warden_config::config_path())
-                    .spawn();
-                return;
-            }
-            if id == MENU_CONFIG_REVEAL {
-                let _ = std::process::Command::new("open")
-                    .arg("-R")
-                    .arg(warden_config::config_path())
-                    .spawn();
-                return;
-            }
-
-            let Some(win) = app
-                .webview_windows()
-                .into_values()
-                .find(|w| w.is_focused().unwrap_or(false))
-            else {
-                return;
+                reopened
             };
-            let label = win.label().to_string();
-            if id == MENU_TAB_PREV || id == MENU_TAB_PREV_DIGIT {
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:cycle-tab",
-                    serde_json::json!({ "label": label, "dir": -1 }),
-                );
-            } else if id == MENU_TAB_NEXT || id == MENU_TAB_NEXT_DIGIT {
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:cycle-tab",
-                    serde_json::json!({ "label": label, "dir": 1 }),
-                );
-            } else if id == MENU_TAB_CLOSE {
-                // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
-                // it does NOT close the window. The chrome owns "which tab is active" + the
-                // dot/highlight repaint, so it drives the unload_tab command on this event.
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:unload-tab",
-                    serde_json::json!({ "label": label }),
-                );
-            } else if id == MENU_CHECK_UPDATES {
-                // Manual update check → the focused window's chrome runs it (ignores auto_update).
-                let _ = app.emit_to(label.as_str(), "warden:check-update", ());
-            } else if id == MENU_WINDOW_CLOSE {
-                // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, then
-                // sync_empty_surface: shows the launcher if it was the last real window — no quit).
-                let _ = win.close();
-            } else if let Some(n) = id
-                .strip_prefix(MENU_TAB_JUMP_PREFIX)
-                .and_then(|s| s.parse::<u32>().ok())
-            {
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:select-tab",
-                    serde_json::json!({ "label": label, "n": n }),
-                );
+            if reopened {
+                let _ = rebuild_menu(app);
             }
-        })
-        .invoke_handler(tauri::generate_handler![
-            set_hole_rect,
-            init_tabs,
-            activate_tab,
-            unload_tab,
-            kill_session,
-            start_session,
-            rescan_root,
-            diagnostic_message,
-            list_windows,
-            launcher_open_window,
-            probe_now
-        ])
-        .setup(|app| {
-            #[cfg(target_os = "macos")]
+            return;
+        }
+        if let Some(win_label) = id.strip_prefix(MENU_WINDOW_PREFIX) {
+            let st = app.state::<ManagerState>();
             {
-                use tauri::Manager;
-
-                let handle = app.handle().clone();
-                let mut mgr = WindowManager::new();
-                // Load config; on a missing/invalid/empty config, fall back to a
-                // single diagnostic window instead of materializing windows.
-                // Recovery happens in the watcher: the first valid load while no
-                // window window is live materializes + closes the diagnostic.
-                // Read the `notify_debug` toggle from the loaded config (default false) before the
-                // config is consumed by materialize — it gates notify.rs's diagnostic trace.
-                let mut notify_debug = false;
-                match warden_config::load_with(&warden_config::config_path(), &login_shell()) {
-                    Ok(loaded) if !loaded.config.windows.is_empty() => {
-                        notify_debug = loaded.config.notify_debug;
-                        mgr.materialize(&handle, loaded.config);
-                    }
-                    Ok(loaded) => {
-                        notify_debug = loaded.config.notify_debug;
-                        mgr.show_diagnostic(&handle, "config has no [[window]] entries");
-                    }
-                    Err(e) => mgr.show_diagnostic(&handle, &e.to_string()),
+                let mut m = st.lock();
+                if m.windows.contains_key(win_label) {
+                    m.focus_window(win_label);
+                } else {
+                    m.reopen_window(app, win_label);
                 }
-                app.manage(ManagerState(std::sync::Mutex::new(mgr)));
+                // Opening a closed window from the Window menu while the launcher is
+                // showing (zero real windows) must close the launcher — the same
+                // invariant `launcher_open_window` upholds. Harmless no-op on the
+                // focus (already-open) path, since the launcher can't be showing then.
+                m.sync_empty_surface(app);
+            }
+            let _ = rebuild_menu(app);
+            return;
+        }
 
-                // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
-                // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;
-                // needs ManagerState already managed (above) since the handler resolves surfaces
-                // through it. `notify_debug` (config, default false) gates the diagnostic trace.
-                notify::init(handle.clone(), notify_debug);
+        // Config menu acts on the config file, not a window — handle before the focused-window
+        // lookup (no window need be focused). `open` routes to the default editor; `open -R`
+        // reveals in Finder. config_path() is WARDEN_CONFIG else ~/.config/warden/config.toml.
+        if id == MENU_CONFIG_EDIT {
+            let _ = std::process::Command::new("open")
+                .arg(warden_config::config_path())
+                .spawn();
+            return;
+        }
+        if id == MENU_CONFIG_REVEAL {
+            let _ = std::process::Command::new("open")
+                .arg("-R")
+                .arg(warden_config::config_path())
+                .spawn();
+            return;
+        }
 
-                // Background presence-probe scheduler — the single probe driver. Per-window
-                // fast-until-stable bursts on key moments (tab activate, window focus/open, session
-                // start/kill, hot-reload/rescan), decaying to the slow floor (`probe_interval`) or
-                // Idle when it's 0. Triggers call `probe::bump`; nothing else spawns probe passes.
-                {
-                    let st = handle.state::<ManagerState>();
-                    let interval = st.lock().probe_interval.clone();
-                    let app_sched = handle.clone();
-                    std::thread::spawn(move || probe::run_scheduler(app_sched, interval));
+        let Some(win) = app
+            .webview_windows()
+            .into_values()
+            .find(|w| w.is_focused().unwrap_or(false))
+        else {
+            return;
+        };
+        let label = win.label().to_string();
+        if id == MENU_TAB_PREV || id == MENU_TAB_PREV_DIGIT {
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:cycle-tab",
+                serde_json::json!({ "label": label, "dir": -1 }),
+            );
+        } else if id == MENU_TAB_NEXT || id == MENU_TAB_NEXT_DIGIT {
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:cycle-tab",
+                serde_json::json!({ "label": label, "dir": 1 }),
+            );
+        } else if id == MENU_TAB_CLOSE {
+            // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
+            // it does NOT close the window. The chrome owns "which tab is active" + the
+            // dot/highlight repaint, so it drives the unload_tab command on this event.
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:unload-tab",
+                serde_json::json!({ "label": label }),
+            );
+        } else if id == MENU_CHECK_UPDATES {
+            // Manual update check → the focused window's chrome runs it (ignores auto_update).
+            let _ = app.emit_to(label.as_str(), "warden:check-update", ());
+        } else if id == MENU_WINDOW_CLOSE {
+            // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, then
+            // sync_empty_surface: shows the launcher if it was the last real window — no quit).
+            let _ = win.close();
+        } else if let Some(n) = id
+            .strip_prefix(MENU_TAB_JUMP_PREFIX)
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:select-tab",
+                serde_json::json!({ "label": label, "n": n }),
+            );
+        }
+    })
+    .invoke_handler(tauri::generate_handler![
+        set_hole_rect,
+        init_tabs,
+        activate_tab,
+        unload_tab,
+        kill_session,
+        start_session,
+        rescan_root,
+        diagnostic_message,
+        list_windows,
+        launcher_open_window,
+        probe_now
+    ])
+    .setup(|app| {
+        #[cfg(target_os = "macos")]
+        {
+            use tauri::Manager;
+
+            let handle = app.handle().clone();
+            let mut mgr = WindowManager::new();
+            // Load config; on a missing/invalid/empty config, fall back to a
+            // single diagnostic window instead of materializing windows.
+            // Recovery happens in the watcher: the first valid load while no
+            // window window is live materializes + closes the diagnostic.
+            // Read the `notify_debug` toggle from the loaded config (default false) before the
+            // config is consumed by materialize — it gates notify.rs's diagnostic trace.
+            let mut notify_debug = false;
+            match warden_config::load_with(&warden_config::config_path(), &login_shell()) {
+                Ok(loaded) if !loaded.config.windows.is_empty() => {
+                    notify_debug = loaded.config.notify_debug;
+                    mgr.materialize(&handle, loaded.config);
                 }
-                // No launch-time probe pass here: each window's chrome calls the
-                // `probe_now` command once its `warden:session-state` listener is
-                // registered (see init() in index.html), which populates the dots
-                // reliably without racing the listener — covering `probe_interval = 0`
-                // and background windows that never emit a launch `Focused`.
-
-                // macOS menu. Windows are built at runtime with no NSMenu, so without this the
-                // standard shortcuts are dead and there's nowhere to surface tab navigation.
-                // Predefined items (Minimize/Quit) self-handle; custom items fire the Builder's
-                // on_menu_event. Tab chords ⌘⇧[/⌘⇧] (prev/next) and the digit chords (⌘1–9
-                // jump, or ⌘1/⌘2 cycle + ⌘3–9 jump under `tab_digit_keys = "cycle"`) are
-                // macOS-standard and checked app-wide before any view, so they never collide
-                // with the terminal. ⌘W unloads the active *tab* and ⌘⇧W closes the *window* — the Safari/
-                // Chrome convention (close-tab vs close-window), NOT the predefined ⌘W=close-window.
-                // The ⌘1/⌘2 chords depend on the config's `tab_digit_keys` mode
-                // (read from last_good, set by the load above; default Jump for the
-                // diagnostic-at-launch case). build_app_menu rebuilds wholesale, so a
-                // hot-reload that flips the mode just calls it again (see the watcher).
-                rebuild_menu(app.handle())?;
-
-                // Hot-reload: watch the config file; on each event reload + diff
-                // against last_good + apply the resulting WindowOps to live
-                // windows. The notify callback runs on a background thread, but
-                // every Tauri/AppKit/registry touch is main-thread only — hop via
-                // run_on_main_thread before doing any of it.
-                let cfg_path = warden_config::config_path();
-                // Watcher::with_default requires the config's parent dir to already exist.
-                if let Some(parent) = cfg_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                Ok(loaded) => {
+                    notify_debug = loaded.config.notify_debug;
+                    mgr.show_diagnostic(&handle, "config has no [[window]] entries");
                 }
-                let wh = app.handle().clone();
-                // The formatter's copy of the path (cfg_path is moved into the watcher).
-                let fmt_path = cfg_path.clone();
-                // Inject the login shell so hot-reload uses the same default as the initial load.
-                let watcher =
-                    warden_config::Watcher::with_default(cfg_path, login_shell(), move |res| {
-                        let wh = wh.clone();
-                        let fmt_path = fmt_path.clone();
-                        let _ = wh.clone().run_on_main_thread(move || {
-                            use tauri::{Emitter, Manager};
-                            match res {
-                                Ok(loaded) if !loaded.config.windows.is_empty() => {
-                                    // Expand `[[window.root]]`s into the EFFECTIVE config
-                                    // (recursive git-project scan) BEFORE taking the lock —
-                                    // the walk is slow and must never run under the
-                                    // ManagerState mutex, or it stalls the background probe
-                                    // thread for its whole duration (mirrors probe.rs's
-                                    // snapshot-then-release discipline). We're on the main
-                                    // thread here, so no other writer interleaves.
-                                    let new_eff = manager::effective_config(&loaded.config);
-                                    let st = wh.state::<ManagerState>();
-                                    let mut m = st.lock();
-                                    // The app menu is global, not part of window reconcile;
-                                    // rebuilt below from current state.
-                                    // Density + sidebar_drag are global too — a change to either
-                                    // alone yields an empty reconcile (no per-window op), so nudge
-                                    // every chrome below.
-                                    let old_density = m.last_good.density;
-                                    let new_density = loaded.config.density;
-                                    let old_drag = m.last_good.sidebar_drag;
-                                    let new_drag = loaded.config.sidebar_drag;
-                                    // Recover (re-materialize) ONLY when we're
-                                    // actually in the diagnostic state — NOT merely
-                                    // when zero real windows exist, because the
-                                    // launcher state is also `is_empty()` and must
-                                    // take the reconcile path below (unchanged config
-                                    // ⇒ windows stay closed; an added window ⇒ opens
-                                    // ⇒ launcher recedes). Re-materializing there
-                                    // would wrongly reopen every user-closed window.
-                                    let in_diagnostic = wh.get_webview_window(DIAG_LABEL).is_some();
-                                    // Recover (materialize, fresh-launch semantics that respect
-                                    // open_on_start) when in the diagnostic state OR when there is
-                                    // no baseline to reconcile against — an empty `last_good` means
-                                    // we never had a valid config (the diagnostic may have been
-                                    // manually closed, leaving zero surfaces). Reconciling from an
-                                    // empty baseline would emit Open for EVERY window, since
-                                    // `reconcile` deliberately ignores `open_on_start`, wrongly
-                                    // opening `open_on_start = false` windows. The launcher state
-                                    // always has a non-empty `last_good`, so it still reconciles.
-                                    let recover = in_diagnostic || m.last_good.windows.is_empty();
-                                    if recover {
-                                        // Recovery: no reconcile baseline (diagnostic state, or a
-                                        // manually-closed diagnostic). Materialize from the
-                                        // already-scanned effective config and close the
-                                        // diagnostic, rather than reconciling against an
-                                        // empty last_good.
-                                        m.materialize_effective(
-                                            &wh,
-                                            loaded.config.clone(),
-                                            new_eff,
-                                        );
-                                        m.clear_diagnostic(&wh);
-                                    } else {
-                                        // Reconcile against the EFFECTIVE (root-expanded) configs
-                                        // so a project appearing/vanishing on disk since last load
-                                        // surfaces as a tab add/remove. Re-scans on every reload.
-                                        let recon =
-                                            warden_config::reconcile(&m.last_good, &new_eff);
-                                        m.apply(&wh, &recon, &new_eff);
-                                        // Advance the reconcile baseline ONLY on a valid load.
-                                        m.last_good = new_eff;
-                                        m.raw_config = loaded.config.clone();
-                                        // A density/sidebar_drag flip alone produces no per-window
-                                        // op, so apply() emitted nothing; re-push every window's
-                                        // snapshot (now carrying the new globals) so each restyles.
-                                        if old_density != new_density || old_drag != new_drag {
-                                            m.refresh_all_chrome(&wh);
-                                        }
+                Err(e) => mgr.show_diagnostic(&handle, &e.to_string()),
+            }
+            app.manage(ManagerState(std::sync::Mutex::new(mgr)));
+
+            // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
+            // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;
+            // needs ManagerState already managed (above) since the handler resolves surfaces
+            // through it. `notify_debug` (config, default false) gates the diagnostic trace.
+            notify::init(handle.clone(), notify_debug);
+
+            // Background presence-probe scheduler — the single probe driver. Per-window
+            // fast-until-stable bursts on key moments (tab activate, window focus/open, session
+            // start/kill, hot-reload/rescan), decaying to the slow floor (`probe_interval`) or
+            // Idle when it's 0. Triggers call `probe::bump`; nothing else spawns probe passes.
+            {
+                let st = handle.state::<ManagerState>();
+                let interval = st.lock().probe_interval.clone();
+                let app_sched = handle.clone();
+                std::thread::spawn(move || probe::run_scheduler(app_sched, interval));
+            }
+            // No launch-time probe pass here: each window's chrome calls the
+            // `probe_now` command once its `warden:session-state` listener is
+            // registered (see init() in index.html), which populates the dots
+            // reliably without racing the listener — covering `probe_interval = 0`
+            // and background windows that never emit a launch `Focused`.
+
+            // macOS menu. Windows are built at runtime with no NSMenu, so without this the
+            // standard shortcuts are dead and there's nowhere to surface tab navigation.
+            // Predefined items (Minimize/Quit) self-handle; custom items fire the Builder's
+            // on_menu_event. Tab chords ⌘⇧[/⌘⇧] (prev/next) and the digit chords (⌘1–9
+            // jump, or ⌘1/⌘2 cycle + ⌘3–9 jump under `tab_digit_keys = "cycle"`) are
+            // macOS-standard and checked app-wide before any view, so they never collide
+            // with the terminal. ⌘W unloads the active *tab* and ⌘⇧W closes the *window* — the Safari/
+            // Chrome convention (close-tab vs close-window), NOT the predefined ⌘W=close-window.
+            // The ⌘1/⌘2 chords depend on the config's `tab_digit_keys` mode
+            // (read from last_good, set by the load above; default Jump for the
+            // diagnostic-at-launch case). build_app_menu rebuilds wholesale, so a
+            // hot-reload that flips the mode just calls it again (see the watcher).
+            rebuild_menu(app.handle())?;
+
+            // Hot-reload: watch the config file; on each event reload + diff
+            // against last_good + apply the resulting WindowOps to live
+            // windows. The notify callback runs on a background thread, but
+            // every Tauri/AppKit/registry touch is main-thread only — hop via
+            // run_on_main_thread before doing any of it.
+            let cfg_path = warden_config::config_path();
+            // Watcher::with_default requires the config's parent dir to already exist.
+            if let Some(parent) = cfg_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let wh = app.handle().clone();
+            // The formatter's copy of the path (cfg_path is moved into the watcher).
+            let fmt_path = cfg_path.clone();
+            // Inject the login shell so hot-reload uses the same default as the initial load.
+            let watcher =
+                warden_config::Watcher::with_default(cfg_path, login_shell(), move |res| {
+                    let wh = wh.clone();
+                    let fmt_path = fmt_path.clone();
+                    let _ = wh.clone().run_on_main_thread(move || {
+                        use tauri::{Emitter, Manager};
+                        match res {
+                            Ok(loaded) if !loaded.config.windows.is_empty() => {
+                                // Expand `[[window.root]]`s into the EFFECTIVE config
+                                // (recursive git-project scan) BEFORE taking the lock —
+                                // the walk is slow and must never run under the
+                                // ManagerState mutex, or it stalls the background probe
+                                // thread for its whole duration (mirrors probe.rs's
+                                // snapshot-then-release discipline). We're on the main
+                                // thread here, so no other writer interleaves.
+                                let new_eff = manager::effective_config(&loaded.config);
+                                let st = wh.state::<ManagerState>();
+                                let mut m = st.lock();
+                                // The app menu is global, not part of window reconcile;
+                                // rebuilt below from current state.
+                                // Density + sidebar_drag are global too — a change to either
+                                // alone yields an empty reconcile (no per-window op), so nudge
+                                // every chrome below.
+                                let old_density = m.last_good.density;
+                                let new_density = loaded.config.density;
+                                let old_drag = m.last_good.sidebar_drag;
+                                let new_drag = loaded.config.sidebar_drag;
+                                // Recover (re-materialize) ONLY when we're
+                                // actually in the diagnostic state — NOT merely
+                                // when zero real windows exist, because the
+                                // launcher state is also `is_empty()` and must
+                                // take the reconcile path below (unchanged config
+                                // ⇒ windows stay closed; an added window ⇒ opens
+                                // ⇒ launcher recedes). Re-materializing there
+                                // would wrongly reopen every user-closed window.
+                                let in_diagnostic = wh.get_webview_window(DIAG_LABEL).is_some();
+                                // Recover (materialize, fresh-launch semantics that respect
+                                // open_on_start) when in the diagnostic state OR when there is
+                                // no baseline to reconcile against — an empty `last_good` means
+                                // we never had a valid config (the diagnostic may have been
+                                // manually closed, leaving zero surfaces). Reconciling from an
+                                // empty baseline would emit Open for EVERY window, since
+                                // `reconcile` deliberately ignores `open_on_start`, wrongly
+                                // opening `open_on_start = false` windows. The launcher state
+                                // always has a non-empty `last_good`, so it still reconciles.
+                                let recover = in_diagnostic || m.last_good.windows.is_empty();
+                                if recover {
+                                    // Recovery: no reconcile baseline (diagnostic state, or a
+                                    // manually-closed diagnostic). Materialize from the
+                                    // already-scanned effective config and close the
+                                    // diagnostic, rather than reconciling against an
+                                    // empty last_good.
+                                    m.materialize_effective(&wh, loaded.config.clone(), new_eff);
+                                    m.clear_diagnostic(&wh);
+                                } else {
+                                    // Reconcile against the EFFECTIVE (root-expanded) configs
+                                    // so a project appearing/vanishing on disk since last load
+                                    // surfaces as a tab add/remove. Re-scans on every reload.
+                                    let recon = warden_config::reconcile(&m.last_good, &new_eff);
+                                    m.apply(&wh, &recon, &new_eff);
+                                    // Advance the reconcile baseline ONLY on a valid load.
+                                    m.last_good = new_eff;
+                                    m.raw_config = loaded.config.clone();
+                                    // A density/sidebar_drag flip alone produces no per-window
+                                    // op, so apply() emitted nothing; re-push every window's
+                                    // snapshot (now carrying the new globals) so each restyles.
+                                    if old_density != new_density || old_drag != new_drag {
+                                        m.refresh_all_chrome(&wh);
                                     }
-                                    // Update the empty-surface (launcher/diagnostic)
-                                    // now that the live window set may have changed:
-                                    // recovery may have opened only some (or zero, if
-                                    // all `open_on_start = false`) windows; a reconcile
-                                    // may have closed the last one or opened the first.
-                                    m.sync_empty_surface(&wh);
-                                    // If the launcher is still up (config valid but
-                                    // no window opened), its list may be stale (a
-                                    // window added/removed/renamed) — push a refresh.
-                                    m.refresh_launcher(&wh);
-                                    // Apply the (possibly changed) probe cadence while we still
-                                    // hold the lock, then release it before any lock-free work.
-                                    m.set_probe_interval(loaded.config.probe_interval);
+                                }
+                                // Update the empty-surface (launcher/diagnostic)
+                                // now that the live window set may have changed:
+                                // recovery may have opened only some (or zero, if
+                                // all `open_on_start = false`) windows; a reconcile
+                                // may have closed the last one or opened the first.
+                                m.sync_empty_surface(&wh);
+                                // If the launcher is still up (config valid but
+                                // no window opened), its list may be stale (a
+                                // window added/removed/renamed) — push a refresh.
+                                m.refresh_launcher(&wh);
+                                // Apply the (possibly changed) probe cadence while we still
+                                // hold the lock, then release it before any lock-free work.
+                                m.set_probe_interval(loaded.config.probe_interval);
+                                drop(m);
+                                // Opt-in tidy: rewrite the file formatted. Diff-guarded in
+                                // format_file, so warden's own write doesn't loop the watcher.
+                                // Only runs on a clean parse (this branch).
+                                if loaded.config.format_on_save {
+                                    let _ = warden_config::format_file(&fmt_path);
+                                }
+                                // Rebuild the global app menu: the digit-keys mode and/or the
+                                // window set may have changed (open/close ops in apply). Lock
+                                // was released at `drop(m)` above; rebuild_menu re-locks.
+                                let _ = rebuild_menu(&wh);
+                                // Clear any stale error banner.
+                                let _ = wh.emit("warden:error-clear", ());
+                                // Refresh the session dots now that cadence/config may have changed
+                                // (lock already released, so the bump can lock freely).
+                                probe::bump_all(&wh);
+                            }
+                            Ok(_) => {
+                                // Valid TOML but no windows. If live windows exist,
+                                // keep them up and surface the error banner; if we're
+                                // already in the diagnostic state (no live windows),
+                                // there's no banner — route it to the diagnostic so a
+                                // second bad save doesn't leave the launch text stale.
+                                let msg = "config has no [[window]] entries".to_string();
+                                let st = wh.state::<ManagerState>();
+                                let mut m = st.lock();
+                                if m.is_empty() {
+                                    m.close_launcher(&wh);
+                                    m.show_diagnostic(&wh, &msg);
+                                } else {
                                     drop(m);
-                                    // Opt-in tidy: rewrite the file formatted. Diff-guarded in
-                                    // format_file, so warden's own write doesn't loop the watcher.
-                                    // Only runs on a clean parse (this branch).
-                                    if loaded.config.format_on_save {
-                                        let _ = warden_config::format_file(&fmt_path);
-                                    }
-                                    // Rebuild the global app menu: the digit-keys mode and/or the
-                                    // window set may have changed (open/close ops in apply). Lock
-                                    // was released at `drop(m)` above; rebuild_menu re-locks.
-                                    let _ = rebuild_menu(&wh);
-                                    // Clear any stale error banner.
-                                    let _ = wh.emit("warden:error-clear", ());
-                                    // Refresh the session dots now that cadence/config may have changed
-                                    // (lock already released, so the bump can lock freely).
-                                    probe::bump_all(&wh);
-                                }
-                                Ok(_) => {
-                                    // Valid TOML but no windows. If live windows exist,
-                                    // keep them up and surface the error banner; if we're
-                                    // already in the diagnostic state (no live windows),
-                                    // there's no banner — route it to the diagnostic so a
-                                    // second bad save doesn't leave the launch text stale.
-                                    let msg = "config has no [[window]] entries".to_string();
-                                    let st = wh.state::<ManagerState>();
-                                    let mut m = st.lock();
-                                    if m.is_empty() {
-                                        m.close_launcher(&wh);
-                                        m.show_diagnostic(&wh, &msg);
-                                    } else {
-                                        drop(m);
-                                        let _ = wh.emit("warden:error", msg);
-                                    }
-                                }
-                                Err(e) => {
-                                    // Keep last_good; surface the parse error in the banner,
-                                    // or in the diagnostic when no live window can show one.
-                                    let msg = e.to_string();
-                                    let st = wh.state::<ManagerState>();
-                                    let mut m = st.lock();
-                                    if m.is_empty() {
-                                        m.close_launcher(&wh);
-                                        m.show_diagnostic(&wh, &msg);
-                                    } else {
-                                        drop(m);
-                                        let _ = wh.emit("warden:error", msg);
-                                    }
+                                    let _ = wh.emit("warden:error", msg);
                                 }
                             }
-                        });
+                            Err(e) => {
+                                // Keep last_good; surface the parse error in the banner,
+                                // or in the diagnostic when no live window can show one.
+                                let msg = e.to_string();
+                                let st = wh.state::<ManagerState>();
+                                let mut m = st.lock();
+                                if m.is_empty() {
+                                    m.close_launcher(&wh);
+                                    m.show_diagnostic(&wh, &msg);
+                                } else {
+                                    drop(m);
+                                    let _ = wh.emit("warden:error", msg);
+                                }
+                            }
+                        }
                     });
-                // Keep the watcher alive for the app's lifetime. Log a failure so a
-                // dead watcher (no hot-reload) is distinguishable from a working one.
-                match watcher {
-                    Ok(w) => {
-                        app.manage(WatcherState(w));
-                    }
-                    Err(e) => {
-                        eprintln!("warden: failed to start config watcher (no hot-reload): {e}");
-                    }
+                });
+            // Keep the watcher alive for the app's lifetime. Log a failure so a
+            // dead watcher (no hot-reload) is distinguishable from a working one.
+            match watcher {
+                Ok(w) => {
+                    app.manage(WatcherState(w));
+                }
+                Err(e) => {
+                    eprintln!("warden: failed to start config watcher (no hot-reload): {e}");
                 }
             }
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running warden");
+        }
+        Ok(())
+    })
+    .run(tauri::generate_context!())
+    .expect("error while running warden");
 }
 
 #[cfg(test)]
