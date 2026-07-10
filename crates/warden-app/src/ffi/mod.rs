@@ -19,14 +19,6 @@ pub enum ghostty_platform_e {
     GHOSTTY_PLATFORM_IOS = 2,
 }
 
-// --- ghostty_surface_io_backend_e ---
-#[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum ghostty_surface_io_backend_e {
-    GHOSTTY_SURFACE_IO_BACKEND_EXEC = 0,
-    GHOSTTY_SURFACE_IO_BACKEND_HOST_MANAGED = 1,
-}
-
 // --- ghostty_surface_context_e ---
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -103,44 +95,31 @@ pub struct ghostty_env_var_s {
     pub value: *const c_char,
 }
 
-// --- Callback types embedded in ghostty_surface_config_s ---
-// typedef void (*ghostty_surface_receive_buffer_cb)(void*, const uint8_t*, size_t);
-pub type ghostty_surface_receive_buffer_cb =
-    Option<unsafe extern "C" fn(*mut c_void, *const u8, usize)>;
-
-// typedef void (*ghostty_surface_receive_resize_cb)(void*, uint16_t, uint16_t, uint32_t, uint32_t);
-pub type ghostty_surface_receive_resize_cb =
-    Option<unsafe extern "C" fn(*mut c_void, u16, u16, u32, u32)>;
-
 // --- ghostty_surface_config_s ---
 // ghostty_surface_config_new() returns this by value; layout must match the C struct exactly.
 // C struct layout (arm64/x86_64 macOS):
 //   offset  0: platform_tag (int32)
 //   offset  8: platform (union, 8-byte aligned — 4 bytes padding after platform_tag)
 //   offset 16: userdata (ptr)
-//   offset 24: backend (int32)
-//   offset 32: receive_userdata (ptr — 4 bytes padding after backend)
-//   offset 40: receive_buffer (fn ptr)
-//   offset 48: receive_resize (fn ptr)
-//   offset 56: scale_factor (f64)
-//   offset 64: font_size (f32)
-//   offset 72: working_directory (ptr — 4 bytes padding after font_size)
-//   offset 80: command (ptr)
-//   offset 88: env_vars (ptr)
-//   offset 96: env_var_count (usize)
-//   offset 104: initial_input (ptr)
-//   offset 112: wait_after_command (bool, 1 byte)
-//   offset 116: context (int32 — 3 bytes padding after bool)
-//   total: 120 bytes
+//   offset 24: scale_factor (f64)
+//   offset 32: font_size (f32)
+//   offset 40: working_directory (ptr — 4 bytes padding after font_size)
+//   offset 48: command (ptr)
+//   offset 56: env_vars (ptr)
+//   offset 64: env_var_count (usize)
+//   offset 72: initial_input (ptr)
+//   offset 80: wait_after_command (bool, 1 byte)
+//   offset 84: context (int32 — 3 bytes padding after bool)
+//   total: 88 bytes
+//
+// Ghostty main dropped the host-managed IO backend (the `backend`,
+// `receive_userdata`, `receive_buffer`, `receive_resize` fields present through
+// v1.3.1); warden always used the default EXEC backend, so this is a pure trim.
 #[repr(C)]
 pub struct ghostty_surface_config_s {
     pub platform_tag: ghostty_platform_e,
     pub platform: ghostty_platform_u,
     pub userdata: *mut c_void,
-    pub backend: ghostty_surface_io_backend_e,
-    pub receive_userdata: *mut c_void,
-    pub receive_buffer: ghostty_surface_receive_buffer_cb,
-    pub receive_resize: ghostty_surface_receive_resize_cb,
     pub scale_factor: f64,
     pub font_size: f32,
     pub working_directory: *const c_char,
@@ -315,7 +294,7 @@ pub struct ghostty_runtime_config_s {
 
 // --- Header-drift guards: assert struct sizes match the vendored C header exactly.
 // These are compile-time and break the build immediately if a future header bump shifts layout.
-const _: () = assert!(std::mem::size_of::<ghostty_surface_config_s>() == 120);
+const _: () = assert!(std::mem::size_of::<ghostty_surface_config_s>() == 88);
 const _: () = assert!(std::mem::size_of::<ghostty_runtime_config_s>() == 64);
 const _: () = assert!(std::mem::size_of::<ghostty_target_s>() == 16);
 const _: () = assert!(std::mem::size_of::<ghostty_action_s>() == 32);

@@ -163,6 +163,33 @@ shell-pin:
     cargo update -p shell-core
     echo "✓ pinned shell-core → $rev (patch deactivated). Commit Cargo.toml + Cargo.lock."
 
+# ── vendored libghostty (built by github.com/lockyc/libghostty-build) ──
+
+# Re-vendor GhosttyKit.xcframework from a libghostty-build release (default: latest), verifying
+# its sha256. After: update vendor/PROVENANCE.md's Ghostty ref/sha (from the release notes), then
+# `cargo clean -p warden-app` + rebuild. Needs `gh` authed to github.com/lockyc/libghostty-build.
+[group("ghostty")]
+revendor-ghostty tag="latest":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+    repo=lockyc/libghostty-build
+    dl=$(mktemp -d); trap 'rm -rf "$dl"' EXIT
+    if [ "{{tag}}" = latest ]; then
+      gh release download --repo "$repo" --pattern 'GhosttyKit.xcframework.zip*' -D "$dl"
+      tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
+    else
+      gh release download "{{tag}}" --repo "$repo" --pattern 'GhosttyKit.xcframework.zip*' -D "$dl"
+      tag="{{tag}}"
+    fi
+    ( cd "$dl" && shasum -a 256 -c GhosttyKit.xcframework.zip.sha256 )
+    echo "✓ sha256 verified ($tag)"
+    ditto -x -k "$dl/GhosttyKit.xcframework.zip" "$dl/unz"
+    dest=crates/warden-app/vendor/GhosttyKit.xcframework
+    rm -rf "$dest"; cp -R "$dl/unz/GhosttyKit.xcframework" "$dest"
+    echo "✓ vendored $dest from $repo @ $tag"
+    echo "  → update vendor/PROVENANCE.md (Ghostty ref/sha in the release notes), then: cargo clean -p warden-app && cargo build -p warden-app"
+
 # Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)
 [group("dist")]
 build:

@@ -47,7 +47,7 @@ so the dot shows whether its amux session is alive — `amux --probe` exits 0 fo
 
 A tab's optional `kill` command severs the session the dot represents: click the cyan dot once to arm, click again to confirm, and warden runs `kill` fire-and-forget — the surface stays open, and the probe re-runs immediately to update the dot. With agentmux, set it to `'"$HOME/.agentmux/bin/amux" --kill'` (cwd = the tab dir): the mirror of `amux --probe`, it tears down the **whole project** — the agent session plus its frame and scratch terminal — so it reaps exactly what the probe detects. Since the control lives on the presence dot, `kill` only does anything on a tab that also sets `probe` (no probe ⇒ no dot to click).
 
-Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `cmd+N` tabs and windows, and a controlled libghostty **source** build (the vendored binary is a throwaway prebuilt, currently blocked on a Zig 0.15.2 / macOS 26 SDK mismatch).
+Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `cmd+N` tabs and windows.
 
 ## Config
 
@@ -198,7 +198,9 @@ and a `.githooks/pre-commit` guard both refuse while one is live.
 
 MIT — see [`LICENSE`](LICENSE).
 
-The vendored libghostty binary (`crates/warden-app/vendor/`) is third-party code
-distributed under its own MIT license (Ghostty); see
+The vendored libghostty binary (`crates/warden-app/vendor/`) is
+[Ghostty](https://github.com/ghostty-org/ghostty) compiled from an unmodified, pinned
+upstream commit by [`lockyc/libghostty-build`](https://github.com/lockyc/libghostty-build)
+and distributed under Ghostty's MIT license; see
 [`crates/warden-app/vendor/LICENSE-ghostty`](crates/warden-app/vendor/LICENSE-ghostty)
 and [`PROVENANCE.md`](crates/warden-app/vendor/PROVENANCE.md) in that directory.
