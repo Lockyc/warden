@@ -43,8 +43,9 @@ pub type WindowProbeTargets = (String, Vec<ProbeTarget>);
 /// the presence dot's only live source is an async `warden:session-state` event, which a
 /// freshly-built webview isn't yet listening for, so on window open/reopen the first probe
 /// emits are dropped and the dots stay hollow until the chrome finishes booting and
-/// re-drives a probe. This cache breaks that: the scheduler records every probe pass here,
-/// and `init_dto`/refresh patch each `TabDto.presence` from it, so a (re)opened window
+/// re-drives a probe. This cache breaks that: the scheduler records every probe result here
+/// as it lands (`record_one`, before the emit that may be dropped), and `init_dto`/refresh
+/// patch each `TabDto.presence` from it, so a (re)opened window
 /// paints its dots on the FIRST render from the last-known state (self-correcting — the
 /// live burst overwrites any staleness within a pass). Surviving close/reopen is the whole
 /// point: a reopen rebuilds the Registry from scratch, so a Registry-local cache would be
@@ -55,16 +56,16 @@ pub struct PresenceCache {
 }
 
 impl PresenceCache {
-    /// Record a window's probe-pass results (tab id → present). An empty map (a window with
-    /// no probe-enabled tabs, or an unknown/closed label) records nothing — no empty entry.
-    pub fn record(&mut self, label: &str, results: &std::collections::BTreeMap<String, bool>) {
-        if results.is_empty() {
-            return;
-        }
-        let m = self.by_window.entry(label.to_string()).or_default();
-        for (id, on) in results {
-            m.insert(id.clone(), *on);
-        }
+    /// Record ONE tab's probe result (id → present) the moment its probe returns — never a
+    /// whole pass at the end of the sweep. The granularity is load-bearing: a sweep that is
+    /// still in flight when the chrome's listener registers must already have its finished
+    /// tabs in the cache, because `probe_now`'s replay reads the cache at exactly that instant
+    /// (see `probe::probe_window`, which records before it emits).
+    pub fn record_one(&mut self, label: &str, id: &str, on: bool) {
+        self.by_window
+            .entry(label.to_string())
+            .or_default()
+            .insert(id.to_string(), on);
     }
 
     /// The last-known presence for a window's tabs (id → present), for replaying to a chrome
@@ -824,13 +825,10 @@ mod tests {
 
     #[test]
     fn presence_cache_patches_recorded_tabs_and_survives_relookup() {
-        use std::collections::BTreeMap;
         let mut cache = PresenceCache::default();
-        // A window's probe pass: t0 present, t1 absent.
-        let mut results = BTreeMap::new();
-        results.insert("t0".to_string(), true);
-        results.insert("t1".to_string(), false);
-        cache.record("work", &results);
+        // A window's probe pass, recorded tab by tab as each probe returns: t0 present, t1 absent.
+        cache.record_one("work", "t0", true);
+        cache.record_one("work", "t1", false);
 
         // A freshly-built window's DTOs (all presence: None) get patched from the cache —
         // this is what lets a reopened window paint its dots on first render.
@@ -852,15 +850,15 @@ mod tests {
         let mut cache = PresenceCache::default();
         assert!(
             cache.snapshot("work").is_empty(),
-            "no pass yet → empty snapshot (probe_now falls back to the bump)"
+            "no probe yet → empty snapshot (probe_now falls back to the bump)"
         );
-        let mut results = BTreeMap::new();
-        results.insert("t0".to_string(), true);
-        results.insert("t1".to_string(), false);
-        cache.record("work", &results);
+        cache.record_one("work", "t0", true);
+        cache.record_one("work", "t1", false);
         // The snapshot is exactly what probe_now replays to a just-ready listener — including the
-        // `true` a lost first-pass emit left stuck (t0), which is the whole point of the replay.
-        assert_eq!(cache.snapshot("work"), results);
+        // `true` a lost emit left stuck (t0), which is the whole point of the replay.
+        let expected: BTreeMap<String, bool> =
+            [("t0".to_string(), true), ("t1".to_string(), false)].into();
+        assert_eq!(cache.snapshot("work"), expected);
         assert!(
             cache.snapshot("other").is_empty(),
             "different window → no cross-talk"
@@ -868,22 +866,28 @@ mod tests {
     }
 
     #[test]
-    fn presence_cache_record_ignores_empty_and_overwrites() {
-        use std::collections::BTreeMap;
+    fn presence_cache_snapshot_sees_a_tab_mid_sweep_not_only_at_pass_end() {
+        // The stuck-dark-dot regression: probe_now's replay can land while a wide window's sweep is
+        // still running, so a tab already probed must be visible in the snapshot immediately — not
+        // only once the whole pass finishes.
         let mut cache = PresenceCache::default();
-        // Empty pass (no probe-enabled tabs / closed window) creates no entry.
-        cache.record("work", &BTreeMap::new());
+        cache.record_one("work", "t0", true); // first tab of the sweep lands...
+        assert_eq!(
+            cache.snapshot("work").get("t0"),
+            Some(&true),
+            "an in-flight sweep's finished tab must already be replayable"
+        );
+    }
+
+    #[test]
+    fn presence_cache_record_one_overwrites_with_the_newest_result() {
+        let mut cache = PresenceCache::default();
         let mut tabs = vec![dto("t0")];
         cache.patch("work", &mut tabs);
-        assert_eq!(tabs[0].presence, None, "empty pass records nothing");
+        assert_eq!(tabs[0].presence, None, "never probed → no entry");
 
-        // A later pass with a value, then a newer pass, keeps the newest (present→absent).
-        let mut r1 = BTreeMap::new();
-        r1.insert("t0".to_string(), true);
-        cache.record("work", &r1);
-        let mut r2 = BTreeMap::new();
-        r2.insert("t0".to_string(), false);
-        cache.record("work", &r2);
+        cache.record_one("work", "t0", true);
+        cache.record_one("work", "t0", false); // a later pass (present→absent, e.g. a kill)
         let mut tabs = vec![dto("t0")];
         cache.patch("work", &mut tabs);
         assert_eq!(tabs[0].presence, Some(false), "newest result wins");

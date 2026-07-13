@@ -336,8 +336,8 @@ where
                 };
                 let cmd = substitute(&probe, &dir, &title);
                 let on = probe_fn(&cmd, &dir);
-                // Emit this dot the instant its own probe finishes (the caller's closure filters to
-                // changed-only), then record it for the settle-diff + PresenceCache.
+                // Hand this result to the caller's observer the instant its own probe finishes (it
+                // records it, then emits only if it changed), then keep it for the settle-diff.
                 emit(&id, on);
                 result.lock().unwrap().insert(id, on);
             });
@@ -375,30 +375,49 @@ pub(crate) fn probe_window(
             .flat_map(|(_lbl, tabs)| tabs)
             .collect()
     };
-    let result = sweep(
+    sweep(
         work,
         priority,
         MAX_PROBE_CONCURRENCY,
         run_probe,
         |id, on| {
-            // Emit only on a real change, so a stable window's pass stays silent.
-            if presence_changed(prev, id, on) {
-                emit_one(app, label, id, on);
-            }
+            observe(
+                prev,
+                id,
+                on,
+                |id, on| state.lock().presence_cache.record_one(label, id, on),
+                |id, on| emit_one(app, label, id, on),
+            )
         },
-    );
-    if result.is_empty() {
-        return result; // nothing emitted; caller compares empty==empty → settles
+    )
+}
+
+/// One tab's post-probe bookkeeping: **record first, emit second** — and emit only when the state
+/// actually changed, so a settled window's pass stays silent.
+///
+/// The order is load-bearing, not incidental. A freshly-built webview isn't listening for
+/// `warden:session-state` yet, so an emit issued before the chrome's listener registers is simply
+/// dropped; the only thing that heals it is `probe_now`'s handshake replay of the PresenceCache
+/// (which the chrome triggers the moment its listener IS ready). Recording each result *before* its
+/// emit means any dropped emit is already in the cache the replay reads — whereas persisting the
+/// whole pass at the END of the sweep leaves a window in which the early tabs' emits are dropped
+/// AND the cache the replay reads is still empty. Those dots then stay dark for the life of the
+/// process: `prev` already holds the value, so the changed-only guard means no later pass ever
+/// re-emits it. That was the "a tab whose amux session is live shows a dark presence dot" bug — a
+/// wide `[[window.root]]` makes the first sweep long enough to straddle the handshake, and only
+/// tabs that probed *present* look wrong (a dropped `false` leaves a hollow dot, which is what an
+/// absent session should look like anyway).
+fn observe(
+    prev: &BTreeMap<String, bool>,
+    id: &str,
+    on: bool,
+    record: impl Fn(&str, bool),
+    emit: impl Fn(&str, bool),
+) {
+    record(id, on);
+    if presence_changed(prev, id, on) {
+        emit(id, on);
     }
-    // Persist this pass so a (re)opened window's init/refresh DTO paints its dots from the
-    // last-known state — the chrome's `warden:session-state` listener isn't alive yet when a
-    // freshly-built webview opens, so the per-tab emits above would be dropped for it. See
-    // PresenceCache.
-    {
-        let mut m = state.lock();
-        m.presence_cache.record(label, &result);
-    }
-    result
 }
 
 /// A fast-burst request for one window. `tab` names the tab that triggered it (kill/start/activate)
@@ -677,6 +696,48 @@ mod tests {
         assert!(
             peak <= 4,
             "concurrency must not exceed the cap (peak {peak})"
+        );
+    }
+
+    #[test]
+    fn observe_records_before_it_emits() {
+        // The order is the fix for the stuck-dark dot: a probe result must be in the cache before
+        // the emit that a not-yet-registered listener may drop, because probe_now's replay reads
+        // that cache at exactly the moment the listener comes up.
+        let log = Mutex::new(Vec::new());
+        observe(
+            &BTreeMap::new(),
+            "t0",
+            true,
+            |id, on| log.lock().unwrap().push(format!("record {id}={on}")),
+            |id, on| log.lock().unwrap().push(format!("emit {id}={on}")),
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["record t0=true".to_string(), "emit t0=true".to_string()],
+            "record must precede emit"
+        );
+    }
+
+    #[test]
+    fn observe_records_an_unchanged_result_but_stays_silent() {
+        // A settled pass emits nothing — but must still keep the cache current, since the cache is
+        // what a (re)opened window and the handshake replay paint from.
+        let mut prev = BTreeMap::new();
+        prev.insert("t0".to_string(), true);
+        let recorded = Mutex::new(Vec::new());
+        let emitted = Mutex::new(Vec::new());
+        observe(
+            &prev,
+            "t0",
+            true,
+            |id, on| recorded.lock().unwrap().push((id.to_string(), on)),
+            |id, on| emitted.lock().unwrap().push((id.to_string(), on)),
+        );
+        assert_eq!(*recorded.lock().unwrap(), vec![("t0".to_string(), true)]);
+        assert!(
+            emitted.lock().unwrap().is_empty(),
+            "unchanged → no re-emit (a settled window's pass is silent)"
         );
     }
 

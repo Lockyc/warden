@@ -37,10 +37,11 @@ Two things ride on top of the concurrent sweep, both load-bearing:
   (stamped with the window `label`, filtered by the chrome's `forMe()` — the same
   `emit_to`-leaks footgun as `warden:refresh`, see CLAUDE.md) the instant *its own* probe
   returns, and only when it **changed vs the previous pass** (`presence_changed` + `emit_one`).
-  So a **settled window's pass emits nothing**, while the full result map is still recorded into
-  `PresenceCache` every pass. **Don't** revert to a single end-of-pass emit (it would trap the
-  killed tab's new state behind the slowest worker), and **don't** serialize the sweep back to
-  one-at-a-time.
+  So a **settled window's pass emits nothing**, while every result — changed or not — is still
+  recorded into `PresenceCache`, **per tab and before its emit** (`observe`; see the replay
+  section below, where that order is load-bearing). **Don't** revert to a single end-of-pass emit
+  (it would trap the killed tab's new state behind the slowest worker), and **don't** serialize
+  the sweep back to one-at-a-time.
 
 `probe_interval` is shared as an `Arc<AtomicU64>` (the scheduler's slow floor) so a
 hot-reload changes cadence live — the reload hook pairs the new floor with a `bump_all`, so
@@ -54,7 +55,7 @@ the listener and the dot can stay hollow; bump instead.
 
 ### The `PresenceCache` paints dots on the first render
 
-First *paint* of the dots does not wait for that burst: the scheduler records every pass
+First *paint* of the dots does not wait for that burst: the scheduler records every probe result
 into the manager's persistent **`PresenceCache`** (keyed window-label → tab-id → present?,
 *outliving* window close/reopen — a reopen rebuilds the Registry from scratch), and
 `init_dto`/refresh patch each `TabDto.presence` from it, so a (re)opened window renders its
@@ -77,13 +78,24 @@ sharply one whose **session pre-existed launch**, `true` from the very first pro
 stuck at its hollow build-time dot. The fix: `probe_now` (called by the chrome the instant its
 listener *is* ready) reads `PresenceCache::snapshot(label)` and emits it as one batched
 `warden:session-state` **before** bumping — replaying the last-known state to the now-ready
-listener. Race-proof either way: a pass already recorded → the snapshot delivers it; no pass
-yet → the snapshot is empty and the paired bump's pass emits with the listener up. This gap
-was invisible while probe passes were slow (sequential) — the pass was still emitting when the
-listener came up, so most emits landed; the concurrent sweep finishes inside the gap, making
-the loss reliable, which is what surfaced it. **Don't** drop the `probe_now` snapshot expecting
-the live burst alone to paint first state — the burst it triggers is `changed`-gated against a
-`prev` the lost pass already filled.
+listener. This gap was invisible while probe passes were slow (sequential) — the pass was still
+emitting when the listener came up, so most emits landed; the concurrent sweep finishes inside
+the gap, making the loss reliable, which is what surfaced it. **Don't** drop the `probe_now`
+snapshot expecting the live burst alone to paint first state — the burst it triggers is
+`changed`-gated against a `prev` the lost pass already filled.
+
+**The replay is only as good as the cache is *current* — so each result is recorded BEFORE its
+emit (`observe`), never batched at the end of the pass.** The snapshot covers a pass that
+*finished* before the handshake, but a sweep can also still be **in flight** across it: a wide
+`[[window.root]]` window probes dozens of tabs in waves, so its early tabs emit (dropped — no
+listener) while the pass is far from done. Persisting the whole result map at the end of the
+sweep therefore left a window in which those emits were already lost **and** the cache the
+replay reads was still empty — and since `prev` holds the value, no later pass ever re-emits it.
+Those dots then stay dark for the life of the process, and only tabs that probed **present**
+look wrong (a dropped `false` leaves a hollow dot, which is what an absent session looks like
+anyway) — the "my amux session is live but the tab's presence dot is dark" bug. Recording
+per-tab, before the emit, closes it: anything a dropped emit carried is already in the cache
+the replay reads. **Don't** move the record back to the end of the pass "to take the lock once".
 
 ### Probe execution details
 
