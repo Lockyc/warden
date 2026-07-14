@@ -293,10 +293,12 @@
       }
 
       // Hot-reload: the manager pushes a fresh snapshot after a reconcile. Drop a malformed payload
-      // or one addressed to a sibling window.
+      // or one addressed to a sibling window. Listeners are registered at script-eval time but `sb`
+      // only exists after init()'s awaits, so every one of them must tolerate a pre-init event —
+      // dropping it is safe (init() pulls a fresh init_dto and replays presence via probe_now).
       listen("warden:refresh", (e) => {
         const p = e.payload;
-        if (!p || !Array.isArray(p.tabs)) return;
+        if (!p || !Array.isArray(p.tabs) || !sb) return;
         if (myLabel && p.label && p.label !== myLabel) return;
         applyDto(p);
       });
@@ -322,15 +324,19 @@
       });
       listen("warden:error-clear", () => { if (sb) sb.clearError(); });
       // Menu "Check for Updates…" → chrome-core checks now + announces (up-to-date / error / banner).
-      listen("warden:check-update", () => sb && sb.checkForUpdateNow());
+      // emit_to leaks → forMe filter, else one menu click checks in every open window.
+      listen("warden:check-update", (e) => {
+        if (!forMe(e) || !sb) return;
+        sb.checkForUpdateNow();
+      });
 
       // Menu tab nav: cycle ONLY loaded tabs (⌘⇧[/]) and jump (⌘1–9). emit_to leaks → forMe filter.
       listen("warden:cycle-tab", (e) => {
-        if (!forMe(e)) return;
+        if (!forMe(e) || !sb) return;
         sb.selectByOffset(e.payload.dir, { liveOnly: true });
       });
       listen("warden:select-tab", (e) => {
-        if (!forMe(e)) return;
+        if (!forMe(e) || !sb) return;
         sb.selectByIndex(e.payload.n);
       });
       // ⌘W unloads the active tab (same as clicking its live dot).
@@ -341,7 +347,7 @@
 
       // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).
       listen("warden:notify", (e) => {
-        if (!forMe(e)) return;
+        if (!forMe(e) || !sb) return;
         const id = e.payload && e.payload.id;
         if (id && id !== activeId) {
           badges.add(id);
@@ -351,14 +357,14 @@
       // A desktop-notification banner was clicked — the native layer raised this window; select the
       // tab that fired it (which activates it + clears its badge via onSelect).
       listen("warden:focus-tab", (e) => {
-        if (!forMe(e)) return;
+        if (!forMe(e) || !sb) return;
         const id = e.payload && e.payload.id;
         if (id) sb.select(id);
       });
       // Probe results: light/clear the cyan presence dot per tab. Resolves once the backend has
       // registered this listener, so init() can await it before the first probe_now.
       const sessionListenReady = listen("warden:session-state", (e) => {
-        if (!forMe(e)) return;
+        if (!forMe(e) || !sb) return;
         const states = e.payload && e.payload.states;
         if (!states) return;
         Object.entries(states).forEach(([id, on]) => {

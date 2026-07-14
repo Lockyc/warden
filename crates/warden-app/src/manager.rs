@@ -597,8 +597,8 @@ impl WindowManager {
     /// Drop a window's state and reap its surfaces, without re-closing the Tauri
     /// window (used from the `Destroyed` handler, where the OS already destroyed
     /// the window — calling `window.close()` again would be redundant). Surfaces
-    /// must still be freed explicitly: `GhosttySurface` has no `Drop`, so merely
-    /// dropping the registry would leak the libghostty surface handles.
+    /// are freed eagerly via `close_all` rather than relying on `GhosttySurface`'s
+    /// `Drop` safety net, so the libghostty handles go with the window, not later.
     pub fn remove_window(&mut self, label: &str) {
         if let Some(mut ws) = self.windows.remove(label) {
             ws.registry.close_all();

@@ -853,7 +853,14 @@ fn main() {
             );
         } else if id == MENU_CHECK_UPDATES {
             // Manual update check → the focused window's chrome runs it (ignores auto_update).
-            let _ = app.emit_to(label.as_str(), "warden:check-update", ());
+            // Label-stamped like every other per-window emit: `emit_to` leaks to sibling
+            // webviews, so without the stamp + the chrome's forMe() filter one menu click
+            // would run an update check in every open window.
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:check-update",
+                serde_json::json!({ "label": label }),
+            );
         } else if id == MENU_WINDOW_CLOSE {
             // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, then
             // sync_empty_surface: shows the launcher if it was the last real window — no quit).
@@ -986,25 +993,25 @@ fn main() {
                                 let new_density = loaded.config.density;
                                 let old_drag = m.last_good.sidebar_drag;
                                 let new_drag = loaded.config.sidebar_drag;
-                                // Recover (re-materialize) ONLY when we're
-                                // actually in the diagnostic state — NOT merely
-                                // when zero real windows exist, because the
-                                // launcher state is also `is_empty()` and must
-                                // take the reconcile path below (unchanged config
-                                // ⇒ windows stay closed; an added window ⇒ opens
-                                // ⇒ launcher recedes). Re-materializing there
-                                // would wrongly reopen every user-closed window.
-                                let in_diagnostic = wh.get_webview_window(DIAG_LABEL).is_some();
                                 // Recover (materialize, fresh-launch semantics that respect
-                                // open_on_start) when in the diagnostic state OR when there is
-                                // no baseline to reconcile against — an empty `last_good` means
-                                // we never had a valid config (the diagnostic may have been
-                                // manually closed, leaving zero surfaces). Reconciling from an
-                                // empty baseline would emit Open for EVERY window, since
-                                // `reconcile` deliberately ignores `open_on_start`, wrongly
-                                // opening `open_on_start = false` windows. The launcher state
-                                // always has a non-empty `last_good`, so it still reconciles.
-                                let recover = in_diagnostic || m.last_good.windows.is_empty();
+                                // open_on_start) ONLY when there is no baseline to reconcile
+                                // against — an empty `last_good` means we never had a valid
+                                // config. Reconciling from an empty baseline would emit Open for
+                                // EVERY window, since `reconcile` deliberately ignores
+                                // `open_on_start`, wrongly opening `open_on_start = false` ones.
+                                //
+                                // Do NOT also recover on "the diagnostic is up": the launcher
+                                // state can *become* the diagnostic state (close every window,
+                                // then save a half-written config — the Err branch below routes
+                                // to the diagnostic because `is_empty()`), and recovering on the
+                                // next good save would re-materialize every window the user
+                                // deliberately closed. An empty `last_good` already covers every
+                                // genuine diagnostic case (invalid/missing config at launch, or a
+                                // manually-closed diagnostic); the launcher state always has a
+                                // non-empty `last_good`, so it correctly reconciles instead —
+                                // unchanged config ⇒ windows stay closed; an added window ⇒ opens.
+                                // `sync_empty_surface` below clears the diagnostic either way.
+                                let recover = m.last_good.windows.is_empty();
                                 if recover {
                                     // Recovery: no reconcile baseline (diagnostic state, or a
                                     // manually-closed diagnostic). Materialize from the
