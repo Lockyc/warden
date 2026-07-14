@@ -16,7 +16,11 @@
   "bundle": {
     "active": true,
     "targets": "app",
-    "icon": ["icons/icon.icns"]
+    "icon": ["icons/icon.icns"],
+    "resources": {
+      "vendor/resources/terminfo": "terminfo",
+      "vendor/resources/ghostty": "ghostty"
+    }
   },
   "plugins": {
     "updater": {

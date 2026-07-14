@@ -176,18 +176,26 @@ revendor-ghostty tag="latest":
     repo=lockyc/libghostty-build
     dl=$(mktemp -d); trap 'rm -rf "$dl"' EXIT
     if [ "{{tag}}" = latest ]; then
-      gh release download --repo "$repo" --pattern 'GhosttyKit.xcframework.zip*' -D "$dl"
+      gh release download --repo "$repo" --pattern 'Ghostty*.zip*' -D "$dl"
       tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
     else
-      gh release download "{{tag}}" --repo "$repo" --pattern 'GhosttyKit.xcframework.zip*' -D "$dl"
+      gh release download "{{tag}}" --repo "$repo" --pattern 'Ghostty*.zip*' -D "$dl"
       tag="{{tag}}"
     fi
-    ( cd "$dl" && shasum -a 256 -c GhosttyKit.xcframework.zip.sha256 )
+    ( cd "$dl" && shasum -a 256 -c GhosttyKit.xcframework.zip.sha256 GhosttyResources.zip.sha256 )
     echo "✓ sha256 verified ($tag)"
     ditto -x -k "$dl/GhosttyKit.xcframework.zip" "$dl/unz"
     dest=crates/warden-app/vendor/GhosttyKit.xcframework
     rm -rf "$dest"; cp -R "$dl/unz/GhosttyKit.xcframework" "$dest"
     echo "✓ vendored $dest from $repo @ $tag"
+    # The resources are NOT optional: without terminfo/78/xterm-ghostty in the bundle,
+    # libghostty exports TERM=xterm-256color and the terminal loses synchronized output
+    # (see vendor/PROVENANCE.md § Resources). Vendor them from the SAME release as the lib.
+    ditto -x -k "$dl/GhosttyResources.zip" "$dl/unz-res"
+    res=crates/warden-app/vendor/resources
+    rm -rf "$res"; mkdir -p "$res"; cp -R "$dl/unz-res/." "$res/"
+    test -e "$res/terminfo/78/xterm-ghostty" || { echo "✗ terminfo sentinel missing in $res — libghostty would fall back to xterm-256color"; exit 1; }
+    echo "✓ vendored $res (terminfo + shell-integration)"
     echo "  → update vendor/PROVENANCE.md (Ghostty ref/sha in the release notes), then: cargo clean -p warden-app && cargo build -p warden-app"
 
 # Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)

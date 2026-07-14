@@ -537,6 +537,47 @@ fn scrub_inherited_tmux_env() {
     }
 }
 
+/// Make libghostty find *warden's* ghostty resources — the terminfo it needs to call itself a
+/// ghostty terminal. libghostty locates them by climbing from the running executable for the
+/// sentinel `Contents/Resources/terminfo/78/xterm-ghostty` (`resourcesdir.zig`); miss it and it
+/// silently exports `TERM=xterm-256color` instead of `xterm-ghostty` (`termio/Exec.zig`). That
+/// fallback is not cosmetic: `xterm-256color` advertises no `Sync` capability, so tmux stops
+/// bracketing its redraws in DEC mode 2026 — the one signal that makes libghostty *pause*
+/// rendering — so it renders half-drawn frames, and an unfocused surface (which paints its hollow
+/// cursor on **every** frame, ahead of the blink gate) flickers that cursor wherever a mid-repaint
+/// sample left it. Two cases, one lever — `GHOSTTY_RESOURCES_DIR`, which libghostty honours ahead
+/// of the climb and from which it derives `TERMINFO` as `<parent>/terminfo`:
+///
+/// * **Packaged `warden.app`** — the climb succeeds on its own (the bundle ships the resources), so
+///   we only *clear* an inherited `GHOSTTY_RESOURCES_DIR`. warden is routinely launched from inside
+///   another ghostty/warden terminal, which exports that var; inherited, it would point warden at a
+///   *different* Ghostty build's terminfo. Same reasoning as the `$TMUX` scrub: a terminal host must
+///   not inherit its launcher's terminal context.
+/// * **Unbundled (`cargo run` / `just run`)** — there is no bundle to climb to, so point it at the
+///   vendored resources. Without this, dev runs would silently be `xterm-256color` and reproduce
+///   bugs the shipped app doesn't have (and mask ones it does). Debug-only, so no build-machine path
+///   is ever baked into a release binary.
+///
+/// Must run before libghostty is initialised — the resources dir is resolved once at app init.
+fn configure_ghostty_resources() {
+    // The bundle's own resources must win over whatever terminal launched us.
+    std::env::remove_var("GHOSTTY_RESOURCES_DIR");
+
+    #[cfg(debug_assertions)]
+    {
+        let vendor = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/resources"));
+        if vendor.join("terminfo/78/xterm-ghostty").exists() {
+            std::env::set_var("GHOSTTY_RESOURCES_DIR", vendor.join("ghostty"));
+        } else {
+            eprintln!(
+                "warden: vendored ghostty resources missing at {} — terminals will fall back to \
+                 TERM=xterm-256color (no synchronized output). Run `just revendor-ghostty`.",
+                vendor.display()
+            );
+        }
+    }
+}
+
 /// The shell warden spawns when a tab's config sets none — the user's **login shell**, run
 /// as a login shell, exactly as a terminal does. Read from `$SHELL` (launchd populates it from
 /// the user's directory record even for a Dock/Finder launch), falling back to the macOS
@@ -665,6 +706,10 @@ fn main() {
     // `shell`/`probe`/`kill` named by bare command would be not-found. Adopt the login-shell PATH
     // before any surface or probe spawns and inherits this process's environment.
     restore_login_path();
+    // Point libghostty at warden's own ghostty resources, so terminals get TERM=xterm-ghostty (and
+    // with it synchronized output) rather than the silent xterm-256color fallback. Before ghostty
+    // init: the resources dir is resolved once, at app init.
+    configure_ghostty_resources();
 
     // libghostty must be initialised once before any app/surface is created.
     #[cfg(target_os = "macos")]
