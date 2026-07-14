@@ -48,8 +48,16 @@ fmt:
 clippy:
     cargo clippy --workspace -- -D warnings
 
-# The active-[patch] guard also runs via .githooks/pre-commit (opt-in per clone via core.hooksPath);
-# fmt/clippy/tests have no hook/CI yet, so run this manually before committing/merging.
+# `core.hooksPath` is per-clone local config that the repo can't carry, so a fresh clone has NEITHER
+# hook until this runs — no docaudit pre-push gate, no active-[patch] pre-commit guard.
+# Enable this clone's .githooks (docaudit pre-push gate + active-[patch] pre-commit guard). Run once per clone.
+[group("check")]
+hooks:
+    git config core.hooksPath .githooks
+    @echo "✓ hooks enabled (.githooks): docaudit pre-push gate + active-[patch] pre-commit guard"
+
+# CI runs fmt/clippy/tests on push + PR; this is the same gate locally, plus the config fmt-check
+# and the active-[patch] guard (which also runs via .githooks/pre-commit — see `just hooks`).
 # Full pre-merge gate: fmt-check, clippy, tests, config fmt-check, active-[patch] guard
 [group("check")]
 gate:

@@ -2,6 +2,10 @@
 docs/superpowers/
 .superpowers/
 
+# Agent worktrees (<repo>/.claude/worktrees/<branch>) — full checkouts of this repo's own
+# branches; committing them would be circular. Tracked here so a fresh clone is covered.
+.claude/worktrees/
+
 # Generated at build time from the pinned chrome-core crate (build.rs); reproducible, not tracked
 /crates/warden-app/ui/chrome-core.css
 /crates/warden-app/ui/chrome-core.js

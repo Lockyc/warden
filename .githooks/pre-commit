@@ -2,16 +2,16 @@
 # warden pre-commit gate — block committing an active shared-core [patch].
 # Activated per clone via core.hooksPath=.githooks (same opt-in as pre-push).
 #
-# An active path patch (`just chrome-dev` / `just config-dev`) builds green locally but is
-# unresolvable for every other clone and CI. That's the one `just gate` check whose failure is
-# silent AND remote (fmt/clippy/tests fail loudly for the author too), so it's worth a cheap,
-# build-free commit-time guard. It inspects the STAGED Cargo.toml (the index), so it fires only
-# when you're actually committing the active patch — not while chrome-dev/config-dev is live during
-# an unrelated commit. Re-pin first: `just chrome-pin` / `just config-pin`.
+# An active path patch (`just chrome-dev` / `just config-dev` / `just shell-dev`) builds green
+# locally but is unresolvable for every other clone and CI. That's the one `just gate` check whose
+# failure is silent AND remote (fmt/clippy/tests fail loudly for the author too), so it's worth a
+# cheap, build-free commit-time guard. It inspects the STAGED Cargo.toml (the index), so it fires
+# only when you're actually committing the active patch — not while a *-dev patch is live during an
+# unrelated commit. Re-pin first: `just chrome-pin` / `just config-pin` / `just shell-pin`.
 set -euo pipefail
 
 if git show :Cargo.toml 2>/dev/null | grep -qE '^\[patch\.'; then
   echo "✗ commit blocked: an active [patch] is staged in Cargo.toml." >&2
-  echo "  Run 'just chrome-pin' / 'just config-pin' to re-pin + deactivate before committing." >&2
+  echo "  Run 'just chrome-pin' / 'just config-pin' / 'just shell-pin' to re-pin + deactivate before committing." >&2
   exit 1
 fi
