@@ -28,12 +28,13 @@ use super::{PixelRect, SurfaceError, SurfaceEvent, SurfaceSignal, TabSpec, Termi
 use crate::ffi;
 use crate::geometry;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::AnyObject;
@@ -41,13 +42,14 @@ use objc2::{
     class, declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass,
 };
 use objc2_app_kit::{
-    NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSEvent,
-    NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSResponder,
-    NSView, NSWindow, NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
+    NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSCursor,
+    NSEvent, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF,
+    NSResponder, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSDictionary, NSNotification, NSNotificationCenter, NSPoint, NSRect,
-    NSSize, NSString,
+    NSSize, NSString, NSURL,
 };
 
 // --- AppKit modifier-flag bit masks (stable AppKit ABI values) ---
@@ -118,8 +120,21 @@ unsafe extern "C" fn action_cb(
     let Some(surface) = target.surface() else {
         return false;
     };
+    // Two actions are handled entirely inside the seam — they act on AppKit, not on a tab, so
+    // there is nothing for the app layer to route.
+    if let Some(url) = action.open_url() {
+        open_url(&url);
+        return true;
+    }
+    if let Some(shape) = action.mouse_shape() {
+        set_mouse_shape(surface, shape);
+        return true;
+    }
+
     let signal = if action.is_ring_bell() {
         Some(SurfaceSignal::Bell)
+    } else if let Some(exit_code) = action.child_exited() {
+        Some(SurfaceSignal::ChildExited { exit_code })
     } else if let Some(dn) = action.desktop_notification() {
         // Copy the borrowed C strings out now — libghostty frees them when this call returns.
         let read = |p: *const c_char| {
@@ -303,6 +318,78 @@ fn shared_app() -> ffi::ghostty_app_t {
     (*GHOSTTY_APP.get_or_init(|| unsafe { create_app() })) as ffi::ghostty_app_t
 }
 
+/// Open a link the user clicked in a terminal (`GHOSTTY_ACTION_OPEN_URL`). libghostty only raises
+/// this for a link *it* detected under an explicit click, so the gesture is always user-initiated;
+/// warden just hands it to macOS, exactly as Ghostty.app does. A URL macOS can't parse is dropped.
+fn open_url(url: &str) {
+    unsafe {
+        let s = NSString::from_str(url);
+        if let Some(u) = NSURL::URLWithString(&s) {
+            NSWorkspace::sharedWorkspace().openURL(&u);
+        }
+    }
+}
+
+/// Surface handle → its `WardenHostView`, so an action that names a *surface* can act on the view
+/// hosting it. Only `MOUSE_SHAPE` needs this today: a mouse cursor is a view-level AppKit concern,
+/// not a tab-level one, so it can't ride the `SurfaceEvent` sink like bell/notification do.
+/// Main-thread only (action_cb runs on the main thread, from `ghostty_app_tick`); the pointer is
+/// stored as a `usize` purely so the map is `Send`. Entries are removed in `close()`, so a stale
+/// view is never dereferenced.
+static SURFACE_VIEWS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
+
+/// Apply libghostty's requested cursor shape to the view hosting `surface`. Stores it on the view
+/// and invalidates its cursor rects — AppKit re-asks via `resetCursorRects`, which is what makes the
+/// shape *stick* as the mouse moves (a bare `NSCursor::set()` is undone by the next mouse-move).
+fn set_mouse_shape(surface: ffi::ghostty_surface_t, shape: u32) {
+    let view_ptr = SURFACE_VIEWS
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&(surface as usize)).copied());
+    let Some(ptr) = view_ptr else { return };
+    // SAFETY: main thread (action_cb), and the entry is removed in close() before the view dies.
+    let view: &WardenHostView = unsafe { &*(ptr as *const WardenHostView) };
+    if view.ivars().mouse_shape.get() == shape {
+        return;
+    }
+    view.ivars().mouse_shape.set(shape);
+    if let Some(window) = view.window() {
+        window.invalidateCursorRectsForView(view);
+    }
+}
+
+/// Map `ghostty_action_mouse_shape_e` onto AppKit's cursors. The shapes are CSS-derived, so several
+/// have no AppKit equivalent — those fall back to the arrow rather than approximating. The two that
+/// actually matter in a terminal: `TEXT` over cells (I-beam) and `POINTER` over a link (hand).
+fn cursor_for_shape(shape: u32) -> Retained<NSCursor> {
+    // ghostty.h `ghostty_action_mouse_shape_e`, 0-based in declaration order.
+    const POINTER: u32 = 3;
+    const CROSSHAIR: u32 = 7;
+    const TEXT: u32 = 8;
+    const ALIAS: u32 = 10;
+    const COPY: u32 = 11;
+    const NOT_ALLOWED: u32 = 14;
+    const GRAB: u32 = 15;
+    const GRABBING: u32 = 16;
+    const COL_RESIZE: u32 = 18;
+    const ROW_RESIZE: u32 = 19;
+    {
+        match shape {
+            POINTER => NSCursor::pointingHandCursor(),
+            TEXT => NSCursor::IBeamCursor(),
+            CROSSHAIR => NSCursor::crosshairCursor(),
+            ALIAS => NSCursor::dragLinkCursor(),
+            COPY => NSCursor::dragCopyCursor(),
+            NOT_ALLOWED => NSCursor::operationNotAllowedCursor(),
+            GRAB => NSCursor::openHandCursor(),
+            GRABBING => NSCursor::closedHandCursor(),
+            COL_RESIZE => NSCursor::resizeLeftRightCursor(),
+            ROW_RESIZE => NSCursor::resizeUpDownCursor(),
+            _ => NSCursor::arrowCursor(),
+        }
+    }
+}
+
 // --- Custom NSView that forwards keyboard events to libghostty --------------
 declare_class!(
     struct WardenHostView;
@@ -322,6 +409,8 @@ declare_class!(
         fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Option<Retained<Self>> {
             let this = this.set_ivars(HostIvars {
                 surface: Cell::new(ptr::null_mut()),
+                mouse_shape: Cell::new(0),
+                tracking_area: RefCell::new(None),
             });
             unsafe { msg_send_id![super(this), initWithFrame: frame] }
         }
@@ -454,8 +543,68 @@ declare_class!(
         }
 
         // --- Mouse: forward button/drag/scroll so terminal mouse modes (tmux pane select,
-        // scrollback, TUI clicks) work. `mouseMoved` (hover with no button) needs an
-        // NSTrackingArea and is deferred — click/drag/scroll cover the core interactions. ---
+        // scrollback, TUI clicks) work, plus *motion* (below) so libghostty can track what's under
+        // the cursor. ---
+
+        // Hover position. Without this libghostty never learns where the mouse is between clicks,
+        // so it can't resolve the cell under the cursor — which is what its link detection runs on.
+        // That made URLs completely inert: no hover underline, no pointer cursor, and no
+        // GHOSTTY_ACTION_OPEN_URL on click, since there was no hovered link to open. Motion needs an
+        // NSTrackingArea (AppKit doesn't deliver mouseMoved: otherwise), installed in
+        // `updateTrackingAreas` below.
+        #[method(mouseMoved:)]
+        fn mouse_moved(&self, event: &NSEvent) {
+            unsafe { forward_mouse_pos(self, event) };
+        }
+
+        // Leaving the view must clear libghostty's hover, or the last hovered link keeps its
+        // underline while the mouse sits in the sidebar.
+        #[method(mouseExited:)]
+        fn mouse_exited(&self, event: &NSEvent) {
+            let surface = self.ivars().surface.get();
+            if surface.is_null() {
+                return;
+            }
+            // Negative coordinates = "outside the surface" (Ghostty.app clears hover the same way).
+            unsafe { ffi::ghostty_surface_mouse_pos(surface, -1.0, -1.0, mods_from_event(event)) };
+        }
+
+        // AppKit calls this on every geometry change; the tracking area must be rebuilt each time
+        // (and the previous one removed, or they stack). `InVisibleRect` keeps the region pinned to
+        // the visible bounds, and `ActiveInKeyWindow` limits hover tracking to the focused window —
+        // a click into a background window still lands correctly, because `forward_mouse_button`
+        // pushes the position before the button.
+        #[method(updateTrackingAreas)]
+        fn update_tracking_areas(&self) {
+            unsafe {
+                if let Some(old) = self.ivars().tracking_area.borrow_mut().take() {
+                    self.removeTrackingArea(&old);
+                }
+                let area = NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    self.bounds(),
+                    NSTrackingAreaOptions::NSTrackingMouseEnteredAndExited
+                        | NSTrackingAreaOptions::NSTrackingMouseMoved
+                        | NSTrackingAreaOptions::NSTrackingActiveInKeyWindow
+                        | NSTrackingAreaOptions::NSTrackingInVisibleRect,
+                    Some(self),
+                    None,
+                );
+                self.addTrackingArea(&area);
+                *self.ivars().tracking_area.borrow_mut() = Some(area);
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+        }
+
+        // The cursor shape libghostty asked for (I-beam over cells, hand over a link). Cursor
+        // *rects* rather than a bare NSCursor::set(): AppKit re-applies these as the mouse moves,
+        // so the shape sticks instead of being reset by the next motion event.
+        #[method(resetCursorRects)]
+        fn reset_cursor_rects(&self) {
+            let cursor = cursor_for_shape(self.ivars().mouse_shape.get());
+            self.addCursorRect_cursor(self.bounds(), &cursor);
+        }
+
         #[method(mouseDown:)]
         fn mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
@@ -553,6 +702,12 @@ declare_class!(
 /// focused window's view, which forwards to *its own* surface.
 struct HostIvars {
     surface: Cell<ffi::ghostty_surface_t>,
+    /// Cursor shape libghostty last asked for (`ghostty_action_mouse_shape_e`), read back by
+    /// `resetCursorRects`. Defaults to 0 (`DEFAULT` → arrow).
+    mouse_shape: Cell<u32>,
+    /// The view's live `NSTrackingArea`, held so `updateTrackingAreas` can remove the old one
+    /// before installing a replacement (AppKit would otherwise stack duplicates on every resize).
+    tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
 }
 
 impl WardenHostView {
@@ -860,6 +1015,12 @@ impl GhosttySurface {
             // windows by construction, no shared global to disambiguate.
             host_view.set_surface(surface);
 
+            // Let a surface-targeted action reach this view (mouse-cursor shape). Removed in
+            // close(), which runs before the view is dropped.
+            if let Ok(mut map) = SURFACE_VIEWS.lock() {
+                map.insert(surface as usize, Retained::as_ptr(&host_view) as usize);
+            }
+
             // Kick an initial tick in case the first wakeup raced app creation.
             dispatch_async_f(main_queue(), app as *mut c_void, tick_trampoline);
 
@@ -952,6 +1113,11 @@ impl GhosttySurface {
             return;
         }
         self.closed = true;
+        // Drop the surface→view entry before the view is freed, so a late MOUSE_SHAPE action can't
+        // dereference a dangling view (same lifetime discipline as the observer removal below).
+        if let Ok(mut map) = SURFACE_VIEWS.lock() {
+            map.remove(&(self.surface as usize));
+        }
         // Drop the key-state observers registered in new() before the view is freed, so the
         // notification center stops messaging a dangling view.
         unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.host_view) };

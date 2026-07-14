@@ -9,8 +9,8 @@ use std::sync::OnceLock;
 #[cfg(target_os = "macos")]
 pub mod ghostty;
 
-/// An attention signal a surface raised, in seam-neutral terms (no libghostty/Tauri types).
-/// The surface layer decodes the platform action into this; the app layer routes it to a tab.
+/// A signal a surface raised, in seam-neutral terms (no libghostty/Tauri types). The surface layer
+/// decodes the platform action into this; the app layer routes it to a tab.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceSignal {
     /// The terminal rang its bell (`\a`). Carries no text.
@@ -18,6 +18,10 @@ pub enum SurfaceSignal {
     /// A desktop-notification escape (OSC 9 / OSC 777). `title`/`body` are whatever the program
     /// emitted (either may be empty).
     Notification { title: String, body: String },
+    /// The surface's child process exited — the terminal is dead. The surface stays alive rendering
+    /// libghostty's "Process exited" overlay until the app tears it down, so the app layer unloads
+    /// the tab back to **cold** (its dot goes dark; focusing it respawns).
+    ChildExited { exit_code: u32 },
 }
 
 /// A signal from a specific surface. `surface_id` is the opaque surface handle as a `usize`

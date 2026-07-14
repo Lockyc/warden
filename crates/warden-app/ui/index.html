@@ -153,16 +153,11 @@
         reportRect();
       }
 
-      // Unload a tab (dot ✕ or ⌘W): kill its surface+PTY → cold; the native layer activates a
-      // neighbour and returns its id so the highlight follows; killing the last tab leaves a blank.
-      async function unloadTab(id) {
-        let newActive;
-        try {
-          newActive = await invoke("unload_tab", { id });
-        } catch (err) {
-          console.error("warden: unload_tab failed", err); // PTY state unknown — leave the row as-is
-          return;
-        }
+      // The chrome state after a tab went cold: row shows cold, and the highlight follows whichever
+      // neighbour the native layer activated (none → blank hole + empty state). Shared by BOTH ways
+      // a tab goes cold — the user unloading it (dot ✕ / ⌘W) and its process exiting on its own
+      // (warden:tab-exited) — so the two can't drift into different-looking outcomes.
+      function applyUnloaded(id, newActive) {
         sb.setLive(id, false);
         if (newActive) {
           sb.setActive(newActive);
@@ -174,6 +169,19 @@
           setActiveId(null);
         }
         reportRect();
+      }
+
+      // Unload a tab (dot ✕ or ⌘W): kill its surface+PTY → cold; the native layer activates a
+      // neighbour and returns its id so the highlight follows; killing the last tab leaves a blank.
+      async function unloadTab(id) {
+        let newActive;
+        try {
+          newActive = await invoke("unload_tab", { id });
+        } catch (err) {
+          console.error("warden: unload_tab failed", err); // PTY state unknown — leave the row as-is
+          return;
+        }
+        applyUnloaded(id, newActive);
       }
 
       async function init() {
@@ -260,6 +268,16 @@
         if (!p || !Array.isArray(p.tabs)) return;
         if (myLabel && p.label && p.label !== myLabel) return;
         applyDto(p);
+      });
+
+      // A tab's process exited on its own (shell exited, agent quit, command finished). The native
+      // layer has already unloaded it to cold and picked any new active tab — apply the same chrome
+      // tail as a manual unload. emit_to leaks to sibling windows → forMe filter.
+      listen("warden:tab-exited", (e) => {
+        if (!forMe(e)) return;
+        const p = e.payload;
+        if (!p || !p.id || !sb) return;
+        applyUnloaded(p.id, p.newActive || null);
       });
 
       // Config error banner (parse error / no-window) — now sidebar-scoped via the component. A

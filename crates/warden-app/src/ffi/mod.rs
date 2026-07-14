@@ -207,7 +207,10 @@ pub struct ghostty_action_s {
 // its 0-based position. Read `tag` as a u32 and COMPARE (never transmute into a Rust enum) — an
 // unknown value from a future libghostty is then just "unhandled", not invalid-discriminant UB.
 pub const GHOSTTY_ACTION_DESKTOP_NOTIFICATION: u32 = 31; // ghostty.h:906
+pub const GHOSTTY_ACTION_MOUSE_SHAPE: u32 = 36; // ghostty.h:911
 pub const GHOSTTY_ACTION_RING_BELL: u32 = 50; // ghostty.h:925
+pub const GHOSTTY_ACTION_OPEN_URL: u32 = 55; // ghostty.h:930
+pub const GHOSTTY_ACTION_SHOW_CHILD_EXITED: u32 = 56; // ghostty.h:931
 
 /// `ghostty_action_desktop_notification_s` (ghostty.h:650-653): the union variant for
 /// `DESKTOP_NOTIFICATION`. Two borrowed C strings, valid only for the duration of the action_cb
@@ -217,6 +220,27 @@ pub const GHOSTTY_ACTION_RING_BELL: u32 = 50; // ghostty.h:925
 pub struct ghostty_action_desktop_notification_s {
     pub title: *const c_char,
     pub body: *const c_char,
+}
+
+/// `ghostty_action_open_url_s` (ghostty.h:818-822): the union variant for `OPEN_URL` — libghostty
+/// asking the host to open a link the user clicked. `url` is **not NUL-terminated**: it is a
+/// borrowed `(ptr, len)` slice owned by libghostty and valid only for this call, so copy it out.
+/// `kind` is `ghostty_action_open_url_kind_e` (unknown/text/html); warden opens all kinds the same.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_open_url_s {
+    pub kind: u32,
+    pub url: *const c_char,
+    pub len: usize,
+}
+
+/// `ghostty_surface_message_childexited_s` (ghostty.h:832-835): the union variant for
+/// `SHOW_CHILD_EXITED` — the surface's child process is gone, so the terminal is dead.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_child_exited_s {
+    pub exit_code: u32,
+    pub runtime_ms: u64,
 }
 
 impl ghostty_action_s {
@@ -232,6 +256,46 @@ impl ghostty_action_s {
                 &*(&self.action as *const ghostty_action_u
                     as *const ghostty_action_desktop_notification_s)
             })
+        } else {
+            None
+        }
+    }
+
+    /// The URL libghostty wants opened, copied out of the borrowed `(ptr, len)` slice. `None` for
+    /// any other tag. Same cast-safety argument as `desktop_notification` (the tag proves the
+    /// variant; the 24-byte struct exactly fills the 8-aligned union).
+    pub fn open_url(&self) -> Option<String> {
+        if self.tag != GHOSTTY_ACTION_OPEN_URL {
+            return None;
+        }
+        let u = unsafe {
+            &*(&self.action as *const ghostty_action_u as *const ghostty_action_open_url_s)
+        };
+        if u.url.is_null() || u.len == 0 {
+            return None;
+        }
+        // NOT NUL-terminated — build from the explicit length, never `CStr`.
+        let bytes = unsafe { std::slice::from_raw_parts(u.url as *const u8, u.len) };
+        String::from_utf8(bytes.to_vec()).ok()
+    }
+
+    /// The child's exit code when the surface's process has died, else `None`.
+    pub fn child_exited(&self) -> Option<u32> {
+        if self.tag == GHOSTTY_ACTION_SHOW_CHILD_EXITED {
+            let c = unsafe {
+                &*(&self.action as *const ghostty_action_u as *const ghostty_action_child_exited_s)
+            };
+            Some(c.exit_code)
+        } else {
+            None
+        }
+    }
+
+    /// The desired mouse-cursor shape (`ghostty_action_mouse_shape_e`, a bare C enum stored
+    /// directly in the union), else `None`.
+    pub fn mouse_shape(&self) -> Option<u32> {
+        if self.tag == GHOSTTY_ACTION_MOUSE_SHAPE {
+            Some(unsafe { *(&self.action as *const ghostty_action_u as *const u32) })
         } else {
             None
         }
@@ -298,6 +362,12 @@ const _: () = assert!(std::mem::size_of::<ghostty_surface_config_s>() == 88);
 const _: () = assert!(std::mem::size_of::<ghostty_runtime_config_s>() == 64);
 const _: () = assert!(std::mem::size_of::<ghostty_target_s>() == 16);
 const _: () = assert!(std::mem::size_of::<ghostty_action_s>() == 32);
+// Action union variants warden reads. Each must fit the 24-byte, 8-aligned union blob — a variant
+// that outgrew it would read past the action struct. (Discriminants can't be guarded this way; see
+// the tag consts above and CLAUDE.md's "eyeball the action tags on a version jump".)
+const _: () = assert!(std::mem::size_of::<ghostty_action_desktop_notification_s>() <= 24);
+const _: () = assert!(std::mem::size_of::<ghostty_action_open_url_s>() == 24);
+const _: () = assert!(std::mem::size_of::<ghostty_action_child_exited_s>() <= 24);
 // ghostty_input_key_s is passed by value to forward_key's ghostty_surface_key — a header
 // bump that shifts `text`/`unshifted_codepoint`'s offsets would silently corrupt every
 // keystroke, so guard its size too (3×enum + keycode = 16, ptr 16..24, u32+bool → 32).
@@ -459,6 +529,85 @@ mod tests {
         };
         assert!(!other.is_ring_bell());
         assert!(other.desktop_notification().is_none());
+        assert!(other.open_url().is_none());
+        assert!(other.child_exited().is_none());
+        assert!(other.mouse_shape().is_none());
+    }
+
+    /// Write a variant into the union prefix, exactly as libghostty lays it out.
+    /// SAFETY (all three uses): the variant fits the 8-aligned 24-byte union (const-asserted above).
+    fn action_with<T>(tag: u32, payload: T) -> ghostty_action_s {
+        let mut a = ghostty_action_s {
+            tag,
+            action: ghostty_action_u { _bytes: [0; 24] },
+        };
+        unsafe { std::ptr::write(&mut a.action as *mut ghostty_action_u as *mut T, payload) };
+        a
+    }
+
+    #[test]
+    fn decodes_open_url_from_a_non_nul_terminated_slice() {
+        // libghostty hands over (ptr, len) into a buffer that is NOT NUL-terminated — reading it as
+        // a CStr would run past the end. The trailing junk here would be picked up by that bug.
+        let backing = b"https://example.com/x?a=1JUNKJUNK";
+        let action = action_with(
+            GHOSTTY_ACTION_OPEN_URL,
+            ghostty_action_open_url_s {
+                kind: 1, // TEXT
+                url: backing.as_ptr() as *const c_char,
+                len: "https://example.com/x?a=1".len(),
+            },
+        );
+        assert_eq!(
+            action.open_url().as_deref(),
+            Some("https://example.com/x?a=1")
+        );
+        // …and it must not be mistaken for anything else.
+        assert!(!action.is_ring_bell());
+        assert!(action.desktop_notification().is_none());
+    }
+
+    #[test]
+    fn open_url_with_a_null_or_empty_url_is_dropped() {
+        let null = action_with(
+            GHOSTTY_ACTION_OPEN_URL,
+            ghostty_action_open_url_s {
+                kind: 0,
+                url: std::ptr::null(),
+                len: 7,
+            },
+        );
+        assert!(null.open_url().is_none());
+        let empty = action_with(
+            GHOSTTY_ACTION_OPEN_URL,
+            ghostty_action_open_url_s {
+                kind: 0,
+                url: b"x".as_ptr() as *const c_char,
+                len: 0,
+            },
+        );
+        assert!(empty.open_url().is_none());
+    }
+
+    #[test]
+    fn decodes_child_exited_exit_code() {
+        let action = action_with(
+            GHOSTTY_ACTION_SHOW_CHILD_EXITED,
+            ghostty_action_child_exited_s {
+                exit_code: 130, // e.g. SIGINT
+                runtime_ms: 4_200,
+            },
+        );
+        assert_eq!(action.child_exited(), Some(130));
+        assert!(action.open_url().is_none());
+    }
+
+    #[test]
+    fn decodes_mouse_shape_enum() {
+        // The union holds the bare C enum; 3 = POINTER (a link is under the cursor).
+        let action = action_with(GHOSTTY_ACTION_MOUSE_SHAPE, 3u32);
+        assert_eq!(action.mouse_shape(), Some(3));
+        assert!(action.child_exited().is_none());
     }
 
     #[test]

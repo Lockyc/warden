@@ -522,6 +522,37 @@ impl WindowManager {
         }
     }
 
+    /// Unload the tab owning `surface_id` back to **cold** because its child process exited, and
+    /// tell that window's chrome. Returns nothing; a surface that no longer maps to a tab (already
+    /// unloaded) is simply dropped.
+    ///
+    /// Without this, a dead tab is a dead end: libghostty keeps the surface alive rendering its
+    /// "Process exited" overlay, warden's dot still reads *live*, and nothing short of ⌘W clears it.
+    /// warden's tabs are config-declared and respawnable, so the honest state for "its process is
+    /// gone" is exactly the state a manual unload produces — cold dot, surface freed, focus the row
+    /// to spawn a fresh one. So this reuses `Registry::unload` rather than inventing a second
+    /// teardown: same neighbour-leaning when the dead tab was the visible one, same chrome update
+    /// (`warden:tab-exited` carries the id + the new active tab, and the chrome runs the identical
+    /// tail it runs for the dot-✕ / ⌘W path). One dead-tab semantic, two triggers.
+    pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
+        let state = app.state::<ManagerState>();
+        let Some((label, tab, _visible)) = state.lock().locate_surface(surface_id) else {
+            return;
+        };
+        let new_active = state
+            .lock()
+            .windows
+            .get_mut(&label)
+            .and_then(|ws| ws.registry.unload(&tab));
+        // Per-window event: `emit_to` leaks to sibling webviews, so stamp the label and let the
+        // chrome filter (see CLAUDE.md).
+        let _ = app.emit_to(
+            label.as_str(),
+            "warden:tab-exited",
+            serde_json::json!({ "label": label, "id": tab, "newActive": new_active }),
+        );
+    }
+
     /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and
     /// whether that tab is currently **visible** (its window is focused AND it's the active tab).
     /// A visible tab needs no notification — the user is already looking at it.

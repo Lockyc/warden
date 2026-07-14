@@ -188,7 +188,15 @@ fn focus_window_tab(label: String, id: Option<String>) {
 pub fn init(app: AppHandle, debug: bool) {
     NOTIFY_DEBUG.store(debug, Ordering::Relaxed);
     let _ = APP_HANDLE.set(app.clone());
-    crate::surface::set_surface_event_sink(move |event| handle(&app, event));
+    // The sink is the single entry point for every surface signal, so it fans out by kind: a dead
+    // child is a *tab-state* change (unload to cold), not an attention signal, so it goes to the
+    // manager rather than through the badge/banner path below.
+    crate::surface::set_surface_event_sink(move |event| match event.signal {
+        SurfaceSignal::ChildExited { .. } => {
+            crate::manager::WindowManager::handle_child_exited(&app, event.surface_id)
+        }
+        _ => handle(&app, event),
+    });
     setup_banners();
     if debug {
         dbglog("--- notify_debug enabled; tracing notification path ---");
@@ -241,6 +249,8 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
             SurfaceSignal::Notification { title, body } => {
                 format!("Notification(title={title:?}, body={body:?})")
             }
+            // Routed to the manager before reaching here (see the sink in `init`).
+            SurfaceSignal::ChildExited { exit_code } => format!("ChildExited({exit_code})"),
         };
         dbglog(&format!(
             "handle: signal={kind} surface={}",
