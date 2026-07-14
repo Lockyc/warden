@@ -94,6 +94,17 @@ unsafe extern "C" fn tick_trampoline(context: *mut c_void) {
     }
 }
 
+/// GCD work item: emit one `SurfaceEvent` (leaked from a `Box` by `action_cb`) on a *later* main-
+/// thread turn than the libghostty callback that produced it. Used for the one signal whose handler
+/// frees the surface libghostty is still standing on — see `action_cb`.
+unsafe extern "C" fn emit_event_trampoline(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+    let event: Box<SurfaceEvent> = Box::from_raw(context as *mut SurfaceEvent);
+    super::emit_surface_event(*event);
+}
+
 // --- Runtime callbacks ------------------------------------------------------
 /// Called by libghostty (from any thread) when it has main-thread work pending.
 /// We coalesce nothing; just schedule a tick on the Tauri-owned main runloop.
@@ -106,11 +117,11 @@ unsafe extern "C" fn wakeup_cb(_userdata: *mut c_void) {
 }
 
 /// App/surface actions (set-title, new-window, ring-bell, desktop-notification, ...). warden acts
-/// on the two attention signals — `RING_BELL` and `DESKTOP_NOTIFICATION` — decoding them into a
-/// seam-neutral `SurfaceEvent` and forwarding to the app-level sink (which routes to the owning
-/// tab). All other actions are unhandled; returning false = "not handled", which the reference
-/// (`Ghostty.App.swift`) also does for every unimplemented action. Runs on the main thread (called
-/// from a `ghostty_app_tick`).
+/// on the attention signals (`RING_BELL`, `DESKTOP_NOTIFICATION`), the dead-child signal
+/// (`SHOW_CHILD_EXITED`), and the link affordances (`OPEN_URL`, `MOUSE_SHAPE`), decoding each into
+/// a seam-neutral `SurfaceEvent` or an AppKit call. All other actions are unhandled; returning
+/// false = "not handled", which the reference (`Ghostty.App.swift`) also does for every
+/// unimplemented action. Runs on the main thread (called from a `ghostty_app_tick`).
 unsafe extern "C" fn action_cb(
     _app: ffi::ghostty_app_t,
     target: ffi::ghostty_target_s,
@@ -131,10 +142,29 @@ unsafe extern "C" fn action_cb(
         return true;
     }
 
+    // A dead child tears the tab down, which FREES this very surface — and libghostty is still
+    // using it. `Surface.childExited` calls us mid-function and, once we answer `true`, goes on to
+    // read `self.config` and call `self.close()` (Surface.zig). Freeing inside this callback is
+    // therefore a use-after-free — a silent one, which is exactly why it survived a live test. So
+    // hand the event to the *next* main-queue turn: libghostty's stack unwinds first, then warden
+    // unloads the tab. (This also keeps `ManagerState` off the lock path of any action libghostty
+    // might raise synchronously from a warden call.) Bell/notification stay direct — they free
+    // nothing.
+    if let Some(exit_code) = action.child_exited() {
+        let event = Box::new(SurfaceEvent {
+            surface_id: surface as usize,
+            signal: SurfaceSignal::ChildExited { exit_code },
+        });
+        dispatch_async_f(
+            main_queue(),
+            Box::into_raw(event) as *mut c_void,
+            emit_event_trampoline,
+        );
+        return true;
+    }
+
     let signal = if action.is_ring_bell() {
         Some(SurfaceSignal::Bell)
-    } else if let Some(exit_code) = action.child_exited() {
-        Some(SurfaceSignal::ChildExited { exit_code })
     } else if let Some(dn) = action.desktop_notification() {
         // Copy the borrowed C strings out now — libghostty frees them when this call returns.
         let read = |p: *const c_char| {

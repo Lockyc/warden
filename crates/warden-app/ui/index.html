@@ -164,10 +164,15 @@
           badges.delete(newActive);
           sb.setAttention(newActive, null); // now visible → clear its badge
           setActiveId(newActive);
-        } else {
+        } else if (id === activeId) {
+          // The tab we were looking at went cold and nothing live remains → blank hole.
           sb.setActive(null);
           setActiveId(null);
         }
+        // else: a BACKGROUND tab went cold. `unload` only names a new active tab when the tab it
+        // unloaded was the active one, so a null here means either "nothing live left" (above) or
+        // "selection was never involved" — and blanking on the latter would drop the highlight off
+        // the tab the user is still using. Leave the selection alone.
         reportRect();
       }
 
