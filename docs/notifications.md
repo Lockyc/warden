@@ -102,8 +102,8 @@ and whether `willPresent` fired. A reproduction that shows all of those succeedi
 appears on screen is the signature of the OS-side suppression above — and the proof to *not* edit
 `notify.rs`.
 
-`/tmp` is deliberate: a fresh log per boot matches the reboot-and-retry workflow. Turn the flag off
-(or remove it) once the OS-side issue is resolved.
+The temp dir is deliberate: a fresh log per boot matches the reboot-and-retry workflow. Turn the flag
+off (or remove it) once the OS-side issue is resolved.
 
 ## The escape hatch we didn't build: a notification sidecar
 

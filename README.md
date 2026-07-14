@@ -7,6 +7,7 @@
 **A curator for your terminals** — windows, projects, and (mostly) muxers all the way down.
 
 [![Release](https://img.shields.io/github/v/release/Lockyc/warden?sort=semver&label=release)](https://github.com/Lockyc/warden/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/Lockyc/warden/ci.yml?branch=dev&label=CI)](https://github.com/Lockyc/warden/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-CE412B?logo=rust&logoColor=white)
 ![Tauri](https://img.shields.io/badge/Tauri-24C8DB?logo=tauri&logoColor=white)
@@ -32,6 +33,7 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 - **Project trees** — point a `[[window.root]]` at a directory (e.g. `~/Developer`) and warden auto-discovers every git project under it, rendering them as a collapsible tree of tabs — no per-project config needed. Pair it with amux `probe`/`kill` for a per-project session dot on every discovered project.
 - **Live hot-reload** — edit the config and windows and tabs are added, removed, recoloured, and re-sectioned live on save. A missing or invalid config opens a diagnostic window; a parse error mid-edit keeps the last-good windows up behind an error banner. The **Config** menu opens the config file in your default editor or reveals it in Finder, so you needn't remember its path.
 - **Tab-row affordances** — a letter/colour tile and a **live/cold dot** (filled when the terminal is spawned, hollow when cold). Hover a live dot for a ✕ that **unloads** the tab — kills the terminal and PTY; it respawns a fresh shell on next focus.
+- **Live terminal affordances** — URLs in a terminal are **clickable**: hover one for a hand cursor, click to open it in your default browser. And when a tab's process exits (the shell quits, an agent finishes), the tab goes **cold** — the dot empties and the row respawns a fresh shell on next focus — rather than stranding a dead "Process exited" screen.
 - **Notifications** — a background tab that rings the bell or emits a desktop-notification escape (OSC 9 / OSC 777) gets an amber badge, and a desktop notification additionally raises a macOS banner; the badge clears on focus. This is the channel [agentmux](https://github.com/lockyc/agentmux)'s Claude hooks feed instead of shelling out to `osascript`.
 - **Session-presence probes** — a per-tab `probe` command lights a cyan dot when it exits 0, independent of whether warden's own terminal surface is loaded (details below).
 - **Keyboard navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**). **⌘W** unloads the active tab and **⌘⇧W** closes the window (Safari/Chrome convention).
@@ -46,6 +48,8 @@ probe = '"$HOME/.agentmux/bin/amux" --probe'
 so the dot shows whether its amux session is alive — `amux --probe` exits 0 for the agent session **or** a lingering frame (so the dot stays lit if the agent exits but the frame wrapper is still up; a plain bare-amux without a frame only ever has the agent). amux owns the session naming and socket layout, so the probe stays a one-liner that can't drift from amux's internals. `probe_interval` controls the cadence (`0` = check on focus/hot-reload only). Name amux by **absolute path**: warden runs the probe via `sh -c` with the `.app`'s own env, which is minimal on a Finder/Dock launch — amux's internal `tmux` calls then resolve via the **login-shell PATH** warden imports at startup. Not using agentmux? Point `probe` at any check that exits 0 when your session exists.
 
 A tab's optional `kill` command severs the session the dot represents: click the cyan dot once to arm, click again to confirm, and warden runs `kill` fire-and-forget — the surface stays open, and the probe re-runs immediately to update the dot. With agentmux, set it to `'"$HOME/.agentmux/bin/amux" --kill'` (cwd = the tab dir): the mirror of `amux --probe`, it tears down the **whole project** — the agent session plus its frame and scratch terminal — so it reaps exactly what the probe detects. Since the control lives on the presence dot, `kill` only does anything on a tab that also sets `probe` (no probe ⇒ no dot to click).
+
+The mirror also holds. When the probe reports the session **gone** on a tab whose terminal is still live, the same dot becomes a one-click **start**: warden types the tab's `cmd` into the existing shell, so a dead agent session restarts in place — scrollback preserved, no terminal respawn.
 
 Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `cmd+N` tabs and windows.
 
@@ -133,14 +137,19 @@ With [`just`](https://github.com/casey/just) (run `just` to list recipes):
 mock project tree documented in [`examples/projects/README.md`](examples/projects/README.md).
 
 ```sh
+just hooks        # once per clone: enable .githooks (pre-push doc gate + active-[patch] guard)
 just run          # launch the app against examples/config.toml (never touches your real config)
 just validate     # validate the demo config (pass a path to validate another)
 just test         # workspace tests
 just fmt          # format Rust sources (cargo fmt)
 just clippy       # lint (warnings as errors)
+just gate         # the full pre-merge gate CI runs (fmt-check, clippy, tests)
 just build        # build the release warden.app (needs: cargo install tauri-cli --version ^2)
 just deploy       # build, install to /Applications, and relaunch
 ```
+
+`core.hooksPath` is per-clone local git config that the repo can't carry, so **run `just hooks` once
+after cloning** — without it neither git hook is active.
 
 Builds are **signed with Developer ID and notarized** automatically when the Apple signing/notary env vars are set in the build environment (`APPLE_SIGNING_IDENTITY` pointing at a Developer ID Application cert, plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`, or `APPLE_API_KEY*`) — so release artifacts open on other Macs without a Gatekeeper block. Without those vars (e.g. building from source as a contributor), the build is ad-hoc/unsigned and `just deploy` strips the Gatekeeper quarantine xattr so the local copy still runs.
 
