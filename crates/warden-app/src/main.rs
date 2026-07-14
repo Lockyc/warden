@@ -272,10 +272,23 @@ fn probe_now(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
     probe::bump(window.label());
 }
 
-/// Activate tab `id` within the calling window's registry.
+/// Activate tab `id` within the calling window's registry. **Returns whether the tab is now live**
+/// — i.e. whether a surface actually covers the content hole.
+///
+/// That return value is load-bearing, not informational. warden's window is transparent and the
+/// terminal NSView composites *above* the webview, so the hole is only ever filled by a live
+/// surface; the chrome's `#empty-state` is the opaque backstop for when it isn't. A failed lazy
+/// spawn leaves the tab cold **but still selected**, and the chrome cannot see that from the
+/// `warden:error` banner alone — so if this returned nothing, the chrome would keep the placeholder
+/// hidden (it keys on "a tab is selected") and the uncovered hole would leak the wallpaper: exactly
+/// the leak the placeholder exists to stop. Report liveness so the chrome paints it.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
+fn activate_tab(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+) -> bool {
     use tauri::Emitter;
     let err = {
         let mut m = state.lock();
@@ -283,8 +296,10 @@ fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
             .get_mut(window.label())
             .and_then(|ws| ws.registry.activate(&id).err())
     };
-    // A lazy spawn failed on click: the tab stays cold (blank placeholder) instead
-    // of panicking. The chrome is listening now, so push the reason to the banner.
+    // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
+    // empty-state placeholder over the uncovered hole) instead of panicking. The chrome is
+    // listening now, so push the reason to the banner.
+    let live = err.is_none();
     if let Some(e) = err {
         eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
         // A per-tab spawn error belongs to THIS window only. `emit` broadcasts to every
@@ -304,6 +319,7 @@ fn activate_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     // this window so its dot is current within a pass rather than up to a slow-poll stale. Probe this
     // tab first so its dot settles immediately even in a wide window.
     probe::bump_tab(window.label(), &id);
+    live
 }
 
 /// Kill tab `id`'s terminal (surface + PTY) in the calling window; it goes cold and
