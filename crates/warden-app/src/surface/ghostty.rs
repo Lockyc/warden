@@ -52,6 +52,20 @@ use objc2_foundation::{
     NSSize, NSString, NSURL,
 };
 
+/// Opaque `CGColorRef`. A msg_send returning or taking one (`-[NSColor CGColor]`,
+/// `-[CALayer setBackgroundColor:]`) must carry the exact Objective-C type encoding
+/// `^{CGColor=}`, or objc2's runtime type-check aborts the send ("expected return to have
+/// type code '^{CGColor=}', but found '@'"). A bare `*mut AnyObject` encodes as `@` and is
+/// rejected; this zero-sized struct gives the pointer the right encoding.
+#[repr(C)]
+struct CGColor {
+    _private: [u8; 0],
+}
+unsafe impl objc2::encode::RefEncode for CGColor {
+    const ENCODING_REF: objc2::encode::Encoding =
+        objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGColor", &[]));
+}
+
 // --- AppKit modifier-flag bit masks (stable AppKit ABI values) ---
 const NS_FLAG_CAPS: usize = 1 << 16;
 const NS_FLAG_SHIFT: usize = 1 << 17;
@@ -1044,6 +1058,28 @@ impl GhosttySurface {
             // Per-view ownership => first-responder routing is correct across
             // windows by construction, no shared global to disambiguate.
             host_view.set_surface(surface);
+
+            // Back the surface's render layer with an OPAQUE colour so its very first composited
+            // frame — before libghostty's Metal renderer presents, and any un-painted region during
+            // a resize — is warden's terminal-area colour, not the transparent window hole showing
+            // the desktop. libghostty makes this view layer-hosting but, when embedded, does NOT set
+            // the layer background; that's the embedder's job, exactly as Ghostty.app's own
+            // SurfaceView sets it. Without it, clicking a *cold* tab flashes the wallpaper for the
+            // frames between the old (opaque) surface hiding and the new surface's first paint — a
+            // sub-frame race the #empty-state placeholder can't win, because it toggles `display` and
+            // its composite can lose to the native surface swap on both edges. #0e1516 matches the
+            // #empty-state backstop. SAFETY: main thread; `layer` is libghostty's render layer
+            // (assigned during ghostty_surface_new above), only messaged, never retained.
+            let layer: *mut AnyObject = msg_send![&*host_view, layer];
+            if !layer.is_null() {
+                let color: *mut AnyObject = msg_send![
+                    class!(NSColor),
+                    colorWithSRGBRed: 0.0549_f64, green: 0.0824_f64, blue: 0.0863_f64, alpha: 1.0_f64
+                ];
+                // `CGColor` is autoreleased (Get rule); setBackgroundColor: retains it.
+                let cg: *mut CGColor = msg_send![color, CGColor];
+                let _: () = msg_send![layer, setBackgroundColor: cg];
+            }
 
             // Let a surface-targeted action reach this view (mouse-cursor shape). Removed in
             // close(), which runs before the view is dropped.
