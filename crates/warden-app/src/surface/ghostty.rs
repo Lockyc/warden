@@ -1059,6 +1059,22 @@ impl GhosttySurface {
             // windows by construction, no shared global to disambiguate.
             host_view.set_surface(surface);
 
+            // Seed the surface's focus from the REAL current state instead of libghostty's
+            // "assume focused" default. A surface is created focused=1, which starts its 60fps
+            // render display link; warden otherwise only clears focus on windowDidResignKey —
+            // which NEVER fires for a surface spawned in a window that was never key (every
+            // background window at launch). Left focused, that background surface keeps rendering
+            // at 60fps and, while a TUI redraws, catches the text cursor at every intermediate
+            // cell tmux relays between redraws → the "cursor flashes around an unfocused window"
+            // bug. (Ghostty.app doesn't exhibit it because it derives focus from
+            // NSApp.isActive && window.isKeyWindow — mirror that here.) An unfocused surface stops
+            // its display link and renders change-driven only, so it no longer samples the cursor
+            // mid-relay. windowDidBecomeKey:/windowDidResignKey: keep it correct after spawn; this
+            // only fixes the initial state, which those observers can't (a never-key window emits
+            // neither). SAFETY: main thread; isActive/isKeyWindow are plain AppKit reads.
+            let focused = NSApplication::sharedApplication(mtm).isActive() && window.isKeyWindow();
+            ffi::ghostty_surface_set_focus(surface, focused);
+
             // Back the surface's render layer with an OPAQUE colour so its very first composited
             // frame — before libghostty's Metal renderer presents, and any un-painted region during
             // a resize — is warden's terminal-area colour, not the transparent window hole showing
