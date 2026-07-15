@@ -426,6 +426,11 @@ extern "C" {
     // void ghostty_surface_set_focus(ghostty_surface_t, bool);
     pub fn ghostty_surface_set_focus(surface: ghostty_surface_t, focused: bool);
 
+    // void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);
+    // Binds the surface's render display link to a CGDirectDisplayID so vsync matches that
+    // monitor's refresh rate. Set at spawn and on windowDidChangeScreen (see ghostty.rs).
+    pub fn ghostty_surface_set_display_id(surface: ghostty_surface_t, display_id: u32);
+
     // void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
     // Inject text into the surface as if typed — the runtime equivalent of the config's
     // `initial_input`. Length-delimited (not a C string), so embedded NULs are fine.

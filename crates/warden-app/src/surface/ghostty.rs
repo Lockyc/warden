@@ -45,7 +45,8 @@ use objc2_app_kit::{
     NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSCursor,
     NSEvent, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF,
     NSResponder, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
-    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWorkspace,
+    NSWindowDidBecomeKeyNotification, NSWindowDidChangeScreenNotification,
+    NSWindowDidResignKeyNotification, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSDictionary, NSNotification, NSNotificationCenter, NSPoint, NSRect,
@@ -514,6 +515,21 @@ declare_class!(
             unsafe { ffi::ghostty_surface_set_focus(surface, false) };
         }
 
+        #[method(windowDidChangeScreen:)]
+        fn window_did_change_screen(&self, _notification: &NSNotification) {
+            let surface = self.ivars().surface.get();
+            if surface.is_null() {
+                return;
+            }
+            // Rebind libghostty's render display link to the window's current display so vsync
+            // tracks THIS monitor's refresh rate. A window moved between mixed-refresh displays
+            // otherwise keeps the creation display's link → judder / frames the panel can't show.
+            // A scale change from the same move is handled by viewDidChangeBackingProperties.
+            // SAFETY: notifications are delivered on the main thread.
+            let Some(window) = self.window() else { return };
+            unsafe { ffi::ghostty_surface_set_display_id(surface, window_display_id(&window)) };
+        }
+
         #[method(keyDown:)]
         fn key_down(&self, event: &NSEvent) {
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
@@ -901,6 +917,28 @@ unsafe fn forward_key(
     ffi::ghostty_surface_key(surface, key)
 }
 
+/// The `CGDirectDisplayID` of the display a window currently sits on (0 if unknown). Read from
+/// the screen's `deviceDescription["NSScreenNumber"]` — the same source Ghostty.app uses.
+/// libghostty binds its render display link to this ID so vsync tracks that monitor's refresh
+/// rate; without it a window keeps the *creation* display's link and, once moved to a
+/// mixed-refresh second monitor, judders / presents frames the panel can't show.
+/// SAFETY: main-thread-only AppKit reads.
+unsafe fn window_display_id(window: &NSWindow) -> u32 {
+    let Some(screen) = window.screen() else {
+        return 0;
+    };
+    let desc: *mut AnyObject = msg_send![&*screen, deviceDescription];
+    if desc.is_null() {
+        return 0;
+    }
+    let key = NSString::from_str("NSScreenNumber");
+    let value: *mut AnyObject = msg_send![desc, objectForKey: &*key];
+    if value.is_null() {
+        return 0;
+    }
+    msg_send![value, unsignedIntValue]
+}
+
 /// Push libghostty the surface's content scale (DPI) and backing pixel size *together*, both
 /// derived from the same `scale`. libghostty computes cell metrics from the content scale and
 /// sizes its framebuffer from the pixel size, so the two must never drift: a stale content scale
@@ -1025,6 +1063,15 @@ impl GhosttySurface {
                 Some(NSWindowDidResignKeyNotification),
                 Some(&window),
             );
+            // Track which display the window is on so libghostty's render display link vsyncs to
+            // the right monitor's refresh rate (see window_display_id). Scoped to `window` like the
+            // key observers; the initial ID is seeded right after the surface is created below.
+            center.addObserver_selector_name_object(
+                &host_view,
+                sel!(windowDidChangeScreen:),
+                Some(NSWindowDidChangeScreenNotification),
+                Some(&window),
+            );
 
             // Build the surface config from defaults, then override platform/dir/shell/startup.
             let mut cfg = ffi::ghostty_surface_config_new();
@@ -1074,6 +1121,11 @@ impl GhosttySurface {
             // neither). SAFETY: main thread; isActive/isKeyWindow are plain AppKit reads.
             let focused = NSApplication::sharedApplication(mtm).isActive() && window.isKeyWindow();
             ffi::ghostty_surface_set_focus(surface, focused);
+
+            // Seed the render display link onto the display the window opens on, so vsync matches
+            // that monitor from the first frame (not just after a later windowDidChangeScreen).
+            // Matters when a window opens on a non-primary / different-refresh display.
+            ffi::ghostty_surface_set_display_id(surface, window_display_id(&window));
 
             // Back the surface's render layer with an OPAQUE colour so its very first composited
             // frame — before libghostty's Metal renderer presents, and any un-painted region during
