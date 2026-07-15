@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# docaudit pre-push gate — installed by 'docaudit install-hook'. Activated per
-# clone via core.hooksPath -> .githooks. Fails closed: if docaudit can't be found
-# the push is blocked (install: go install github.com/lockyc/docaudit@latest).
+# docgraph pre-push gate — installed by 'docgraph install-hook'. Activated per
+# clone via core.hooksPath -> .githooks. Fails closed: if docgraph can't be found
+# the push is blocked (install: go install github.com/lockyc/docgraph@latest).
 set -euo pipefail
 
-# Resolve docaudit even under a minimal hook PATH. Git runs hooks with whatever
+# Resolve docgraph even under a minimal hook PATH. Git runs hooks with whatever
 # PATH the caller had; GUI clients and some agent harnesses push with a bare PATH
-# that omits ~/go/bin, so 'command -v docaudit' alone is unreliable and would
+# that omits ~/go/bin, so 'command -v docgraph' alone is unreliable and would
 # make the gate fail-closed (blocked) purely because it couldn't see an installed
 # binary. Fall back to the Go install dirs before giving up.
-docaudit_bin() {
-  if command -v docaudit >/dev/null 2>&1; then command -v docaudit; return; fi
+docgraph_bin() {
+  if command -v docgraph >/dev/null 2>&1; then command -v docgraph; return; fi
   local d
   for d in "${GOBIN:-}" "${GOPATH:+${GOPATH%%:*}/bin}" "$HOME/go/bin"; do
-    [ -n "$d" ] && [ -x "$d/docaudit" ] && { printf '%s\n' "$d/docaudit"; return; }
+    [ -n "$d" ] && [ -x "$d/docgraph" ] && { printf '%s\n' "$d/docgraph"; return; }
   done
   if command -v go >/dev/null 2>&1; then
     d="$(go env GOBIN 2>/dev/null)"; [ -z "$d" ] && d="$(go env GOPATH 2>/dev/null)/bin"
-    [ -x "$d/docaudit" ] && { printf '%s\n' "$d/docaudit"; return; }
+    [ -x "$d/docgraph" ] && { printf '%s\n' "$d/docgraph"; return; }
   fi
   return 1
 }
 
-if ! bin="$(docaudit_bin)"; then
-  echo "docaudit: not found on PATH or in the Go bin dir — push blocked (fail-closed)." >&2
-  echo "  install it: go install github.com/lockyc/docaudit@latest" >&2
+if ! bin="$(docgraph_bin)"; then
+  echo "docgraph: not found on PATH or in the Go bin dir — push blocked (fail-closed)." >&2
+  echo "  install it: go install github.com/lockyc/docgraph@latest" >&2
   exit 1
 fi
 exec "$bin" .

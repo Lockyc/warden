@@ -49,12 +49,12 @@ clippy:
     cargo clippy --workspace -- -D warnings
 
 # `core.hooksPath` is per-clone local config that the repo can't carry, so a fresh clone has NEITHER
-# hook until this runs — no docaudit pre-push gate, no active-[patch] pre-commit guard.
-# Enable this clone's .githooks (docaudit pre-push gate + active-[patch] pre-commit guard). Run once per clone.
+# hook until this runs — no docgraph pre-push gate, no active-[patch] pre-commit guard.
+# Enable this clone's .githooks (docgraph pre-push gate + active-[patch] pre-commit guard). Run once per clone.
 [group("check")]
 hooks:
     git config core.hooksPath .githooks
-    @echo "✓ hooks enabled (.githooks): docaudit pre-push gate + active-[patch] pre-commit guard"
+    @echo "✓ hooks enabled (.githooks): docgraph pre-push gate + active-[patch] pre-commit guard"
 
 # CI runs fmt/clippy/tests on push + PR; this is the same gate locally, plus the config fmt-check
 # and the active-[patch] guard (which also runs via .githooks/pre-commit — see `just hooks`).
