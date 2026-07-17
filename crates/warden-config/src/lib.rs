@@ -7,10 +7,14 @@ pub mod reconcile;
 pub mod resolve;
 pub mod watch;
 
-// House-style formatter + colour parsing are shared with curator via the config-core crate.
-// Re-exported at the root so the rest of warden-config (and warden-app) keep using
-// `warden_config::{Colour, ColourError, format_file, format_str}` unchanged.
-pub use config_core::{fmt_cli, format_file, format_str, Colour, ColourError};
+// House-style formatter + colour parsing, plus `write_default_config` (the shared home
+// surface's "Create a starter config" path — see main.rs's `shell_home_create_config`), are
+// shared with curator and lector via the config-core crate. Re-exported at the root so the rest
+// of warden-config (and warden-app) keep using `warden_config::{Colour, ColourError,
+// format_file, format_str}` unchanged.
+pub use config_core::{
+    fmt_cli, format_file, format_str, write_default_config, Colour, ColourError, SeedError,
+};
 pub use load::{config_path, load, load_with, LoadError, Loaded};
 pub use model::{Config, Density, Root, Tab, TabDigitKeys, Warning, Window};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, WindowUpdate};

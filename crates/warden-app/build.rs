@@ -21,7 +21,6 @@ fn main() {
     // generated chrome-core.{css,js} into ui/.
     println!("cargo:rerun-if-changed=ui/index.html");
     println!("cargo:rerun-if-changed=ui/diagnostic.html");
-    println!("cargo:rerun-if-changed=ui/launcher.html");
 
     #[cfg(target_os = "macos")]
     {

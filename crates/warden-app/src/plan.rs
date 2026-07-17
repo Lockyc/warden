@@ -60,7 +60,7 @@ pub struct WindowSpec {
     pub colour: String,      // "#rrggbb" from Colour::hex()
     pub width: f64,          // inner width in logical pixels
     pub height: f64,         // inner height in logical pixels
-    pub open_on_start: bool, // false = start closed-but-configured (launcher/menu opens it)
+    pub open_on_start: bool, // false = start closed-but-configured (home surface/menu opens it)
     pub tabs: Vec<TabPlan>,
 }
 
@@ -187,7 +187,7 @@ pub struct WindowMenuEntry {
     pub label: String,
     pub title: String,
     pub open: bool,
-    pub colour: String, // "#rrggbb" — for launcher tiles; the app menu ignores it
+    pub colour: String, // "#rrggbb" — for the shared home surface's swatches; the app menu ignores it
 }
 
 /// Map the configured window specs (config order) to menu entries, tagging each

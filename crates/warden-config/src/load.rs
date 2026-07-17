@@ -20,16 +20,15 @@ pub enum LoadError {
     Resolve(#[from] ResolveError),
 }
 
+const CONFIG_ENV: &str = "WARDEN_CONFIG";
+const CONFIG_DIR: &str = "warden";
+
+/// Config path to load at launch: `$WARDEN_CONFIG` if set and non-empty, else
+/// `~/.config/warden/config.toml`. Shared with curator and lector via config-core — the
+/// set-but-empty fall-through this app already had is now the shared behaviour, and fixed the
+/// other two.
 pub fn config_path() -> PathBuf {
-    // A set-but-empty WARDEN_CONFIG falls through to the default rather than
-    // yielding `PathBuf::from("")` (which would only surface a confusing read error).
-    if let Ok(p) = std::env::var("WARDEN_CONFIG") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
-    }
-    let base = dirs::home_dir().unwrap_or_default();
-    base.join(".config").join("warden").join("config.toml")
+    config_core::resolve_config_path(CONFIG_ENV, CONFIG_DIR)
 }
 
 /// Load with the built-in [`DEFAULT_SHELL`] fallback. Convenience for tests; the app/CLI

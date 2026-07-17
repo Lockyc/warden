@@ -22,12 +22,13 @@ mod probe;
 mod registry;
 
 #[cfg(target_os = "macos")]
-use manager::{InitDto, WindowManager, DIAG_LABEL, LAUNCHER_LABEL};
+use manager::{InitDto, WindowManager, DIAG_LABEL};
 
 use geometry::WebRect;
 
-// Menu-item IDs, matched in the Builder's on_menu_event handler.
-// Direct-jump items use the prefix `tab_jump_<n>` (1-based position).
+// Menu-item IDs, matched in the Builder's on_menu_event handler. The App/Config/Window submenus
+// and Close Tab/Close Window are the shared spine now (`shell_core::menu`) — only warden's own
+// items keep a local id. Direct-jump items use the prefix `tab_jump_<n>` (1-based position).
 const MENU_TAB_PREV: &str = "tab_prev";
 const MENU_TAB_NEXT: &str = "tab_next";
 // ⌘1 / ⌘2 alias Next / Previous Tab. They live alongside ⌘⇧] / ⌘⇧[ and, by claiming
@@ -35,17 +36,11 @@ const MENU_TAB_NEXT: &str = "tab_next";
 // at ⌘3 (positions 1 and 2 have no direct chord under this layout).
 const MENU_TAB_NEXT_DIGIT: &str = "tab_next_digit";
 const MENU_TAB_PREV_DIGIT: &str = "tab_prev_digit";
-const MENU_TAB_CLOSE: &str = "tab_close";
 const MENU_TAB_JUMP_PREFIX: &str = "tab_jump_";
-const MENU_WINDOW_CLOSE: &str = "window_close";
+// Reopen Last Closed (⌘⇧T) is warden-only — curator and lector have no equivalent, so this stays
+// a local item spliced into the spine's Window submenu rather than added to the spine itself
+// (YAGNI — add it there only if a sibling app wants it too).
 const MENU_WINDOW_REOPEN_LAST: &str = "window_reopen_last";
-// Per-window items: id = this prefix + the window's Tauri label.
-const MENU_WINDOW_PREFIX: &str = "window_open_";
-// Config menu: open the config file in the default editor / reveal it in Finder.
-const MENU_CONFIG_EDIT: &str = "config_edit";
-const MENU_CONFIG_REVEAL: &str = "config_reveal";
-// warden submenu: manually check for a new release (emits warden:check-update to the focused chrome).
-const MENU_CHECK_UPDATES: &str = "check_updates";
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -81,11 +76,17 @@ impl ManagerState {
 #[cfg(target_os = "macos")]
 struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 
-/// Build and install the app menu. The digit chords depend on `mode`:
+/// Build and install the app menu: the shared spine (App/Config/Window submenus + the Close Tab
+/// item) interleaved with warden's own Tab submenu. The digit chords depend on `mode`:
 /// - `Jump` (default): ⌘1–⌘9 jump straight to that 1-based tab position.
 /// - `Cycle`: ⌘1 = next tab, ⌘2 = previous (distinct items firing the same
 ///   cycle-tab event — a menu item carries one accelerator), reclaiming the
 ///   digit-1/2 chords, so jumps shift to ⌘3–⌘9 (positions 1–2 lose their chord).
+///
+/// **⌘W closes a tab, ⌘⇧W closes the window — unchanged.** warden already had this right (the
+/// family standard other apps are adopting); only the item/id/accelerator moved into
+/// `shell_core::menu` so it can't drift per app. Reopen Last Closed (⌘⇧T) stays warden-only —
+/// spliced into the spine's Window submenu below rather than added to the spine itself.
 ///
 /// The on_menu_event handler is mode-agnostic — it keys on item IDs, and the
 /// IDs simply differ per mode. `set_menu` replaces the app-global menu wholesale,
@@ -97,46 +98,38 @@ fn build_app_menu(
     entries: Vec<crate::plan::WindowMenuEntry>,
     reopen_available: bool,
 ) -> tauri::Result<()> {
-    use tauri::menu::{
-        AboutMetadataBuilder, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
-    };
+    use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
     use warden_config::TabDigitKeys;
 
+    let window_entries: Vec<shell_core::menu::WindowEntry> = entries
+        .into_iter()
+        .map(|e| shell_core::menu::WindowEntry {
+            id: e.label,
+            title: e.title,
+            open: e.open,
+            colour: Some(e.colour),
+        })
+        .collect();
+    let config_path = warden_config::config_path();
     // About box carries the build stamp (shell_core::build_stamp → BUILD_GIT_SHA/BUILD_DATE) so a
     // glance confirms the installed app matches a given commit.
-    let about_meta = AboutMetadataBuilder::new()
-        .name(Some("warden"))
-        .version(Some(env!("CARGO_PKG_VERSION")))
-        .short_version(Some(env!("BUILD_GIT_SHA")))
-        .comments(Some(format!(
-            "commit {} · built {}",
-            env!("BUILD_GIT_SHA"),
-            env!("BUILD_DATE"),
-        )))
-        .build();
-    let close_window = MenuItemBuilder::with_id(MENU_WINDOW_CLOSE, "Close Window")
-        .accelerator("Shift+Cmd+KeyW")
-        .build(app)?;
-    let check_updates =
-        MenuItemBuilder::with_id(MENU_CHECK_UPDATES, "Check for Updates…").build(app)?;
-    let app_menu = SubmenuBuilder::new(app, "warden")
-        .about(Some(about_meta))
-        .minimize()
-        .item(&check_updates)
-        .separator()
-        .item(&close_window)
-        .separator()
-        .quit()
-        .build()?;
+    let spine = shell_core::menu::build_spine(
+        app,
+        shell_core::menu::SpineConfig {
+            app_name: "warden",
+            config_path: &config_path,
+            windows: &window_entries,
+        },
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_GIT_SHA"),
+        env!("BUILD_DATE"),
+    )?;
 
     let prev = MenuItemBuilder::with_id(MENU_TAB_PREV, "Previous Tab")
         .accelerator("Shift+Cmd+BracketLeft")
         .build(app)?;
     let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
         .accelerator("Shift+Cmd+BracketRight")
-        .build(app)?;
-    let close_tab = MenuItemBuilder::with_id(MENU_TAB_CLOSE, "Close Tab")
-        .accelerator("Cmd+KeyW")
         .build(app)?;
 
     let mut tab_menu = SubmenuBuilder::new(app, "Tab").item(&prev).item(&next);
@@ -158,7 +151,10 @@ fn build_app_menu(
         tab_menu = tab_menu.item(next_digit).item(prev_digit);
     }
 
-    tab_menu = tab_menu.separator().item(&close_tab).separator();
+    // The spine's Close Tab (⌘W) — id/accelerator now live in shell_core::menu so they can't
+    // drift per app; warden's own semantics (unload the active tab, NOT close the window) are
+    // unchanged, see the on_menu_event handler's CLOSE_TAB arm.
+    tab_menu = tab_menu.separator().item(&spine.close_tab).separator();
 
     // Jump-to-position. Jump mode: ⌘1–⌘9. Cycle mode: ⌘3–⌘9 (⌘1/⌘2 taken above).
     let first = if mode == TabDigitKeys::Cycle { 3 } else { 1 };
@@ -174,51 +170,25 @@ fn build_app_menu(
     }
     let tab_menu = tab_menu.build()?;
 
-    // Window menu: reopen-last (⌘⇧T) + one row per configured window. Open windows
-    // get a checkmark and raise on select; closed windows show "(closed)" and reopen.
+    // Reopen Last Closed (⌘⇧T) is warden-only (curator/lector have no equivalent), so it's not
+    // part of the spine (YAGNI — add it there only if a sibling app wants it too). Spliced into
+    // the spine's already-built Window submenu, at the top, mirroring warden's original layout
+    // (reopen-last + separator, then the rest).
     let reopen_last = MenuItemBuilder::with_id(MENU_WINDOW_REOPEN_LAST, "Reopen Last Closed")
         .accelerator("Shift+Cmd+KeyT")
         .enabled(reopen_available)
         .build(app)?;
-    let mut window_menu = SubmenuBuilder::new(app, "Window")
-        .item(&reopen_last)
-        .separator();
-    // Build the per-window check items first so their `&` refs outlive the chained
-    // `.item()` calls (same pattern as the tab jumps above).
-    let window_items = entries
-        .iter()
-        .map(|e| {
-            let text = if e.open {
-                e.title.clone()
-            } else {
-                format!("{}  (closed)", e.title)
-            };
-            CheckMenuItemBuilder::with_id(format!("{MENU_WINDOW_PREFIX}{}", e.label), text)
-                .checked(e.open)
-                .build(app)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for it in &window_items {
-        window_menu = window_menu.item(it);
-    }
-    let window_menu = window_menu.build()?;
-
-    // Config menu: open the config file in the default editor, or reveal it in Finder — so the
-    // user needn't memorise ~/.config/warden/config.toml. No accelerators (matches curator's
-    // Config submenu); the items act on the file, not a window (routed in on_menu_event).
-    let edit_cfg = MenuItemBuilder::with_id(MENU_CONFIG_EDIT, "Edit Config").build(app)?;
-    let reveal_cfg =
-        MenuItemBuilder::with_id(MENU_CONFIG_REVEAL, "Reveal Config in Finder").build(app)?;
-    let config_menu = SubmenuBuilder::new(app, "Config")
-        .item(&edit_cfg)
-        .item(&reveal_cfg)
-        .build()?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let window_menu = &spine.submenus[2];
+    window_menu.insert_items(&[&reopen_last, &sep], 0)?;
 
     let menu = MenuBuilder::new(app)
-        .item(&app_menu)
-        .item(&tab_menu)
-        .item(&config_menu)
-        .item(&window_menu)
+        .items(&[
+            &spine.submenus[0], // App
+            &tab_menu,
+            &spine.submenus[1], // Config
+            &spine.submenus[2], // Window
+        ])
         .build()?;
     app.set_menu(menu)?;
     Ok(())
@@ -484,56 +454,73 @@ fn diagnostic_message(state: tauri::State<ManagerState>) -> String {
     state.lock().diagnostic_msg.clone()
 }
 
-/// One launcher tile: a configured window + its colour + whether it's open now.
+/// warden's starter config, offered by the shared home surface's "Create a starter config"
+/// button when no config file exists at all. Tracked, and `include_str!`'d so a missing/renamed
+/// template is a build error rather than a runtime surprise.
 #[cfg(target_os = "macos")]
-#[derive(serde::Serialize, Clone)]
-struct LauncherEntryDto {
-    label: String,
-    title: String,
-    colour: String,
-    open: bool,
-}
+const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
 
-#[cfg(target_os = "macos")]
-fn launcher_entries(m: &WindowManager) -> Vec<LauncherEntryDto> {
-    m.window_menu_entries()
-        .into_iter()
-        .map(|e| LauncherEntryDto {
-            label: e.label,
-            title: e.title,
-            colour: e.colour,
-            open: e.open,
-        })
-        .collect()
-}
-
-/// The launcher's window list — fetched once by `launcher.html` on load.
+/// The home surface's "Create a starter config" button. This is where config-core is called (via
+/// `warden_config`'s re-export — this crate never pins config-core directly, the same
+/// one-source-of-truth rule as its other re-exported house helpers) — shell-core owns the
+/// surface but never touches config-core (the cores stay independent).
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn list_windows(state: tauri::State<ManagerState>) -> Vec<LauncherEntryDto> {
-    launcher_entries(&state.lock())
-}
-
-/// Open (closed) or raise (open) the window `label` from the launcher, then update
-/// the empty-surface (the launcher recedes once a real window exists) and rebuild
-/// the Window menu. Mirrors the Window-menu `on_menu_event` open/focus path.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn launcher_open_window(
-    window: tauri::WebviewWindow,
-    state: tauri::State<ManagerState>,
-    label: String,
-) {
+fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
-    let app = window.app_handle().clone();
+    let path = warden_config::config_path();
+    match warden_config::write_default_config(&path, DEFAULT_CONFIG) {
+        // A config already existed — say so rather than report a success that didn't happen.
+        Ok(false) => Err(format!(
+            "{} already exists — left untouched",
+            path.display()
+        )),
+        Ok(true) => match warden_config::load_with(&path, &login_shell()) {
+            Ok(loaded) => {
+                // Expand `[[window.root]]`s into the EFFECTIVE config BEFORE taking the lock —
+                // the walk is slow and must never run under the ManagerState mutex, or it stalls
+                // the background probe thread for its whole duration (same discipline as
+                // `rescan_root` and the hot-reload watcher below).
+                let effective = manager::effective_config(&loaded.config);
+                let st = app.state::<ManagerState>();
+                let mut m = st.lock();
+                m.materialize_effective(&app, loaded.config, effective);
+                drop(m); // release before rebuild_menu (non-reentrant mutex)
+                let _ = rebuild_menu(&app);
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The home surface's "Edit Config" button (shown for a config that failed to load). Reuses the
+/// spine's own Edit Config action rather than a second `open` spawn.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn shell_home_edit_config() {
+    let path = warden_config::config_path();
+    shell_core::menu::handle_spine_event(shell_core::menu::ids::EDIT_CONFIG, &path);
+}
+
+/// The home surface's per-window button (shown for the `Windows` list state): open, or focus if
+/// already open, then update the empty-surface (it recedes once a real window exists) and
+/// rebuild the Window menu. Mirrors the Window-menu `on_menu_event` open/focus path — same
+/// invariant as `MENU_WINDOW_REOPEN_LAST`'s handler: every window-open path must sync, not just
+/// the home surface's own click.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn shell_home_open_window(id: String, app: tauri::AppHandle) {
+    use tauri::Manager;
+    let st = app.state::<ManagerState>();
     {
-        let mut m = state.lock();
-        if m.windows.contains_key(&label) {
-            m.focus_window(&label);
+        let mut m = st.lock();
+        if m.windows.contains_key(&id) {
+            m.focus_window(&id);
         } else {
-            m.reopen_window(&app, &label);
+            m.reopen_window(&app, &id);
         }
-        // A real window now exists → `sync_empty_surface` closes the launcher.
         m.sync_empty_surface(&app);
     } // release the lock before rebuild_menu (non-reentrant mutex)
     let _ = rebuild_menu(&app);
@@ -749,11 +736,12 @@ fn main() {
     // app installs identically. Window-state persists each window's size/position/maximized keyed by
     // Tauri label *within a per-config state file* (window_state_filename) so two configs sharing a
     // window title don't share bounds; restore is explicit in manager.rs::build_window (runtime-built
-    // windows). The transient diagnostic + launcher windows are excluded from state restore.
+    // windows). The transient diagnostic + shared home surface windows are excluded from state
+    // restore.
     shell_core::register_plugins(
         tauri::Builder::default(),
         window_state_filename(),
-        &[DIAG_LABEL, LAUNCHER_LABEL],
+        &[DIAG_LABEL, shell_core::home::HOME_LABEL],
     )
     // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
     // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
@@ -765,6 +753,13 @@ fn main() {
         use tauri::{Emitter, Manager};
         let id = event.id().as_ref();
 
+        // The spine's file-acting ids (Edit Config, Reveal Config) need no window — let it
+        // consume them first. config_path() is WARDEN_CONFIG else ~/.config/warden/config.toml.
+        let cfg_path = warden_config::config_path();
+        if shell_core::menu::handle_spine_event(id, &cfg_path) {
+            return;
+        }
+
         // Window menu acts on the manager/app, not the focused window — handle it
         // before the focused-window lookup (reopen-last needs no focused window).
         if id == MENU_WINDOW_REOPEN_LAST {
@@ -772,10 +767,10 @@ fn main() {
             let reopened = {
                 let mut m = st.lock();
                 let reopened = m.reopen_last(app);
-                // Reopening takes the live set from zero→≥1, so close the launcher if
-                // it was showing (⌘⇧T is reachable while the launcher is the front
-                // surface). Same invariant `launcher_open_window` upholds — every
-                // window-open path must sync, not just the launcher's own click.
+                // Reopening takes the live set from zero→≥1, so close the home surface if
+                // it was showing (⌘⇧T is reachable while it's the front surface). Same
+                // invariant `shell_home_open_window` upholds — every window-open path must
+                // sync, not just the home surface's own click.
                 if reopened {
                     m.sync_empty_surface(app);
                 }
@@ -786,7 +781,7 @@ fn main() {
             }
             return;
         }
-        if let Some(win_label) = id.strip_prefix(MENU_WINDOW_PREFIX) {
+        if let Some(win_label) = shell_core::menu::selected_window(id) {
             let st = app.state::<ManagerState>();
             {
                 let mut m = st.lock();
@@ -795,30 +790,13 @@ fn main() {
                 } else {
                     m.reopen_window(app, win_label);
                 }
-                // Opening a closed window from the Window menu while the launcher is
-                // showing (zero real windows) must close the launcher — the same
-                // invariant `launcher_open_window` upholds. Harmless no-op on the
-                // focus (already-open) path, since the launcher can't be showing then.
+                // Opening a closed window from the Window menu while the home surface is
+                // showing (zero real windows) must close it — the same invariant
+                // `shell_home_open_window` upholds. Harmless no-op on the focus (already-open)
+                // path, since the home surface can't be showing then.
                 m.sync_empty_surface(app);
             }
             let _ = rebuild_menu(app);
-            return;
-        }
-
-        // Config menu acts on the config file, not a window — handle before the focused-window
-        // lookup (no window need be focused). `open` routes to the default editor; `open -R`
-        // reveals in Finder. config_path() is WARDEN_CONFIG else ~/.config/warden/config.toml.
-        if id == MENU_CONFIG_EDIT {
-            let _ = std::process::Command::new("open")
-                .arg(warden_config::config_path())
-                .spawn();
-            return;
-        }
-        if id == MENU_CONFIG_REVEAL {
-            let _ = std::process::Command::new("open")
-                .arg("-R")
-                .arg(warden_config::config_path())
-                .spawn();
             return;
         }
 
@@ -842,7 +820,7 @@ fn main() {
                 "warden:cycle-tab",
                 serde_json::json!({ "label": label, "dir": 1 }),
             );
-        } else if id == MENU_TAB_CLOSE {
+        } else if id == shell_core::menu::ids::CLOSE_TAB {
             // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
             // it does NOT close the window. The chrome owns "which tab is active" + the
             // dot/highlight repaint, so it drives the unload_tab command on this event.
@@ -851,7 +829,7 @@ fn main() {
                 "warden:unload-tab",
                 serde_json::json!({ "label": label }),
             );
-        } else if id == MENU_CHECK_UPDATES {
+        } else if id == shell_core::menu::ids::CHECK_UPDATES {
             // Manual update check → the focused window's chrome runs it (ignores auto_update).
             // Label-stamped like every other per-window emit: `emit_to` leaks to sibling
             // webviews, so without the stamp + the chrome's forMe() filter one menu click
@@ -861,9 +839,9 @@ fn main() {
                 "warden:check-update",
                 serde_json::json!({ "label": label }),
             );
-        } else if id == MENU_WINDOW_CLOSE {
-            // ⌘⇧W closes the whole window window (Destroyed → reap surfaces, then
-            // sync_empty_surface: shows the launcher if it was the last real window — no quit).
+        } else if id == shell_core::menu::ids::CLOSE_WINDOW {
+            // ⌘⇧W closes the whole window (Destroyed → reap surfaces, then sync_empty_surface:
+            // shows the home surface if it was the last real window — no quit).
             let _ = win.close();
         } else if let Some(n) = id
             .strip_prefix(MENU_TAB_JUMP_PREFIX)
@@ -885,8 +863,9 @@ fn main() {
         start_session,
         rescan_root,
         diagnostic_message,
-        list_windows,
-        launcher_open_window,
+        shell_home_create_config,
+        shell_home_edit_config,
+        shell_home_open_window,
         probe_now
     ])
     .setup(|app| {
@@ -1000,14 +979,14 @@ fn main() {
                                 // EVERY window, since `reconcile` deliberately ignores
                                 // `open_on_start`, wrongly opening `open_on_start = false` ones.
                                 //
-                                // Do NOT also recover on "the diagnostic is up": the launcher
+                                // Do NOT also recover on "the diagnostic is up": the home-surface
                                 // state can *become* the diagnostic state (close every window,
                                 // then save a half-written config — the Err branch below routes
                                 // to the diagnostic because `is_empty()`), and recovering on the
                                 // next good save would re-materialize every window the user
                                 // deliberately closed. An empty `last_good` already covers every
                                 // genuine diagnostic case (invalid/missing config at launch, or a
-                                // manually-closed diagnostic); the launcher state always has a
+                                // manually-closed diagnostic); the home-surface state always has a
                                 // non-empty `last_good`, so it correctly reconciles instead —
                                 // unchanged config ⇒ windows stay closed; an added window ⇒ opens.
                                 // `sync_empty_surface` below clears the diagnostic either way.
@@ -1036,16 +1015,15 @@ fn main() {
                                         m.refresh_all_chrome(&wh);
                                     }
                                 }
-                                // Update the empty-surface (launcher/diagnostic)
-                                // now that the live window set may have changed:
-                                // recovery may have opened only some (or zero, if
-                                // all `open_on_start = false`) windows; a reconcile
-                                // may have closed the last one or opened the first.
+                                // Update the empty-surface (home surface/diagnostic) now that
+                                // the live window set may have changed: recovery may have opened
+                                // only some (or zero, if all `open_on_start = false`) windows; a
+                                // reconcile may have closed the last one or opened the first.
+                                // Recomputes the window list fresh every call, so — unlike the
+                                // old launcher — no separate "push a stale list a refresh" step
+                                // is needed afterward: shell_core::home::show_home is idempotent
+                                // and this already re-shows/refreshes it with current entries.
                                 m.sync_empty_surface(&wh);
-                                // If the launcher is still up (config valid but
-                                // no window opened), its list may be stale (a
-                                // window added/removed/renamed) — push a refresh.
-                                m.refresh_launcher(&wh);
                                 // Apply the (possibly changed) probe cadence while we still
                                 // hold the lock, then release it before any lock-free work.
                                 m.set_probe_interval(loaded.config.probe_interval);
@@ -1076,7 +1054,7 @@ fn main() {
                                 let st = wh.state::<ManagerState>();
                                 let mut m = st.lock();
                                 if m.is_empty() {
-                                    m.close_launcher(&wh);
+                                    shell_core::home::close_home(&wh);
                                     m.show_diagnostic(&wh, &msg);
                                 } else {
                                     drop(m);
@@ -1090,7 +1068,7 @@ fn main() {
                                 let st = wh.state::<ManagerState>();
                                 let mut m = st.lock();
                                 if m.is_empty() {
-                                    m.close_launcher(&wh);
+                                    shell_core::home::close_home(&wh);
                                     m.show_diagnostic(&wh, &msg);
                                 } else {
                                     drop(m);
