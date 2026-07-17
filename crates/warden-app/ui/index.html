@@ -84,7 +84,10 @@
       let activeId = null; // controller mirror of the active tab, for the empty-state placeholder
       let activeLive = false; // …and whether a live surface actually covers the hole for it
       const badges = new Set(); // tab ids with an unread notification/bell badge
-      const session = new Map(); // tab id → 'on'/'off' (probe presence), for probe-enabled tabs
+      // tab id → 'on' | 'ghost' | 'off' (probe presence), for probe-enabled tabs. The backend
+      // sends these strings verbatim (they ARE chrome-core's wire values) — do not re-derive
+      // them from a boolean; presence has been 3-state since exit 3 ("recoverable") shipped.
+      const session = new Map();
 
       // In-app updates are a chrome-core capability (check / install / relaunch + the 6h re-check
       // cadence); see chrome-core's dividing-line decision. This controller only passes warden's
@@ -145,13 +148,9 @@
             treePath: t.treePath || [],
             live: t.spawned,
             attention: badges.has(t.id) ? true : null,
-            // Live probe events (the `session` Map) win; else the snapshot's last-known
-            // presence (`t.presence`: true/false/null from the backend PresenceCache) so a
-            // just-opened window paints its dots on the FIRST render instead of hollow-until-
-            // first-probe; else "off". Only meaningful for probe-enabled tabs.
-            presence: t.has_probe
-              ? (session.get(t.id) ?? (t.presence == null ? "off" : t.presence ? "on" : "off"))
-              : null,
+            // `t.presence` is already 'on'/'ghost'/'off' (or null = never probed) from the
+            // backend PresenceCache; a live `session` entry from a probe emit wins over it.
+            presence: t.has_probe ? (session.get(t.id) ?? t.presence ?? "off") : null,
             killable: !!t.has_kill,
             startable: !!t.has_cmd, // presence dot can restart a dead session by re-running `cmd`
             warn: !!t.warn,
@@ -373,12 +372,10 @@
       // registered this listener, so init() can await it before the first probe_now.
       const sessionListenReady = listen("warden:session-state", (e) => {
         if (!forMe(e) || !sb) return;
-        const states = e.payload && e.payload.states;
-        if (!states) return;
-        Object.entries(states).forEach(([id, on]) => {
-          session.set(id, on ? "on" : "off");
-          sb.setPresence(id, on ? "on" : "off");
-        });
+        for (const [id, state] of Object.entries(e.payload.states || {})) {
+          session.set(id, state);
+          sb.setPresence(id, state);
+        }
       });
 
       // The terminal surface tracks the hole: re-report on any layout change, and re-clamp the
