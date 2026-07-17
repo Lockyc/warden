@@ -267,7 +267,16 @@ fn probe_now(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
     //     re-emits, so those dots would be stuck dark (the "launchpad dot never lights" bug, worst
     //     for a tab whose session pre-existed so its state never changes after that lost first pass).
     //  2. Bump so a live burst refreshes anything that changed since.
-    let snapshot = state.lock().presence_cache.snapshot(window.label());
+    // `PresenceCache` still stores `bool` (its storage type is Task 5's scope); widen it to
+    // `Presence` here at the boundary via `Presence::from` — never `Recoverable`, since a bool
+    // can't say that (see the `From<bool>` impl doc in probe.rs).
+    let snapshot: std::collections::BTreeMap<String, probe::Presence> = state
+        .lock()
+        .presence_cache
+        .snapshot(window.label())
+        .into_iter()
+        .map(|(id, on)| (id, probe::Presence::from(on)))
+        .collect();
     probe::emit_presence_snapshot(window.app_handle(), window.label(), &snapshot);
     probe::bump(window.label());
 }
