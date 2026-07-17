@@ -1,6 +1,6 @@
 # Session-presence probing — the scheduler & presence cache
 
-How warden drives the per-tab **cyan session-presence dot**: the off-main-thread
+How warden drives the per-tab **three-state session-presence dot** (cyan / ghost / hollow): the off-main-thread
 scheduler, the per-window fast-until-stable bursts, the `PresenceCache` that paints dots
 instantly on window (re)open, and the invariants that keep it correct and cheap. Read this
 before touching `probe.rs`, the presence dot, or anything that bumps/reprobes. The
@@ -42,6 +42,11 @@ Two things ride on top of the concurrent sweep, both load-bearing:
   section below, where that order is load-bearing). **Don't** revert to a single end-of-pass emit
   (it would trap the killed tab's new state behind the slowest worker), and **don't** serialize
   the sweep back to one-at-a-time.
+
+  The changed-only guard is over the **3-state** `Presence`, so a `Present → Recoverable` transition
+  (the session crashed) and a `Recoverable → Absent` one (the offer burned) each emit exactly once.
+  `run_probe`'s collapse is what keeps this honest: only a *clean* exit 3 is `Recoverable` — a spawn
+  failure or a timeout is `Absent`, so a broken probe can't flip every dot to a ghost and back.
 
 `probe_interval` is shared as an `Arc<AtomicU64>` (the scheduler's slow floor) so a
 hot-reload changes cadence live — the reload hook pairs the new floor with a `bump_all`, so
@@ -99,7 +104,8 @@ the replay reads. **Don't** move the record back to the end of the pass "to take
 
 ### Probe execution details
 
-Probe `exit 0 = session present`; cwd = the tab's dir; tokens `{dir}`/`{title}` are
+Probe `exit 0 = session present`, `exit 3 = recoverable` (see `run_probe`'s exit-code map in
+`probe.rs`, the vocabulary's single source of truth); cwd = the tab's dir; tokens `{dir}`/`{title}` are
 substituted **raw** (not shell-quoted), so quote them in the command (`'… "{dir}"'`) when a
 path/title may contain spaces or `sh` metacharacters — otherwise the probe word-splits and
 silently reports "no session"; stdout/stderr are discarded so a chatty probe can't spam

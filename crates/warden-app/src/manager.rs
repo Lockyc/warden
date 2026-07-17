@@ -83,7 +83,10 @@ impl PresenceCache {
     }
 
     /// Fill each tab's `presence` from the cache; a tab the cache has never seen is left
-    /// as-is (`None` from `tab_dtos` → hollow "unknown" until the first probe lands).
+    /// as-is (`None` from `tab_dtos`). What that renders as depends on `has_probe`, not on
+    /// this field alone — see `TabDto.presence`'s doc (registry.rs): a probe-enabled tab
+    /// paints a hollow "unknown" ring until its first probe lands, while a tab with no probe
+    /// configured has no dot at all.
     pub fn patch(&self, label: &str, tabs: &mut [TabDto]) {
         let Some(m) = self.by_window.get(label) else {
             return;
@@ -1006,7 +1009,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&t).unwrap()["presence"],
             serde_json::Value::Null,
-            "never-probed stays null so the chrome renders no dot at all"
+            "no cache record for this tab stays null on the wire (see TabDto.presence's doc for how the chrome renders it)"
         );
     }
 }

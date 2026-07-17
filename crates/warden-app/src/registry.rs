@@ -20,10 +20,16 @@ pub struct TabDto {
     #[serde(rename = "treePath")]
     pub tree_path: Vec<String>, // folder segments between root and project
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
-    /// (nothing), or `null` (never probed — the chrome renders no presence dot at all). The
-    /// Registry never sets it — it's `None` here and patched by the manager from its persistent
-    /// `PresenceCache` (see manager.rs) so a (re)opened window paints its dots on the first
-    /// render instead of waiting for a post-boot probe emit.
+    /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
+    /// record for this tab yet. `null` covers two different cases and the chrome renders them
+    /// differently: `toComponentDto` (ui/index.html) passes `null` straight through only when
+    /// `has_probe` is false (no probe configured, permanently), and chrome-core renders **no
+    /// dot at all** for that; for a `has_probe: true` tab it instead floors `null` to `"off"`,
+    /// so an unprobed tab paints a hollow ring — visually identical to a confirmed-absent
+    /// session — until the first probe result overwrites it. The Registry never sets this
+    /// field — it's `None` here and patched by the manager from the cache so a (re)opened
+    /// window paints its dots on the first render instead of waiting for a post-boot probe
+    /// emit.
     pub presence: Option<crate::probe::Presence>,
 }
 
