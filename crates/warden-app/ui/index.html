@@ -213,7 +213,7 @@
           if (sb) sb.setError("⚠ failed to load window: " + err);
           return;
         }
-        if (!dto) return; // diagnostic window
+        if (!dto) return; // no managed window for this label yet (race: init_tabs ran before this window's WindowState was inserted)
         myLabel = dto.label;
 
         sb = window.ChromeSidebar.mount(

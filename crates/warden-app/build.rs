@@ -20,7 +20,6 @@ fn main() {
     // watching `ui` broadly would self-trigger a rerun every build, since build.rs writes the
     // generated chrome-core.{css,js} into ui/.
     println!("cargo:rerun-if-changed=ui/index.html");
-    println!("cargo:rerun-if-changed=ui/diagnostic.html");
 
     #[cfg(target_os = "macos")]
     {

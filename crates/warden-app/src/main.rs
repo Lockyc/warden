@@ -22,7 +22,7 @@ mod probe;
 mod registry;
 
 #[cfg(target_os = "macos")]
-use manager::{InitDto, WindowManager, DIAG_LABEL};
+use manager::{InitDto, WindowManager};
 
 use geometry::WebRect;
 
@@ -447,13 +447,6 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     }
 }
 
-/// Message the diagnostic window displays — read by `diagnostic.html` on load.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn diagnostic_message(state: tauri::State<ManagerState>) -> String {
-    state.lock().diagnostic_msg.clone()
-}
-
 /// warden's starter config, offered by the shared home surface's "Create a starter config"
 /// button when no config file exists at all. Tracked, and `include_str!`'d so a missing/renamed
 /// template is a build error rather than a runtime surprise.
@@ -736,12 +729,11 @@ fn main() {
     // app installs identically. Window-state persists each window's size/position/maximized keyed by
     // Tauri label *within a per-config state file* (window_state_filename) so two configs sharing a
     // window title don't share bounds; restore is explicit in manager.rs::build_window (runtime-built
-    // windows). The transient diagnostic + shared home surface windows are excluded from state
-    // restore.
+    // windows). The transient shared home surface window is excluded from state restore.
     shell_core::register_plugins(
         tauri::Builder::default(),
         window_state_filename(),
-        &[DIAG_LABEL, shell_core::home::HOME_LABEL],
+        &[shell_core::home::HOME_LABEL],
     )
     // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
     // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
@@ -862,7 +854,6 @@ fn main() {
         kill_session,
         start_session,
         rescan_root,
-        diagnostic_message,
         shell_home_create_config,
         shell_home_edit_config,
         shell_home_open_window,
@@ -875,23 +866,25 @@ fn main() {
 
             let handle = app.handle().clone();
             let mut mgr = WindowManager::new();
-            // Load config; on a missing/invalid/empty config, fall back to a
-            // single diagnostic window instead of materializing windows.
-            // Recovery happens in the watcher: the first valid load while no
-            // window window is live materializes + closes the diagnostic.
+            // Load config; a config that parses (even with zero `[[window]]` entries) always
+            // materializes — `materialize` builds nothing for an empty window list and
+            // `sync_empty_surface` shows the home surface's window list (empty or not). A
+            // missing/invalid config instead records the error and shows the home surface
+            // directly: `sync_empty_surface`'s `home_state` call picks `NoConfig` when the file
+            // doesn't exist, `Broken` when it does but didn't load. Recovery from either happens
+            // in the watcher: the first valid load while no real window is live materializes.
             // Read the `notify_debug` toggle from the loaded config (default false) before the
             // config is consumed by materialize — it gates notify.rs's diagnostic trace.
             let mut notify_debug = false;
             match warden_config::load_with(&warden_config::config_path(), &login_shell()) {
-                Ok(loaded) if !loaded.config.windows.is_empty() => {
+                Ok(loaded) => {
                     notify_debug = loaded.config.notify_debug;
                     mgr.materialize(&handle, loaded.config);
                 }
-                Ok(loaded) => {
-                    notify_debug = loaded.config.notify_debug;
-                    mgr.show_diagnostic(&handle, "config has no [[window]] entries");
+                Err(e) => {
+                    mgr.load_error = Some(e.to_string());
+                    mgr.sync_empty_surface(&handle);
                 }
-                Err(e) => mgr.show_diagnostic(&handle, &e.to_string()),
             }
             app.manage(ManagerState(std::sync::Mutex::new(mgr)));
 
@@ -926,9 +919,10 @@ fn main() {
             // with the terminal. ⌘W unloads the active *tab* and ⌘⇧W closes the *window* — the Safari/
             // Chrome convention (close-tab vs close-window), NOT the predefined ⌘W=close-window.
             // The ⌘1/⌘2 chords depend on the config's `tab_digit_keys` mode
-            // (read from last_good, set by the load above; default Jump for the
-            // diagnostic-at-launch case). build_app_menu rebuilds wholesale, so a
-            // hot-reload that flips the mode just calls it again (see the watcher).
+            // (read from last_good, set by the load above; default Jump when the
+            // load failed and last_good is still the empty default). build_app_menu
+            // rebuilds wholesale, so a hot-reload that flips the mode just calls it
+            // again (see the watcher).
             rebuild_menu(app.handle())?;
 
             // Hot-reload: watch the config file; on each event reload + diff
@@ -952,17 +946,28 @@ fn main() {
                     let _ = wh.clone().run_on_main_thread(move || {
                         use tauri::{Emitter, Manager};
                         match res {
-                            Ok(loaded) if !loaded.config.windows.is_empty() => {
+                            Ok(loaded) => {
                                 // Expand `[[window.root]]`s into the EFFECTIVE config
                                 // (recursive git-project scan) BEFORE taking the lock —
                                 // the walk is slow and must never run under the
                                 // ManagerState mutex, or it stalls the background probe
                                 // thread for its whole duration (mirrors probe.rs's
                                 // snapshot-then-release discipline). We're on the main
-                                // thread here, so no other writer interleaves.
+                                // thread here, so no other writer interleaves. A config
+                                // that parses but declares zero `[[window]]` entries is
+                                // NOT special-cased here: `window_specs`/`reconcile` on an
+                                // empty windows list simply open nothing / close everything,
+                                // and `sync_empty_surface` below shows the home surface's
+                                // (now-empty) window list — not an error state.
                                 let new_eff = manager::effective_config(&loaded.config);
                                 let st = wh.state::<ManagerState>();
                                 let mut m = st.lock();
+                                // A previous save may have left an error recorded (Broken);
+                                // this load succeeded, so clear it before sync_empty_surface
+                                // reads it below. The `recover` branch's materialize_effective
+                                // also clears it, but the `else` reconcile branch doesn't call
+                                // that, so this is the one point both paths share.
+                                m.load_error = None;
                                 // The app menu is global, not part of window reconcile;
                                 // rebuilt below from current state.
                                 // Density + sidebar_drag are global too — a change to either
@@ -979,26 +984,24 @@ fn main() {
                                 // EVERY window, since `reconcile` deliberately ignores
                                 // `open_on_start`, wrongly opening `open_on_start = false` ones.
                                 //
-                                // Do NOT also recover on "the diagnostic is up": the home-surface
-                                // state can *become* the diagnostic state (close every window,
-                                // then save a half-written config — the Err branch below routes
-                                // to the diagnostic because `is_empty()`), and recovering on the
-                                // next good save would re-materialize every window the user
-                                // deliberately closed. An empty `last_good` already covers every
-                                // genuine diagnostic case (invalid/missing config at launch, or a
-                                // manually-closed diagnostic); the home-surface state always has a
-                                // non-empty `last_good`, so it correctly reconciles instead —
-                                // unchanged config ⇒ windows stay closed; an added window ⇒ opens.
-                                // `sync_empty_surface` below clears the diagnostic either way.
+                                // Do NOT also recover on "the home surface is showing an error":
+                                // the home-surface state can *become* Broken (close every
+                                // window, then save a half-written config — the Err branch below
+                                // records the error via `sync_empty_surface` regardless of live
+                                // windows), and recovering on the next good save would
+                                // re-materialize every window the user deliberately closed. An
+                                // empty `last_good` already covers every genuine no-baseline case
+                                // (invalid/missing config at launch, or a config later saved with
+                                // zero windows); a real baseline always has a non-empty
+                                // `last_good` (even a config with configured-but-closed windows),
+                                // so it correctly reconciles instead — unchanged config ⇒ windows
+                                // stay closed; an added window ⇒ opens.
                                 let recover = m.last_good.windows.is_empty();
                                 if recover {
-                                    // Recovery: no reconcile baseline (diagnostic state, or a
-                                    // manually-closed diagnostic). Materialize from the
-                                    // already-scanned effective config and close the
-                                    // diagnostic, rather than reconciling against an
-                                    // empty last_good.
+                                    // Recovery: no reconcile baseline. Materialize from the
+                                    // already-scanned effective config rather than reconciling
+                                    // against an empty last_good.
                                     m.materialize_effective(&wh, loaded.config.clone(), new_eff);
-                                    m.clear_diagnostic(&wh);
                                 } else {
                                     // Reconcile against the EFFECTIVE (root-expanded) configs
                                     // so a project appearing/vanishing on disk since last load
@@ -1015,14 +1018,16 @@ fn main() {
                                         m.refresh_all_chrome(&wh);
                                     }
                                 }
-                                // Update the empty-surface (home surface/diagnostic) now that
-                                // the live window set may have changed: recovery may have opened
-                                // only some (or zero, if all `open_on_start = false`) windows; a
+                                // Update the empty-surface (home surface) now that the live
+                                // window set may have changed: recovery may have opened only
+                                // some (or zero, if all `open_on_start = false`) windows; a
                                 // reconcile may have closed the last one or opened the first.
                                 // Recomputes the window list fresh every call, so — unlike the
                                 // old launcher — no separate "push a stale list a refresh" step
                                 // is needed afterward: shell_core::home::show_home is idempotent
                                 // and this already re-shows/refreshes it with current entries.
+                                // (`recover`'s materialize_effective already calls this too;
+                                // idempotent, so the second call here is a harmless no-op then.)
                                 m.sync_empty_surface(&wh);
                                 // Apply the (possibly changed) probe cadence while we still
                                 // hold the lock, then release it before any lock-free work.
@@ -1044,34 +1049,21 @@ fn main() {
                                 // (lock already released, so the bump can lock freely).
                                 probe::bump_all(&wh);
                             }
-                            Ok(_) => {
-                                // Valid TOML but no windows. If live windows exist,
-                                // keep them up and surface the error banner; if we're
-                                // already in the diagnostic state (no live windows),
-                                // there's no banner — route it to the diagnostic so a
-                                // second bad save doesn't leave the launch text stale.
-                                let msg = "config has no [[window]] entries".to_string();
-                                let st = wh.state::<ManagerState>();
-                                let mut m = st.lock();
-                                if m.is_empty() {
-                                    shell_core::home::close_home(&wh);
-                                    m.show_diagnostic(&wh, &msg);
-                                } else {
-                                    drop(m);
-                                    let _ = wh.emit("warden:error", msg);
-                                }
-                            }
                             Err(e) => {
-                                // Keep last_good; surface the parse error in the banner,
-                                // or in the diagnostic when no live window can show one.
+                                // Keep last_good; record the error and let sync_empty_surface
+                                // route it — home_state's own precedence already no-ops when a
+                                // real window exists (has_windows wins over Broken), so it's safe
+                                // to call unconditionally. The banner is a separate concern (a
+                                // parse error mid-edit while windows are open needs its own
+                                // sidebar notice — sync_empty_surface has nothing to show there).
                                 let msg = e.to_string();
                                 let st = wh.state::<ManagerState>();
                                 let mut m = st.lock();
-                                if m.is_empty() {
-                                    shell_core::home::close_home(&wh);
-                                    m.show_diagnostic(&wh, &msg);
-                                } else {
-                                    drop(m);
+                                m.load_error = Some(msg.clone());
+                                let had_windows = !m.is_empty();
+                                m.sync_empty_surface(&wh);
+                                drop(m);
+                                if had_windows {
                                     let _ = wh.emit("warden:error", msg);
                                 }
                             }

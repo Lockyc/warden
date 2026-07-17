@@ -1,7 +1,6 @@
 //! Pure bridge: `warden_config` types → app-side window/tab descriptors, plus
 //! Tauri window-label sanitization. No AppKit, no Tauri — fully unit-tested.
 
-use crate::manager::DIAG_LABEL;
 use crate::surface::TabSpec;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -128,11 +127,11 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
 
 /// Map a whole config to window specs, assigning unique labels in window order.
 pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
-    // Reserve the diagnostic window's label so a config window whose title
-    // sanitizes to it (e.g. "warden diagnostic") gets `-2`, not a collision that
+    // Reserve the shared home surface's label so a config window whose title
+    // sanitizes to it (e.g. "shell home") gets `-2`, not a collision that
     // silently breaks window-state persistence / crashes config recovery.
     let mut taken = HashSet::new();
-    taken.insert(DIAG_LABEL.to_string());
+    taken.insert(shell_core::home::HOME_LABEL.to_string());
     config
         .windows
         .iter()
@@ -150,7 +149,7 @@ pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
 /// An open window (its title present in `live_names`) keeps its **actual live label**:
 /// a live Tauri window can't be relabeled, so the mapping must match it. A closed
 /// window gets a deterministic fresh label via `unique_label`, avoiding every live
-/// label (`live_labels`) ∪ the diagnostic reservation ∪ labels assigned earlier here.
+/// label (`live_labels`) ∪ the home surface's reservation ∪ labels assigned earlier here.
 ///
 /// This exists because recomputing labels purely from config order (`window_specs`)
 /// diverges from a live window's label whenever two titles sanitize to the same base
@@ -163,7 +162,7 @@ pub fn configured_specs(
     live_labels: &HashSet<String>,
 ) -> Vec<WindowSpec> {
     let mut taken: HashSet<String> = live_labels.clone();
-    taken.insert(DIAG_LABEL.to_string());
+    taken.insert(shell_core::home::HOME_LABEL.to_string());
     config
         .windows
         .iter()
@@ -266,8 +265,8 @@ pub fn reconcile_ops(
     let mut ops = Vec::new();
     let mut assigned: HashSet<String> = taken.clone();
     // Same reservation as window_specs: a newly-opened window must never grab
-    // the diagnostic label.
-    assigned.insert(DIAG_LABEL.to_string());
+    // the home surface's label.
+    assigned.insert(shell_core::home::HOME_LABEL.to_string());
 
     for window in &recon.open {
         let label = unique_label(&window.title, &assigned);
@@ -760,37 +759,37 @@ colour = "#222222"
     }
 
     #[test]
-    fn configured_specs_reserves_diagnostic_label_for_closed_windows() {
+    fn configured_specs_reserves_home_label_for_closed_windows() {
         let c = cfg(r##"
 [[window]]
-title = "warden diagnostic"
+title = "shell home"
 colour = "#111111"
   [[window.tab]]
   title = "t1"
   dir = "/tmp/t1"
 "##);
-        // No live windows: the sole window is "closed" and must not grab DIAG_LABEL.
+        // No live windows: the sole window is "closed" and must not grab HOME_LABEL.
         let specs = configured_specs(&c, &HashMap::new(), &HashSet::new());
-        assert_ne!(specs[0].label, DIAG_LABEL);
-        assert_eq!(specs[0].label, "warden-diagnostic-2");
+        assert_ne!(specs[0].label, shell_core::home::HOME_LABEL);
+        assert_eq!(specs[0].label, "shell-home-2");
     }
 
     #[test]
-    fn window_specs_reserves_diagnostic_label() {
-        // A window whose title sanitizes to the reserved diagnostic label must NOT
+    fn window_specs_reserves_home_label() {
+        // A window whose title sanitizes to the reserved home-surface label must NOT
         // be assigned that label (it would silently break window-state persistence
-        // and crash config recovery) — it gets the "-2" suffix instead.
+        // and collide with the shared home surface) — it gets the "-2" suffix instead.
         let c = cfg(r##"
 [[window]]
-title = "warden diagnostic"
+title = "shell home"
 colour = "#111111"
   [[window.tab]]
   title = "t1"
   dir = "/tmp/t1"
 "##);
         let specs = window_specs(&c);
-        assert_ne!(specs[0].label, DIAG_LABEL);
-        assert_eq!(specs[0].label, "warden-diagnostic-2");
+        assert_ne!(specs[0].label, shell_core::home::HOME_LABEL);
+        assert_eq!(specs[0].label, "shell-home-2");
     }
 
     /// Regression: a tab added by a hot-reload reconcile (`WindowUpdate.add_tabs`) must
