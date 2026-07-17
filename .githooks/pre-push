@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # docgraph pre-push gate — installed by 'docgraph install-hook'. Activated per
 # clone via core.hooksPath -> .githooks. Fails closed: if docgraph can't be found
-# the push is blocked (install: go install github.com/lockyc/docgraph@latest).
+# the push is blocked (install: go install github.com/lockyc/docgraph/v2@latest).
 set -euo pipefail
+refs="$(cat)"   # git feeds pre-push ref lines on stdin; captured before running anything
 
-# Resolve docgraph even under a minimal hook PATH. Git runs hooks with whatever
-# PATH the caller had; GUI clients and some agent harnesses push with a bare PATH
-# that omits ~/go/bin, so 'command -v docgraph' alone is unreliable and would
-# make the gate fail-closed (blocked) purely because it couldn't see an installed
-# binary. Fall back to the Go install dirs before giving up.
 docgraph_bin() {
   if command -v docgraph >/dev/null 2>&1; then command -v docgraph; return; fi
   local d
@@ -24,7 +20,11 @@ docgraph_bin() {
 
 if ! bin="$(docgraph_bin)"; then
   echo "docgraph: not found on PATH or in the Go bin dir — push blocked (fail-closed)." >&2
-  echo "  install it: go install github.com/lockyc/docgraph@latest" >&2
+  echo "  install it: go install github.com/lockyc/docgraph/v2@latest" >&2
   exit 1
 fi
-exec "$bin" .
+"$bin" .
+# Diff-scoped ADVISORY nag: footgun declarations ADDED in the pushed range. Never blocks.
+printf '%s' "$refs" | "$bin" footgun-drift . || true
+# Diff-scoped ADVISORY nag: docs whose 'covers' edge points at code this push changed. Never blocks.
+printf '%s' "$refs" | "$bin" covers-drift . || true
