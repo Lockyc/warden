@@ -1187,6 +1187,16 @@ impl TerminalSurface for GhosttySurface {
 
     fn hide(&self) {
         self.host_view.setHidden(true);
+        // Clearing focus is what STOPS the surface's 60fps render display link; hiding the view
+        // alone does not (a hidden surface keeps rendering, just off-screen). This is the
+        // symmetric counterpart to `focus()` and the only path that covers a tab going
+        // off-screen: `windowDidResignKey:` and the `performKeyEquivalent:` handoff both gate on
+        // `!isHidden()`, and there is no `resignFirstResponder` override — so without this line a
+        // tab stays focused=1 forever once activated (switch away → `activate` hides it but never
+        // unfocuses it) and every tab ever visited burns 60fps for the life of the process. Safe
+        // against the active tab: `activate`'s show()+focus() and hide() branches are mutually
+        // exclusive, so hide() only ever lands on a non-active surface.
+        unsafe { ffi::ghostty_surface_set_focus(self.surface, false) };
     }
 
     fn focus(&self) {
