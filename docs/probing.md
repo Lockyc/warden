@@ -56,8 +56,8 @@ the listener and the dot can stay hollow; bump instead.
 ### The `PresenceCache` paints dots on the first render
 
 First *paint* of the dots does not wait for that burst: the scheduler records every probe result
-into the manager's persistent **`PresenceCache`** (keyed window-label → tab-id → present?,
-*outliving* window close/reopen — a reopen rebuilds the Registry from scratch), and
+into the manager's persistent **`PresenceCache`** (keyed window-label → tab-id → `Presence`
+on/ghost/off, *outliving* window close/reopen — a reopen rebuilds the Registry from scratch), and
 `init_dto`/refresh patch each `TabDto.presence` from it, so a (re)opened window renders its
 cyan dots from the last-known state on the **first** render (`toComponentDto` folds
 `t.presence` in ahead of the "off" default) instead of hollow-until-first-probe. The burst

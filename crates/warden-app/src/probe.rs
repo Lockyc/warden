@@ -23,13 +23,16 @@ use tauri::{AppHandle, Emitter, Manager};
 ///
 /// The exit vocabulary is deliberately sparse so a hand-rolled probe degrades gracefully: a
 /// `tmux has-session` one-liner never exits 3, so it simply never ghosts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub enum Presence {
     /// Exit 0 — a live session. Cyan dot; kill affordance when `kill` is configured.
+    #[serde(rename = "on")]
     Present,
     /// Exit 3 — no live session, but a restorable one. Ghost; start affordance only.
+    #[serde(rename = "ghost")]
     Recoverable,
     /// Every other outcome — clean non-zero, spawn failure, or timeout. Hollow ring.
+    #[serde(rename = "off")]
     Absent,
 }
 
@@ -40,21 +43,6 @@ impl Presence {
             Presence::Present => "on",
             Presence::Recoverable => "ghost",
             Presence::Absent => "off",
-        }
-    }
-}
-
-/// Widen a boolean present/absent reading into `Presence` — never `Recoverable` (a bool has no
-/// way to say that). Exists solely to bridge `PresenceCache`'s still-`bool` storage (its storage
-/// type is Task 5's scope, not this one) at the one place that needs a `Presence` from it
-/// (`probe_now`'s handshake replay in `main.rs`); the cache regains the ghost distinction once
-/// Task 5 widens its storage type, and this impl becomes dead code to delete then.
-impl From<bool> for Presence {
-    fn from(on: bool) -> Self {
-        if on {
-            Presence::Present
-        } else {
-            Presence::Absent
         }
     }
 }
@@ -368,7 +356,7 @@ fn order_work(work: &mut [ProbeWork], priority: Option<&str>) {
 }
 
 /// Run every work-item's probe **concurrently** (bounded by `concurrency`), calling `emit(id, on)`
-/// the moment each probe returns and collecting the full `id → present?` map. Workers pull from a
+/// the moment each probe returns and collecting the full `id → Presence` map. Workers pull from a
 /// shared cursor, so the sweep's wall-clock is ~`ceil(n/concurrency)` probe times, not the sum —
 /// the fix for the O(tabs) sequential pass that made a wide window's dots take seconds to update.
 /// `order_work` runs first, so the just-bumped tab is at the head of the cursor and is claimed in
@@ -451,16 +439,7 @@ pub(crate) fn probe_window(
                 prev,
                 id,
                 on,
-                // `PresenceCache::record_one` still stores `bool` (its storage type is Task 5's
-                // scope — see probe.rs's module doc / the task boundary note); collapse to
-                // Present-vs-not here so this crate compiles without pulling that task forward.
-                // The cache regains the ghost distinction once Task 5 widens its storage type.
-                |id, on: Presence| {
-                    state
-                        .lock()
-                        .presence_cache
-                        .record_one(label, id, on == Presence::Present)
-                },
+                |id, on: Presence| state.lock().presence_cache.record_one(label, id, on),
                 |id, on| emit_one(app, label, id, on),
             )
         },
@@ -710,6 +689,17 @@ mod tests {
         assert_eq!(Presence::Present.as_str(), "on");
         assert_eq!(Presence::Recoverable.as_str(), "ghost");
         assert_eq!(Presence::Absent.as_str(), "off");
+    }
+
+    #[test]
+    fn presence_serialization_matches_as_str() {
+        for p in [Presence::Present, Presence::Recoverable, Presence::Absent] {
+            assert_eq!(
+                serde_json::to_value(p).unwrap(),
+                serde_json::Value::String(p.as_str().to_string()),
+                "serde and as_str must agree — both are the chrome-core wire value"
+            );
+        }
     }
 
     #[test]

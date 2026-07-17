@@ -19,11 +19,12 @@ pub struct TabDto {
     pub tree: bool,            // row belongs to a project-tree (root) section
     #[serde(rename = "treePath")]
     pub tree_path: Vec<String>, // folder segments between root and project
-    /// Last-known session presence (Some(true)=present, Some(false)=absent, None=not yet
-    /// probed). The Registry never sets it — it's `None` here and patched by the manager
-    /// from its persistent `PresenceCache` (see manager.rs) so a (re)opened window paints
-    /// its cyan dots on the first render instead of waiting for a post-boot probe emit.
-    pub presence: Option<bool>,
+    /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
+    /// (nothing), or `null` (never probed — the chrome renders no presence dot at all). The
+    /// Registry never sets it — it's `None` here and patched by the manager from its persistent
+    /// `PresenceCache` (see manager.rs) so a (re)opened window paints its dots on the first
+    /// render instead of waiting for a post-boot probe emit.
+    pub presence: Option<crate::probe::Presence>,
 }
 
 /// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
