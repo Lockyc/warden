@@ -372,7 +372,7 @@
       // registered this listener, so init() can await it before the first probe_now.
       const sessionListenReady = listen("warden:session-state", (e) => {
         if (!forMe(e) || !sb) return;
-        for (const [id, state] of Object.entries(e.payload.states || {})) {
+        for (const [id, state] of Object.entries(e.payload?.states || {})) {
           session.set(id, state);
           sb.setPresence(id, state);
         }

@@ -55,9 +55,25 @@ type ProbeWork = (String, PathBuf, String, String);
 /// process-spawn / socket-check bound (not CPU bound), so this can exceed the core count; it caps
 /// the burst of concurrent `sh -c` children so a wide `[[window.root]]` (dozens of discovered tabs)
 /// can't fork a hundred processes at once. With this cap a ~40-tab window sweeps in ~3 waves of one
-/// probe (~0.07s each) instead of ~40 sequential probes (~3s) — the fix for the "dot takes ages to
-/// clear after kill" lag. The just-bumped tab is probed first (see `order_work`) so it lands in the
-/// first wave regardless of its list position.
+/// probe (~0.22s each) instead of ~40 sequential probes (~9s) — still the fix for the "dot takes
+/// ages to clear after kill" lag, just at the canonical probe's real per-probe cost (below). The
+/// just-bumped tab is probed first (see `order_work`) so it lands in the first wave regardless of
+/// its list position.
+///
+/// **Absent-path cost, since `amux --probe` started consulting the crash ledger (exit-3
+/// `Recoverable`, see [`Presence`]):** measured on this machine, `amux --probe` in a directory with
+/// no session is ~0.23s, of which `session_log.sh dropped --pending "$PWD"` alone accounts for
+/// ~0.2s (556-line ledger) — versus ~0.03s before that call existed. Every absent probe now pays
+/// this, at the `probe_interval` floor, for ~95% of tabs (the spec's own figure for how often the
+/// recoverable question is cold). This is the accepted trade, not a regression to chase down: the
+/// alternative (a separate `recover_probe` per tab) would pay the same ledger read plus a second
+/// fork. Still well inside [`PROBE_TIMEOUT`], off the main thread, and pool-capped by this constant.
+///
+/// **Fails-safe on a symlinked `dir`, never a false ghost:** the ledger's cwd filter is exact
+/// string equality against the *interactive shell's* logical `$PWD`, but this probe runs via
+/// `Command::new("sh").current_dir(dir)`, which leaves `sh` to reset `$PWD` to the physical
+/// `getcwd()` — so a tab whose `dir` traverses a symlink can miss the match and never ghost
+/// (same class as the watcher's `/private/var` vs `/var` trap in `CLAUDE.md`, just one layer up).
 const MAX_PROBE_CONCURRENCY: usize = 16;
 
 /// Per-probe deadline. A window's probes run concurrently on a bounded pool, but a wedged command (a

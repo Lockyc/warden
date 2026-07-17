@@ -12,6 +12,12 @@ These are trivial, zero-retrofit additions to make the moment `warden-app` needs
 
 - **No debounce / coalescing** in `Watcher` (`crates/warden-config/src/watch.rs`). The callback fires for every filesystem event matching the config file name. Editors that write in place (rather than atomic temp-file + rename) can produce a transient `load()` parse error (a partial read mid-write) and/or multiple callbacks per save. Atomic-save editors are unaffected. Debounce/coalescing is intentionally left to `warden-app`, which owns the reload UX and already keeps last-good config on a parse error. Also documented at the call site.
 
+## Chrome (`ui/index.html`) has no automated test coverage — deferred, not forgotten
+
+`ui/index.html`'s DTO-mapping and event-filtering logic (`toComponentDto`, `forMe`, the `warden:session-state` handler) has zero committed tests — no unit harness, no e2e, in any of warden/chrome-core/curator. This has already bitten the same bug class twice on the 3-state-presence branch: `toComponentDto` once coerced the (now-string) `t.presence` back to a boolean, painting every non-`"off"` tab live cyan; and a brief's snippet nearly shipped `forMe(e.payload)` (passing the payload instead of the event), which would have made the per-window filter always return `true` and silently stop filtering. Neither is catchable by the compiler (plain JS) or by any Rust/Cargo test — the failure lives entirely in `ui/index.html`'s hand-written DOM/event glue.
+
+A throwaway harness proved a fix is viable: headless Chromium over CDP, with a stubbed `window.__TAURI__` bridge, loading the real `index.html` + the real generated `chrome-core.js`, asserting the presence-state → dot-class mapping (8/8 cases). It was built to verify this branch's fix, then deleted — nothing tracks the approach or the gap it closed. **Deferred, not committed to:** stand up that CDP harness (stubbed Tauri bridge + real chrome assets) as a real test target if this bug class bites a third time, or before the next chrome-touching DTO change.
+
 ## warden ↔ agentmux signal richness (deferred integration ideas)
 
 Two related deferrals about the seam between warden and agentmux. Both are conscious decisions, not gaps.
