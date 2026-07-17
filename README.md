@@ -192,9 +192,10 @@ with nothing extra to install:
   of Tauri runtime setup. `build.rs` materializes the release scripts (git-ignored) and stamps the
   build; the app registers window-state/updater/process via its `register_plugins`.
 
-Those same cores are also shared with a **sibling app, [curator](https://github.com/Lockyc/curator)**,
-which curates **browser tabs** the way warden curates **terminals**. curator is a peer project,
-not a dependency of warden — it just draws from the same cores. (warden's embedded terminal is a
+Those same cores are also shared with two **sibling apps, [curator](https://github.com/Lockyc/curator)**
+(curates **browser tabs**) and **[lector](https://github.com/Lockyc/lector)** (curates **local
+documentation sites**), the way warden curates **terminals**. Neither is a dependency of warden —
+they're peer projects that just draw from the same cores. (warden's embedded terminal is a
 separate, vendored third-party component; see the License note below.)
 
 If you want to iterate on a shared core, `just chrome-dev` builds warden against a sibling
