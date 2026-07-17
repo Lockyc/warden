@@ -908,6 +908,21 @@ mod tests {
     }
 
     #[test]
+    fn presence_cache_snapshot_survives_a_recoverable_result() {
+        // The exact bug this task closes: `probe_now`'s replay reads `snapshot`, and a
+        // Recoverable tab caught between window-build and the chrome's listener registering
+        // must come back as Recoverable, not collapse to Absent (the deleted `on ==
+        // Presence::Present` bridge) or Present (the deleted `From<bool>` bridge).
+        let mut cache = PresenceCache::default();
+        cache.record_one("work", "ghost-tab", Presence::Recoverable);
+        assert_eq!(
+            cache.snapshot("work").get("ghost-tab"),
+            Some(&Presence::Recoverable),
+            "a recoverable session must replay as recoverable, not collapse to absent or present"
+        );
+    }
+
+    #[test]
     fn presence_cache_snapshot_sees_a_tab_mid_sweep_not_only_at_pass_end() {
         // The stuck-dark-dot regression: probe_now's replay can land while a wide window's sweep is
         // still running, so a tab already probed must be visible in the snapshot immediately — not
