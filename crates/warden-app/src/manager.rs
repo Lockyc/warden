@@ -669,10 +669,22 @@ impl WindowManager {
                     let _ = surface.reparent(nsw as *mut c_void, INITIAL_RECT);
                 }
                 match ws.registry.attach(&tab_id, surface) {
-                    // Show the returned tab in its origin: it's already Spawned, so activate
-                    // just shows+focuses it and marks it active.
+                    // Re-assert the origin's CURRENT selection — NOT the returned tab. The chrome
+                    // owns selection (warden passes no `active`), so force-activating the returned
+                    // tab here would show its terminal while the sidebar still highlights whatever
+                    // was selected: the shown surface and the sidebar diverge, and re-popping the
+                    // now-shown-but-unselected tab leaves an uncovered (transparent) hole.
+                    // `reparent` unhid the returning surface; re-activating the real selection
+                    // re-hides it (activate hides all others). If nothing is active (the selection
+                    // was closed while this tab was out), the returned tab becomes active — there
+                    // is nothing else to show.
                     Ok(()) => {
-                        let _ = ws.registry.activate(&tab_id);
+                        let show = ws
+                            .registry
+                            .active_tab()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| tab_id.clone());
+                        let _ = ws.registry.activate(&show);
                     }
                     // Defensive: slot wasn't Cold/Detached (shouldn't happen) — hand-back the
                     // surface and drop it rather than leak, keeping the decision explicit.

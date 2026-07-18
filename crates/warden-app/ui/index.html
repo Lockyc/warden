@@ -247,7 +247,14 @@
                 console.error("warden: IPC activate_tab failed", err);
                 return false;
               });
-              if (activeId === id) setActiveId(id, live); // ignore a stale reply for an old click
+              if (activeId === id) {
+                setActiveId(id, live); // ignore a stale reply for an old click
+                // Repaint the row's live/cold dot now the spawn has settled. setActiveId only
+                // tracks selection + the empty-state; without this an unloaded tab that a cold
+                // start just brought live keeps showing a hollow (cold) dot until the next full
+                // refresh (the "cold-start indicator never lights up" bug).
+                sb.setLive(id, live);
+              }
             },
             onUnload: unloadTab,
             onPopOut(id) {
