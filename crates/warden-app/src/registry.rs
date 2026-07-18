@@ -54,14 +54,6 @@ enum TabSlot {
     /// local (this-registry) operation on a `Detached` tab is a no-op: there
     /// is nothing here to spawn, show, kill, or free — the surface and its
     /// lifecycle belong to whichever registry currently holds it `Spawned`.
-    ///
-    /// `warden-app` has no `[lib]` target, so `pub` alone doesn't exempt this
-    /// from the dead-code lint — nothing outside this file can be an
-    /// "external consumer" the way a library crate would have one. `detach`
-    /// (the only non-test constructor) has no caller yet: the manager-side
-    /// pop-out command that calls it lands in a follow-up task. Drop this
-    /// `allow` once that lands.
-    #[allow(dead_code)]
     Detached,
 }
 
@@ -254,6 +246,14 @@ impl Registry {
         }
     }
 
+    /// The display title of tab `id` (for a detached window's banner), or `None` if unknown.
+    pub fn tab_title(&self, id: &str) -> Option<String> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.title.clone())
+    }
+
     /// The id of the tab owning the spawned surface with handle `surface_id`
     /// (`GhosttySurface::id`), if any — routes a per-surface signal (bell /
     /// notification) back to its tab.
@@ -334,10 +334,6 @@ impl Registry {
     /// stand the placeholder in for); or a tab already `Detached` (restored to
     /// `Detached` — already gone elsewhere, calling this twice is a no-op, not
     /// a second extraction).
-    ///
-    /// No caller yet (see `TabSlot::Detached`'s doc) — `#[allow(dead_code)]`
-    /// until the manager-side pop-out command lands.
-    #[allow(dead_code)]
     pub fn detach(&mut self, id: &str) -> Option<GhosttySurface> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Detached) {
@@ -355,32 +351,37 @@ impl Registry {
 
     /// Return a surface to slot `id` as `Spawned` — the inverse of `detach`,
     /// called when a popped-out window's tab is reparented back into its
-    /// origin registry. Only succeeds from a `Detached` slot (the placeholder
-    /// `detach` leaves behind); succeeds → `Ok(())` and the slot becomes
-    /// `Spawned(surface)`.
+    /// origin registry. Succeeds from a `Detached` **or** a `Cold` slot →
+    /// `Ok(())`, and the slot becomes `Spawned(surface)`.
     ///
-    /// On failure — unknown `id`, or a slot that isn't `Detached` (defensive:
-    /// the command layer should only ever call this on the placeholder it
-    /// itself created via `detach`) — the surface is handed **back** as
-    /// `Err(surface)` rather than silently dropped. A `bool` return (as the
-    /// task brief's other suggested shape) was rejected for this reason: on
-    /// the failure path the `surface` parameter would simply fall out of
-    /// scope and hit `GhosttySurface`'s `Drop` safety net, closing a surface
-    /// the caller doesn't expect to lose. Returning it keeps that decision
-    /// with the caller instead of making it silently here.
+    /// Both source slots are real return paths, which is why this accepts
+    /// either: if the origin window stayed open while the tab was popped out,
+    /// its slot is still the `Detached` placeholder `detach` left. If the user
+    /// *closed* the origin window first, redock reopens it from config — which
+    /// rebuilds that tab as a fresh `Cold` (or a freshly-spawned surface the
+    /// caller then `unload`s back to `Cold`) — so the slot the returning
+    /// surface lands in is `Cold`. Either way the reparented surface takes the
+    /// slot.
     ///
-    /// No caller yet (see `TabSlot::Detached`'s doc) — `#[allow(dead_code)]`
-    /// until the manager-side pop-out command lands.
-    #[allow(dead_code)]
+    /// On failure — unknown `id`, or a slot that is already `Spawned` (a
+    /// live surface already occupies it; overwriting would leak that surface's
+    /// PTY) — the surface is handed **back** as `Err(surface)` rather than
+    /// silently dropped. A `bool` return (as the task brief's other suggested
+    /// shape) was rejected for this reason: on the failure path the `surface`
+    /// parameter would simply fall out of scope and hit `GhosttySurface`'s
+    /// `Drop` safety net, closing a surface the caller doesn't expect to lose.
+    /// Returning it keeps that decision with the caller instead of making it
+    /// silently here.
     pub fn attach(&mut self, id: &str, surface: GhosttySurface) -> Result<(), GhosttySurface> {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return Err(surface);
         };
-        if matches!(t.slot, TabSlot::Detached) {
-            t.slot = TabSlot::Spawned(surface);
-            Ok(())
-        } else {
-            Err(surface)
+        match t.slot {
+            TabSlot::Cold | TabSlot::Detached => {
+                t.slot = TabSlot::Spawned(surface);
+                Ok(())
+            }
+            TabSlot::Spawned(_) => Err(surface),
         }
     }
 
@@ -664,11 +665,12 @@ mod tests {
     // `attach` itself is NOT unit-tested: every path through it needs a real
     // `GhosttySurface` argument (there is no valid empty/placeholder value to
     // construct one from — see the module-level note above), so both its
-    // success arm (Detached -> Spawned) and its Err-returns-the-surface
-    // failure arms need a live surface to even call it with. The
-    // `matches!(t.slot, TabSlot::Detached)` gate it relies on is exercised
-    // structurally above via `force_detached` + `is_detached`. See the task
-    // report for the GUI-driven verification plan.
+    // success arms (Cold -> Spawned, when redock reopened the origin, and
+    // Detached -> Spawned, when the origin stayed open) and its Err-returns-the-
+    // surface failure arm (a `Spawned` slot) need a live surface to even call it
+    // with. The slot gate it relies on is exercised structurally above via
+    // `force_detached` + `is_detached`. See the task report for the GUI-driven
+    // verification plan.
 
     #[test]
     fn unload_of_detached_tab_is_noop_and_stays_detached() {

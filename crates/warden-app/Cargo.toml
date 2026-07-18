@@ -7,11 +7,11 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 # The shared sidebar chrome, embedded as string consts; build.rs writes them into ui/ (the
 # frontendDist Tauri embeds). Pinned by rev — bump in lockstep with config-core + the toolchain.
-chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "51c218916b7a895acb4b2638e678510040a7eb26" }
+chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "e64875449f9cc9090306c73a3711922e56c9318f" }
 # Shared release tooling + build_stamp. build.rs materializes scripts/*.sh (git-ignored) and stamps
 # BUILD_GIT_SHA/BUILD_DATE. default-features=false keeps the build-dep zero-tauri (resolver 2 keeps
 # it separate from the runtime-featured [dependencies] entry below). Pinned by rev.
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "9a72d5d388e88c3c43ce67db81f029704fdef285", default-features = false }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "b2bf464c29ab512a9831684bddc4b3bd210ee7c7", default-features = false }
 
 [dependencies]
 # macos-private-api: required for programmatic transparent windows (the
@@ -28,7 +28,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # Shared Tauri runtime helpers (register_plugins). runtime feature pulls tauri; the build-dep above
 # stays zero-tauri. Same rev as the build-dep — bump both in lockstep.
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "9a72d5d388e88c3c43ce67db81f029704fdef285", features = ["runtime"] }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "b2bf464c29ab512a9831684bddc4b3bd210ee7c7", features = ["runtime"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 warden-config = { path = "../warden-config" }

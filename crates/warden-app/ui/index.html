@@ -81,6 +81,7 @@
       let activeId = null; // controller mirror of the active tab, for the empty-state placeholder
       let activeLive = false; // …and whether a live surface actually covers the hole for it
       const badges = new Set(); // tab ids with an unread notification/bell badge
+      const detached = new Set(); // tab ids popped out into their own window (onSelect → raise it)
       // tab id → 'on' | 'ghost' | 'off' (probe presence), for probe-enabled tabs. The backend
       // sends these strings verbatim (they ARE chrome-core's wire values) — do not re-derive
       // them from a boolean; presence has been 3-state since exit 3 ("recoverable") shipped.
@@ -127,6 +128,10 @@
         const ids = new Set(dto.tabs.map((t) => t.id));
         badges.forEach((id) => { if (!ids.has(id)) badges.delete(id); });
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
+        // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
+        // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
+        detached.clear();
+        dto.tabs.forEach((t) => { if (t.detached) detached.add(t.id); });
         return {
           title: dto.title,
           colour: dto.colour ?? null,
@@ -143,6 +148,10 @@
             // project. Forwarded from warden's TabDto (serde renames tree_path → treePath).
             tree: !!t.tree,
             treePath: t.treePath || [],
+            // This tab's surface has been popped out into its own window: chrome-core renders
+            // the row with the ⤢ detached mark and the app treats a click on it as "raise that
+            // window". Invisible until forwarded here (the "tree rendered flat" footgun class).
+            detached: !!t.detached,
             live: t.spawned,
             attention: badges.has(t.id) ? true : null,
             // `t.presence` is already 'on'/'ghost'/'off' (or null = never probed) from the
@@ -220,6 +229,12 @@
           document.getElementById("sidebar"),
           {
             async onSelect(id) {
+              // A popped-out tab has no local surface to activate — "select" means "raise its
+              // window". Don't change local selection (leave activeId on whatever's in this hole).
+              if (detached.has(id)) {
+                invokeSafe("raise_popped_window", { id });
+                return;
+              }
               // Focusing a tab clears its unread badge (it's now visible).
               badges.delete(id);
               sb.setAttention(id, null);
@@ -235,6 +250,13 @@
               if (activeId === id) setActiveId(id, live); // ignore a stale reply for an old click
             },
             onUnload: unloadTab,
+            onPopOut(id) {
+              // Pop the tab out into its own window (preserving the live terminal). The backend
+              // detaches the surface, opens a detached window, reparents into it, and pushes a
+              // refresh so this row re-renders detached. chrome-core only offers this control on a
+              // not-already-detached tab.
+              invokeSafe("pop_out_tab", { id });
+            },
             onKill(id) {
               // No optimistic drop: the presence dot tracks `warden:session-state` only. kill_session
               // runs the kill then bumps the scheduler's fast burst, which converges the dot
@@ -348,6 +370,12 @@
       listen("warden:unload-tab", (e) => {
         if (!forMe(e)) return;
         if (activeId) unloadTab(activeId);
+      });
+      // ⌘⇧O pops the active tab out into its own window (same as its ⤢ pop-out control). Skip a
+      // tab that's already detached (its window is elsewhere — nothing to pop out).
+      listen("warden:pop-out-tab", (e) => {
+        if (!forMe(e)) return;
+        if (activeId && !detached.has(activeId)) invokeSafe("pop_out_tab", { id: activeId });
       });
 
       // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).

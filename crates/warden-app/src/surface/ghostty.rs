@@ -1190,9 +1190,6 @@ impl GhosttySurface {
     /// immediately so the surface fills the new window's hole with no blank first frame.
     ///
     /// Main-thread only, like every other method here (AppKit + libghostty surface calls).
-    // No caller yet — the registry pop-out path (a later task) calls this; the `-D warnings`
-    // gate would otherwise flag it. Drop this allow when that caller lands.
-    #[allow(dead_code)]
     pub fn reparent(
         &mut self,
         new_ns_window: *mut c_void,

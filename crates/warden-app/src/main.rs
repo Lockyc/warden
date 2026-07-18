@@ -153,8 +153,13 @@ fn build_app_menu(
 
     // The spine's Close Tab (⌘W) — id/accelerator now live in shell_core::menu so they can't
     // drift per app; warden's own semantics (unload the active tab, NOT close the window) are
-    // unchanged, see the on_menu_event handler's CLOSE_TAB arm.
-    tab_menu = tab_menu.separator().item(&spine.close_tab).separator();
+    // unchanged, see the on_menu_event handler's CLOSE_TAB arm. Pop Out Tab (⌘⇧O) sits beside it,
+    // acting on the active tab via the same focused-window emit path.
+    tab_menu = tab_menu
+        .separator()
+        .item(&spine.close_tab)
+        .item(&spine.pop_out_tab)
+        .separator();
 
     // Jump-to-position. Jump mode: ⌘1–⌘9. Cycle mode: ⌘3–⌘9 (⌘1/⌘2 taken above).
     let first = if mode == TabDigitKeys::Cycle { 3 } else { 1 };
@@ -308,6 +313,181 @@ fn unload_tab(
         .and_then(|ws| ws.registry.unload(&id))
 }
 
+/// A popped-out tab's window opens at this size — a single terminal needs far less than a
+/// full multi-tab window's config-resolved default (1500×1000).
+#[cfg(target_os = "macos")]
+const DETACHED_DEFAULT_WIDTH: f64 = 900.0;
+#[cfg(target_os = "macos")]
+const DETACHED_DEFAULT_HEIGHT: f64 = 640.0;
+/// The detached window's banner height (matches `detach.html`'s `#banner`, 2.25rem ≈ 36px).
+/// Only used to size the surface's BIRTH rect so it doesn't flash full-height for one frame
+/// before `detach.html`'s own `set_hole_rect` lands and reports the exact hole.
+#[cfg(target_os = "macos")]
+const DETACHED_BANNER_H: f64 = 36.0;
+
+/// Pop tab `id` out of the calling window into its own detached window, preserving the live
+/// terminal (surface + PTY). The tab stays present in the origin's sidebar as a `Detached`
+/// placeholder (rendered with the ⤢ mark) until the detached window closes, at which point
+/// `redock` (wired via `shell_core::detach::wire_return`) moves it back.
+///
+/// **Lock discipline (load-bearing):** the `ManagerState` lock is held ONLY to extract the
+/// surface + read the spec inputs (phase 1) and again to store the result (phase 3). The window
+/// build + reparent (phase 2) run with the lock RELEASED — `open_detached` builds a window and
+/// its `birth_content` closure moves the surface in, and holding the lock across that (which can
+/// re-enter Tauri/AppKit) risks deadlock. The surface is threaded through an `Option` so the
+/// closure can borrow it and we can recover it afterward on either outcome.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn pop_out_tab(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    let app = window.app_handle().clone();
+    let origin_label = window.label().to_string();
+
+    // Phase 1 — under the lock: extract the live surface (leaves a Detached placeholder) and
+    // read the banner spec inputs. Lock dropped at the end of this block.
+    let (surface, spec, token) = {
+        let mut m = state.lock();
+        let ws = m
+            .windows
+            .get_mut(&origin_label)
+            .ok_or_else(|| "window not found".to_string())?;
+        let surface = ws
+            .registry
+            .detach(&id)
+            .ok_or_else(|| "tab is not live — open it before popping it out".to_string())?;
+        let title = ws.registry.tab_title(&id).unwrap_or_else(|| id.clone());
+        let colour = ws.colour.clone();
+        let spec = shell_core::detach::DetachSpec {
+            title,
+            colour: Some(colour),
+            width: DETACHED_DEFAULT_WIDTH,
+            height: DETACHED_DEFAULT_HEIGHT,
+        };
+        let token = crate::plan::detach_window_token(&origin_label, &id);
+        (surface, spec, token)
+    };
+
+    // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
+    // into it. Birth rect ≈ the hole below the banner (detach.html corrects it on load).
+    let birth_rect = crate::surface::PixelRect {
+        x: 0.0,
+        y: 0.0,
+        width: DETACHED_DEFAULT_WIDTH,
+        height: (DETACHED_DEFAULT_HEIGHT - DETACHED_BANNER_H).max(0.0),
+    };
+    let mut surface_opt = Some(surface);
+    let build = shell_core::detach::open_detached(&app, &token, &spec, "warden", |win| {
+        let nsw = win.ns_window()?;
+        surface_opt
+            .as_mut()
+            .expect("surface present during birth")
+            .reparent(nsw as *mut std::os::raw::c_void, birth_rect)
+            .map_err(|e| std::io::Error::other(format!("reparent failed: {e}")))?;
+        Ok(())
+    });
+
+    let label = match build {
+        Ok(label) => label,
+        Err(e) => {
+            // The window build / reparent failed. reparent only errors before it moves the
+            // view, so the surface is intact AND its view is still shown in the origin — put
+            // it back into the origin's registry slot so the tab stays live (never a permanent
+            // Detached placeholder with no window). If the origin vanished meanwhile, the
+            // surface drops here (the tab genuinely has no home).
+            let surface = surface_opt.take().expect("surface held on build failure");
+            let mut m = state.lock();
+            if let Some(ws) = m.windows.get_mut(&origin_label) {
+                if let Err(s) = ws.registry.attach(&id, surface) {
+                    drop(s);
+                }
+            }
+            return Err(format!("couldn't pop out tab: {e}"));
+        }
+    };
+
+    // Phase 3 — re-lock to store the (now reparented) surface + wire the return.
+    let surface = surface_opt.take().expect("surface reparented on success");
+    {
+        let mut m = state.lock();
+        m.detached.insert(
+            label.clone(),
+            manager::DetachedSurface {
+                surface,
+                origin_label: origin_label.clone(),
+                tab_id: id.clone(),
+            },
+        );
+    }
+    if let Some(win) = app.get_webview_window(&label) {
+        let app2 = app.clone();
+        let label2 = label.clone();
+        shell_core::detach::wire_return(&win, move || redock(&app2, &label2));
+    }
+
+    // The origin's row now renders detached; refresh it. sync_empty_surface is a no-op here
+    // (origin still open) but keeps the home-surface authority single-sourced; the menu is
+    // unchanged (detached windows aren't in it) but rebuilt for consistency.
+    {
+        let mut m = state.lock();
+        m.sync_empty_surface(&app);
+    }
+    let _ = rebuild_menu(&app);
+    if let Some(dto) = state.lock().init_dto(&origin_label) {
+        let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
+    }
+    Ok(())
+}
+
+/// Raise the detached window hosting tab `id` (popped out of the calling window). The chrome
+/// calls this instead of `activate_tab` when a *detached* row is clicked in the origin sidebar —
+/// there is no local surface to activate, so "select" means "bring its window forward".
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn raise_popped_window(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+) {
+    use tauri::Manager;
+    let app = window.app_handle().clone();
+    let label = state.lock().detached_label_for(window.label(), &id);
+    if let Some(label) = label {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+        }
+    }
+}
+
+/// Return a popped-out tab to its origin when its detached window closes — the `on_close`
+/// wired by `shell_core::detach::wire_return`. Runs on the main thread (Tauri delivers the
+/// window `Destroyed` event there), so it can lock `ManagerState` and touch AppKit directly.
+/// Captures only the `AppHandle` (Clone) + the detached label; the state is fetched inside.
+#[cfg(target_os = "macos")]
+fn redock(app: &tauri::AppHandle, detached_label: &str) {
+    use tauri::{Emitter, Manager};
+    let st = app.state::<ManagerState>();
+    let origin = st.lock().redock(app, detached_label);
+    let Some(origin_label) = origin else {
+        return; // already redocked (double-close) — nothing to do
+    };
+    // The origin may have been reopened by redock; rebuild the menu so its checkmark/(closed)
+    // tag is right (lock already released — rebuild_menu re-locks).
+    let _ = rebuild_menu(app);
+    // Push a fresh snapshot so the origin's chrome un-detaches the returned tab's row and shows
+    // it active. A no-op emit if the origin is gone (tab had no home).
+    let dto = st.lock().init_dto(&origin_label);
+    if let Some(dto) = dto {
+        let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
+    }
+    // The tab's session may have changed while popped out — fast-burst the origin's dots.
+    probe::bump(&origin_label);
+}
+
 /// Kill the *session* tab `id` represents (the thing its `probe` checks for) by running
 /// its configured `kill` command via `sh -c`, cwd = the tab's dir, fire-and-forget on a
 /// detached thread (exit code ignored — warden has no response to a failed kill, and must
@@ -444,6 +624,11 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     let mut m = state.lock();
     if let Some(ws) = m.windows.get_mut(window.label()) {
         ws.registry.set_active_frame(view_rect);
+    } else {
+        // A detached (popped-out) window lives outside `windows`; its banner-shell page
+        // (`detach.html`) reports its own hole rect via this same command, so route it to
+        // the detached surface. No-op if the label is neither a real nor a detached window.
+        m.set_detached_frame(window.label(), view_rect);
     }
 }
 
@@ -821,6 +1006,15 @@ fn main() {
                 "warden:unload-tab",
                 serde_json::json!({ "label": label }),
             );
+        } else if id == shell_core::menu::ids::POP_OUT_TAB {
+            // ⌘⇧O pops the active tab out into its own window. The chrome owns "which tab is
+            // active", so it drives the pop_out_tab command on this event. Label-stamped +
+            // forMe()-filtered like every per-window emit (emit_to leaks to siblings).
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:pop-out-tab",
+                serde_json::json!({ "label": label }),
+            );
         } else if id == shell_core::menu::ids::CHECK_UPDATES {
             // Manual update check → the focused window's chrome runs it (ignores auto_update).
             // Label-stamped like every other per-window emit: `emit_to` leaks to sibling
@@ -851,6 +1045,8 @@ fn main() {
         init_tabs,
         activate_tab,
         unload_tab,
+        pop_out_tab,
+        raise_popped_window,
         kill_session,
         start_session,
         rescan_root,

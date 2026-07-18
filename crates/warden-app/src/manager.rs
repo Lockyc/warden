@@ -4,9 +4,11 @@
 use crate::plan::{reconcile_ops, window_specs, WindowOp, WindowSpec};
 use crate::probe::Presence;
 use crate::registry::{ProbeTarget, Registry, TabDto};
-use crate::surface::PixelRect;
+use crate::surface::ghostty::GhosttySurface;
+use crate::surface::{PixelRect, TerminalSurface};
 use crate::ManagerState;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::os::raw::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -148,6 +150,22 @@ pub struct WindowState {
     pub spawn_error: Option<String>,
 }
 
+/// A tab that has been popped out into its own detached window. Holds the live surface
+/// (moved out of its origin `WindowState`'s `Registry`, which keeps a `Detached`
+/// placeholder in its slot) plus the bookkeeping needed to return it when the detached
+/// window closes: which origin window/tab it belongs to.
+///
+/// These live in `WindowManager::detached`, **separate from `windows`**, so hot-reload
+/// `reconcile` (which only walks `windows`) never sees them and can't close or duplicate
+/// them — the detached-label prefix exclusion is thus never even reached for these,
+/// because they aren't in the reconciled set at all. `is_empty` counts them so the home
+/// surface doesn't pop up while a detached window is the only thing on screen.
+pub struct DetachedSurface {
+    pub surface: GhosttySurface,
+    pub origin_label: String,
+    pub tab_id: String,
+}
+
 pub struct WindowManager {
     pub windows: HashMap<String, WindowState>, // key = Tauri label
     pub names: HashMap<String, String>,        // window title -> label
@@ -180,6 +198,13 @@ pub struct WindowManager {
     /// (`reopen_window` / `reopen_last`). Stale entries (closed-then-deleted, or
     /// already reopened) are filtered at reopen time.
     pub last_closed: Vec<String>,
+    /// Tabs currently popped out into their own detached windows, keyed by the detached
+    /// window's Tauri label (`shell_core::detach::detached_label`). Kept **separate from
+    /// `windows`** so hot-reload reconcile never touches them (it walks `windows` only) and
+    /// so `is_empty` can count them (keeping the home surface hidden while a detached window
+    /// is the only surface on screen). Populated by `pop_out_tab`, drained by `redock` when
+    /// the detached window closes.
+    pub detached: HashMap<String, DetachedSurface>,
 }
 
 impl WindowManager {
@@ -206,6 +231,7 @@ impl WindowManager {
             probe_interval: Arc::new(AtomicU64::new(5)),
             presence_cache: PresenceCache::default(),
             last_closed: Vec::new(),
+            detached: HashMap::new(),
         }
     }
 
@@ -549,7 +575,89 @@ impl WindowManager {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.windows.is_empty()
+        // A popped-out (detached) window is a real surface on screen: while one exists the
+        // app is NOT empty, so the home surface must not appear. `sync_empty_surface` reads
+        // this from places (e.g. a real window's Destroyed handler) that don't otherwise know
+        // about detached windows.
+        self.windows.is_empty() && self.detached.is_empty()
+    }
+
+    /// The detached window's label for the tab `(origin_label, tab_id)`, if that tab is
+    /// currently popped out. Used to route a click on a detached sidebar row (in the origin
+    /// window) to "raise the popped-out window".
+    pub fn detached_label_for(&self, origin_label: &str, tab_id: &str) -> Option<String> {
+        self.detached
+            .iter()
+            .find(|(_, ds)| ds.origin_label == origin_label && ds.tab_id == tab_id)
+            .map(|(label, _)| label.clone())
+    }
+
+    /// Update a detached window's surface frame — its content hole, reported by
+    /// `detach.html`'s own `set_hole_rect` on load/resize (the detached window is not in
+    /// `windows`, so the ordinary registry path can't reach it). No-op if `label` isn't a
+    /// live detached window.
+    pub fn set_detached_frame(&mut self, label: &str, rect: PixelRect) {
+        if let Some(ds) = self.detached.get_mut(label) {
+            ds.surface.set_frame(rect);
+        }
+    }
+
+    /// Return a popped-out tab's surface to its origin window when the detached window closes
+    /// (`shell_core::detach::wire_return`'s `on_close`). Runs on the main thread under the
+    /// `ManagerState` lock. Returns the origin label so the caller can rebuild the menu and
+    /// push a refresh to it; `None` if the detached window was already gone (double-close).
+    ///
+    /// Edge cases, in order:
+    /// 1. **Origin still open** — its slot is the `Detached` placeholder; `unload` is a no-op
+    ///    on it, `reparent` moves the view back, `attach` (Detached → Spawned) restores it.
+    /// 2. **Origin closed by the user while detached** — `reopen_window` rebuilds it from
+    ///    config (which may spawn a fresh surface for this tab); `unload` kills that fresh
+    ///    surface back to `Cold` so `attach` (Cold → Spawned) lands the RETURNING surface,
+    ///    never overwriting a live one.
+    /// 3. **Origin removed from config entirely** — the tab has no home, so the surface is
+    ///    dropped (kills its PTY): the one place a live surface is intentionally dropped.
+    pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<String> {
+        let DetachedSurface {
+            mut surface,
+            origin_label,
+            tab_id,
+        } = self.detached.remove(detached_label)?;
+
+        // Rebuild the origin window if the user closed it while the tab was popped out, so the
+        // tab has somewhere to return to (case 2).
+        if !self.windows.contains_key(&origin_label) {
+            self.reopen_window(app, &origin_label);
+        }
+
+        match self.windows.get_mut(&origin_label) {
+            // Case 3: origin gone from config — the tab genuinely ends. Dropping the surface
+            // closes its PTY (the only intentional live-surface drop in the whole flow).
+            None => drop(surface),
+            Some(ws) => {
+                // Kill any fresh surface a reopen spawned for this tab (→ Cold) so `attach`
+                // never overwrites a `Spawned` slot; on the origin-stayed-open path the slot
+                // is `Detached` and this is a no-op.
+                ws.registry.unload(&tab_id);
+                if let Ok(nsw) = ws.window.ns_window() {
+                    // reparent only errors before it moves the view, so a failure here leaves
+                    // the surface intact for `attach` below to re-home in the registry.
+                    let _ = surface.reparent(nsw as *mut c_void, INITIAL_RECT);
+                }
+                match ws.registry.attach(&tab_id, surface) {
+                    // Show the returned tab in its origin: it's already Spawned, so activate
+                    // just shows+focuses it and marks it active.
+                    Ok(()) => {
+                        let _ = ws.registry.activate(&tab_id);
+                    }
+                    // Defensive: slot wasn't Cold/Detached (shouldn't happen) — hand-back the
+                    // surface and drop it rather than leak, keeping the decision explicit.
+                    Err(s) => drop(s),
+                }
+            }
+        }
+
+        self.sync_empty_surface(app);
+        Some(origin_label)
     }
 
     /// Drop a window's state and reap its surfaces, without re-closing the Tauri
