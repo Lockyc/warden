@@ -1166,6 +1166,122 @@ impl GhosttySurface {
             })
         }
     }
+
+    /// Move this LIVE surface — its PTY, scrollback, and running process all intact — into a
+    /// different NSWindow, re-parenting the native view at the AppKit level WITHOUT freeing or
+    /// respawning the libghostty surface. This is the session-preserving half of "pop a tab out
+    /// into its own window": a later task hands the owning tab slot to a new window's registry
+    /// and calls this to carry the live view across.
+    ///
+    /// It mirrors `new`'s per-window AppKit wiring exactly, unwired-then-rewired: drop the three
+    /// window-scoped notification observers from the old window, move the host view, re-register
+    /// the same three against the new window, then re-seed the two per-window render signals
+    /// (`display_id` for vsync, `focus` for the render display link). It calls NONE of
+    /// `teardown` / `ghostty_surface_free` / `close`: the surface handle and everything it owns
+    /// downstream (PTY, scrollback, child process) must survive untouched.
+    ///
+    /// The `SURFACE_VIEWS` map and `FOCUSED_SURFACE` atomic are deliberately left alone: the map
+    /// keys `surface → host_view`, and neither pointer changes across a reparent (same surface,
+    /// same view), so the entry stays valid; `FOCUSED_SURFACE` is the paste target, owned by
+    /// `focus()`, which the caller drives after the move — `new` doesn't touch it at spawn either.
+    ///
+    /// `new_ns_window` is the raw `NSWindow *` (Tauri's `WebviewWindow::ns_window()`), as in
+    /// `new`. `rect` is the view's frame in the destination content-view's coordinates, applied
+    /// immediately so the surface fills the new window's hole with no blank first frame.
+    ///
+    /// Main-thread only, like every other method here (AppKit + libghostty surface calls).
+    // No caller yet — the registry pop-out path (a later task) calls this; the `-D warnings`
+    // gate would otherwise flag it. Drop this allow when that caller lands.
+    #[allow(dead_code)]
+    pub fn reparent(
+        &mut self,
+        new_ns_window: *mut c_void,
+        rect: PixelRect,
+    ) -> Result<(), SurfaceError> {
+        // A torn-down surface has a freed handle and its observers already removed; reparenting
+        // it would message a dangling view / a freed surface. Refuse rather than corrupt state.
+        if self.closed {
+            return Err(SurfaceError::SurfaceCreateFailed);
+        }
+        let mtm = MainThreadMarker::new()
+            .expect("GhosttySurface::reparent must be called on the main thread");
+
+        unsafe {
+            // Derive the destination Retained<NSWindow> exactly as new() does: from the raw
+            // NSWindow* via its contentView's back-reference, so the swapped-in field carries a
+            // proper retain count.
+            let window_ref: &NSWindow = &*(new_ns_window as *const NSWindow);
+            let content_view = window_ref
+                .contentView()
+                .ok_or(SurfaceError::SurfaceCreateFailed)?;
+            let new_window = content_view
+                .window()
+                .ok_or(SurfaceError::SurfaceCreateFailed)?;
+
+            // Drop the three window-scoped observers from the OLD window. All three were
+            // registered with `host_view` as the observer (new() above), so a single
+            // removeObserver(&host_view) drops all three at once — the same call teardown uses.
+            let center = NSNotificationCenter::defaultCenter();
+            center.removeObserver(&self.host_view);
+
+            // Move the native view: out of the old content view, back in as the TOPMOST subview
+            // of the new one (above its WKWebView — same as new()'s addSubview).
+            self.host_view.removeFromSuperview();
+            content_view.addSubview(&self.host_view);
+
+            // Re-register the same three observers, now scoped to the NEW window — identical to
+            // new()'s block, just against `new_window`.
+            center.addObserver_selector_name_object(
+                &self.host_view,
+                sel!(windowDidBecomeKey:),
+                Some(NSWindowDidBecomeKeyNotification),
+                Some(&new_window),
+            );
+            center.addObserver_selector_name_object(
+                &self.host_view,
+                sel!(windowDidResignKey:),
+                Some(NSWindowDidResignKeyNotification),
+                Some(&new_window),
+            );
+            center.addObserver_selector_name_object(
+                &self.host_view,
+                sel!(windowDidChangeScreen:),
+                Some(NSWindowDidChangeScreenNotification),
+                Some(&new_window),
+            );
+
+            // Adopt the new window as this surface's owner (replaces the old retain).
+            self.window = new_window;
+
+            // Fit the view to the destination hole and push content-scale + backing size for the
+            // new window's display *together* (set_frame's discipline — a cross-monitor move can
+            // change the scale, and the two must never drift). Positioning the frame now avoids a
+            // blank first frame.
+            let frame = NSRect::new(
+                NSPoint::new(rect.x, rect.y),
+                NSSize::new(rect.width, rect.height),
+            );
+            self.host_view.setFrame(frame);
+            let scale = self.window.backingScaleFactor();
+            apply_surface_geometry(self.surface, rect.width, rect.height, scale);
+
+            // Re-seed the render display link onto the new window's monitor so vsync tracks its
+            // refresh rate (same source as new() + the windowDidChangeScreen: observer).
+            ffi::ghostty_surface_set_display_id(self.surface, window_display_id(&self.window));
+
+            // Re-seed focus from the NEW window's REAL key state. LOAD-BEARING: without it a
+            // surface moved into a background (non-key) window keeps libghostty's focus=1, which
+            // keeps its 60fps render display link running forever (the "cursor flashes around an
+            // unfocused window" footgun). windowDidBecomeKey:/windowDidResignKey: keep it correct
+            // afterwards, but a window that is never key emits neither — so this initial seed is
+            // the only thing that gets a background detach right, exactly as new() reasons.
+            let focused =
+                NSApplication::sharedApplication(mtm).isActive() && self.window.isKeyWindow();
+            ffi::ghostty_surface_set_focus(self.surface, focused);
+        }
+
+        Ok(())
+    }
 }
 
 impl TerminalSurface for GhosttySurface {
