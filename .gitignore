@@ -28,3 +28,4 @@ examples/projects/**/.git/
 
 # Generated updater manifest (scripts/gen-latest-json.sh, for a release upload)
 /latest.json
+.DS_Store
