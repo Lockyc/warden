@@ -1279,8 +1279,13 @@ fn main() {
         }
         Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running warden");
+    .build(tauri::generate_context!())
+    .expect("error while building warden")
+    .run(|_app, event| {
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            crate::manager::mark_quitting();
+        }
+    });
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use crate::surface::{PixelRect, TerminalSurface};
 use crate::ManagerState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use warden_config::{Config, Reconciliation};
@@ -22,6 +22,22 @@ const INITIAL_RECT: PixelRect = PixelRect {
     width: 740.0,
     height: 600.0,
 };
+
+/// Set once on `RunEvent::ExitRequested` (main.rs), which fires before every window's
+/// `Destroyed` during ⌘Q. Checked at the top of `redock` so a detached window's teardown
+/// doesn't reopen its (already-closed) origin window mid-quit. Never reset — warden doesn't
+/// prevent exit, so once it's true the app is on its way out for good.
+static IS_QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Mark the app as quitting. Call once, from `RunEvent::ExitRequested`.
+pub fn mark_quitting() {
+    IS_QUITTING.store(true, Ordering::SeqCst);
+}
+
+/// Whether the app is quitting — see `IS_QUITTING`.
+pub fn is_quitting() -> bool {
+    IS_QUITTING.load(Ordering::SeqCst)
+}
 
 /// One window's probe work-list: `(window label, its probe-enabled tabs)`.
 pub type WindowProbeTargets = (String, Vec<ProbeTarget>);
@@ -617,6 +633,15 @@ impl WindowManager {
     /// 3. **Origin removed from config entirely** — the tab has no home, so the surface is
     ///    dropped (kills its PTY): the one place a live surface is intentionally dropped.
     pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<String> {
+        // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's
+        // `Destroyed`): don't reopen an origin window or reparent a surface mid-teardown —
+        // everything is being torn down and `GhosttySurface`'s `Drop` frees it. Without this,
+        // a detached window whose origin was already closed would build a fresh window during
+        // app termination (reaped by native `terminate:`, but real window resurrection).
+        if is_quitting() {
+            return None;
+        }
+
         let DetachedSurface {
             mut surface,
             origin_label,
