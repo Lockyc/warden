@@ -1,7 +1,7 @@
 //! Owns the live window windows. Materializes them from config and (Task 7)
 //! applies reconciliations. Impure (Tauri + AppKit) — verified at checkpoints.
 
-use crate::plan::{reconcile_ops, window_specs, WindowOp, WindowSpec};
+use crate::plan::{reconcile_ops, window_specs, TabPlan, WindowOp, WindowSpec};
 use crate::probe::Presence;
 use crate::registry::{ProbeTarget, Registry, TabDto};
 use crate::surface::ghostty::GhosttySurface;
@@ -827,34 +827,14 @@ impl WindowManager {
                         if let Some(c) = colour {
                             ws.colour = c;
                         }
-                        for id in &remove_tabs {
-                            ws.registry.remove(id);
-                        }
-                        for tp in &add_tabs {
-                            // A failed eager spawn on hot-reload leaves the tab cold
-                            // (it retries on focus, which surfaces the error via the
-                            // banner then) — log it, never panic.
-                            if let Err(e) = ws.registry.add(&tp.spec, tp.load_on_open) {
-                                eprintln!(
-                                    "warden: surface spawn failed for tab {:?}: {e}",
-                                    tp.spec.title
-                                );
-                            }
-                        }
-                        // Respawn kept tabs whose terminal spec changed: tear down and
-                        // rebuild by the same id (identity is stable). A cold tab just gets
-                        // a fresh spec and lazy-spawns on next focus; a load_on_open tab
-                        // respawns eagerly. The previously-active tab is re-activated below
-                        // so a visible respawn shows its new surface immediately.
-                        for tp in &respawn_tabs {
-                            ws.registry.remove(&tp.spec.id);
-                            if let Err(e) = ws.registry.add(&tp.spec, tp.load_on_open) {
-                                eprintln!(
-                                    "warden: surface respawn failed for tab {:?}: {e}",
-                                    tp.spec.title
-                                );
-                            }
-                        }
+                        // Add/remove/respawn tabs, skipping any that are currently
+                        // popped out (Detached) — see `apply_tab_reconcile`.
+                        apply_tab_reconcile(
+                            &mut ws.registry,
+                            &remove_tabs,
+                            &add_tabs,
+                            &respawn_tabs,
+                        );
                         // Apply in-place metadata (group/probe/kill + recomputed
                         // tree/tree_path) without respawning; the warden:refresh below
                         // pushes fresh DTOs (has_probe/has_kill recomputed) and the
@@ -916,9 +896,77 @@ impl WindowManager {
     }
 }
 
+/// Apply a hot-reload's tab-set reconcile ops (from the config diff) to one
+/// window's registry — **skipping any tab currently popped out (`Detached`)**.
+///
+/// `reconcile_ops` is derived purely from the config diff and knows nothing about
+/// runtime pop-out state, so a config edit to a currently-detached tab would
+/// otherwise clobber its placeholder: `remove`/`respawn`'s `remove` drops the
+/// slot the live surface must return to (→ `redock` finds no slot and `drop`s the
+/// PTY — silent data loss), and `add`/`respawn`'s `add` eagerly spawns a duplicate
+/// surface for a tab already live elsewhere. Guarding each op on `is_detached`
+/// leaves `redock` the sole owner of a detached tab's lifecycle; the new spec is
+/// re-applied by the reconcile that runs once the tab is docked home again.
+///
+/// The skip keys on `Tab::key` (`id`-else-normalized-`dir`) exactly as the
+/// registry keys every entry — `remove_tabs` carries those keys directly, and a
+/// `TabPlan`'s `spec.id` *is* that key. A non-detached tab reconciles unchanged.
+fn apply_tab_reconcile(
+    registry: &mut Registry,
+    remove_tabs: &[String],
+    add_tabs: &[TabPlan],
+    respawn_tabs: &[TabPlan],
+) {
+    for id in remove_tabs {
+        // A popped-out tab's placeholder is redock's to manage — dropping it here
+        // strands the live surface with no slot to return to.
+        if registry.is_detached(id) {
+            continue;
+        }
+        registry.remove(id);
+    }
+    for tp in add_tabs {
+        // An add for a currently-detached key would spawn a duplicate PTY for a
+        // tab the placeholder already represents. (An add normally only fires for a
+        // genuinely new key; this guard is defensive.)
+        if registry.is_detached(&tp.spec.id) {
+            continue;
+        }
+        // A failed eager spawn on hot-reload leaves the tab cold (it retries on
+        // focus, which surfaces the error via the banner then) — log it, never panic.
+        if let Err(e) = registry.add(&tp.spec, tp.load_on_open) {
+            eprintln!(
+                "warden: surface spawn failed for tab {:?}: {e}",
+                tp.spec.title
+            );
+        }
+    }
+    // Respawn kept tabs whose terminal spec changed: tear down and rebuild by the
+    // same id (identity is stable). A cold tab just gets a fresh spec and lazy-spawns
+    // on next focus; a load_on_open tab respawns eagerly. The previously-active tab is
+    // re-activated by the caller so a visible respawn shows its new surface immediately.
+    for tp in respawn_tabs {
+        // A detached tab is out on loan: its surface lives in the popped-out
+        // window's registry, so tearing down the placeholder here would clobber the
+        // live PTY. Skip — the new spec is picked up by the reconcile that runs once
+        // it's docked home.
+        if registry.is_detached(&tp.spec.id) {
+            continue;
+        }
+        registry.remove(&tp.spec.id);
+        if let Err(e) = registry.add(&tp.spec, tp.load_on_open) {
+            eprintln!(
+                "warden: surface respawn failed for tab {:?}: {e}",
+                tp.spec.title
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surface::TabSpec;
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -927,6 +975,87 @@ mod tests {
         assert_eq!(m.probe_interval.load(Ordering::Relaxed), 5);
         m.set_probe_interval(0);
         assert_eq!(m.probe_interval.load(Ordering::Relaxed), 0);
+    }
+
+    fn tab_spec(id: &str, dir: &str) -> TabSpec {
+        TabSpec {
+            id: id.into(),
+            title: id.into(),
+            dir: std::path::PathBuf::from(dir),
+            shell: "sh".into(),
+            startup: None,
+            group: None,
+            probe: None,
+            kill: None,
+            tree: false,
+            tree_path: Vec::new(),
+        }
+    }
+
+    // `apply` itself needs a live `AppHandle` (Tauri) and a real `GhosttySurface`
+    // (AppKit) — both unconstructable in a unit-test process — so the detached-aware
+    // guard is exercised at its narrowest real layer: `apply_tab_reconcile`, the free
+    // function `apply`'s `WindowOp::Update` arm delegates the add/remove/respawn to.
+    // `force_detached` reaches a `Detached` slot without a live surface (see registry.rs).
+    #[test]
+    fn reconcile_leaves_a_detached_tabs_placeholder_alone() {
+        // A hot-reload whose config diff removes/respawns a currently popped-out tab
+        // must NOT touch its Detached placeholder: the live surface lives in the
+        // popped-out window's registry and `redock` is its sole owner. Clobbering the
+        // placeholder either strands the surface (remove → redock drops the PTY, silent
+        // data loss) or spawns a duplicate (respawn's/ add's `add`).
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = r.add(&tab_spec("t0", "/tmp/old"), false);
+        let _ = r.add(&tab_spec("t1", "/tmp/b"), false);
+        r.force_detached("t0");
+
+        // Respawn variant: config changed t0's dir (id stable) → respawn_tabs=[t0]. A
+        // non-detached sibling t1 is genuinely removed to prove the normal path is intact.
+        let respawn = vec![TabPlan {
+            spec: tab_spec("t0", "/tmp/new"),
+            load_on_open: false,
+        }];
+        apply_tab_reconcile(&mut r, &["t1".to_string()], &[], &respawn);
+        assert!(
+            r.is_detached("t0"),
+            "detached tab's placeholder must survive a respawn op"
+        );
+        let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(
+            ids,
+            vec!["t0".to_string()],
+            "t0 kept (detached), t1 removed via the normal path, no duplicate entry"
+        );
+        assert!(
+            !r.is_spawned("t0"),
+            "no duplicate surface spawned for the detached tab"
+        );
+
+        // Remove variant: config deleted t0 while it's out → remove_tabs=[t0].
+        apply_tab_reconcile(&mut r, &["t0".to_string()], &[], &[]);
+        assert!(
+            r.is_detached("t0"),
+            "detached tab's placeholder must survive a remove op (returns on redock)"
+        );
+        assert_eq!(r.tab_dtos().len(), 1, "still present, not dropped");
+
+        // Add variant (defensive): an add for a currently-detached key must not append
+        // a duplicate entry — the placeholder already represents it.
+        apply_tab_reconcile(
+            &mut r,
+            &[],
+            &[TabPlan {
+                spec: tab_spec("t0", "/tmp/x"),
+                load_on_open: false,
+            }],
+            &[],
+        );
+        assert!(r.is_detached("t0"));
+        assert_eq!(
+            r.tab_dtos().len(),
+            1,
+            "add for a detached key must not create a duplicate entry"
+        );
     }
 
     fn dto(id: &str) -> TabDto {

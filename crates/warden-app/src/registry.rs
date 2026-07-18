@@ -129,7 +129,13 @@ impl Registry {
             .any(|t| t.id == id && matches!(t.slot, TabSlot::Spawned(_)))
     }
 
-    #[cfg(test)]
+    /// Is tab `id` currently a `Detached` placeholder (its live surface popped
+    /// out into another window's registry)? The hot-reload reconcile
+    /// (`manager::apply_tab_reconcile`) consults this to leave a popped-out tab's
+    /// placeholder untouched — a config diff must never remove/respawn a tab
+    /// whose surface it doesn't hold, or the live PTY is clobbered and `redock`
+    /// loses its return slot. `id` is the same `Tab::key` (`id`-else-normalized-
+    /// `dir`) the registry keys every entry on.
     pub fn is_detached(&self, id: &str) -> bool {
         self.tabs
             .iter()
