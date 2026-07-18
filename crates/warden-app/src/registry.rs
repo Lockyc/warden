@@ -240,9 +240,9 @@ impl Registry {
     /// shell on next focus, exactly like a never-opened tab). No-op if the tab is
     /// unknown or already cold. If the killed tab was the active one, switch to an
     /// already-**live** neighbour so unloading never spawns a fresh surface just to
-    /// fill the hole (see `pick_live_neighbour`); return that neighbour's id for the
-    /// chrome to move its highlight to. `None` if nothing live remains — the chrome
-    /// then blanks the hole rather than waking a cold tab.
+    /// fill the hole (see `shell_core::pick_live_neighbour`); return that neighbour's
+    /// id for the chrome to move its highlight to. `None` if nothing live remains —
+    /// the chrome then blanks the hole rather than waking a cold tab.
     pub fn unload(&mut self, id: &str) -> Option<String> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Cold) {
@@ -256,7 +256,7 @@ impl Registry {
                 .iter()
                 .map(|t| matches!(t.slot, TabSlot::Spawned(_)))
                 .collect();
-            if let Some(n) = pick_live_neighbour(idx, &live) {
+            if let Some(n) = shell_core::pick_live_neighbour(idx, &live) {
                 let next = self.tabs[n].id.clone();
                 // The neighbour is already live (pick_live_neighbour only returns
                 // spawned tabs), so this activate never spawns and can't fail.
@@ -336,19 +336,6 @@ impl Registry {
         }
         self.active = None;
     }
-}
-
-/// Index of the tab to activate after the tab at `idx` is killed, given each tab's live
-/// (spawned) state. Lean **up** the list: take the nearest live tab to the left (the one you
-/// usually came from), else the nearest live tab to the right. `None` ⇒ nothing live to show —
-/// the caller leaves the hole blank rather than spawning a cold tab just to fill it. Pure index
-/// logic, so it's unit-testable without real surfaces (which `add(.., true)` can't fabricate
-/// against a null `ns_window`).
-fn pick_live_neighbour(idx: usize, live: &[bool]) -> Option<usize> {
-    if let Some(p) = (0..idx).rev().find(|&i| live[i]) {
-        return Some(p);
-    }
-    ((idx + 1)..live.len()).find(|&i| live[i])
 }
 
 #[cfg(test)]
@@ -492,36 +479,6 @@ mod tests {
         let _ = r.add(&spec("t0", "/tmp"), false);
         assert_eq!(r.unload("nope"), None);
         assert_eq!(r.tab_dtos().len(), 1);
-    }
-
-    #[test]
-    fn pick_live_neighbour_prefers_previous_when_live() {
-        // killed@2; previous@1 is live → take it (lean up), even though next@3 is also live.
-        assert_eq!(pick_live_neighbour(2, &[false, true, true, true]), Some(1));
-    }
-
-    #[test]
-    fn pick_live_neighbour_prefers_nearest_live_left_over_right() {
-        // killed@3; nearest live left is @1 (@2 cold), live far right @4 → left wins.
-        assert_eq!(
-            pick_live_neighbour(3, &[false, true, false, false, true]),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn pick_live_neighbour_uses_right_when_nothing_live_left() {
-        // killed@1; nothing live to the left (@0 cold); live@3 → scan right to it.
-        assert_eq!(
-            pick_live_neighbour(1, &[false, false, false, true]),
-            Some(3)
-        );
-    }
-
-    #[test]
-    fn pick_live_neighbour_none_when_nothing_live() {
-        // No live tab anywhere → blank the hole, never spawn one to fill it.
-        assert_eq!(pick_live_neighbour(1, &[false, false, false]), None);
     }
 
     #[test]
