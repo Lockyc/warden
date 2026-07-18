@@ -264,6 +264,11 @@
               // not-already-detached tab.
               invokeSafe("pop_out_tab", { id });
             },
+            onPopIn(id) {
+              // Dock a popped-out tab back in (the ↩ overlay on a detached row's tile). Closing
+              // the detached window fires its Destroyed handler → redock → the tab returns here.
+              invokeSafe("pop_in_tab", { id });
+            },
             onKill(id) {
               // No optimistic drop: the presence dot tracks `warden:session-state` only. kill_session
               // runs the kill then bumps the scheduler's fast burst, which converges the dot

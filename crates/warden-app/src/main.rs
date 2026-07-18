@@ -471,6 +471,22 @@ fn raise_popped_window(
     }
 }
 
+/// Dock tab `id` back into its origin window — the ↩ pop-in overlay on a detached row. Closing the
+/// detached window fires its `Destroyed` handler (`redock`), which returns the tab here; this reuses
+/// the exact same return path as the user closing the popped-out window by hand. No-op if `id`
+/// isn't a tab detached from the calling window.
+#[tauri::command]
+fn pop_in_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
+    use tauri::Manager;
+    let app = window.app_handle().clone();
+    let label = state.lock().detached_label_for(window.label(), &id);
+    if let Some(label) = label {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.close();
+        }
+    }
+}
+
 /// Return a popped-out tab to its origin when its detached window closes — the `on_close`
 /// wired by `shell_core::detach::wire_return`. Runs on the main thread (Tauri delivers the
 /// window `Destroyed` event there), so it can lock `ManagerState` and touch AppKit directly.
@@ -1055,6 +1071,7 @@ fn main() {
         unload_tab,
         pop_out_tab,
         raise_popped_window,
+        pop_in_tab,
         kill_session,
         start_session,
         rescan_root,
