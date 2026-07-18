@@ -808,6 +808,7 @@ mod tests {
             has_cmd: false,
             tree: false,
             tree_path: Vec::new(),
+            detached: false,
             presence: None,
         }
     }

@@ -19,6 +19,10 @@ pub struct TabDto {
     pub tree: bool,            // row belongs to a project-tree (root) section
     #[serde(rename = "treePath")]
     pub tree_path: Vec<String>, // folder segments between root and project
+    /// The tab's live surface has been moved to a popped-out window's registry
+    /// (`Registry::detach`) — it is present here as a placeholder only, has no
+    /// local surface, and `spawned` is always false alongside this.
+    pub detached: bool,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -33,13 +37,32 @@ pub struct TabDto {
     pub presence: Option<crate::probe::Presence>,
 }
 
-/// A tab's surface is either live or cold (cold = not yet spawned, or unloaded).
+/// A tab's surface is live, cold, or detached. Cold = not yet spawned, or
+/// unloaded — retains its `TabSpec` on `TabEntry` so it can (re)spawn locally.
 /// The `TabSpec` lives on `TabEntry`, not in the slot, so a cold tab always retains
 /// what it needs to (re)spawn — `unload` returns a live tab to `Cold` without
 /// losing its spec.
 enum TabSlot {
     Spawned(GhosttySurface),
     Cold,
+    /// The tab's live surface has been moved OUT to a popped-out window's own
+    /// `Registry` (via `detach`), without freeing the PTY. This slot holds no
+    /// surface — it's a placeholder that keeps the tab's identity present so
+    /// hot-reload `reconcile` counts it as still here (not missing → no
+    /// respawn; not stale → no duplicate add). `attach` is the return path,
+    /// putting a surface back as `Spawned` when the tab moves home. Every
+    /// local (this-registry) operation on a `Detached` tab is a no-op: there
+    /// is nothing here to spawn, show, kill, or free — the surface and its
+    /// lifecycle belong to whichever registry currently holds it `Spawned`.
+    ///
+    /// `warden-app` has no `[lib]` target, so `pub` alone doesn't exempt this
+    /// from the dead-code lint — nothing outside this file can be an
+    /// "external consumer" the way a library crate would have one. `detach`
+    /// (the only non-test constructor) has no caller yet: the manager-side
+    /// pop-out command that calls it lands in a follow-up task. Drop this
+    /// `allow` once that lands.
+    #[allow(dead_code)]
+    Detached,
 }
 
 struct TabEntry {
@@ -114,6 +137,26 @@ impl Registry {
             .any(|t| t.id == id && matches!(t.slot, TabSlot::Spawned(_)))
     }
 
+    #[cfg(test)]
+    pub fn is_detached(&self, id: &str) -> bool {
+        self.tabs
+            .iter()
+            .any(|t| t.id == id && matches!(t.slot, TabSlot::Detached))
+    }
+
+    /// Test-only: force tab `id`'s slot straight to `Detached`, bypassing
+    /// `detach` (which needs a real `Spawned` surface to extract — unavailable
+    /// in a unit test with no AppKit). `TabSlot::Detached` carries no data, so
+    /// this is a safe, direct state construction — it exercises every
+    /// Detached-tab code path (`describe`, `unload`, `start_session`, `remove`,
+    /// `close_all`, a second `detach`) without ever touching a `GhosttySurface`.
+    #[cfg(test)]
+    pub fn force_detached(&mut self, id: &str) {
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
+            t.slot = TabSlot::Detached;
+        }
+    }
+
     pub fn tab_dtos(&self) -> Vec<TabDto> {
         self.tabs
             .iter()
@@ -128,6 +171,7 @@ impl Registry {
                 has_cmd: t.spec.startup.is_some(),
                 tree: t.spec.tree,
                 tree_path: t.spec.tree_path.clone(),
+                detached: matches!(t.slot, TabSlot::Detached),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
@@ -179,6 +223,7 @@ impl Registry {
                 true
             }
             TabSlot::Cold => false,
+            TabSlot::Detached => false, // no local shell — its surface lives elsewhere
         }
     }
 
@@ -248,6 +293,14 @@ impl Registry {
         match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Cold) {
             TabSlot::Spawned(s) => s.close(),
             TabSlot::Cold => return None, // nothing live to kill
+            TabSlot::Detached => {
+                // No local surface to kill — it lives in another window's
+                // registry (a pop-out). Restore the placeholder; leaving it
+                // `Cold` here would make it look locally respawnable, which
+                // would spawn a second surface for the same tab identity.
+                self.tabs[idx].slot = TabSlot::Detached;
+                return None;
+            }
         }
         if self.active.as_deref() == Some(id) {
             self.active = None;
@@ -265,6 +318,70 @@ impl Registry {
             }
         }
         None
+    }
+
+    /// Detach tab `id`'s live surface for a move to another window's `Registry`
+    /// (pop-out): extracts the `Spawned` surface and leaves the slot `Detached`
+    /// — a placeholder that keeps the tab present for `reconcile` (not missing
+    /// → no respawn; not stale → no duplicate) while the actual `GhosttySurface`
+    /// moves to the caller (Task 11's manager code reparents its AppKit view and
+    /// calls `attach` on the destination registry). The surface is **returned,
+    /// never closed** — closing it here would kill the PTY the whole feature
+    /// exists to preserve.
+    ///
+    /// `None` for: an unknown id; a `Cold` tab (nothing live to move — restored
+    /// to `Cold`, not left `Detached`, since there is no surface anywhere to
+    /// stand the placeholder in for); or a tab already `Detached` (restored to
+    /// `Detached` — already gone elsewhere, calling this twice is a no-op, not
+    /// a second extraction).
+    ///
+    /// No caller yet (see `TabSlot::Detached`'s doc) — `#[allow(dead_code)]`
+    /// until the manager-side pop-out command lands.
+    #[allow(dead_code)]
+    pub fn detach(&mut self, id: &str) -> Option<GhosttySurface> {
+        let idx = self.tabs.iter().position(|t| t.id == id)?;
+        match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Detached) {
+            TabSlot::Spawned(s) => Some(s),
+            TabSlot::Cold => {
+                self.tabs[idx].slot = TabSlot::Cold;
+                None
+            }
+            TabSlot::Detached => {
+                self.tabs[idx].slot = TabSlot::Detached;
+                None
+            }
+        }
+    }
+
+    /// Return a surface to slot `id` as `Spawned` — the inverse of `detach`,
+    /// called when a popped-out window's tab is reparented back into its
+    /// origin registry. Only succeeds from a `Detached` slot (the placeholder
+    /// `detach` leaves behind); succeeds → `Ok(())` and the slot becomes
+    /// `Spawned(surface)`.
+    ///
+    /// On failure — unknown `id`, or a slot that isn't `Detached` (defensive:
+    /// the command layer should only ever call this on the placeholder it
+    /// itself created via `detach`) — the surface is handed **back** as
+    /// `Err(surface)` rather than silently dropped. A `bool` return (as the
+    /// task brief's other suggested shape) was rejected for this reason: on
+    /// the failure path the `surface` parameter would simply fall out of
+    /// scope and hit `GhosttySurface`'s `Drop` safety net, closing a surface
+    /// the caller doesn't expect to lose. Returning it keeps that decision
+    /// with the caller instead of making it silently here.
+    ///
+    /// No caller yet (see `TabSlot::Detached`'s doc) — `#[allow(dead_code)]`
+    /// until the manager-side pop-out command lands.
+    #[allow(dead_code)]
+    pub fn attach(&mut self, id: &str, surface: GhosttySurface) -> Result<(), GhosttySurface> {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return Err(surface);
+        };
+        if matches!(t.slot, TabSlot::Detached) {
+            t.slot = TabSlot::Spawned(surface);
+            Ok(())
+        } else {
+            Err(surface)
+        }
     }
 
     /// Show + focus the tab `id` (spawning it first if declared); hide all others.
@@ -479,6 +596,125 @@ mod tests {
         let _ = r.add(&spec("t0", "/tmp"), false);
         assert_eq!(r.unload("nope"), None);
         assert_eq!(r.tab_dtos().len(), 1);
+    }
+
+    // --- detach / attach (Task 10: pop a tab out) ---------------------------
+    //
+    // A real `Spawned` slot needs a live `GhosttySurface`, which needs AppKit —
+    // unconstructable in this unit-test process (ns_window is null; every test
+    // in this file stays on load_on_open=false for exactly this reason). So the
+    // slot-state transitions below use `force_detached` (a safe, data-free
+    // direct construction of `TabSlot::Detached`) to reach the states a real
+    // pop-out would produce, and prove `detach`/`unload`/`start_session`/
+    // `remove`/`close_all`/a second `detach` all treat that slot correctly
+    // without ever touching a `GhosttySurface`. The one thing genuinely
+    // untestable here is `detach` extracting a *live* surface and `attach`
+    // accepting one back — that needs a real surface, so it's covered by a
+    // GUI-driven check instead (see Task 12 / the manual verification note in
+    // the task report).
+
+    #[test]
+    fn detach_of_cold_tab_returns_none_and_stays_cold() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        assert!(r.detach("t0").is_none());
+        assert!(!r.is_spawned("t0"));
+        assert!(!r.is_detached("t0"), "a cold tab must not become Detached");
+        assert!(!r.tab_dtos()[0].detached);
+    }
+
+    #[test]
+    fn detach_of_unknown_tab_returns_none() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        assert!(r.detach("nope").is_none());
+    }
+
+    #[test]
+    fn detach_of_already_detached_tab_is_noop() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.force_detached("t0");
+        assert!(
+            r.detach("t0").is_none(),
+            "nothing live here to extract a second time"
+        );
+        assert!(r.is_detached("t0"), "must stay Detached, not reset to Cold");
+    }
+
+    #[test]
+    fn detached_tab_is_still_listed_by_describe() {
+        // reconcile-relevant: the placeholder keeps the tab present (not
+        // missing → no respawn attempt; not stale → no duplicate add).
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        let _ = r.add(&spec("t1", "/tmp"), false);
+        r.force_detached("t0");
+        let dtos = r.tab_dtos();
+        assert_eq!(
+            dtos.len(),
+            2,
+            "detached tab must still be listed, not dropped"
+        );
+        let t0 = dtos.iter().find(|d| d.id == "t0").unwrap();
+        assert!(t0.detached, "detached: true");
+        assert!(!t0.spawned, "spawned: false alongside detached: true");
+    }
+
+    // `attach` itself is NOT unit-tested: every path through it needs a real
+    // `GhosttySurface` argument (there is no valid empty/placeholder value to
+    // construct one from — see the module-level note above), so both its
+    // success arm (Detached -> Spawned) and its Err-returns-the-surface
+    // failure arms need a live surface to even call it with. The
+    // `matches!(t.slot, TabSlot::Detached)` gate it relies on is exercised
+    // structurally above via `force_detached` + `is_detached`. See the task
+    // report for the GUI-driven verification plan.
+
+    #[test]
+    fn unload_of_detached_tab_is_noop_and_stays_detached() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.force_detached("t0");
+        assert_eq!(r.unload("t0"), None, "no local surface to kill");
+        assert!(
+            r.is_detached("t0"),
+            "must stay Detached, not fall back to Cold"
+        );
+    }
+
+    #[test]
+    fn start_session_noop_for_detached_tab() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut with_cmd = spec("t0", "/tmp");
+        with_cmd.startup = Some("amux".into());
+        let _ = r.add(&with_cmd, false);
+        r.force_detached("t0");
+        assert!(
+            !r.start_session("t0"),
+            "no local shell to type into once detached"
+        );
+    }
+
+    #[test]
+    fn remove_of_detached_tab_does_not_panic_and_drops_placeholder() {
+        // Must not attempt to free anything (there is no surface here to
+        // free — it lives in the popped-out window's registry).
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        let _ = r.add(&spec("t1", "/tmp"), false);
+        r.force_detached("t0");
+        r.remove("t0");
+        let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["t1".to_string()]);
+    }
+
+    #[test]
+    fn close_all_with_detached_tab_does_not_panic() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.force_detached("t0");
+        r.close_all();
+        assert_eq!(r.tab_dtos().len(), 0);
     }
 
     #[test]
