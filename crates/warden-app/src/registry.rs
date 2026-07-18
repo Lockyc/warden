@@ -355,6 +355,19 @@ impl Registry {
         }
     }
 
+    /// Bring tab `id` live in place if it is `Cold`, spawning its surface against this
+    /// window — so a never-opened tab can be popped out (pop-out then `detach`s the now-live
+    /// surface and reparents it into its own window). No-op if the tab is already `Spawned`
+    /// or `Detached` (a detached tab's live surface is in another window — never respawn a
+    /// second one), and a no-op returning `Ok` if `id` is unknown (the caller's follow-up
+    /// `detach` surfaces the not-found). Errors only if the spawn itself fails.
+    pub fn ensure_spawned_by_id(&mut self, id: &str) -> Result<(), SurfaceError> {
+        if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
+            self.ensure_spawned(idx)?;
+        }
+        Ok(())
+    }
+
     /// Return a surface to slot `id` as `Spawned` — the inverse of `detach`,
     /// called when a popped-out window's tab is reparented back into its
     /// origin registry. Succeeds from a `Detached` **or** a `Cold` slot →
@@ -687,6 +700,24 @@ mod tests {
         assert!(
             r.is_detached("t0"),
             "must stay Detached, not fall back to Cold"
+        );
+    }
+
+    #[test]
+    fn ensure_spawned_by_id_never_respawns_a_detached_tab_or_panics_on_unknown() {
+        // Pop-out calls this to bring a COLD tab live before detaching it. It must NOT touch a
+        // Detached tab (whose live surface is in another window — a second spawn would duplicate
+        // it), and an unknown id must be a clean no-op (the caller's follow-up `detach` reports
+        // not-found). The Cold→spawn path needs AppKit and is GUI-only (Task-12 driver).
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.force_detached("t0");
+        assert!(r.ensure_spawned_by_id("t0").is_ok());
+        assert!(r.is_detached("t0"), "must stay Detached, not respawn");
+        assert!(!r.is_spawned("t0"), "no second surface spawned here");
+        assert!(
+            r.ensure_spawned_by_id("does-not-exist").is_ok(),
+            "unknown id is a clean no-op"
         );
     }
 

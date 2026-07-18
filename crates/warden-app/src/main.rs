@@ -355,10 +355,18 @@ fn pop_out_tab(
             .windows
             .get_mut(&origin_label)
             .ok_or_else(|| "window not found".to_string())?;
+        // Bring a never-opened (cold) tab live first, so popping the ⤢ affordance — which the
+        // sidebar shows on EVERY row, not just loaded ones — works from any tab rather than
+        // erroring on a cold one. Spawning happens in the origin window; `detach` then extracts
+        // the now-live surface and phase 2 reparents it out (all synchronous, so the brief
+        // in-origin overlap never renders). Already-Detached / unknown tabs stay a clean error.
+        ws.registry
+            .ensure_spawned_by_id(&id)
+            .map_err(|e| format!("could not open the tab to pop it out: {e}"))?;
         let surface = ws
             .registry
             .detach(&id)
-            .ok_or_else(|| "tab is not live — open it before popping it out".to_string())?;
+            .ok_or_else(|| "tab is not available to pop out".to_string())?;
         let title = ws.registry.tab_title(&id).unwrap_or_else(|| id.clone());
         let colour = ws.colour.clone();
         let spec = shell_core::detach::DetachSpec {
