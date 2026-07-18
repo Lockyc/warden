@@ -1226,6 +1226,14 @@ impl GhosttySurface {
             self.host_view.removeFromSuperview();
             content_view.addSubview(&self.host_view);
 
+            // Un-hide the view. A reparent target ALWAYS shows this surface: the detached window
+            // exists to show its one tab, and a redock immediately re-`activate`s the returned
+            // tab. Load-bearing for popping out a NON-active tab: that tab's surface was
+            // `hide()`n (setHidden(true)) when it was deselected in the origin, and without this
+            // it would stay hidden in the detached window — only the banner would appear, no
+            // terminal (the "unselected tab pops out to just a title bar" bug).
+            self.host_view.setHidden(false);
+
             // Re-register the same three observers, now scoped to the NEW window — identical to
             // new()'s block, just against `new_window`.
             center.addObserver_selector_name_object(
