@@ -1,3 +1,11 @@
+---
+type: architecture
+links:
+  - rel: see-also
+    to: README.md
+    note: README is the user-facing tour; this is the agent-facing architecture doc
+---
+
 # warden — agent orientation
 
 ## What warden is

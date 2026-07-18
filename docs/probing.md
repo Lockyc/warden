@@ -1,3 +1,11 @@
+---
+type: reference
+links:
+  - rel: part-of
+    to: CLAUDE.md
+    note: CLAUDE.md points here for the full probe-scheduler internals
+---
+
 # Session-presence probing — the scheduler & presence cache
 
 How warden drives the per-tab **three-state session-presence dot** (cyan / ghost / hollow): the off-main-thread

@@ -1,3 +1,11 @@
+---
+type: reference
+links:
+  - rel: part-of
+    to: CLAUDE.md
+    note: CLAUDE.md points here as the full config schema reference
+---
+
 # Config schema & resolution
 
 The full reference for warden's config file — every key, the cascade rules, and the

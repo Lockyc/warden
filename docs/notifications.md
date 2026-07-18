@@ -1,3 +1,11 @@
+---
+type: runbook
+links:
+  - rel: part-of
+    to: CLAUDE.md
+    note: CLAUDE.md's footgun points here for the full trace/diagnosis write-up
+---
+
 # Notifications — design, the macOS-26 banner gap, and how to diagnose it
 
 warden surfaces a terminal's attention signals (bell, OSC 9 / OSC 777 desktop notification) on the

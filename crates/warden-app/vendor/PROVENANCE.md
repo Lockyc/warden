@@ -1,3 +1,11 @@
+---
+type: reference
+links:
+  - rel: part-of
+    to: CLAUDE.md
+    note: CLAUDE.md documents the revendor procedure that updates this file
+---
+
 # Vendored libghostty
 
 `GhosttyKit.xcframework` (macOS slice only) + `ghostty.h` + `resources/` are
