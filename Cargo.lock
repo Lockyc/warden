@@ -3344,7 +3344,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=645c4c042e7ebf05bc3310ba37bcdecd89b7d8f7#645c4c042e7ebf05bc3310ba37bcdecd89b7d8f7"
+source = "git+https://github.com/Lockyc/shell-core?rev=b2fa948690d6879156affec174278194d97c47d1#b2fa948690d6879156affec174278194d97c47d1"
 dependencies = [
  "tauri",
  "tauri-plugin-process",

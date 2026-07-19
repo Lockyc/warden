@@ -184,9 +184,11 @@ that is the same for warden, curator, lector, and any future sibling app.
   with warden's own `src/default-config.toml` template — shell-core never touches config-core (the
   three cores stay mutually independent; see the constellation `CLAUDE.md`).
 - **Plugin registration comes from shell-core.** `main.rs` registers window-state + updater + process via
-  `shell_core::register_plugins(builder, window_state_filename(), &[shell_core::home::HOME_LABEL])`.
-  window-state stays a direct dep (manager.rs uses `WindowExt::restore_state`); `window_state_filename` (the
-  `fnv1a_64` hash) is warden's own and passed in — only the registration is shared. The `runtime` feature
+  `shell_core::register_plugins(builder, Some(&config_path), &[shell_core::home::HOME_LABEL])`, passing
+  warden's resolved config path — shell-core derives the per-config window-state filename from it
+  (`state_filename`, its own `fnv1a_64`), so the canonicalize→hash→format policy is single-sourced there,
+  not per app (only the *path* is app-specific). window-state stays a direct dep (manager.rs uses
+  `WindowExt::restore_state`); only the registration + filename policy are shared. The `runtime` feature
   pulls tauri; the `build.rs` build-dep uses `default-features = false` so it stays zero-tauri (resolver 2
   keeps the two separate).
 - **Deliberately NOT shared** (each diverges per app, don't consolidate): IPC fan-out, the config watcher,
