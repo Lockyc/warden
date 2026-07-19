@@ -12,8 +12,16 @@ pub mod watch;
 // shared with curator and lector via the config-core crate. Re-exported at the root so the rest
 // of warden-config (and warden-app) keep using `warden_config::{Colour, ColourError,
 // format_file, format_str}` unchanged.
+//
+// Project-tree root discovery (`discover_projects`/`tree_path`, the `RootDir`/`DiscoveredProject`
+// types, `DEFAULT_ROOT_DEPTH`) is shared with lector the same way — leaf-free, so warden's own
+// `Tab` never appears in config-core's signatures. warden-app maps a `DiscoveredProject` onto its
+// own `Tab` shape (scanner.rs); resolve.rs delegates a raw root's name/dir/depth validation to
+// `config_core::resolve_root_dir` directly, mapping `RootError` onto warden's own `ResolveError`
+// variants with the enclosing window's context.
 pub use config_core::{
-    fmt_cli, format_file, format_str, write_default_config, Colour, ColourError, SeedError,
+    discover_projects, fmt_cli, format_file, format_str, tree_path, write_default_config, Colour,
+    ColourError, DiscoveredProject, RootDir, SeedError, DEFAULT_ROOT_DEPTH,
 };
 pub use load::{config_path, load, load_with, LoadError, Loaded};
 pub use model::{Config, Density, Root, Tab, TabDigitKeys, Warning, Window};

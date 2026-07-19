@@ -28,10 +28,6 @@ pub const DEFAULT_WIDTH: u32 = 1500;
 /// Default window height when `height` is omitted. Matches curator's default.
 pub const DEFAULT_HEIGHT: u32 = 1000;
 
-/// Default project-tree scan depth below a root's `dir` when `depth` is omitted —
-/// a safety floor against runaway walks on a deep or huge tree.
-pub const DEFAULT_ROOT_DEPTH: u32 = 6;
-
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
 /// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
@@ -400,6 +396,23 @@ fn resolve_tab(
     })
 }
 
+/// Map config-core's leaf-free `RootError` onto warden's own `ResolveError` variants, adding the
+/// enclosing window's context (config-core has no window concept).
+fn map_root_error(e: config_core::RootError, window: &str) -> ResolveError {
+    match e {
+        config_core::RootError::EmptyDir => ResolveError::EmptyRootDir {
+            window: window.to_string(),
+        },
+        config_core::RootError::EmptyName => ResolveError::EmptyRootName {
+            window: window.to_string(),
+        },
+        config_core::RootError::ZeroDepth(depth) => ResolveError::InvalidRootDepth {
+            window: window.to_string(),
+            depth,
+        },
+    }
+}
+
 /// Resolve one raw root into a `Root`. Mirrors `resolve_tab`'s cascade but with no
 /// tab level (root → window → global) since a root has no per-tab config of its own.
 #[allow(clippy::too_many_arguments)]
@@ -413,35 +426,15 @@ fn resolve_root(
     global_kill: Option<&str>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Root, ResolveError> {
-    let dir_str = rr.dir.trim();
-    if dir_str.is_empty() {
-        return Err(ResolveError::EmptyRootDir {
-            window: rp.title.clone(),
-        });
-    }
-    let dir = expand_tilde(dir_str);
-    // name defaults to basename(dir); an explicit empty name is an error.
-    let name = match rr.name.as_deref() {
-        Some(n) if n.trim().is_empty() => {
-            return Err(ResolveError::EmptyRootName {
-                window: rp.title.clone(),
-            });
-        }
-        // Store trimmed so a trailing-space typo collides in the section namespace.
-        Some(n) => n.trim().to_string(),
-        None => basename(&dir),
-    };
-    let depth = rr.depth.unwrap_or(DEFAULT_ROOT_DEPTH);
-    if depth == 0 {
-        return Err(ResolveError::InvalidRootDepth {
-            window: rp.title.clone(),
-            depth,
-        });
-    }
-    if !dir.exists() {
+    // name/dir/depth validation + tilde expansion + basename default are shared with lector via
+    // config-core's `resolve_root_dir` — leaf-free, so it hands back a bare RootDir and warden
+    // maps its error onto ResolveError with this window's context.
+    let root_dir = config_core::resolve_root_dir(rr.name.as_deref(), &rr.dir, rr.depth)
+        .map_err(|e| map_root_error(e, &rp.title))?;
+    if !root_dir.dir.exists() {
         warnings.push(Warning {
             window: rp.title.clone(),
-            message: format!("root dir does not exist: {}", dir.display()),
+            message: format!("root dir does not exist: {}", root_dir.dir.display()),
         });
     }
     // Cascade root→window→global (no tab level); shell falls back to the login shell.
@@ -452,9 +445,9 @@ fn resolve_root(
     let probe = cascade(rr.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
     let kill = cascade(rr.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
     Ok(Root {
-        name,
-        dir,
-        depth,
+        name: root_dir.name,
+        dir: root_dir.dir,
+        depth: root_dir.depth,
         shell,
         startup,
         probe,

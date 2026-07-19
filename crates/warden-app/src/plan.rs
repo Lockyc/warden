@@ -4,7 +4,7 @@
 use crate::surface::TabSpec;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use warden_config::{Config, Reconciliation, Tab, Window};
+use warden_config::{tree_path, Config, Reconciliation, Tab, Window};
 
 /// Derive (tree, tree_path) for a tab from its window's roots (root name → dir).
 /// A tab whose `group` names a root is a tree row; tree_path = folder segments
@@ -16,7 +16,7 @@ pub fn derive_tree_meta(
     dir: &Path,
 ) -> (bool, Vec<String>) {
     match group.and_then(|g| root_dirs.get(g)) {
-        Some(root_dir) => (true, crate::scanner::tree_path(root_dir, dir)),
+        Some(root_dir) => (true, tree_path(root_dir, dir)),
         None => (false, Vec::new()),
     }
 }
