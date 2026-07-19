@@ -1,5 +1,5 @@
 name    = "warden"
-summary = "Curated terminals - a macOS console of grouped project tabs of embedded libghostty terminal surfaces"
+summary = "Curated terminals - a macOS console of grouped project tabs of embedded libghostty terminal surfaces."
 kind    = "app"
 status  = "active"
 tags    = ["terminals", "macos"]
