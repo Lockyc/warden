@@ -430,10 +430,13 @@ fn pop_out_tab(
             },
         );
     }
-    if let Some(win) = app.get_webview_window(&label) {
+    {
         let app2 = app.clone();
         let label2 = label.clone();
-        shell_core::detach::wire_return(&win, move || redock(&app2, &label2));
+        // wire_return resolves the detached window by label itself (get_window) — warden's stays
+        // single-webview (it hosts a re-parented native surface), but the shared lookup is correct
+        // either way, so callers no longer pick get_webview_window (wrong for curator/lector).
+        shell_core::detach::wire_return(&app, &label, move || redock(&app2, &label2));
     }
 
     // The origin's row now renders detached; refresh it. sync_empty_surface is a no-op here
