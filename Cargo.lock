@@ -395,7 +395,7 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=14334ec030986313e5bfb56085eaed8438e5c404#14334ec030986313e5bfb56085eaed8438e5c404"
+source = "git+https://github.com/Lockyc/config-core?rev=c6d20ec1aeae8f701cac9ce474f0ad15597552f5#c6d20ec1aeae8f701cac9ce474f0ad15597552f5"
 dependencies = [
  "dirs 5.0.1",
  "taplo",
@@ -3343,7 +3343,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=71ea09218b3fc0691a619f09e0cd9625b1b67521#71ea09218b3fc0691a619f09e0cd9625b1b67521"
+source = "git+https://github.com/Lockyc/shell-core?rev=645c4c042e7ebf05bc3310ba37bcdecd89b7d8f7#645c4c042e7ebf05bc3310ba37bcdecd89b7d8f7"
 dependencies = [
  "tauri",
  "tauri-plugin-process",
@@ -4764,7 +4764,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
