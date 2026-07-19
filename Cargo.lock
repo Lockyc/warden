@@ -3344,8 +3344,9 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=b2fa948690d6879156affec174278194d97c47d1#b2fa948690d6879156affec174278194d97c47d1"
+source = "git+https://github.com/Lockyc/shell-core?rev=85c9f9b9f41365e628d549d6763ec922eafa6285#85c9f9b9f41365e628d549d6763ec922eafa6285"
 dependencies = [
+ "notify",
  "tauri",
  "tauri-plugin-process",
  "tauri-plugin-updater",
@@ -4765,7 +4766,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
