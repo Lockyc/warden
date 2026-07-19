@@ -191,10 +191,16 @@ that is the same for warden, curator, lector, and any future sibling app.
   `WindowExt::restore_state`); only the registration + filename policy are shared. The `runtime` feature
   pulls tauri; the `build.rs` build-dep uses `default-features = false` so it stays zero-tauri (resolver 2
   keeps the two separate).
-- **Deliberately NOT shared** (each diverges per app, don't consolidate): IPC fan-out, the config watcher,
-  the chrome-caller command gate (curator-only — warden hosts no untrusted webviews, so it has no such
-  gate), and warden's own **Tab submenu items** (digit-mode jumps, Reopen Last Closed) — genuinely
-  warden-specific, unlike the spine that now wraps them. See shell-core's CLAUDE.md for the full dividing
+- **Not shared (genuinely warden-specific):** IPC fan-out (warden inlines `emit_to` with
+  app-namespaced `warden:refresh` events + a `forMe()` filter); **warden's own config watcher** (it
+  parses inside + drives a slow root-scan/main-thread reconcile and relies on `format_file`'s
+  diff-guard — curator + lector share `shell_core::watch`, but warden's contract is different, and
+  its file-name match is the reference that shared watcher was modelled on); and warden's own **Tab
+  submenu items** (digit-mode jumps, Reopen Last Closed) — genuinely warden-specific, unlike the spine
+  that now wraps them. warden has **no** chrome-caller command gate — not because "only curator hosts
+  untrusted content" (the gate is redundant vs remote anyway; origin dispatch handles that — see
+  shell-core's command-isolation model), but because warden's surfaces are native `NSView`s with no
+  webview to spoof a call and no second local surface to screen. See shell-core's CLAUDE.md for the full dividing
   line.
 - Dev loop: **`just shell-dev`** / **`just shell-pin`** (rev in `crates/warden-app/Cargo.toml`, scoped
   `#PATCH:shell#`), mirroring the chrome-/config- pairs.
