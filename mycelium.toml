@@ -1,5 +1,5 @@
 name    = "warden"
-summary = "Curated terminals — a macOS console of grouped project tabs over embedded libghostty surfaces"
+summary = "Curated terminals - a macOS console of grouped project tabs of embedded libghostty terminal surfaces"
 kind    = "app"
 status  = "active"
 tags    = ["terminals", "macos"]
@@ -10,4 +10,4 @@ topics_extra = ["ghostty", "hot-reload", "terminal", "terminal-emulator", "termi
 
 [[provides]]
 name    = "terminals"
-summary = "A macOS console of grouped project terminals over embedded libghostty surfaces"
+summary = "A macOS console of grouped project tabs of embedded libghostty terminal surfaces"
