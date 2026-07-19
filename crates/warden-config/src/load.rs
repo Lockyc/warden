@@ -1,6 +1,7 @@
-use crate::model::{Config, Warning};
+use crate::model::Config;
 use crate::raw::parse;
 use crate::resolve::{resolve_with, ResolveError, DEFAULT_SHELL};
+use config_core::Warning;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 

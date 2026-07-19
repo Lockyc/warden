@@ -21,10 +21,10 @@ pub mod watch;
 // variants with the enclosing window's context.
 pub use config_core::{
     discover_projects, fmt_cli, format_file, format_str, tree_path, write_default_config, Colour,
-    ColourError, DiscoveredProject, RootDir, SeedError, DEFAULT_ROOT_DEPTH,
+    ColourError, Density, DiscoveredProject, RootDir, SeedError, Warning, DEFAULT_ROOT_DEPTH,
 };
 pub use load::{config_path, load, load_with, LoadError, Loaded};
-pub use model::{Config, Density, Root, Tab, TabDigitKeys, Warning, Window};
+pub use model::{Config, Root, Tab, TabDigitKeys, Window};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, WindowUpdate};
 pub use resolve::ResolveError;
 pub use watch::Watcher;

@@ -395,9 +395,10 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=c6d20ec1aeae8f701cac9ce474f0ad15597552f5#c6d20ec1aeae8f701cac9ce474f0ad15597552f5"
+source = "git+https://github.com/Lockyc/config-core?rev=2e98316e2d32fdbc05c8999cccb32d8b243395f1#2e98316e2d32fdbc05c8999cccb32d8b243395f1"
 dependencies = [
  "dirs 5.0.1",
+ "serde",
  "taplo",
  "tempfile",
  "thiserror 1.0.69",

@@ -1,4 +1,5 @@
 use crate::Colour;
+use config_core::Density;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,28 +27,10 @@ pub struct Config {
     pub notify_debug: bool,
 }
 
-/// UI density — a whole-app presentation mode that scales the chrome's type and
-/// spacing as a unit. The crate only carries the choice; the app's chrome owns the
-/// actual sizes (it maps this to a `data-density` attribute → CSS variables).
-///
-/// - `Comfortable` (default): the standard sizing.
-/// - `Compact`: proportionally condensed type + spacing for denser tab lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Density {
-    #[default]
-    Comfortable,
-    Compact,
-}
-
-impl Density {
-    /// The token the chrome's `data-density` attribute uses.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Density::Comfortable => "comfortable",
-            Density::Compact => "compact",
-        }
-    }
-}
+// `Density` and `Warning` are the leaf-free primitives shared with curator and lector — they
+// live in config-core and are re-exported at this crate's root (see lib.rs). warden builds its
+// model by hand (raw → resolve → model) rather than through serde, but the enum/struct shapes
+// are identical, so it consumes the shared ones like the sibling apps do.
 
 /// Behaviour of the ⌘1/⌘2 menu accelerators (a whole-app keybinding mode).
 ///
@@ -131,10 +114,4 @@ pub struct Tab {
     /// `""` opts out). `None` = no kill affordance. Opaque to the crate — the app
     /// runs it via `sh -c` when the user confirms killing the tab's session.
     pub kill: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Warning {
-    pub window: String,
-    pub message: String,
 }
