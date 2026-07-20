@@ -3344,7 +3344,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=2bf3f2a1867bad6c5853c282a1c4c77cf38f566d#2bf3f2a1867bad6c5853c282a1c4c77cf38f566d"
+source = "git+https://github.com/Lockyc/shell-core?rev=e81e20b111f21b87d93a98e561c60cbd47c1c53b#e81e20b111f21b87d93a98e561c60cbd47c1c53b"
 dependencies = [
  "notify",
  "tauri",
