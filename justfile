@@ -67,6 +67,13 @@ gate:
     cargo test --workspace
     cargo run -p warden-config --bin warden -- fmt --check examples/config.toml
 
+# Perf bench (macOS): render-starvation A/B for the probe sweep's background-QoS demotion.
+# Prints how long a high-priority "render" thread takes to finish a fixed workload while a
+# probe-equivalent fork storm runs at default vs background QoS. Not a CI gate (machine-specific).
+[group("bench")]
+bench:
+    cargo test -p warden-app --release probe_qos_bench -- --ignored --nocapture
+
 # ── shared chrome-core dev loop (require the sibling ../chrome-core ghq checkout) ──
 
 # Build warden against local ../chrome-core (uncommitted edits included): activate the [patch], `just run`

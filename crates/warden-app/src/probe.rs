@@ -69,6 +69,12 @@ type ProbeWork = (String, PathBuf, String, String);
 /// alternative (a separate `recover_probe` per tab) would pay the same ledger read plus a second
 /// fork. Still well inside [`PROBE_TIMEOUT`], off the main thread, and pool-capped by this constant.
 ///
+/// **Two mitigations now bound this cost so it no longer stutters rendering:** agentmux's
+/// `session_log.sh dropped` short-circuits (grep-cost) when the cwd never appears in the ledger —
+/// the dominant `[[window.root]]` case — and every sweep worker runs at background QoS (see
+/// `set_background_qos`), so the `amux --probe` children inherit it and yield P-cores to
+/// libghostty's render thread. `just bench` (`probe_qos_bench`) guards the QoS half.
+///
 /// **Fails-safe on a symlinked `dir`, never a false ghost:** the ledger's cwd filter is exact
 /// string equality against the *interactive shell's* logical `$PWD`, but this probe runs via
 /// `Command::new("sh").current_dir(dir)`, which leaves `sh` to reset `$PWD` to the physical
@@ -960,5 +966,80 @@ mod tests {
             |_id, _on| {},
         );
         assert_eq!(first.lock().unwrap().as_deref(), Some("d"));
+    }
+
+    // Perf bench (not a correctness test) — run via `just bench`. Measures whether demoting the
+    // probe sweep's child processes to background QoS keeps a high-priority "render" thread from
+    // being starved by the fork storm. A/B: baseline forks the burst from a default-QoS thread;
+    // treatment routes the identical burst through the real `sweep` (workers demoted in Task 4).
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "perf bench; run via `just bench`"]
+    fn probe_qos_bench() {
+        // A child that burns a fixed slice of CPU (~an absent-path amux --probe), returning Absent.
+        fn burn_child(_cmd: &str, _dir: &Path) -> Presence {
+            let _ = std::process::Command::new("sh")
+                .arg("-c")
+                .arg("i=0; while [ $i -lt 4000000 ]; do i=$((i+1)); done")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            Presence::Absent
+        }
+        // Time a fixed CPU-bound "render" workload on a USER_INTERACTIVE thread while `burst` runs.
+        fn render_time_under(burst: impl FnOnce() + Send) -> Duration {
+            thread::scope(|s| {
+                let h = s.spawn(|| {
+                    // SAFETY: set this thread to the render path's interactive QoS.
+                    unsafe {
+                        libc::pthread_set_qos_class_self_np(
+                            libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
+                            0,
+                        )
+                    };
+                    let start = Instant::now();
+                    let mut acc = 0u64;
+                    for i in 0..800_000_000u64 {
+                        acc = acc.wrapping_add(i);
+                    }
+                    std::hint::black_box(acc);
+                    start.elapsed()
+                });
+                burst();
+                h.join().unwrap()
+            })
+        }
+        let n = MAX_PROBE_CONCURRENCY;
+        let work: Vec<ProbeWork> = (0..3 * n)
+            .map(|i| {
+                (
+                    format!("t{i}"),
+                    PathBuf::from("/tmp"),
+                    format!("t{i}"),
+                    "x".to_string(),
+                )
+            })
+            .collect();
+        // Baseline: fork the burst from normal (default-QoS) threads — no demotion.
+        let base = render_time_under(|| {
+            thread::scope(|s| {
+                for _ in 0..n {
+                    s.spawn(|| {
+                        for _ in 0..3 {
+                            burn_child("x", Path::new("/tmp"));
+                        }
+                    });
+                }
+            });
+        });
+        // Treatment: identical burst through the real sweep (workers demoted to background QoS).
+        let treat = render_time_under(|| {
+            let _ = sweep(work.clone(), None, n, burn_child, |_, _| {});
+        });
+        eprintln!("render under DEFAULT-qos burst   : {base:?}");
+        eprintln!("render under BACKGROUND-qos burst: {treat:?}");
+        eprintln!(
+            "(treatment should be <= baseline — the demoted burst yields P-cores to rendering)"
+        );
     }
 }
