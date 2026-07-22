@@ -147,6 +147,19 @@ fn idle_due(now: Instant) -> Instant {
     now + Duration::from_secs(365 * 24 * 3600)
 }
 
+/// Demote the calling thread to background QoS (macOS). Spawned child processes inherit the
+/// spawning thread's QoS via `posix_spawn`, so a probe sweep worker that calls this makes its
+/// `sh -c "<probe>"` children background-QoS too — the scheduler parks them on the E-cores and
+/// starves them whenever libghostty's render thread wants a P-core. No-op off macOS so the pure
+/// probe unit tests stay portable. Orthogonal to cadence / concurrency / priority ordering.
+#[cfg(target_os = "macos")]
+fn set_background_qos() {
+    // SAFETY: a thread-local libpthread call with no preconditions; the return is advisory.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0) };
+}
+#[cfg(not(target_os = "macos"))]
+fn set_background_qos() {}
+
 /// Background presence-probe scheduler. Owns per-window `WindowSchedule`s; wakes on a `bump` or every
 /// [`TICK`]. On a bump a window goes Fast (probe asap, reset agreement + burst clock); each due window
 /// is probed, its result diffed against the previous pass, and `advance` decides the next cadence
@@ -547,6 +560,17 @@ pub fn bump_all(app: &AppHandle) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn set_background_qos_demotes_calling_thread() {
+        set_background_qos();
+        let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+        let mut prio: std::os::raw::c_int = 0;
+        // SAFETY: reads the calling thread's QoS via libpthread; both out-params are stack-owned.
+        unsafe { libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut prio) };
+        assert_eq!(class as u32, libc::qos_class_t::QOS_CLASS_BACKGROUND as u32);
+    }
 
     #[test]
     fn substitute_replaces_dir_and_title() {
