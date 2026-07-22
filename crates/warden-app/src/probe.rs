@@ -62,18 +62,20 @@ type ProbeWork = (String, PathBuf, String, String);
 ///
 /// **Absent-path cost, since `amux --probe` started consulting the crash ledger (exit-3
 /// `Recoverable`, see [`Presence`]):** measured on this machine, `amux --probe` in a directory with
-/// no session is ~0.23s, of which `session_log.sh dropped --pending "$PWD"` alone accounts for
-/// ~0.2s (556-line ledger) — versus ~0.03s before that call existed. Every absent probe now pays
-/// this, at the `probe_interval` floor, for ~95% of tabs (the spec's own figure for how often the
-/// recoverable question is cold). This is the accepted trade, not a regression to chase down: the
-/// alternative (a separate `recover_probe` per tab) would pay the same ledger read plus a second
-/// fork. Still well inside [`PROBE_TIMEOUT`], off the main thread, and pool-capped by this constant.
+/// no session was ~0.23s, of which `session_log.sh dropped --pending "$PWD"` alone accounted for
+/// ~0.2s (556-line ledger) — versus ~0.03s before that call existed. Paid at the `probe_interval`
+/// floor by every session-less tab, and per session-less dir across a wide `[[window.root]]`, this
+/// unbounded per-5s fork storm is what stuttered rendering under continuous output. The two
+/// mitigations below now bound it. Each probe is still well inside [`PROBE_TIMEOUT`], off the main
+/// thread, and pool-capped by this constant.
 ///
-/// **Two mitigations now bound this cost so it no longer stutters rendering:** agentmux's
+/// **Two mitigations bound this cost so it no longer stutters rendering:** agentmux's
 /// `session_log.sh dropped` short-circuits (grep-cost) when the cwd never appears in the ledger —
-/// the dominant `[[window.root]]` case — and every sweep worker runs at background QoS (see
+/// the dominant `[[window.root]]` case, so only a dir with prior amux history but no live session
+/// still pays the full ~0.2s fold — and every sweep worker runs at background QoS (see
 /// `set_background_qos`), so the `amux --probe` children inherit it and yield P-cores to
-/// libghostty's render thread. `just bench` (`probe_qos_bench`) guards the QoS half.
+/// libghostty's render thread even when a probe is expensive. `just bench` (`probe_qos_bench`) is
+/// the manual A/B that surfaces the QoS half.
 ///
 /// **Fails-safe on a symlinked `dir`, never a false ghost:** the ledger's cwd filter is exact
 /// string equality against the *interactive shell's* logical `$PWD`, but this probe runs via
