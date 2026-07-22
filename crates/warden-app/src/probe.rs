@@ -986,29 +986,50 @@ mod tests {
                 .status();
             Presence::Absent
         }
-        // Time a fixed CPU-bound "render" workload on a USER_INTERACTIVE thread while `burst` runs.
-        fn render_time_under(burst: impl FnOnce() + Send) -> Duration {
+        // Time a fixed, UN-FOLDABLE CPU workload on `n_render` USER_INTERACTIVE "render" threads
+        // (one per core, so cores are genuinely contended and QoS routing actually matters) while
+        // `burst` runs; return the SLOWEST render thread's elapsed — the worst-case frame stall.
+        // The per-thread loop MUST be a real dependency chain black_box'd EACH step: a plain
+        // `acc += i` loop folds to closed-form O(1) under -O and then the A/B measures nothing.
+        fn render_time_under(n_render: usize, burst: impl FnOnce() + Send) -> Duration {
             thread::scope(|s| {
-                let h = s.spawn(|| {
-                    // SAFETY: set this thread to the render path's interactive QoS.
-                    unsafe {
-                        libc::pthread_set_qos_class_self_np(
-                            libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
-                            0,
-                        )
-                    };
-                    let start = Instant::now();
-                    let mut acc = 0u64;
-                    for i in 0..800_000_000u64 {
-                        acc = acc.wrapping_add(i);
-                    }
-                    std::hint::black_box(acc);
-                    start.elapsed()
-                });
+                let handles: Vec<_> = (0..n_render)
+                    .map(|_| {
+                        s.spawn(|| {
+                            // SAFETY: set this thread to the render path's interactive QoS.
+                            unsafe {
+                                libc::pthread_set_qos_class_self_np(
+                                    libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
+                                    0,
+                                )
+                            };
+                            let start = Instant::now();
+                            let mut acc = 1u64;
+                            for _ in 0..120_000_000u64 {
+                                // black_box the running value each step so LLVM cannot fold the
+                                // serial dependency chain to a closed form — keeps it a real,
+                                // sustained CPU workload sensitive to being descheduled.
+                                acc = std::hint::black_box(
+                                    acc.wrapping_mul(6364136223846793005)
+                                        .wrapping_add(1442695040888963407),
+                                );
+                            }
+                            std::hint::black_box(acc);
+                            start.elapsed()
+                        })
+                    })
+                    .collect();
                 burst();
-                h.join().unwrap()
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap())
+                    .max()
+                    .unwrap()
             })
         }
+        let n_render = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(8);
         let n = MAX_PROBE_CONCURRENCY;
         let work: Vec<ProbeWork> = (0..3 * n)
             .map(|i| {
@@ -1021,7 +1042,7 @@ mod tests {
             })
             .collect();
         // Baseline: fork the burst from normal (default-QoS) threads — no demotion.
-        let base = render_time_under(|| {
+        let base = render_time_under(n_render, || {
             thread::scope(|s| {
                 for _ in 0..n {
                     s.spawn(|| {
@@ -1033,7 +1054,7 @@ mod tests {
             });
         });
         // Treatment: identical burst through the real sweep (workers demoted to background QoS).
-        let treat = render_time_under(|| {
+        let treat = render_time_under(n_render, || {
             let _ = sweep(work.clone(), None, n, burn_child, |_, _| {});
         });
         eprintln!("render under DEFAULT-qos burst   : {base:?}");
