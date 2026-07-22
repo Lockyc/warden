@@ -410,19 +410,25 @@ where
     let result = Mutex::new(BTreeMap::new());
     thread::scope(|scope| {
         for _ in 0..n {
-            scope.spawn(|| loop {
-                // Claim the next item and release the cursor lock BEFORE probing — never hold it
-                // across the (slow) probe, or the pool serializes on it.
-                let next = cursor.lock().unwrap().next();
-                let Some((id, dir, title, probe)) = next else {
-                    break;
-                };
-                let cmd = substitute(&probe, &dir, &title);
-                let on = probe_fn(&cmd, &dir);
-                // Hand this result to the caller's observer the instant its own probe finishes (it
-                // records it, then emits only if it changed), then keep it for the settle-diff.
-                emit(&id, on);
-                result.lock().unwrap().insert(id, on);
+            scope.spawn(|| {
+                // Worker (and the probe children it spawns, via QoS inheritance) run at background
+                // QoS so the fork storm yields P-cores to libghostty's render thread. See
+                // set_background_qos. Must stay first — a child spawned before this would not inherit.
+                set_background_qos();
+                loop {
+                    // Claim the next item and release the cursor lock BEFORE probing — never hold it
+                    // across the (slow) probe, or the pool serializes on it.
+                    let next = cursor.lock().unwrap().next();
+                    let Some((id, dir, title, probe)) = next else {
+                        break;
+                    };
+                    let cmd = substitute(&probe, &dir, &title);
+                    let on = probe_fn(&cmd, &dir);
+                    // Hand this result to the caller's observer the instant its own probe finishes
+                    // (it records it, then emits only if it changed), then keep it for the settle-diff.
+                    emit(&id, on);
+                    result.lock().unwrap().insert(id, on);
+                }
             });
         }
     });
