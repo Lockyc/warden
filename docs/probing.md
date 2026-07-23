@@ -35,12 +35,13 @@ kill" lag. Concurrency collapses that to a couple of waves (~0.1–0.2s). Keep t
 Two things ride on top of the concurrent sweep, both load-bearing:
 
 - **The just-bumped tab is probed first.** A tab-specific trigger (kill/start/activate) calls
-  `bump_tab(label, id)`, which stashes that tab as the window's `priority`; `order_work` moves
-  it to the head of the work-list so it's claimed in the **first** wave regardless of its list
-  position — its dot updates in ~one probe. This is **not** a one-shot reprobe (still one
+  `bump_tab`/`bump_tab_await`, which stashes that tab as the window's `priority`; `order_work`
+  moves it to the head of the work-list so it's claimed in the **first** wave regardless of its
+  list position — its dot updates in ~one probe. This is **not** a one-shot reprobe (still one
   driver, still the normal pass); it's just ordering, so it doesn't violate
   scheduler-is-the-only-prober. A whole-window bump (`bump`/`bump_all`, e.g. hot-reload/rescan/
-  focus) sets no priority and keeps natural list order.
+  focus) sets no priority and keeps natural list order. (The `_await` variant additionally holds
+  the burst open until the tab's expected transition lands — see the directional-await section.)
 - **Emit is per-tab, changed-only, `label`-stamped.** Each worker emits `warden:session-state`
   (stamped with the window `label`, filtered by the chrome's `forMe()` — the same
   `emit_to`-leaks footgun as `warden:refresh`, see CLAUDE.md) the instant *its own* probe
@@ -130,19 +131,47 @@ tmux/amux-agnostic — the command is the user's, warden only reads its exit cod
 ## The scheduler is the single probe driver — never reintroduce a one-shot reprobe
 
 Every trigger pushes a window into a fast burst via a `bump`, and **none** call
-`probe_window`/`run_probe` directly or run their own reprobe loop. Two bump flavours:
-`bump`/`bump_all` (whole window — `probe_now`, window focus, hot-reload, `rescan_root`) and
-`bump_tab(label, id)` (a specific tab just changed — `kill_session`, `start_session`,
-`activate_tab`), which additionally names the tab to probe first that pass (see the
-priority-first note above). Burst state (`WindowSchedule` in `probe.rs`) is tracked **per
-window, deliberately** — one window's flapping probe shouldn't force every other window's
-dots into fast polling too. `CAP` bounds a burst that never settles (a flapping/
-nondeterministic probe): **don't** remove it, or a bad probe command pins the scheduler at
+`probe_window`/`run_probe` directly or run their own reprobe loop. Three bump flavours:
+`bump`/`bump_all` (whole window — `probe_now`, window focus, hot-reload, `rescan_root`);
+`bump_tab(label, id)` (a specific tab, no definite expected transition — a warm tab-switch),
+which names the tab to probe first that pass (see the priority-first note above); and
+`bump_tab_await(label, id, want_present)` (below), which does the same **and** arms a
+directional await. Burst state (`WindowSchedule` in `probe.rs`) is tracked **per window,
+deliberately** — one window's flapping probe shouldn't force every other window's dots into
+fast polling too. `CAP` bounds a burst that never settles (a flapping/nondeterministic probe,
+**or a stuck await**): **don't** remove it, or a bad probe command pins the scheduler at
 `FAST` forever. There is **no optimistic dot-clear** by design (see CLAUDE.md's kill-flicker
 footgun) — re-adding a chrome-side clear, even a "helpful" one, reintroduces the flicker once
 a stale pass can land mid-teardown. `probe_interval = 0` means **event-driven-then-idle** —
 burst on every trigger, then no steady polling until the next one — not "no probing"; don't
 read a `0` floor as disabling presence checks.
+
+### A directional await keeps the burst hot until the expected transition lands
+
+`bump_tab_await(label, id, want_present)` fixes the case a plain burst mishandles: a trigger
+that expects a **specific async transition** — a kill (session should go *down*) or a session
+start (a cold-`activate` of a probe-enabled tab, or `start_session` re-typing `cmd` — should
+come *up*). The transition is asynchronous: `amux --kill` returns before tmux teardown fully
+lands, and a started session takes a second or two to spin up. A plain burst treats each "still
+the old state" pass as *agreement*, so ~`AGREE_TARGET`×`FAST` (~1.2s) of the transition-not-yet-
+landed **settles** the window onto the pre-transition state and drops it to the slow floor
+(`probe_interval`, default 5s) — the real change is then only caught on the next slow poll (the
+"~5s dot lag after kill/start" bug).
+
+The await closes that: it stashes `(id, want_present)` on the `WindowSchedule`, and the settle
+logic (`advance`, gated by `await_pending`) refuses to settle while that tab is still on the old
+side — the burst stays `Fast`, agreement reset, until the tab reaches the expected side (then it
+resumes normal fast-until-stable settling) **or** `CAP` fires (the backstop for a transition that
+never arrives — a failed kill, a session that never comes up — after which it settles normally so
+a stuck await can't burst forever). The await is **directional, not leave-baseline**, which is
+what makes it self-satisfying: an `activate` of an already-live tab arms `want_present = true` and
+`await_pending` returns false on the first pass (already `Present`), so a plain tab-switch never
+bursts to `CAP`. It is a **polling-duration heuristic only** — dots are always driven by the
+per-tab changed-only emit, so a mis-judged await can at worst poll `Fast` a bit longer, never
+paint a wrong dot. **This replaces `start_session`'s old fixed 1s/3s re-bump band-aid** — a single
+`bump_tab_await` now covers a slow start (don't reintroduce the delayed re-bumps). `activate_tab`
+arms it only for a **fresh cold-spawn of a probe-enabled tab** (`Registry::activate` reports the
+fresh spawn; `tab_has_probe` gates it) so a warm switch or a dotless tab stays a plain `bump_tab`.
 
 `run_scheduler` must be spawned **exactly once** per process (`main.rs` setup does this,
 right after `ManagerState` is managed). Spawning a second one won't crash, but it's far

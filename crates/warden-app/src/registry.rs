@@ -142,6 +142,16 @@ impl Registry {
             .any(|t| t.id == id && matches!(t.slot, TabSlot::Detached))
     }
 
+    /// Does tab `id` have a `probe` command (⇒ a presence dot the scheduler tracks)? `activate_tab`
+    /// consults this so it only arms a session-start await when cold-spawning a tab that actually
+    /// has a session to come up — a probe-less tab has no dot, so awaiting one would just burst to
+    /// CAP for nothing. Unknown id ⇒ `false`.
+    pub fn tab_has_probe(&self, id: &str) -> bool {
+        self.tabs
+            .iter()
+            .any(|t| t.id == id && t.spec.probe.is_some())
+    }
+
     /// Test-only: force tab `id`'s slot straight to `Detached`, bypassing
     /// `detach` (which needs a real `Spawned` surface to extract — unavailable
     /// in a unit test with no AppKit). `TabSlot::Detached` carries no data, so
@@ -279,12 +289,16 @@ impl Registry {
     /// never-opened or previously unloaded — spawns a fresh surface from its spec.
     /// A spawn failure leaves the tab cold and returns the error (the caller
     /// surfaces it); the tab can be retried by activating it again. Never panics.
-    fn ensure_spawned(&mut self, idx: usize) -> Result<(), SurfaceError> {
+    /// Spawn tab `idx`'s surface if it is `Cold`. Returns `true` iff it spawned **this call** (the
+    /// tab was cold) — the signal `activate` forwards so a caller can arm a session-start await only
+    /// when a fresh surface actually ran its `initial_input` (an already-live tab starts nothing).
+    fn ensure_spawned(&mut self, idx: usize) -> Result<bool, SurfaceError> {
         if let TabSlot::Cold = self.tabs[idx].slot {
             let s = GhosttySurface::new(self.ns_window, self.last_rect, &self.tabs[idx].spec)?;
             self.tabs[idx].slot = TabSlot::Spawned(s);
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Kill tab `id`'s surface + PTY, returning it to cold (it respawns a fresh
@@ -410,9 +424,13 @@ impl Registry {
     /// the hole shows the blank placeholder (no live surface for `idx`); the error
     /// is returned for the caller to surface, and re-activating retries. Returns
     /// `Ok` for an unknown id (no-op) and for an already-spawned tab.
-    pub fn activate(&mut self, id: &str) -> Result<(), SurfaceError> {
+    /// Show tab `id` (spawning it if cold) and hide the rest. Returns `Ok(true)` iff this call
+    /// spawned a **fresh** surface (the tab was cold) — so the caller can arm a session-start await
+    /// only when `initial_input` actually ran; `Ok(false)` for a warm tab-switch. An unknown id is a
+    /// no-op `Ok(false)`.
+    pub fn activate(&mut self, id: &str) -> Result<bool, SurfaceError> {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
-            return Ok(());
+            return Ok(false);
         };
         let spawned = self.ensure_spawned(idx);
         let rect = self.last_rect;

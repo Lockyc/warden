@@ -113,20 +113,55 @@ pub(crate) enum Cadence {
     Idle,
 }
 
+/// Whether an *armed* tab-bump's expected transition still hasn't landed, given this pass's probed
+/// presence for the awaited tab. `want_present` is the direction the trigger expects:
+/// `true` = the session should come **up** (start / cold-activate), `false` = it should go **down**
+/// (kill). Pending (`true`) means "the transition we're waiting for hasn't happened — keep bursting".
+///
+/// **Directional, not leave-baseline, so it self-satisfies when there's nothing to wait for.**
+/// Activating a tab whose session is already live arms `want_present = true`, and this returns
+/// `false` immediately (already `Present`) — so a plain tab-switch never bursts to [`CAP`]. A kill
+/// that finds the session already gone likewise disarms at once. The dot is still driven by the
+/// per-tab changed-only emit regardless; this only governs how long the *burst* stays hot.
+fn await_pending(now: Presence, want_present: bool) -> bool {
+    if want_present {
+        now != Presence::Present
+    } else {
+        now == Presence::Present
+    }
+}
+
 /// Pure fast-until-stable transition. Given whether this pass's states changed vs the previous pass,
-/// the running agreement count, how long the current burst has run, and the slow-floor seconds,
-/// return the new agreement count and the cadence to adopt next. Settling requires
-/// [`AGREE_TARGET`] consecutive unchanged passes; a burst is force-ended at [`CAP`] so a flapping
-/// signal can't burst forever. `slow_secs == 0` maps a settled/capped window to [`Cadence::Idle`].
+/// the running agreement count, how long the current burst has run, the slow-floor seconds, and
+/// whether an armed tab-bump's expected transition is still pending, return the new agreement count
+/// and the cadence to adopt next.
+///
+/// Ordinarily settling requires [`AGREE_TARGET`] consecutive unchanged passes, and a burst is
+/// force-ended at [`CAP`] so a flapping signal can't burst forever (`slow_secs == 0` maps a
+/// settled/capped window to [`Cadence::Idle`]).
+///
+/// **`awaiting_pending` overrides settling until the expected transition lands.** A tab-specific
+/// trigger (kill/start/cold-activate) expects a *change*, so its "still the old state" passes are the
+/// burst *waiting*, not the burst *settled* — counting them as agreement used to settle the window
+/// onto the pre-transition state and drop it to the slow floor before the async transition (session
+/// teardown / startup) completed, so the dot only caught up on the next slow poll (the "~5s dot lag
+/// after kill/start" bug). While `awaiting_pending`, the burst stays [`Cadence::Fast`] with agreement
+/// reset, so it can't settle early — still bounded by [`CAP`], which wins over a stuck await.
 pub(crate) fn advance(
     changed: bool,
     agree: u32,
     elapsed: Duration,
     slow_secs: u64,
+    awaiting_pending: bool,
 ) -> (u32, Cadence) {
+    let capped = elapsed >= CAP;
+    // The expected transition hasn't landed yet: keep the burst hot (never settle on the old
+    // state), unless CAP has fired — CAP is the backstop for a transition that never arrives.
+    if awaiting_pending && !capped {
+        return (0, Cadence::Fast);
+    }
     let agree = if changed { 0 } else { agree + 1 };
     let settled = agree >= AGREE_TARGET;
-    let capped = elapsed >= CAP;
     if settled || capped {
         if slow_secs == 0 {
             (agree, Cadence::Idle)
@@ -148,6 +183,11 @@ struct WindowSchedule {
     /// Set by such a bump, `take`n when the window is probed (applies to that one pass only). A
     /// whole-window bump (hot-reload/rescan/focus) leaves it unset — natural list order.
     priority: Option<String>,
+    /// An *armed* await: `(tab id, want_present)`. Set by a directional tab-bump (kill →
+    /// `false`, start / cold-activate → `true`) so the burst can't settle onto the pre-transition
+    /// state — it stays Fast until that tab reaches the expected side (or [`CAP`] fires), then is
+    /// cleared. See `advance`/`await_pending`. `None` = ordinary fast-until-stable settling.
+    awaiting: Option<(String, bool)>,
 }
 
 /// A `next_due` far enough in the future to mean "Idle — only a bump wakes this window".
@@ -193,20 +233,32 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
         let slow = interval.load(Ordering::Relaxed);
 
         // Apply bumps: window goes hot (probe immediately, fresh burst).
-        for Bump { label, tab } in bumps {
+        for Bump {
+            label,
+            tab,
+            await_present,
+        } in bumps
+        {
             let s = sched.entry(label).or_insert_with(|| WindowSchedule {
                 next_due: now,
                 prev: BTreeMap::new(),
                 agree: 0,
                 burst_start: now,
                 priority: None,
+                awaiting: None,
             });
             s.next_due = now;
             s.agree = 0;
             s.burst_start = now;
             // A tab-specific bump names the tab to probe first; a whole-window bump (tab == None)
             // must not clear a priority a coalesced tab-bump set in the same drain.
-            if tab.is_some() {
+            if let Some(id) = &tab {
+                // A directional bump (kill/start/cold-activate) also arms an await so the burst
+                // holds until that tab's expected transition lands; a plain tab-bump (warm
+                // activate) leaves any existing await alone (CAP still bounds it).
+                if let Some(want_present) = await_present {
+                    s.awaiting = Some((id.clone(), want_present));
+                }
                 s.priority = tab;
             }
         }
@@ -233,6 +285,7 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
                 agree: 0,
                 burst_start: now,
                 priority: None,
+                awaiting: None,
             });
         }
 
@@ -245,8 +298,19 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
             let priority = s.priority.take();
             let new = probe_window(&app, label, &s.prev, priority.as_deref());
             let changed = new != s.prev;
-            let (agree, cadence) =
-                advance(changed, s.agree, now.duration_since(s.burst_start), slow);
+            // Is an armed tab-bump still waiting for its expected transition? (A tab that dropped
+            // out of the work-list reads as Absent, which resolves the await one way or the other.)
+            let awaiting_pending = s.awaiting.as_ref().is_some_and(|(id, want_present)| {
+                let now_p = new.get(id).copied().unwrap_or(Presence::Absent);
+                await_pending(now_p, *want_present)
+            });
+            let elapsed = now.duration_since(s.burst_start);
+            let (agree, cadence) = advance(changed, s.agree, elapsed, slow, awaiting_pending);
+            // Disarm once the transition landed (no longer pending) or the burst hit CAP — so a
+            // stale baseline can't keep re-arming Fast on later passes.
+            if !awaiting_pending || elapsed >= CAP {
+                s.awaiting = None;
+            }
             s.prev = new;
             s.agree = agree;
             s.next_due = match cadence {
@@ -519,9 +583,12 @@ fn observe(
 
 /// A fast-burst request for one window. `tab` names the tab that triggered it (kill/start/activate)
 /// so the scheduler probes that tab first; `None` is a whole-window bump (hot-reload/rescan/focus).
+/// `await_present`, when set on a tab-bump, arms a directional await so the burst holds until that
+/// tab's expected transition lands (`true` = session should come up, `false` = go down).
 struct Bump {
     label: String,
     tab: Option<String>,
+    await_present: Option<bool>,
 }
 
 /// Scheduler bump channel sender, set once by `run_scheduler` at startup. Commands/events call
@@ -537,21 +604,31 @@ fn install_bump_tx(tx: Sender<Bump>) {
 /// Enqueue a fast-burst request for one window by label. No-op if the scheduler isn't installed
 /// (unit tests, teardown) or the receiver is gone. Use `bump_tab` when a single tab triggered it.
 pub fn bump(label: &str) {
-    send_bump(label, None);
+    send_bump(label, None, None);
 }
 
 /// Like `bump`, but names the tab that triggered the burst so the scheduler probes it first — its
-/// dot then updates within the first concurrency wave regardless of its list position. Used by the
-/// tab-specific triggers (kill/start/activate).
+/// dot then updates within the first concurrency wave regardless of its list position. Used for a
+/// tab-specific trigger with **no** definite expected transition (a warm tab-switch / focus).
 pub fn bump_tab(label: &str, tab: &str) {
-    send_bump(label, Some(tab.to_string()));
+    send_bump(label, Some(tab.to_string()), None);
 }
 
-fn send_bump(label: &str, tab: Option<String>) {
+/// Like `bump_tab`, but also arms a **directional await** so the burst holds Fast until the tab's
+/// expected transition lands (bounded by [`CAP`]), instead of settling on the pre-transition state.
+/// `want_present`: the session should come **up** (`true` — start / cold-activate) or go **down**
+/// (`false` — kill). This is the fix for the "~5s dot lag after kill/start" — an async transition
+/// slower than the ~[`AGREE_TARGET`]×[`FAST`] settle window used to drop the window to the slow poll.
+pub fn bump_tab_await(label: &str, tab: &str, want_present: bool) {
+    send_bump(label, Some(tab.to_string()), Some(want_present));
+}
+
+fn send_bump(label: &str, tab: Option<String>, await_present: Option<bool>) {
     if let Some(tx) = BUMP_TX.get() {
         let _ = tx.send(Bump {
             label: label.to_string(),
             tab,
+            await_present,
         });
     }
 }
@@ -658,20 +735,20 @@ mod tests {
     #[test]
     fn advance_settles_after_agree_target_unchanged_passes() {
         // Two agreeing passes are not enough; the third (agree reaches AGREE_TARGET) settles.
-        let (a1, c1) = advance(false, 0, Duration::from_millis(400), 5);
+        let (a1, c1) = advance(false, 0, Duration::from_millis(400), 5, false);
         assert_eq!(a1, 1);
         assert!(matches!(c1, Cadence::Fast));
-        let (a2, c2) = advance(false, a1, Duration::from_millis(800), 5);
+        let (a2, c2) = advance(false, a1, Duration::from_millis(800), 5, false);
         assert_eq!(a2, 2);
         assert!(matches!(c2, Cadence::Fast));
-        let (a3, c3) = advance(false, a2, Duration::from_millis(1200), 5);
+        let (a3, c3) = advance(false, a2, Duration::from_millis(1200), 5, false);
         assert_eq!(a3, 3);
         assert!(matches!(c3, Cadence::Slow(d) if d == Duration::from_secs(5)));
     }
 
     #[test]
     fn advance_change_resets_agreement_and_stays_fast() {
-        let (a, c) = advance(true, 2, Duration::from_millis(1200), 5);
+        let (a, c) = advance(true, 2, Duration::from_millis(1200), 5, false);
         assert_eq!(a, 0);
         assert!(matches!(c, Cadence::Fast));
     }
@@ -679,22 +756,86 @@ mod tests {
     #[test]
     fn advance_settled_with_zero_slow_goes_idle() {
         // probe_interval == 0 → event-driven only: after settling, Idle (no steady poll).
-        let (_, c) = advance(false, AGREE_TARGET - 1, Duration::from_millis(1200), 0);
+        let (_, c) = advance(
+            false,
+            AGREE_TARGET - 1,
+            Duration::from_millis(1200),
+            0,
+            false,
+        );
         assert!(matches!(c, Cadence::Idle));
     }
 
     #[test]
     fn advance_caps_a_flapping_signal_to_slow() {
         // Never agrees (changed every pass) but the burst exceeded CAP → drop out of Fast anyway.
-        let (a, c) = advance(true, 0, CAP + Duration::from_secs(1), 5);
+        let (a, c) = advance(true, 0, CAP + Duration::from_secs(1), 5, false);
         assert_eq!(a, 0);
         assert!(matches!(c, Cadence::Slow(d) if d == Duration::from_secs(5)));
     }
 
     #[test]
     fn advance_cap_with_zero_slow_goes_idle() {
-        let (_, c) = advance(true, 0, CAP + Duration::from_secs(1), 0);
+        let (_, c) = advance(true, 0, CAP + Duration::from_secs(1), 0, false);
         assert!(matches!(c, Cadence::Idle));
+    }
+
+    #[test]
+    fn advance_awaiting_pending_refuses_to_settle_on_the_old_state() {
+        // The core fix: while an armed tab-bump's transition is pending, three "still the old
+        // state" (unchanged) passes must NOT settle the burst — it stays Fast, agreement reset,
+        // so the async kill/start transition can't be missed and stranded on the slow poll.
+        for agree in [0, 1, 2, AGREE_TARGET, 99] {
+            let (a, c) = advance(false, agree, Duration::from_millis(1200), 5, true);
+            assert_eq!(a, 0, "agreement is reset while awaiting");
+            assert!(
+                matches!(c, Cadence::Fast),
+                "an awaiting window stays Fast even after AGREE_TARGET unchanged passes"
+            );
+        }
+    }
+
+    #[test]
+    fn advance_cap_wins_over_a_stuck_await() {
+        // A transition that never arrives (failed kill / a session that never comes up) must still
+        // drop to the slow floor at CAP rather than burst Fast forever.
+        let (_, c) = advance(false, 0, CAP + Duration::from_secs(1), 5, true);
+        assert!(matches!(c, Cadence::Slow(d) if d == Duration::from_secs(5)));
+        let (_, c0) = advance(false, 0, CAP, 0, true);
+        assert!(
+            matches!(c0, Cadence::Idle),
+            "capped await with slow==0 → Idle"
+        );
+    }
+
+    #[test]
+    fn await_pending_is_directional_and_self_satisfying() {
+        // want_present (start / cold-activate): pending until the session is actually Present.
+        assert!(
+            await_pending(Presence::Absent, true),
+            "no session yet → keep waiting"
+        );
+        assert!(
+            await_pending(Presence::Recoverable, true),
+            "a ghost is not the live session a start awaits → keep waiting"
+        );
+        assert!(
+            !await_pending(Presence::Present, true),
+            "session up → satisfied (so a warm tab-switch never bursts to CAP)"
+        );
+        // !want_present (kill): pending only while the session is still Present.
+        assert!(
+            await_pending(Presence::Present, false),
+            "still live → keep waiting for teardown"
+        );
+        assert!(
+            !await_pending(Presence::Absent, false),
+            "gone → satisfied (a kill of an already-dead session disarms at once)"
+        );
+        assert!(
+            !await_pending(Presence::Recoverable, false),
+            "left Present (crashed to a ghost) → the kill's leave-Present await is satisfied"
+        );
     }
 
     #[test]

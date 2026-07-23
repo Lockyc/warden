@@ -265,11 +265,21 @@ fn activate_tab(
     id: String,
 ) -> bool {
     use tauri::Emitter;
-    let err = {
+    // Capture both the spawn outcome AND whether this call spawned a FRESH cold surface (whose
+    // `initial_input` may be starting a session) for a probe-enabled tab — the two facts that
+    // decide whether to arm a session-start await below. Both read under the one lock.
+    let (spawned_fresh, has_probe, err) = {
         let mut m = state.lock();
-        m.windows
-            .get_mut(window.label())
-            .and_then(|ws| ws.registry.activate(&id).err())
+        match m.windows.get_mut(window.label()) {
+            Some(ws) => {
+                let has_probe = ws.registry.tab_has_probe(&id);
+                match ws.registry.activate(&id) {
+                    Ok(fresh) => (fresh, has_probe, None),
+                    Err(e) => (false, has_probe, Some(e)),
+                }
+            }
+            None => (false, false, None),
+        }
     };
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
     // empty-state placeholder over the uncovered hole) instead of panicking. The chrome is
@@ -290,10 +300,17 @@ fn activate_tab(
             }),
         );
     }
-    // A just-activated tab may have a session that changed while it was cold/backgrounded — fast-burst
-    // this window so its dot is current within a pass rather than up to a slow-poll stale. Probe this
-    // tab first so its dot settles immediately even in a wide window.
-    probe::bump_tab(window.label(), &id);
+    // Fast-burst this window so a just-activated tab's dot is current within a pass, probing this tab
+    // first so it lands in the first wave. If we just cold-spawned a probe-enabled tab, its
+    // `initial_input` may be starting a session asynchronously — arm a session-start await so the
+    // burst holds until it comes up (bounded by CAP), instead of settling "absent" within the
+    // ~AGREE_TARGET×FAST window and only catching the session on the next slow poll. A warm switch
+    // (or a probe-less tab) has no expected transition, so it's a plain priority bump.
+    if spawned_fresh && has_probe {
+        probe::bump_tab_await(window.label(), &id, true);
+    } else {
+        probe::bump_tab(window.label(), &id);
+    }
     live
 }
 
@@ -537,25 +554,28 @@ fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>,
     let cmd = probe::substitute(&cmd, &dir, &title);
     let label = window.label().to_string();
     // Run the kill fire-and-forget off the UI thread, then bump this window so the scheduler's fast
-    // burst catches the absent→ transition the moment teardown lands. No optimistic drop and no
-    // killing-suppression flag: the dot tracks `warden:session-state` and converges monotonically
-    // (stays lit ~0.4–1s while `amux --kill` tears down, then drops once — no off→on→off flicker).
-    // A genuinely-failed kill leaves the session present, so the dot correctly stays lit.
+    // burst catches the leave-Present transition the moment teardown lands. `bump_tab_await(false)`
+    // arms a directional await (session should go DOWN) so the burst holds Fast until it does rather
+    // than settling on the still-Present state and dropping to the slow poll — the fix for the
+    // ~5s-lingering dot when `amux --kill` returns before tmux teardown fully lands. No optimistic
+    // drop and no suppression flag: the dot tracks `warden:session-state` and converges
+    // monotonically (no off→on→off flicker). A genuinely-failed kill leaves the session present, so
+    // the await simply rides to CAP and the dot correctly stays lit.
     std::thread::spawn(move || {
         let _ = probe::run_probe(&cmd, &dir);
         // Probe THIS tab first in the burst so its dot clears within one probe, not after every
         // other tab in a wide window's sweep.
-        probe::bump_tab(&label, &id);
+        probe::bump_tab_await(&label, &id, false);
     });
 }
 
 /// Restart the *session* tab `id` represents by re-typing its startup `cmd` into the live shell
 /// (see `Registry::start_session` — the runtime twin of spawn-time `initial_input`). No-op if the
-/// tab is cold or has no `cmd`. Unlike `kill_session` (a single bump), the started session appears
-/// **asynchronously** — the shell has to run the typed command — so a single burst can settle
-/// "absent" before it comes up. Instead we bump now and again at ~1s/~3s so the scheduler's fast
-/// burst re-arms and catches the session once it lands; the slow poll heals any later drift, and
-/// `probe_interval = 0` tabs re-light on next focus. Same minimal-env PATH footgun as probes.
+/// tab is cold or has no `cmd`. The started session appears **asynchronously** — the shell has to
+/// run the typed command — so a single ordinary burst can settle "absent" before it comes up. A
+/// directional await (`bump_tab_await(true)`, session should come UP) holds the burst Fast until the
+/// session is actually `Present` (bounded by CAP), so the dot lights within a probe of the session
+/// landing rather than up to a slow poll later. Same minimal-env PATH footgun as probes.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
@@ -569,21 +589,9 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     if !started {
         return; // cold / no cmd / unknown — nothing typed, nothing to re-probe
     }
-    let label = window.label().to_string();
-    // The started session appears asynchronously — the shell has to run the typed `cmd` — and a
-    // single burst can settle on "stably absent" before it comes up. So re-bump at ~1s and ~3s to
-    // re-arm the scheduler's fast burst and catch a slow start; the slow poll heals any later drift,
-    // and `probe_interval = 0` tabs light on the next event. (Delayed *bumps*, not reprobes — the
-    // scheduler is the only prober.) This is the one trigger that needs more than a single bump.
-    // Each bump names this tab so it's probed first in the burst (its dot lights as soon as the
-    // session comes up, not after the rest of a wide window's sweep).
-    probe::bump_tab(&label, &id);
-    std::thread::spawn(move || {
-        for delay_ms in [1000u64, 3000] {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            probe::bump_tab(&label, &id);
-        }
-    });
+    // Probe this tab first in the burst so its dot lights as soon as the session comes up, not after
+    // the rest of a wide window's sweep; the await keeps the burst alive across the async start.
+    probe::bump_tab_await(window.label(), &id, true);
 }
 
 /// Re-scan every project-tree root of the focused window's config and reconcile:
