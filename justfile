@@ -233,6 +233,19 @@ deploy:
     #!/usr/bin/env bash
     set -euo pipefail
     bash install.sh
+    # macOS 26 runs a per-exec provenance/quarantine check (syspolicyd → qtn_proc). An ad-hoc,
+    # team-less local build makes that check FAIL on the app AND every process it spawns; for a
+    # terminal like warden that hosts your shells, that is a syspolicyd/kernel_task CPU storm on
+    # every command run inside it. A Developer ID signature gives the bundle a real Team ID, so the
+    # check attributes it and takes the cached fast-path instead of re-failing. (`release`
+    # additionally notarizes for distribution; local deploy only needs the signature + Team ID.)
+    id="$(security find-identity -p codesigning -v 2>/dev/null | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+    if [ -n "$id" ]; then
+      codesign --force --deep --options runtime --timestamp=none --sign "$id" /Applications/warden.app
+      echo "✓ signed: $id"
+    else
+      echo "⚠ no Developer ID identity in keychain — warden stays ad-hoc; expect syspolicyd CPU load on macOS 26" >&2
+    fi
     echo "→ launching"
     open "/Applications/warden.app"
     echo "✓ warden updated in /Applications"
