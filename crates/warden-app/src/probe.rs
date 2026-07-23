@@ -297,6 +297,14 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
             // Priority applies to this one pass; take it so the next pass reverts to list order.
             let priority = s.priority.take();
             let new = probe_window(&app, label, &s.prev, priority.as_deref());
+            // A probe pass BLOCKS this loop for its wall-clock (a slow probe → seconds), so
+            // schedule the next due time from when the pass FINISHED, not the iteration start
+            // (`now`). Off `now`, a pass slower than the cadence makes `now + FAST` already in the
+            // past → the window is instantly due again → the scheduler back-to-back re-probes with
+            // zero breathing room (one slow tab pegs the loop). `pass_end + FAST` guarantees at
+            // least a FAST gap after each pass. `elapsed` (the burst-vs-CAP clock) is also taken at
+            // `pass_end`, so a slow pass counts its full wall-clock toward CAP.
+            let pass_end = Instant::now();
             let changed = new != s.prev;
             // Is an armed tab-bump still waiting for its expected transition? (A tab that dropped
             // out of the work-list reads as Absent, which resolves the await one way or the other.)
@@ -304,7 +312,7 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
                 let now_p = new.get(id).copied().unwrap_or(Presence::Absent);
                 await_pending(now_p, *want_present)
             });
-            let elapsed = now.duration_since(s.burst_start);
+            let elapsed = pass_end.duration_since(s.burst_start);
             let (agree, cadence) = advance(changed, s.agree, elapsed, slow, awaiting_pending);
             // Disarm once the transition landed (no longer pending) or the burst hit CAP — so a
             // stale baseline can't keep re-arming Fast on later passes.
@@ -314,9 +322,9 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
             s.prev = new;
             s.agree = agree;
             s.next_due = match cadence {
-                Cadence::Fast => now + FAST,
-                Cadence::Slow(d) => now + d,
-                Cadence::Idle => idle_due(now),
+                Cadence::Fast => pass_end + FAST,
+                Cadence::Slow(d) => pass_end + d,
+                Cadence::Idle => idle_due(pass_end),
             };
         }
     }
