@@ -1,7 +1,7 @@
-use crate::model::{Config, Root, Tab, TabDigitKeys, Window};
+use crate::model::{Config, Root, Tab, Window};
 use crate::raw::{RawConfig, RawWindow};
 use crate::{Colour, ColourError};
-use config_core::{Density, Warning};
+use config_core::{Density, TabDigitKeys, Warning};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;

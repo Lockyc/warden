@@ -26,17 +26,9 @@ use manager::{InitDto, WindowManager};
 
 use geometry::WebRect;
 
-// Menu-item IDs, matched in the Builder's on_menu_event handler. The App/Config/Window submenus
-// and Close Tab/Close Window are the shared spine now (`shell_core::menu`) — only warden's own
-// items keep a local id. Direct-jump items use the prefix `tab_jump_<n>` (1-based position).
-const MENU_TAB_PREV: &str = "tab_prev";
-const MENU_TAB_NEXT: &str = "tab_next";
-// ⌘1 / ⌘2 alias Next / Previous Tab. They live alongside ⌘⇧] / ⌘⇧[ and, by claiming
-// the digit-1/2 chords, deliberately remove the digit-1/2 *jumps* — direct jumps start
-// at ⌘3 (positions 1 and 2 have no direct chord under this layout).
-const MENU_TAB_NEXT_DIGIT: &str = "tab_next_digit";
-const MENU_TAB_PREV_DIGIT: &str = "tab_prev_digit";
-const MENU_TAB_JUMP_PREFIX: &str = "tab_jump_";
+// Menu-item IDs, matched in the Builder's on_menu_event handler. The App/Config/Window submenus,
+// Close Tab / Close Window / Pop Out Tab, and the tab-nav block are all the shared spine now
+// (`shell_core::menu`) — only warden's own Reopen Last Closed keeps a local id.
 // Reopen Last Closed (⌘⇧T) is warden-only — curator and lector have no equivalent, so this stays
 // a local item spliced into the spine's Window submenu rather than added to the spine itself
 // (YAGNI — add it there only if a sibling app wants it too).
@@ -77,11 +69,11 @@ impl ManagerState {
 struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 
 /// Build and install the app menu: the shared spine (App/Config/Window submenus + the Close Tab
-/// item) interleaved with warden's own Tab submenu. The digit chords depend on `mode`:
-/// - `Jump` (default): ⌘1–⌘9 jump straight to that 1-based tab position.
-/// - `Cycle`: ⌘1 = next tab, ⌘2 = previous (distinct items firing the same
-///   cycle-tab event — a menu item carries one accelerator), reclaiming the
-///   digit-1/2 chords, so jumps shift to ⌘3–⌘9 (positions 1–2 lose their chord).
+/// item) interleaved with warden's own Tab submenu. The digit chords still depend on `mode`, but
+/// the items themselves now come from `shell_core::menu::build_tab_nav` — the mode's effect
+/// (`Jump`: ⌘1–⌘9 jump straight to that 1-based tab position; `Cycle`: ⌘1/⌘2 alias next/previous,
+/// reclaiming the digit-1/2 chords so jumps shift to ⌘3–⌘9) is defined there once, for all three
+/// apps, not rebuilt here.
 ///
 /// **⌘W closes a tab, ⌘⇧W closes the window — unchanged.** warden already had this right (the
 /// family standard other apps are adopting); only the item/id/accelerator moved into
@@ -99,7 +91,6 @@ fn build_app_menu(
     reopen_available: bool,
 ) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
-    use warden_config::TabDigitKeys;
 
     let window_entries: Vec<shell_core::menu::WindowEntry> = entries
         .into_iter()
@@ -125,53 +116,23 @@ fn build_app_menu(
         env!("BUILD_DATE"),
     )?;
 
-    let prev = MenuItemBuilder::with_id(MENU_TAB_PREV, "Previous Tab")
-        .accelerator("Shift+Cmd+BracketLeft")
-        .build(app)?;
-    let next = MenuItemBuilder::with_id(MENU_TAB_NEXT, "Next Tab")
-        .accelerator("Shift+Cmd+BracketRight")
-        .build(app)?;
-
-    let mut tab_menu = SubmenuBuilder::new(app, "Tab").item(&prev).item(&next);
-
-    // Cycle mode only: ⌘1/⌘2 as next/prev aliases. Kept alive past the `if` so the
-    // builder's `&` items outlive the chained `.item()` calls below.
-    let cycle_items = if mode == TabDigitKeys::Cycle {
-        let next_digit = MenuItemBuilder::with_id(MENU_TAB_NEXT_DIGIT, "Next Tab (⌘1)")
-            .accelerator("Cmd+Digit1")
-            .build(app)?;
-        let prev_digit = MenuItemBuilder::with_id(MENU_TAB_PREV_DIGIT, "Previous Tab (⌘2)")
-            .accelerator("Cmd+Digit2")
-            .build(app)?;
-        Some((next_digit, prev_digit))
-    } else {
-        None
-    };
-    if let Some((next_digit, prev_digit)) = &cycle_items {
-        tab_menu = tab_menu.item(next_digit).item(prev_digit);
+    // The tab-nav block is shell-core's now: Previous/Next Tab, the ⌘1/⌘2 cycle aliases when the
+    // mode asks for them, and the jump items (⌘1–9, or ⌘3–9 once the aliases take 1 and 2). Only
+    // the submenu *composition* below is warden's.
+    let nav = shell_core::menu::build_tab_nav(app, mode.is_cycle())?;
+    let mut tab_menu = SubmenuBuilder::new(app, "Tab");
+    for it in &nav.nav {
+        tab_menu = tab_menu.item(it);
     }
-
-    // The spine's Close Tab (⌘W) — id/accelerator now live in shell_core::menu so they can't
-    // drift per app; warden's own semantics (unload the active tab, NOT close the window) are
-    // unchanged, see the on_menu_event handler's CLOSE_TAB arm. Pop Out Tab (⌘⇧O) sits beside it,
-    // acting on the active tab via the same focused-window emit path.
+    // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
+    // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
     tab_menu = tab_menu
         .separator()
         .item(&spine.close_tab)
         .item(&spine.pop_out_tab)
         .separator();
-
-    // Jump-to-position. Jump mode: ⌘1–⌘9. Cycle mode: ⌘3–⌘9 (⌘1/⌘2 taken above).
-    let first = if mode == TabDigitKeys::Cycle { 3 } else { 1 };
-    let jumps = (first..=9)
-        .map(|i| {
-            MenuItemBuilder::with_id(format!("{MENU_TAB_JUMP_PREFIX}{i}"), format!("Tab {i}"))
-                .accelerator(format!("Cmd+Digit{i}"))
-                .build(app)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for j in &jumps {
-        tab_menu = tab_menu.item(j);
+    for it in &nav.jumps {
+        tab_menu = tab_menu.item(it);
     }
     let tab_menu = tab_menu.build()?;
 
@@ -989,19 +950,36 @@ fn main() {
             return;
         };
         let label = win.label().to_string();
-        if id == MENU_TAB_PREV || id == MENU_TAB_PREV_DIGIT {
-            let _ = app.emit_to(
-                label.as_str(),
-                "warden:cycle-tab",
-                serde_json::json!({ "label": label, "dir": -1 }),
-            );
-        } else if id == MENU_TAB_NEXT || id == MENU_TAB_NEXT_DIGIT {
-            let _ = app.emit_to(
-                label.as_str(),
-                "warden:cycle-tab",
-                serde_json::json!({ "label": label, "dir": 1 }),
-            );
-        } else if id == shell_core::menu::ids::CLOSE_TAB {
+        // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases) — shell-core routes the
+        // id, so this handler is mode-blind: the aliases arrive as plain Next/Prev.
+        if let Some(action) = shell_core::menu::tab_nav_action(id) {
+            use shell_core::menu::TabNavAction;
+            match action {
+                TabNavAction::Prev => {
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        "warden:cycle-tab",
+                        serde_json::json!({ "label": label, "dir": -1 }),
+                    );
+                }
+                TabNavAction::Next => {
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        "warden:cycle-tab",
+                        serde_json::json!({ "label": label, "dir": 1 }),
+                    );
+                }
+                TabNavAction::Jump(n) => {
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        "warden:select-tab",
+                        serde_json::json!({ "label": label, "n": n }),
+                    );
+                }
+            }
+            return;
+        }
+        if id == shell_core::menu::ids::CLOSE_TAB {
             // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
             // it does NOT close the window. The chrome owns "which tab is active" + the
             // dot/highlight repaint, so it drives the unload_tab command on this event.
@@ -1033,15 +1011,6 @@ fn main() {
             // ⌘⇧W closes the whole window (Destroyed → reap surfaces, then sync_empty_surface:
             // shows the home surface if it was the last real window — no quit).
             let _ = win.close();
-        } else if let Some(n) = id
-            .strip_prefix(MENU_TAB_JUMP_PREFIX)
-            .and_then(|s| s.parse::<u32>().ok())
-        {
-            let _ = app.emit_to(
-                label.as_str(),
-                "warden:select-tab",
-                serde_json::json!({ "label": label, "n": n }),
-            );
         }
     })
     .invoke_handler(tauri::generate_handler![

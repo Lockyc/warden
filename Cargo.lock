@@ -395,7 +395,7 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=a8cb0f88d472f3b1b222c11258fc8d7830c812b7#a8cb0f88d472f3b1b222c11258fc8d7830c812b7"
+source = "git+https://github.com/Lockyc/config-core?rev=32da05722453a9b54eff59f567b5360fbfff5ff5#32da05722453a9b54eff59f567b5360fbfff5ff5"
 dependencies = [
  "dirs 5.0.1",
  "serde",
@@ -3366,7 +3366,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=7ac14a43410456ba409505641bf4208c3d3753c4#7ac14a43410456ba409505641bf4208c3d3753c4"
+source = "git+https://github.com/Lockyc/shell-core?rev=4853c4f2194b4867a1476939f7baf1451aa44dab#4853c4f2194b4867a1476939f7baf1451aa44dab"
 dependencies = [
  "block2 0.6.2",
  "notify",

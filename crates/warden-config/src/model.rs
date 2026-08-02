@@ -1,5 +1,5 @@
 use crate::Colour;
-use config_core::Density;
+use config_core::{Density, TabDigitKeys};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,24 +27,10 @@ pub struct Config {
     pub notify_debug: bool,
 }
 
-// `Density` and `Warning` are the leaf-free primitives shared with curator and lector — they
-// live in config-core and are re-exported at this crate's root (see lib.rs). warden builds its
-// model by hand (raw → resolve → model) rather than through serde, but the enum/struct shapes
-// are identical, so it consumes the shared ones like the sibling apps do.
-
-/// Behaviour of the ⌘1/⌘2 menu accelerators (a whole-app keybinding mode).
-///
-/// - `Jump` (default, standard macOS convention): ⌘1–⌘9 jump straight to the
-///   tab at that 1-based position.
-/// - `Cycle`: ⌘1 = next tab, ⌘2 = previous tab (aliasing ⌘⇧] / ⌘⇧[), which
-///   reclaims the digit-1/2 chords, so direct jumps shift to ⌘3–⌘9 (positions
-///   1–2 then have no jump chord).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TabDigitKeys {
-    #[default]
-    Jump,
-    Cycle,
-}
+// `Density`, `TabDigitKeys`, and `Warning` are the leaf-free primitives shared with curator and
+// lector — they live in config-core and are re-exported at this crate's root (see lib.rs).
+// warden builds its model by hand (raw → resolve → model) rather than through serde, but the
+// enum/struct shapes are identical, so it consumes the shared ones like the sibling apps do.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Window {
