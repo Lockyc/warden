@@ -356,16 +356,15 @@ impl WindowManager {
                 .build()
                 .expect("build window window");
 
-        // Windows are built at runtime (not from tauri.conf.json), so the
-        // window-state plugin's automatic restore doesn't apply — trigger it
-        // explicitly. Saved bounds (keyed by the stable per-label) override the
-        // config-resolved builder default above (spec.width × spec.height,
-        // 1500×1000 by default); first launch (no saved state) keeps it.
-        {
-            use tauri_plugin_window_state::{StateFlags, WindowExt};
-            let _ = window
-                .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
-        }
+        // Saved bounds are restored by shell-core's geometry plugin, on its `on_window_ready`
+        // hook — which fires for runtime-built windows too, so nothing needs to trigger it here.
+        //
+        // FOOTGUN: do NOT restore geometry by hand in this function. It looks like it should be
+        // needed — this window is built at runtime, not from `tauri.conf.json` — but the plugin's
+        // hook already covers that case. `build_window` runs off the main event loop (the setup
+        // hook runs before it starts; hot-reload runs on the watcher thread), and reading/setting
+        // geometry marshals to the main loop: calling it from here blocks, either a self-hang at
+        // launch or a deadlock against the plugin's own hook on reload.
 
         let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 

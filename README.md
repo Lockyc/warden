@@ -191,7 +191,7 @@ with nothing extra to install:
   validate, format, hot-reload diff) behind warden's config and `warden fmt`.
 - **[shell-core](https://github.com/Lockyc/shell-core)** — the shared release tooling + a sliver
   of Tauri runtime setup. `build.rs` materializes the release scripts (git-ignored) and stamps the
-  build; the app registers window-state/updater/process via its `register_plugins`.
+  build; the app registers window geometry persistence/updater/process via its `register_plugins`.
 
 Those same cores are also shared with two **sibling apps, [curator](https://github.com/Lockyc/curator)**
 (curates **browser tabs**) and **[lector](https://github.com/Lockyc/lector)** (curates **local

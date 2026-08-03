@@ -140,7 +140,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
 pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
     // Reserve the shared home surface's label so a config window whose title
     // sanitizes to it (e.g. "shell home") gets `-2`, not a collision that
-    // silently breaks window-state persistence / crashes config recovery.
+    // silently breaks geometry persistence / crashes config recovery.
     let mut taken = HashSet::new();
     taken.insert(shell_core::home::HOME_LABEL.to_string());
     config
@@ -810,7 +810,7 @@ colour = "#111111"
     #[test]
     fn window_specs_reserves_home_label() {
         // A window whose title sanitizes to the reserved home-surface label must NOT
-        // be assigned that label (it would silently break window-state persistence
+        // be assigned that label (it would silently break geometry persistence
         // and collide with the shared home surface) — it gets the "-2" suffix instead.
         let c = cfg(r##"
 [[window]]

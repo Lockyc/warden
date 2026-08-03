@@ -20,7 +20,7 @@ Two layers are built:
 
 - **Config-core** — the `warden-config` crate (pure logic, no GUI): parses/validates/resolves the TOML, diffs two configs for hot-reload, loads from disk, watches the file, ships a `warden validate` + `warden fmt` CLI.
 - **GUI** — the `warden-app` crate: a config-driven, multi-window **macOS-only** Tauri app. What's built (README = the user-facing tour; [`docs/config.md`](docs/config.md) = the schema; [`docs/probing.md`](docs/probing.md) = presence probing; *Conventions & footguns* = the traps):
-  - **A native window per `[[window]]`**, materialized at launch (gated by `open_on_start`), each with a colour + title banner and curator-style transparent chrome (Overlay titlebar, opaque draggable sidebar). Window size/position/maximized persist per Tauri label; sidebar width persists in `localStorage`.
+  - **A native window per `[[window]]`**, materialized at launch (gated by `open_on_start`), each with a colour + title banner and curator-style transparent chrome (Overlay titlebar, opaque draggable sidebar). Window size/position persist per Tauri label (in AppKit points); sidebar width persists in `localStorage`.
   - **Tabs = embedded libghostty surfaces** behind the `TerminalSurface` seam, lazy-spawned on first focus (except `load_on_open`). Sectioned by `[[window.group]]` and auto-discovered from `[[window.root]]` project trees (`scanner.rs` → `synthesize_tabs`, rendered as a collapsible tree; rescan on open / hot-reload / manual refresh — no fs watcher).
   - **Tab-row dots:** live/cold (spawned?) doubling as an **unload** ✕ (kills surface+PTY → cold, respawns on next focus; unloading the visible tab leans **up** to a live neighbour, else a blank placeholder); amber **attention** badge on bell / OSC 9 / OSC 777 (decoded via `action_cb` → `notify.rs`; background tab badges, and a desktop-notify also raises a macOS banner via native `UNUserNotificationCenter` — **clicking the banner raises that window + selects the tab**); cyan **session-presence** dot (per-tab `probe`, off-main-thread scheduler; **three** states — cyan
   = live session on exit 0, a **ghost** = crashed-but-restorable on exit 3, hollow = nothing. The
@@ -119,7 +119,7 @@ The probe **scheduler** internals (bursts, `PresenceCache`, the single-driver ru
 - **Never free a surface from inside `action_cb`** — libghostty is still standing on it (a silent use-after-free that *tests* fine); the `SHOW_CHILD_EXITED` path defers via `dispatch_async_f` — `surface/ghostty.rs`. Any future surface-destroying or lock-taking action must take the same deferred path.
 - **The watcher matches the config by file name, not full path** (survives FSEvents `/private/var` vs `/var` symlinks and atomic-save inode swaps) and fires on *any* event — `warden-config/src/watch.rs`. Don't restore full-path equality or add an `event.kind` filter.
 - **`rescan_root` diffs a fresh scan against `last_good` (what's on screen), not two scans against each other** — `main.rs::rescan_root`. Don't "simplify" to comparing two scans directly (it would miss drift the screen hadn't caught up to).
-- **Window bounds restore is per-label + runtime-triggered:** call `restore_state` explicitly (runtime-built windows get no auto-restore); the label derives deterministically from the title, so a *title change* restores fresh default bounds (consistent with *title change is destructive*) — `manager.rs::build_window`.
+- **Window bounds restore is per-label, via shell-core's geometry plugin's own `on_window_ready` hook** (it fires for runtime-built windows too — no manual trigger needed, and none should be added, see the FOOTGUN in `manager.rs::build_window`); the label derives deterministically from the title, so a *title change* restores fresh default bounds (consistent with *title change is destructive*).
 - **A surface that fails to spawn degrades to a cold tab — never `.expect()`/`unwrap()` it** (one bad tab used to panic the whole app at launch): errors ride the init snapshot (launch-time) or `warden:error` (click-time) — `registry.rs` (`add`/`ensure_spawned`/`activate`).
 - **A new *global* config setting won't hot-reload if only threaded through the per-window DTO** ("density-only edit does nothing"): a global-only edit is an empty reconcile, so add its own old-vs-new compare in the reload hook — launch works via `InitDto`, which is the trap. `main.rs` reload hook.
 - **`emit_to` leaks to sibling webviews** — every per-window event must stamp a `label` and the chrome filters on it (`forMe()`): `main.rs` (`on_menu_event`), `manager.rs` (`warden:refresh`), `notify.rs`, `probe.rs`. Don't add a per-window emit relying on `emit_to`'s targeting alone.
@@ -189,14 +189,19 @@ that is the same for warden, curator, lector, and any future sibling app.
   warden's own `shell_home_create_config` command, calling `config_core::write_default_config`
   with warden's own `src/default-config.toml` template — shell-core never touches config-core (the
   three cores stay mutually independent; see the constellation `CLAUDE.md`).
-- **Plugin registration comes from shell-core.** `main.rs` registers window-state + updater + process via
-  `shell_core::register_plugins(builder, Some(&config_path), &[shell_core::home::HOME_LABEL])`, passing
-  warden's resolved config path — shell-core derives the per-config window-state filename from it
-  (`state_filename`, its own `fnv1a_64`), so the canonicalize→hash→format policy is single-sourced there,
-  not per app (only the *path* is app-specific). window-state stays a direct dep (manager.rs uses
-  `WindowExt::restore_state`); only the registration + filename policy are shared. The `runtime` feature
-  pulls tauri; the `build.rs` build-dep uses `default-features = false` so it stays zero-tauri (resolver 2
-  keeps the two separate).
+- **Plugin registration, including window geometry persistence, comes from shell-core.** `main.rs`
+  registers the geometry plugin + updater + process via
+  `shell_core::register_plugins(builder, Some(&config_path), &[])`, passing warden's resolved config
+  path — shell-core derives the per-config geometry-store filename from it (`geometry_filename`, its
+  own `fnv1a_64`), so the canonicalize→hash→format policy is single-sourced there, not per app (only
+  the *path* is app-specific). Geometry is persisted in AppKit points and clamped to the target
+  monitor's work area on restore, and restore/save both run entirely inside the plugin (its own
+  `on_window_ready` hook, which fires for runtime-built windows too) — warden triggers none of it by
+  hand (see the FOOTGUN in `manager.rs::build_window`). The shared home surface and any popped-out
+  tab window are excluded from persistence structurally by the plugin, so `skip_labels` is empty here;
+  it's reserved for an app's own transient windows, which warden has none of today. The `runtime`
+  feature pulls tauri; the `build.rs` build-dep uses `default-features = false` so it stays zero-tauri
+  (resolver 2 keeps the two separate).
 - **Not shared (genuinely warden-specific):** IPC fan-out (warden inlines `emit_to` with
   app-namespaced `warden:refresh` events + a `forMe()` filter); **warden's own config watcher** (it
   parses inside + drives a slow root-scan/main-thread reconcile and relies on `format_file`'s

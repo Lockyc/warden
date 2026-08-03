@@ -43,8 +43,8 @@ pub struct Reconciliation {
 ///   place, carrying its new full `Tab`.
 ///
 /// **What is NOT detected:**
-/// - A kept window's `width` or `height` change. Window size is owned by the
-///   window-state plugin after first launch and is a first-run default only;
+/// - A kept window's `width` or `height` change. Window size is owned by
+///   shell-core's geometry plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config have no effect on a live
 ///   window.
 ///
@@ -88,8 +88,8 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///   place).
 ///
 /// **What is NOT detected:**
-/// - A kept window's `width` or `height` change. Window size is owned by the
-///   window-state plugin after first launch and is a first-run default only;
+/// - A kept window's `width` or `height` change. Window size is owned by
+///   shell-core's geometry plugin after first launch and is a first-run default only;
 ///   subsequent changes to those fields in the config are not applied to a live
 ///   window.
 /// - A window's `open_on_start` flag. It is a launch-only materialization gate
