@@ -11,7 +11,7 @@ chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "50825d2347
 # Shared release tooling + build_stamp. build.rs materializes scripts/*.sh (git-ignored) and stamps
 # BUILD_GIT_SHA/BUILD_DATE. default-features=false keeps the build-dep zero-tauri (resolver 2 keeps
 # it separate from the runtime-featured [dependencies] entry below). Pinned by rev.
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "f779b4b9f3ff400b4dc8e48ec49ce82d04808ad2", default-features = false }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "dc9fd256b9c2a43229bd351acb2befc9b06eb72e", default-features = false }
 
 [dependencies]
 # macos-private-api: required for programmatic transparent windows (the
@@ -26,7 +26,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # Shared Tauri runtime helpers (register_plugins). runtime feature pulls tauri; the build-dep above
 # stays zero-tauri. Same rev as the build-dep — bump both in lockstep.
-shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "f779b4b9f3ff400b4dc8e48ec49ce82d04808ad2", features = ["runtime"] }
+shell-core = { git = "https://github.com/Lockyc/shell-core", rev = "dc9fd256b9c2a43229bd351acb2befc9b06eb72e", features = ["runtime"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 warden-config = { path = "../warden-config" }

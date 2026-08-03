@@ -361,10 +361,13 @@ impl WindowManager {
         //
         // FOOTGUN: do NOT restore geometry by hand in this function. It looks like it should be
         // needed — this window is built at runtime, not from `tauri.conf.json` — but the plugin's
-        // hook already covers that case. `build_window` runs off the main event loop (the setup
-        // hook runs before it starts; hot-reload runs on the watcher thread), and reading/setting
-        // geometry marshals to the main loop: calling it from here blocks, either a self-hang at
-        // launch or a deadlock against the plugin's own hook on reload.
+        // hook already covers that case. `build_window` runs from two call sites: the setup hook
+        // (main thread, before the event loop starts spinning) and hot-reload (the watcher
+        // thread). Reading/setting geometry marshals to the main loop, and tauri-runtime-wry's
+        // `send_user_message` dispatches by thread id, not by whether the loop has started
+        // spinning — so the setup-hook call would resolve inline, no hang there. The
+        // watcher-thread call is genuinely off the main thread, so that marshal blocks and can
+        // deadlock against the plugin's own hook running on reload.
 
         let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 
