@@ -10,7 +10,7 @@ pub type ProbeTarget = (String, std::path::PathBuf, String, String);
 pub struct TabDto {
     pub id: String,
     pub title: String,
-    pub warn: bool,            // dir missing at materialize time
+    pub warn: bool,            // dir missing NOW — derived per render (see `tab_dtos`)
     pub spawned: bool,         // surface is live (load_on_open or already focused) vs cold/declared
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
     pub has_probe: bool,       // a session-probe command is configured for this tab
@@ -60,7 +60,6 @@ enum TabSlot {
 struct TabEntry {
     id: String,
     title: String,
-    warn: bool,
     spec: TabSpec,
     slot: TabSlot,
 }
@@ -96,7 +95,6 @@ impl Registry {
     /// since one bad surface must not take down the window. A declared tab can't
     /// fail here (no spawn attempted) → always `Ok`.
     pub fn add(&mut self, spec: &TabSpec, load_on_open: bool) -> Result<(), SurfaceError> {
-        let warn = !spec.dir.exists();
         let mut err = None;
         let slot = if load_on_open {
             match GhosttySurface::new(self.ns_window, self.last_rect, spec) {
@@ -115,7 +113,6 @@ impl Registry {
         self.tabs.push(TabEntry {
             id: spec.id.clone(),
             title: spec.title.clone(),
-            warn,
             spec: spec.clone(),
             slot,
         });
@@ -165,13 +162,23 @@ impl Registry {
         }
     }
 
+    /// Snapshot every tab for the chrome.
+    ///
+    /// `warn` is **derived here, per render** — deliberately not cached on the entry.
+    /// A tab's directory can appear or vanish long after the tab is materialized (the
+    /// case that produced this: a config edit declared a tab ~30s before the repo was
+    /// cloned into place, and the ⚠ then stuck for the whole session, since `set_meta`
+    /// relabels a kept tab without touching a cached flag). The filesystem is the one
+    /// source of truth for "does this dir exist"; don't reintroduce a copy. The cost is
+    /// one `stat` per tab, and this runs per sidebar render (window init / reconcile /
+    /// activate), not per frame.
     pub fn tab_dtos(&self) -> Vec<TabDto> {
         self.tabs
             .iter()
             .map(|t| TabDto {
                 id: t.id.clone(),
                 title: t.title.clone(),
-                warn: t.warn,
+                warn: !t.spec.dir.exists(),
                 spawned: matches!(t.slot, TabSlot::Spawned(_)),
                 group: t.spec.group.clone(),
                 has_probe: t.spec.probe.is_some(),
@@ -555,6 +562,31 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/no/such/dir/xyz"), false);
         assert!(r.tab_dtos()[0].warn, "missing dir must set warn");
+    }
+
+    #[test]
+    fn warn_tracks_the_dir_live_in_both_directions() {
+        // `warn` is derived per render, never cached at add-time. Caching it made the
+        // marker lie whenever the directory's existence changed *after* the tab was
+        // materialized — the real case: a config edit declared a tab 34s before the
+        // repo was cloned into place, so the ⚠ stuck for the rest of the session.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("repo");
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", dir.to_str().unwrap()), false);
+        assert!(r.tab_dtos()[0].warn, "absent at add time → warn");
+
+        std::fs::create_dir(&dir).unwrap();
+        assert!(
+            !r.tab_dtos()[0].warn,
+            "dir appeared after add → warn must clear without re-adding the tab"
+        );
+
+        std::fs::remove_dir(&dir).unwrap();
+        assert!(
+            r.tab_dtos()[0].warn,
+            "dir removed after add → warn must return"
+        );
     }
 
     #[test]
