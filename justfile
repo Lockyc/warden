@@ -247,16 +247,9 @@ deploy:
       echo "⚠ no Developer ID identity in keychain — warden stays ad-hoc; expect syspolicyd CPU load on macOS 26" >&2
     fi
     echo "→ launching"
-    # FOOTGUN: `open` looks like a clean LaunchServices launch, and the *parentage* is clean
-    # (PPID 1, launchd) — but it FORWARDS THE CALLER'S FULL ENVIRONMENT to the app. Deploying
-    # from a terminal therefore hands warden that terminal's context, and libghostty gives every
-    # surface's shell warden's environment verbatim, so every tab inherits it too: TERM=tmux-256color,
-    # TERM_PROGRAM=tmux, TERMINFO, GHOSTTY_SURFACE_ID/BIN_DIR/SHELL_FEATURES, ATUIN_*/STARSHIP_*
-    # session keys, AGENTMUX_USER_DIR, the whole CLAUDE_*/CLAUDECODE set — and SHELL, which
-    # `login_shell` reads, so tabs open the *deploying* shell instead of your login shell. main.rs
-    # scrubs the two worst (TMUX/TMUX_PANE, GHOSTTY_RESOURCES_DIR); it cannot chase the rest.
-    # `env -i` clears the caller side so the app gets only the launchd GUI-session environment —
-    # byte-for-byte what a Spotlight/Dock launch gives (verified: identical key set, zero leaks).
-    # Absolute paths are required: there is no PATH left to resolve them with.
-    /usr/bin/env -i /usr/bin/open "/Applications/warden.app"
-    echo "✓ warden updated in /Applications (launched clean — no terminal env inherited)"
+    # Launching is its own shell-core script, NOT a bare `open`: `open` forwards the deploying
+    # terminal's whole environment to the app, and libghostty gives every surface's shell warden's
+    # environment verbatim — so a bare `open` leaks that terminal's context into every tab (SHELL
+    # included, which `login_shell` reads). launch-app.sh's header carries the full footgun.
+    bash scripts/launch-app.sh
+    echo "✓ warden updated in /Applications"

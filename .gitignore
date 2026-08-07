@@ -15,6 +15,7 @@ docs/superpowers/
 /scripts/release.sh
 /scripts/gen-latest-json.sh
 /scripts/install-app.sh
+/scripts/launch-app.sh
 
 # Tauri generated
 crates/warden-app/gen/
