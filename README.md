@@ -127,8 +127,9 @@ sidebar shows an *Update available: v X* bar with a one-click **Update & Relaunc
   independent of Apple notarization.
 - **Opt out** with `auto_update = false` (the **Check for Updates…** menu item still works).
 
-Apple Silicon only. Re-running the installer (or downloading the `.zip`) is needed only to
-bootstrap the first updater-capable version — **0.6.0** — after which updates land in-app.
+Releases ship a **universal binary** — one `warden.app` that runs natively on both Apple Silicon
+and Intel Macs. Re-running the installer (or downloading the `.zip`) is needed only to bootstrap
+the first updater-capable version — **0.6.0** — after which updates land in-app.
 
 ## Build & use
 
