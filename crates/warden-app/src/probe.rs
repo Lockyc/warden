@@ -77,11 +77,9 @@ type ProbeWork = (String, PathBuf, String, String);
 /// libghostty's render thread even when a probe is expensive. `just bench` (`probe_qos_bench`) is
 /// the manual A/B that surfaces the QoS half.
 ///
-/// **Fails-safe on a symlinked `dir`, never a false ghost:** the ledger's cwd filter is exact
-/// string equality against the *interactive shell's* logical `$PWD`, but this probe runs via
-/// `Command::new("sh").current_dir(dir)`, which leaves `sh` to reset `$PWD` to the physical
-/// `getcwd()` — so a tab whose `dir` traverses a symlink can miss the match and never ghost
-/// (same class as the watcher's `/private/var` vs `/var` trap in `CLAUDE.md`, just one layer up).
+/// The ledger's cwd filter is exact string equality against the *interactive shell's* logical
+/// `$PWD`, which is why [`run_probe`] hands the child the configured `dir` as its `PWD` rather than
+/// letting `sh` recompute the physical one — see the comment there.
 const MAX_PROBE_CONCURRENCY: usize = 16;
 
 /// Per-probe deadline. A window's probes run concurrently on a bounded pool, but a wedged command (a
@@ -365,6 +363,16 @@ pub fn run_probe(cmd: &str, dir: &Path) -> Presence {
         .arg("-c")
         .arg(cmd)
         .current_dir(dir)
+        // `current_dir` sets the child's cwd but NOT its `PWD`, so `sh` recomputes `PWD` from the
+        // physical `getcwd()` — which differs from `dir` whenever the configured path reaches the
+        // directory logically: through a symlink, or with different case on a case-insensitive
+        // volume. The tab's own shell gets the configured string (libghostty exports it), so
+        // without this the probe and the terminal disagree about the same tab's directory, and any
+        // probe keyed on `$PWD` misses. Canonical case: `amux` shards its tmux sockets on
+        // `cksum "$PWD"` and dir-guards on `@amux_dir = "$PWD"`, so a `dir` whose case differs from
+        // disk probed a socket the session was never on — a permanently hollow presence dot (and,
+        // via the same code path, a `kill` that silently reaped nothing).
+        .env("PWD", dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -713,6 +721,22 @@ mod tests {
             ),
             Presence::Present
         );
+    }
+
+    #[test]
+    fn run_probe_gives_the_child_the_configured_dir_as_pwd() {
+        // The probe's `$PWD` must be the dir string warden was configured with — the same one the
+        // tab's shell gets — not the physical `getcwd()`. A probe keyed on `$PWD` (amux shards its
+        // tmux sockets on `cksum "$PWD"`) misses its own session otherwise. Reproduced with a
+        // symlink; a case-insensitive volume produces the identical divergence.
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let cmd = format!("test \"$PWD\" = {}", link.display());
+        assert_eq!(run_probe(&cmd, &link), Presence::Present);
     }
 
     #[test]
