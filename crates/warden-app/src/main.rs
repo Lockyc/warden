@@ -366,18 +366,14 @@ fn pop_out_tab(
     // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
     // into it. Birth rect ≈ the hole below the banner (detach.html corrects it on load).
     //
-    // The size comes from the BUILT window, never from `spec`/the DETACHED_DEFAULT_* constants it
-    // was built with: shell-core's geometry plugin restores this tab's remembered size and
-    // position during `build()` (its `on_window_ready` hook runs before `birth_content`), so for
-    // every pop-out after the first, `spec`'s size is stale by the time we get here. Sizing the
-    // birth rect off the constants left a re-popped tab's surface visibly the wrong size — 900
-    // wide inside, say, a remembered 1400 — until `detach.html` loaded and reported the true hole.
-    // Reading the real geometry closes that gap so the surface lands right on the first frame.
-    // `inner_size` is physical; the NSView frame is in points, hence the scale conversion.
+    // `size` is the BUILT window's real size, handed in by `open_detached` — never `spec`'s / the
+    // DETACHED_DEFAULT_* constants it was built with. shell-core's geometry plugin restores this
+    // tab's remembered size and position during `build()`, so for every pop-out after the first
+    // those constants are stale by the time this closure runs. It arrives in logical points, which
+    // is what the NSView frame wants.
     let mut surface_opt = Some(surface);
-    let build = shell_core::detach::open_detached(&app, &token, &spec, "warden", |win| {
+    let build = shell_core::detach::open_detached(&app, &token, &spec, "warden", |win, size| {
         let nsw = win.ns_window()?;
-        let size = win.inner_size()?.to_logical::<f64>(win.scale_factor()?);
         let birth_rect = crate::surface::PixelRect {
             x: 0.0,
             y: 0.0,
