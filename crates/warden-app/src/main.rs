@@ -291,8 +291,14 @@ fn unload_tab(
         .and_then(|ws| ws.registry.unload(&id))
 }
 
-/// A popped-out tab's window opens at this size — a single terminal needs far less than a
-/// full multi-tab window's config-resolved default (1500×1000).
+/// A popped-out tab's window opens at this size the FIRST time that tab is popped — a single
+/// terminal needs far less than a full multi-tab window's config-resolved default (1500×1000).
+///
+/// Only the first time: shell-core's geometry plugin persists a detached window's size and
+/// position keyed on its (deterministic, per-tab) `shell-detach:` label, and restores over this
+/// size inside `open_detached`'s `build()`. So this pair is the no-memory default, never a
+/// description of how big the window will actually be — see the birth-rect comment in
+/// `pop_out_tab`, which is exactly where reading it as the latter goes wrong.
 #[cfg(target_os = "macos")]
 const DETACHED_DEFAULT_WIDTH: f64 = 900.0;
 #[cfg(target_os = "macos")]
@@ -359,15 +365,25 @@ fn pop_out_tab(
 
     // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
     // into it. Birth rect ≈ the hole below the banner (detach.html corrects it on load).
-    let birth_rect = crate::surface::PixelRect {
-        x: 0.0,
-        y: 0.0,
-        width: DETACHED_DEFAULT_WIDTH,
-        height: (DETACHED_DEFAULT_HEIGHT - DETACHED_BANNER_H).max(0.0),
-    };
+    //
+    // The size comes from the BUILT window, never from `spec`/the DETACHED_DEFAULT_* constants it
+    // was built with: shell-core's geometry plugin restores this tab's remembered size and
+    // position during `build()` (its `on_window_ready` hook runs before `birth_content`), so for
+    // every pop-out after the first, `spec`'s size is stale by the time we get here. Sizing the
+    // birth rect off the constants left a re-popped tab's surface visibly the wrong size — 900
+    // wide inside, say, a remembered 1400 — until `detach.html` loaded and reported the true hole.
+    // Reading the real geometry closes that gap so the surface lands right on the first frame.
+    // `inner_size` is physical; the NSView frame is in points, hence the scale conversion.
     let mut surface_opt = Some(surface);
     let build = shell_core::detach::open_detached(&app, &token, &spec, "warden", |win| {
         let nsw = win.ns_window()?;
+        let size = win.inner_size()?.to_logical::<f64>(win.scale_factor()?);
+        let birth_rect = crate::surface::PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: size.width,
+            height: (size.height - DETACHED_BANNER_H).max(0.0),
+        };
         surface_opt
             .as_mut()
             .expect("surface present during birth")
@@ -878,9 +894,11 @@ fn main() {
     // points, clamped to its monitor's work area on restore) keyed by Tauri label *within a
     // per-config store* (scoped by shell-core's `geometry_filename` from the config path below) so
     // two configs sharing a window title don't share bounds; it restores on its own `on_window_ready`
-    // hook, which fires for runtime-built windows too — nothing here triggers it. The shared home
-    // surface and any popped-out tab window are excluded from persistence structurally by the
-    // plugin itself, so `skip_labels` carries none of warden's windows here.
+    // hook, which fires for runtime-built windows too — nothing here triggers it. That covers a
+    // popped-out tab's window as well, keyed by its `shell-detach:` label (deterministic per tab,
+    // see `plan::detach_window_token`), so a re-popped tab reopens at the size and position it was
+    // left at. Only the shared home surface is excluded, structurally inside the plugin itself, so
+    // `skip_labels` carries none of warden's windows here.
     let config_path = warden_config::config_path();
     shell_core::register_plugins(tauri::Builder::default(), Some(&config_path), &[])
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)

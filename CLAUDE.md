@@ -140,6 +140,7 @@ The probe **scheduler** internals (bursts, `PresenceCache`, the single-driver ru
 - **A hot-reload while the home surface shows a window list must reconcile, not re-materialize** ("closed windows reopen on save"): key the recovery branch on `last_good.windows.is_empty()`, not on zero real windows open — only a genuinely no-baseline state re-materializes. `main.rs` reload hook.
 - **Every load-failure call site routes through `self.load_error` + `sync_empty_surface`** — never a direct `show_home`/`close_home` or a bespoke error window (a warden-local diagnostic window once did, making `NoConfig`/`Broken` unreachable). `home_state`'s precedence (real window → `NoConfig` → `Broken` → `Windows`) does the picking; a call site's only job is to keep `self.load_error` current. `manager.rs`.
 - **Pop-out's backend invariants** (break one → deadlock, duplicate a tab, or drop a live PTY): 3-phase lock discipline — extract the surface under the `ManagerState` lock → build the detached window + `reparent` with the lock **RELEASED** → re-lock to store + wire the return; the `TabSlot::Detached` placeholder keeps hot-reload `reconcile` from duplicating the tab; `detached` is counted by `is_empty()`; the `is_quitting` guard in `redock` prevents mid-teardown resurrection; a live surface is dropped only when `redock` finds the origin gone from config. The origin sidebar renders a popped tab muted via the **forwarded** `detached` DTO field (clicking it calls `raise_popped_window`, not `activate_tab`). `main.rs::pop_out_tab` + `manager.rs::redock` + `registry.rs` (`detach`/`attach`).
+- **Size the reparented surface's birth rect from the BUILT window, never from `DETACHED_DEFAULT_*`** — shell-core's geometry plugin restores this tab's remembered size *during* `open_detached`'s `build()` (its `on_window_ready` hook runs before `birth_content`), so the constants passed in are stale for every pop-out after the first and the surface lands visibly the wrong size until `detach.html` reports the true hole. `main.rs::pop_out_tab`'s birth closure reads `win.inner_size()`.
 
 ## Relationship to curator and lector (the shared chrome-core component)
 
@@ -197,8 +198,11 @@ that is the same for warden, curator, lector, and any future sibling app.
   the *path* is app-specific). Geometry is persisted in AppKit points and clamped to the target
   monitor's work area on restore, and restore/save both run entirely inside the plugin (its own
   `on_window_ready` hook, which fires for runtime-built windows too) — warden triggers none of it by
-  hand (see the FOOTGUN in `manager.rs::build_window`). The shared home surface and any popped-out
-  tab window are excluded from persistence structurally by the plugin, so `skip_labels` is empty here;
+  hand (see the FOOTGUN in `manager.rs::build_window`). **That covers a popped-out tab's window
+  too** — keyed by its `shell-detach:` label, which `plan::detach_window_token` derives
+  deterministically from `origin_label:tab_key`, so a re-popped tab reopens at the size and
+  position it was last left at rather than the `DETACHED_DEFAULT_*` size. Only the shared home
+  surface is excluded structurally by the plugin, so `skip_labels` is empty here;
   it's reserved for an app's own transient windows, which warden has none of today. The `runtime`
   feature pulls tauri; the `build.rs` build-dep uses `default-features = false` so it stays zero-tauri
   (resolver 2 keeps the two separate).
