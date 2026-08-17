@@ -59,22 +59,21 @@ Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `
 `~/.config/warden/config.toml` (override with `WARDEN_CONFIG`):
 
 ```toml
-shell = "fish -l"            # global default shell (omit → your login shell, run as login)
-format_on_save = true        # optional; rewrite this file tidy on each clean save (default off)
-density = "compact"          # optional; "comfortable" (default) or "compact" (condensed chrome)
-auto_update = false          # optional; check for a new release on launch + every 6h (default true; menu check stays)
+shell = "fish -l"            # global default shell
+format_on_save = true        # rewrite this file tidy on each clean save
+density = "compact"          # condensed chrome
 
 [[window]]                   # a native macOS window
 title  = "work"
-colour = "#0f8a8a"           # optional; omit for a neutral default
-width  = 1500                # optional; initial width (px, default 1500)
-height = 1000                # optional; initial height (px, default 1000)
+colour = "#0f8a8a"           # banner accent
+width  = 1500                # initial size, px
+height = 1000
 cmd    = "amux"              # this window's default startup command (each tab can override)
 
   [[window.tab]]             # a project terminal
-  title      = "myproject"   # optional; defaults to the dir basename
+  title      = "myproject"   # defaults to the dir basename
   dir        = "~/code/myproject"
-  load_on_open = true        # optional; spawn at launch and keep running
+  load_on_open = true        # spawn at launch and keep running
 
   [[window.tab]]
   title = "notes"
@@ -86,9 +85,70 @@ cmd    = "amux"              # this window's default startup command (each tab c
     [[window.group.tab]]     # same fields as [[window.tab]]
     title = "api"
     dir   = "~/code/api"
+
+  [[window.root]]            # optional: scan a dir; every git repo under it becomes a tab
+  name = "Developer"
+  dir  = "~/Developer"
 ```
 
-A window has its own colour + title banner; its tabs are project terminals. `width` and `height` set the initial window size (defaults 1500×1000; saved state overrides after the first launch). Each tab opens a `shell`; a tab's `cmd` is auto-run *inside* that shell (it's typed in, not exec'd, so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` works and you drop back to a live shell when it exits). Both `shell` and `cmd` **cascade** — set them globally, per-window, or per-tab, and the nearest level wins (`cmd = ""` opts a level out of an inherited command). `load_on_open` tabs start at launch and keep running in the background. Tabs can be **grouped** into labelled sidebar sections with `[[window.group]]`; loose `[[window.tab]]`s (no group) appear first in a headerless section. Grouping is cosmetic — it just sections the sidebar. Set `format_on_save = true` to have warden rewrite the config in house style on each clean hot-reload (the same formatting `warden fmt` applies). Set `density = "compact"` to condense the chrome (type + spacing scaled down proportionally) when you want denser tab lists; the default is `"comfortable"`. It hot-reloads like everything else.
+### Every option
+
+**Global** (top of the file):
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `shell` | your login shell, run as a login shell | The shell every tab spawns. Cascades. |
+| `cmd` | none | Command typed into that shell on spawn. Cascades. |
+| `probe` | none | Session-presence check, run per tab (cwd = the tab's dir): exit 0 ⇒ cyan dot, exit 3 ⇒ ghost (restorable), anything else ⇒ hollow. Cascades. |
+| `probe_interval` | `5` | Slow-poll floor in seconds once a burst settles. `0` = event-driven only (still bursts on triggers, no steady poll). |
+| `kill` | none | Session-kill command, run on a two-step confirm click of the presence dot. Cascades. Only reachable on a tab that also sets `probe`. |
+| `format_on_save` | `false` | Rewrite this file in house style on each clean save (same formatting as `warden fmt`). |
+| `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
+| `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
+| `sidebar_drag` | `true` | The non-interactive sidebar chrome doubles as a window-move drag handle. |
+| `auto_update` | `true` | Check for a new release on launch and every 6h. `false` suppresses the auto-check; **Check for Updates…** still works. Takes effect at next launch. |
+| `notify_debug` | `false` | Trace the notification path to `$TMPDIR/warden-notify-dbg.log` — a debug aid, read at launch (see [`docs/notifications.md`](docs/notifications.md)). |
+
+**`[[window]]`** — one native macOS window each:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `title` | *required* | Banner text + window title; unique across the config. Changing it is destructive — the window is closed and reopened, so its terminals and saved size/position reset. |
+| `colour` | neutral | Banner accent, `#rgb` or `#rrggbb`. |
+| `width` / `height` | `1500` / `1000` | Initial size in px; the window's saved size/position wins after the first launch. |
+| `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu. |
+| `shell` / `cmd` / `probe` / `kill` | inherited from global | Per-window overrides for every tab in it. |
+
+**`[[window.tab]]`** (and `[[window.group.tab]]`) — one project terminal each:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `dir` | *required* | Working directory the terminal opens in (`~` expanded). A dir that doesn't exist is a warning, not an error. |
+| `title` | basename of `dir` | Display label. Purely cosmetic — may repeat within a window. |
+| `id` | unset | Stable identity, needed only to disambiguate two tabs that share a `dir`. Otherwise the `dir` *is* the identity. |
+| `load_on_open` | `false` | Spawn at launch and keep running in the background. Otherwise a tab spawns lazily on first focus. |
+| `shell` / `cmd` / `probe` / `kill` | inherited from the window | Per-tab overrides. |
+
+**`[[window.group]]`** — a labelled sidebar section:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `name` | *required* | Section header. Unique within the window (one namespace shared with `[[window.root]]` names). |
+
+**`[[window.root]]`** — a scanned projects dir; every git repo found becomes a tab:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `dir` | *required* | Dir to scan. The walk stops at each `.git` (never descends into a repo) and skips hidden dirs and symlinks. |
+| `name` | basename of `dir` | Section header for the discovered tree. |
+| `depth` | `6` | How deep to scan; must be ≥ 1. |
+| `shell` / `cmd` / `probe` / `kill` | inherited from the window | Overrides applied to every project discovered under this root. |
+
+Three rules the tables can't carry. **`cmd` is typed *into* the shell, not exec'd** — so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` resolves, and you drop back to a live prompt when it exits. **The cascading keys resolve nearest-level-wins** — global → window → tab, with `""` opting a level out of an inherited value (`cmd = ""` gives you a bare shell under a global `cmd`); projects discovered under a `[[window.root]]` have no tab level, so they cascade root → window → global instead. And **grouping is cosmetic** — `[[window.group]]` only sections the sidebar; loose `[[window.tab]]`s appear first in a headerless section.
+
+Everything above hot-reloads on save, `auto_update` aside.
+
+Full schema, validation rules, and resolution semantics: [`docs/config.md`](docs/config.md).
 
 ## Install
 
