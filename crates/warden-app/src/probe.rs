@@ -66,27 +66,31 @@ type ProbeWork = (String, PathBuf, String, String);
 /// not reason about this constant as if probes were idle waiters; raising it raises peak CPU
 /// roughly linearly.
 ///
-/// **Per-probe cost, and where it actually goes.** Measured 2026-08-24 on this machine: ~77ms for a
-/// dir with a live session, ~102ms for a session-less dir, ~109ms for a session-less dir that has
-/// prior amux history in the ledger. Decomposed, for the ~102ms case:
+/// **Per-probe cost.** Measured back-to-back on this machine (2026-08-24), canonical
+/// `amux --probe`, before and after agentmux 0.37.2 made its helper loading lazy:
 ///
-/// | component | cost | note |
+/// | path | before | after |
 /// |---|---|---|
-/// | `bash` interpreter startup | ~16ms | Homebrew bash; also pays a Gatekeeper assessment per exec |
-/// | **amux startup preamble** | **~86ms** | measured via `amux --help`, which does no probe work |
-/// | `session_log.sh dropped --pending` | ~36ms | absent path only |
-/// | the single `tmux` presence check | ~7ms | the only line doing the actual work |
+/// | dir with a live session | ~87ms | **~47ms** |
+/// | session-less dir | ~92ms | **~70ms** |
+/// | forks per probe | 60 | **21** |
 ///
-/// **The bottleneck has moved: `session_log.sh` is no longer it.** The short-circuit below worked —
-/// that call is ~36ms now, not the ~0.2s it once was. What dominates today is amux's *startup
-/// preamble*, and it is init cost, not parse cost: `bash -n` over the whole ~3000-line script is
-/// only ~13ms, while loading it runs five `source`s (`agentmux-config.sh` twice) and ~61 forks of
-/// `$(dirname)` / `$(cd … && pwd)` / `env pwd -P`. One probe execs 6× `dirname`, 2× `basename`,
-/// `env`, `tr`, `cut`, `cksum` — and exactly **one** `tmux`. Nearly all of it is setup the presence
-/// check never needs. For scale: connecting to all 9 agent sockets directly to test liveness takes
-/// 0.28ms with zero forks. **So `probe_interval` cannot bound this** — the lever is the probe
-/// command's own cost (fix belongs in amux, which owns the socket layout) or the tab count, never
-/// the floor.
+/// What used to dominate was amux's *startup preamble* — it eagerly sourced ~2,300 lines
+/// (`agent_window_style.sh`, `remote_attach.sh`, `agentmux-config.sh`) and re-resolved its own
+/// script dirs with `$(cd "$(dirname …)" && pwd)`, none of which the presence check touches.
+/// agentmux now loads those on first use (`_amux_need`) and canonicalises its install root once.
+///
+/// **What remains, in order:** `session_log.sh dropped --pending` on the session-less path only
+/// (~20-35ms, now the largest single item there), then irreducible per-process cost — `bash`
+/// interpreter startup plus a Gatekeeper assessment per exec, since this is a Homebrew bash. The
+/// `tmux` call that actually answers the question is ~7ms. Parsing amux is NOT a factor (a few ms).
+/// Treat the absolute figures as load-dependent — they move with what else the machine is doing —
+/// and compare before/after in one sitting rather than against a number recorded months earlier.
+///
+/// **So `probe_interval` cannot bound this** — the burst rate is fixed, so raising the floor only
+/// widens the gaps between bursts. The levers are the probe command's own cost and the tab count.
+/// Batching N tabs into one `amux` invocation is the next lever and is deferred in agentmux's
+/// `docs/FOLLOWUPS.md`; the fix belongs there, not here, because amux owns the socket layout.
 ///
 /// **Two mitigations bound this cost so it no longer stutters rendering:** agentmux's
 /// `session_log.sh dropped` short-circuits (grep-cost) when the cwd never appears in the ledger —
