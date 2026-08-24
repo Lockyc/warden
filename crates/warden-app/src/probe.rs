@@ -51,31 +51,50 @@ impl Presence {
 /// yields and the unit a sweep worker runs.
 type ProbeWork = (String, PathBuf, String, String);
 
-/// Upper bound on how many tab probes run at once in a single window's sweep. Probes are
-/// process-spawn / socket-check bound (not CPU bound), so this can exceed the core count; it caps
-/// the burst of concurrent `sh -c` children so a wide `[[window.root]]` (dozens of discovered tabs)
-/// can't fork a hundred processes at once. With this cap a ~40-tab window sweeps in ~3 waves of one
-/// probe (~0.22s each) instead of ~40 sequential probes (~9s) — still the fix for the "dot takes
-/// ages to clear after kill" lag, just at the canonical probe's real per-probe cost (below). The
-/// just-bumped tab is probed first (see `order_work`) so it lands in the first wave regardless of
-/// its list position.
+/// Upper bound on how many tab probes run at once in a single window's sweep. It caps the burst of
+/// concurrent `sh -c` children so a wide `[[window.root]]` (dozens of discovered tabs) can't fork a
+/// hundred processes at once. With this cap a ~40-tab window sweeps in ~3 waves of one probe
+/// (~0.1s each) instead of ~40 sequential probes (~4s) — the fix for the "dot takes ages to clear
+/// after kill" lag. The just-bumped tab is probed first (see `order_work`) so it lands in the first
+/// wave regardless of its list position.
 ///
-/// **Absent-path cost, since `amux --probe` started consulting the crash ledger (exit-3
-/// `Recoverable`, see [`Presence`]):** measured on this machine, `amux --probe` in a directory with
-/// no session was ~0.23s, of which `session_log.sh dropped --pending "$PWD"` alone accounted for
-/// ~0.2s (556-line ledger) — versus ~0.03s before that call existed. Paid at the `probe_interval`
-/// floor by every session-less tab, and per session-less dir across a wide `[[window.root]]`, this
-/// unbounded per-5s fork storm is what stuttered rendering under continuous output. The two
-/// mitigations below now bound it. Each probe is still well inside [`PROBE_TIMEOUT`], off the main
-/// thread, and pool-capped by this constant.
+/// **A probe is CPU-bound, not I/O-bound — the cap above the core count is deliberate anyway.**
+/// Measured 2026-08-24: 5 sequential `amux --probe` runs took 0.509s wall for 0.466s of CPU (~92%),
+/// and the CPU is mostly `sys` — it is `fork`/`exec` work, not blocking on a socket. A concurrent
+/// 5-tab burst spends ~0.42s of CPU inside a ~94ms window (~4.5 cores; `sys` 0.26s vs `user` 0.16s).
+/// Exceeding the core count still makes sense — the waves are short and latency-sensitive — but do
+/// not reason about this constant as if probes were idle waiters; raising it raises peak CPU
+/// roughly linearly.
+///
+/// **Per-probe cost, and where it actually goes.** Measured 2026-08-24 on this machine: ~77ms for a
+/// dir with a live session, ~102ms for a session-less dir, ~109ms for a session-less dir that has
+/// prior amux history in the ledger. Decomposed, for the ~102ms case:
+///
+/// | component | cost | note |
+/// |---|---|---|
+/// | `bash` interpreter startup | ~16ms | Homebrew bash; also pays a Gatekeeper assessment per exec |
+/// | **amux startup preamble** | **~86ms** | measured via `amux --help`, which does no probe work |
+/// | `session_log.sh dropped --pending` | ~36ms | absent path only |
+/// | the single `tmux` presence check | ~7ms | the only line doing the actual work |
+///
+/// **The bottleneck has moved: `session_log.sh` is no longer it.** The short-circuit below worked —
+/// that call is ~36ms now, not the ~0.2s it once was. What dominates today is amux's *startup
+/// preamble*, and it is init cost, not parse cost: `bash -n` over the whole ~3000-line script is
+/// only ~13ms, while loading it runs five `source`s (`agentmux-config.sh` twice) and ~61 forks of
+/// `$(dirname)` / `$(cd … && pwd)` / `env pwd -P`. One probe execs 6× `dirname`, 2× `basename`,
+/// `env`, `tr`, `cut`, `cksum` — and exactly **one** `tmux`. Nearly all of it is setup the presence
+/// check never needs. For scale: connecting to all 9 agent sockets directly to test liveness takes
+/// 0.28ms with zero forks. **So `probe_interval` cannot bound this** — the lever is the probe
+/// command's own cost (fix belongs in amux, which owns the socket layout) or the tab count, never
+/// the floor.
 ///
 /// **Two mitigations bound this cost so it no longer stutters rendering:** agentmux's
 /// `session_log.sh dropped` short-circuits (grep-cost) when the cwd never appears in the ledger —
-/// the dominant `[[window.root]]` case, so only a dir with prior amux history but no live session
-/// still pays the full ~0.2s fold — and every sweep worker runs at background QoS (see
+/// the dominant `[[window.root]]` case — and every sweep worker runs at background QoS (see
 /// `set_background_qos`), so the `amux --probe` children inherit it and yield P-cores to
 /// libghostty's render thread even when a probe is expensive. `just bench` (`probe_qos_bench`) is
-/// the manual A/B that surfaces the QoS half.
+/// the manual A/B that surfaces the QoS half. The QoS half is also why the probe burst lands on the
+/// E-cores: that is the intended shape, not misscheduling.
 ///
 /// **Fails-safe on a symlinked `dir`, never a false ghost:** the ledger's cwd filter is exact
 /// string equality against the *interactive shell's* logical `$PWD`, but this probe runs via
