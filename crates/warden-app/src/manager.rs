@@ -536,16 +536,33 @@ impl WindowManager {
     /// teardown: same neighbour-leaning when the dead tab was the visible one, same chrome update
     /// (`warden:tab-exited` carries the id + the new active tab, and the chrome runs the identical
     /// tail it runs for the dot-✕ / ⌘W path). One dead-tab semantic, two triggers.
+    ///
+    /// Child-exit is per-pane: a SECONDARY's child exiting closes just that pane — the scratch
+    /// shell is done, the tab and its agent are not. Unloading the whole tab here (the pre-split
+    /// behaviour) would kill a live agent because a shell beside it exited. Only a PRIMARY exit
+    /// still emits `warden:tab-exited`; that event means "the whole tab went cold" to the chrome
+    /// (`applyUnloaded`), which is wrong for a pane that merely closed.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let Some((label, tab, _visible)) = state.lock().locate_surface(surface_id) else {
             return;
         };
-        let new_active = state
-            .lock()
-            .windows
-            .get_mut(&label)
-            .and_then(|ws| ws.registry.unload(&tab));
+        let mut lock = state.lock();
+        let Some(ws) = lock.windows.get_mut(&label) else {
+            return;
+        };
+        let Some((tab_id, which)) = ws.registry.locate_surface(surface_id) else {
+            return;
+        };
+        let new_active = match which {
+            crate::registry::PaneIdx::Secondary => {
+                ws.registry.close_secondary(&tab_id);
+                drop(lock);
+                return;
+            }
+            crate::registry::PaneIdx::Primary => ws.registry.unload(&tab_id),
+        };
+        drop(lock);
         // Per-window event: `emit_to` leaks to sibling webviews, so stamp the label and let the
         // chrome filter (see CLAUDE.md).
         let _ = app.emit_to(

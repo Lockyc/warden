@@ -452,14 +452,34 @@ impl Registry {
             .map(|t| t.title.clone())
     }
 
+    /// Map a surface handle back to (tab id, which pane). Both panes are searched — a
+    /// secondary's bell, notification or child-exit is otherwise silently unroutable,
+    /// which is exactly how a split tab would stop badging.
+    pub fn locate_surface(&self, surface_id: usize) -> Option<(String, PaneIdx)> {
+        for t in &self.tabs {
+            for (which, pane) in [
+                (PaneIdx::Primary, Some(&t.primary)),
+                (PaneIdx::Secondary, t.secondary.as_ref()),
+            ] {
+                if let Some(p) = pane {
+                    if let TabSlot::Spawned(s) = &p.slot {
+                        if s.id() == surface_id {
+                            return Some((t.id.clone(), which));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// The id of the tab owning the spawned surface with handle `surface_id`
     /// (`GhosttySurface::id`), if any — routes a per-surface signal (bell /
-    /// notification) back to its tab.
+    /// notification) back to its tab. Thin wrapper over `locate_surface` for
+    /// callers that don't care which pane.
     pub fn tab_of_surface(&self, surface_id: usize) -> Option<&str> {
-        self.tabs.iter().find_map(|t| match &t.primary.slot {
-            TabSlot::Spawned(s) if s.id() == surface_id => Some(t.id.as_str()),
-            _ => None,
-        })
+        let (id, _) = self.locate_surface(surface_id)?;
+        self.tabs.iter().find(|t| t.id == id).map(|t| t.id.as_str())
     }
 
     /// The currently-active (on-screen) tab id, if any.
@@ -1328,5 +1348,38 @@ mod tests {
         };
         r.set_pane_frame(PaneIdx::Primary, wide);
         assert_eq!(r.last_rect_for_test(PaneIdx::Primary), wide);
+    }
+
+    #[test]
+    fn pane_rects_are_remembered_independently() {
+        // Task 4 introduced `last_rect`/`last_rect_secondary` as two separate fields, but its
+        // own test only ever set the primary's — nothing pinned that the two don't alias.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        let wide = PixelRect {
+            x: 1.0,
+            y: 2.0,
+            width: 300.0,
+            height: 400.0,
+        };
+        let narrow = PixelRect {
+            x: 5.0,
+            y: 6.0,
+            width: 30.0,
+            height: 40.0,
+        };
+        r.set_pane_frame(PaneIdx::Primary, wide);
+        r.set_pane_frame(PaneIdx::Secondary, narrow);
+        assert_eq!(r.last_rect_for_test(PaneIdx::Primary), wide);
+        assert_eq!(r.last_rect_for_test(PaneIdx::Secondary), narrow);
+    }
+
+    // --- surface→tab routing (Task 5) ------------------------------------------
+
+    #[test]
+    fn locate_surface_is_none_for_an_unknown_id() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert_eq!(r.locate_surface(999_999), None);
     }
 }
