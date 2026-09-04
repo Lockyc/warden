@@ -24,30 +24,52 @@
          the resize controller. */
       #sidebar { width: var(--cc-sidebar-w, 240px); flex: none; }
       /* #terminal-hole is a flex row of at most two panes plus a divider between them. Unsplit
-         (the common case), #pane-secondary and #pane-divider are `hidden` and #pane-primary alone
-         fills the row — behaviour identical to the pre-split single hole. */
+         (the common case), #pane-secondary and #pane-divider are `hidden` — the SOLE authority
+         for that is the `.split` class on #terminal-hole (toggled by setSplitVisible, below):
+         #pane-divider and #pane-secondary are NEVER given an unconditional `display` here, only
+         one scoped to `#terminal-hole.split`, so an author rule can never out-specificity the
+         `hidden` attribute's UA `display: none` the way the unscoped divider rule once did (fix
+         round 1, CRITICAL 1 — that bug rendered the divider, 6px narrower than before, on EVERY
+         unsplit tab, because author-origin CSS always beats the UA stylesheet regardless of the
+         `hidden` attribute being present). `hidden` is kept in lockstep with `.split` purely for
+         semantics/JS convenience (`secEl.hidden` reads) — setSplitVisible is the only place that
+         ever sets either, so they cannot diverge. */
       #terminal-hole { flex: 1; background: transparent; position: relative; display: flex; }
       .pane { position: relative; background: transparent; }
       #pane-primary { flex: 1 1 0; }
-      #pane-secondary { flex: 1 1 0; }
+      #pane-secondary { flex: 1 1 0; display: none; }
+      #terminal-hole.split #pane-secondary { display: block; }
       /* The divider carries the pane-close control, so the control is ALWAYS VISIBLE without
          floating an ✕ over terminal content — the discoverability rule (no hover-reveal) and
-         the "don't obscure the terminal" constraint are satisfied by the same element. */
-      #pane-divider { flex: 0 0 6px; cursor: col-resize; background: rgba(255,255,255,.18);
-        display: flex; align-items: center; justify-content: center; }
+         the "don't obscure the terminal" constraint are satisfied by the same element.
+         OPAQUE background — fix round 1, IMPORTANT 1: this 6px column is its own box, painted
+         directly on the (transparent) webview canvas — it sits BETWEEN the two panes, not over
+         either one's backstop, so the original rgba(255,255,255,.18) blended straight through
+         to the desktop wallpaper behind the window, a faint but real leak even with the divider
+         correctly hidden the rest of the time. #393f40 is a flat, fully opaque neutral in the
+         same register as the app's dark chrome (close to what that translucent white read as
+         against a dark backdrop), with no transparency left to blend with anything behind it. */
+      #pane-divider { flex: 0 0 6px; cursor: col-resize; background: #393f40;
+        display: none; align-items: center; justify-content: center; }
+      #terminal-hole.split #pane-divider { display: flex; }
       #pane-close { width: 14px; height: 14px; line-height: 14px; text-align: center;
         font-size: 10px; border-radius: 3px; background: rgba(0,0,0,.45); color: #fff;
         cursor: pointer; user-select: none; }
-      /* Empty-state placeholder (warden's shield mark) — shown by the controller whenever no LIVE
-         surface covers a hole (no tab selected, or the selected tab / pane is cold), composited
-         BEHIND the native surface (so a live pane occludes it). OPAQUE — the window is transparent
-         and the terminal NSView composites ABOVE the webview, so an uncovered hole leaks the
-         desktop. #empty-state backstops #pane-primary; #empty-state-2 backstops #pane-secondary,
-         PER HOLE — see paintEmptyState. */
+      /* Empty-state — the opaque backstop for a hole with no live surface. The window is
+         transparent and the terminal NSView composites ABOVE the webview, so an uncovered hole
+         leaks the desktop. Fix round 1, IMPORTANT 4 (a ruling, not a bug fix): the GROUND
+         (this rule, the opaque background) is now ALWAYS ON — never toggled — so "an uncovered
+         hole" is unrepresentable rather than a state paintEmptyState has to get right on every
+         transient (mid-drag, a spawn race, a tab switch). It is invisible whenever a live pane
+         actually covers the hole (occluded by the NSView above it) and covering whenever it
+         doesn't, by construction. Only the ILLUSTRATION (the child svg) stays conditional, via
+         paintEmptyState — an always-visible icon would flash at the hole's edge during a live
+         resize, which the ground alone (a flat colour, unnoticeable) does not. #empty-state
+         backstops #pane-primary; #empty-state-2 backstops #pane-secondary. */
       #empty-state, #empty-state-2 {
         position: absolute;
         inset: 0;
-        display: none;
+        display: flex;
         align-items: center;
         justify-content: center;
         background: #0e1516;
@@ -67,7 +89,7 @@
       <div id="terminal-hole">
         <div id="pane-primary" class="pane">
           <div id="empty-state">
-            <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
+            <svg id="empty-state-art" viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
               <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
                     fill="#283034"/>
               <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
@@ -79,15 +101,16 @@
             </svg>
           </div>
         </div>
-        <!-- Hidden when unsplit — the common case, identical to the single-hole layout. Task 7
-             wires the commands that ever un-hide these (split_pane/close_pane); this task makes
-             the layout correct once they do. -->
+        <!-- Hidden when unsplit — the common case, identical to the single-hole layout — via
+             setSplitVisible(false), the SOLE toggle for both `.split` and `hidden` (see the
+             CSS comment above #terminal-hole). Task 7 wires the commands that ever call it with
+             `true` (split_pane/close_pane); this task makes the layout correct once they do. -->
         <div id="pane-divider" hidden>
           <div id="pane-close" title="Close split">✕</div>
         </div>
         <div id="pane-secondary" class="pane" hidden>
           <div id="empty-state-2">
-            <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="secondary pane empty">
+            <svg id="empty-state-2-art" viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="secondary pane empty">
               <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
                     fill="#283034"/>
               <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
@@ -154,22 +177,22 @@
         }
       }
 
-      // The empty-state elements are the opaque backstop for an UNCOVERED hole. The window is
-      // transparent and the terminal NSView composites above the webview, so a hole is filled only
-      // while a *live* surface sits in it — and "a tab is selected" is not the same thing: a tab
-      // whose lazy spawn failed stays selected but cold, and keying on selection alone left that
-      // hole uncovered, leaking the wallpaper (the very leak these elements exist to stop).
+      // The empty-state elements' GROUND (opaque background) is always on now — see the CSS
+      // comment on #empty-state. Only their ILLUSTRATION (the child svg) is decided here, and
+      // only for cosmetic reasons: showing the "no tab" artwork while a live surface actually
+      // covers the hole is invisible either way (occluded by the NSView above it), but an
+      // always-visible icon would flash at the hole's edge during a live resize.
       //
-      // Per-hole, not per-tab: a live primary beside a COLD secondary leaves the secondary's hole
-      // uncovered, and a single tab-level backstop would leave it transparent — the exact wallpaper
-      // leak #empty-state exists to stop. So each hole is decided on its OWN pane's liveness.
+      // Per-hole, not per-tab: a live primary beside a COLD secondary must still show the
+      // secondary's own artwork — a single tab-level decision would leave it looking covered
+      // when it isn't. So each hole's artwork is decided on its OWN pane's liveness.
       function paintEmptyState() {
         const coveredP = activeId !== null && activeLive;
-        document.getElementById("empty-state").style.display = coveredP ? "none" : "flex";
+        document.getElementById("empty-state-art").style.display = coveredP ? "none" : "";
         const secEl = document.getElementById("pane-secondary");
         const coveredS = !secEl.hidden && activeId !== null && secondaryLive;
-        document.getElementById("empty-state-2").style.display =
-          secEl.hidden || coveredS ? "none" : "flex";
+        document.getElementById("empty-state-2-art").style.display =
+          secEl.hidden || coveredS ? "none" : "";
       }
       // `live` = does a surface cover the PRIMARY hole for this tab? Callers that can't know yet (a
       // click, before the spawn returns) pass false; the placeholder they briefly paint is invisible
@@ -181,6 +204,33 @@
         activeId = id;
         activeLive = !!live;
         secondaryLive = id !== null && !!secondarySpawnedById.get(id);
+        paintEmptyState();
+      }
+
+      // Clears both panes' drag-set inline `flex` (see the divider-drag IIFE's `setSplit`).
+      // Load-bearing on close: once the secondary is hidden, a leftover `flex: 0.3 1 0` on the
+      // primary — now the flex row's SOLE child — only claims 30% of the free space per Flexbox
+      // §9.7 rather than filling the hole, leaving the rest genuinely uncovered (not backstopped
+      // — the empty-state ground lives on the PANES, and an uncovered flex remainder is outside
+      // either pane entirely).
+      function resetSplit() {
+        document.getElementById("pane-primary").style.flex = "";
+        document.getElementById("pane-secondary").style.flex = "";
+      }
+      // The SOLE authority for split visibility: toggles `.split` on #terminal-hole (which the
+      // CSS keys #pane-divider's and #pane-secondary's `display` off — see that comment) and
+      // keeps the `hidden` attribute in lockstep on both elements purely for semantics/JS
+      // convenience, so the two mechanisms can never contradict each other (fix round 1,
+      // CRITICAL 1). Closing always resets the drag ratio. Not called from production code yet
+      // — Task 7's split_pane/close_pane commands are this function's real callers once they
+      // land — but it's the entry point manual testing should use (see the report's manual
+      // verification steps) rather than poking `hidden` directly.
+      function setSplitVisible(isSplit) {
+        document.getElementById("terminal-hole").classList.toggle("split", !!isSplit);
+        document.getElementById("pane-divider").hidden = !isSplit;
+        document.getElementById("pane-secondary").hidden = !isSplit;
+        if (!isSplit) resetSplit();
+        reportRect();
         paintEmptyState();
       }
 
@@ -250,6 +300,12 @@
       // a tab goes cold — the user unloading it (dot ✕ / ⌘W) and its process exiting on its own
       // (warden:tab-exited) — so the two can't drift into different-looking outcomes.
       function applyUnloaded(id, newActive) {
+        // `unload` closes BOTH panes of `id` (Registry::unload acts on every pane), so its
+        // secondary is cold too. The stale direction that matters is stale-TRUE: leaving the old
+        // entry would make re-selecting this tab later derive secondaryLive = true over a pane
+        // that's actually dead (fix round 1, IMPORTANT 3) — the reverse, stale-false, is
+        // harmless (a backstop painted under a live surface is simply invisible).
+        secondarySpawnedById.set(id, false);
         sb.setLive(id, false);
         if (newActive) {
           sb.setActive(newActive);
@@ -499,24 +555,36 @@
       // the same fix for the same footgun: the terminal NSView composites ABOVE this webview, so a
       // mouseup released over either pane's live surface never reaches this window at all — onMove
       // unsticks itself the instant `e.buttons` reads 0 rather than trusting `mouseup` to fire.
+      //
+      // DELTA-based, like `_initResize`'s own `startW + (e.clientX - startX)` — not an absolute
+      // `(clientX - hole.x) / usable` mapping. Fix round 1's cheap fix #1: an absolute mapping
+      // snaps the boundary to wherever in the 6px strip the pointer happened to land the instant
+      // you grab it, a visible jump on every drag start. Tracking the fraction *at grab* and
+      // applying only the pointer's MOVEMENT since then means the boundary starts exactly where
+      // it already was, regardless of where within the divider you clicked.
       (function () {
         const divider = document.getElementById("pane-divider");
         const primaryEl = document.getElementById("pane-primary");
         const secondaryEl = document.getElementById("pane-secondary");
         let dragging = false;
+        let startX = 0;
+        let startFrac = 0.5;
         function setSplit(frac) {
           const f = Math.max(0.1, Math.min(0.9, frac));
           primaryEl.style.flex = f + " 1 0";
           secondaryEl.style.flex = (1 - f) + " 1 0";
           reportRect();
         }
+        function usableWidth() {
+          const hole = document.getElementById("terminal-hole").getBoundingClientRect();
+          const dividerW = divider.getBoundingClientRect().width;
+          return hole.width - dividerW;
+        }
         function onMove(e) {
           if (!dragging) return;
           if (e.buttons === 0) { end(); return; }
-          const hole = document.getElementById("terminal-hole").getBoundingClientRect();
-          const dividerW = divider.getBoundingClientRect().width;
-          const usable = hole.width - dividerW;
-          if (usable > 0) setSplit((e.clientX - hole.x) / usable);
+          const usable = usableWidth();
+          if (usable > 0) setSplit(startFrac + (e.clientX - startX) / usable);
         }
         function end() {
           if (!dragging) return;
@@ -529,6 +597,10 @@
         divider.addEventListener("mousedown", (e) => {
           if (e.target.closest("#pane-close")) return; // the close control has its own handler
           e.preventDefault();
+          const usable = usableWidth();
+          const p = primaryEl.getBoundingClientRect();
+          startFrac = usable > 0 ? p.width / usable : 0.5; // the CURRENT split, not a reset to 50/50
+          startX = e.clientX;
           dragging = true;
           document.body.style.cursor = "col-resize";
           window.addEventListener("mousemove", onMove);
