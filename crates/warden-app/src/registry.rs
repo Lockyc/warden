@@ -57,11 +57,56 @@ enum TabSlot {
     Detached,
 }
 
+/// Which of a tab's (at most two) panes an operation means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneIdx {
+    Primary,
+    Secondary,
+}
+
+/// One terminal within a tab: its spawn recipe plus its live/cold/detached slot.
+struct Pane {
+    spec: TabSpec,
+    slot: TabSlot,
+}
+
+/// A tab owns a `primary` pane and, when split, a `secondary`.
+///
+/// `primary`/`Option<secondary>` rather than a `Vec` so the agreed TWO-PANE CAP is
+/// unrepresentable-otherwise: a third pane cannot be constructed by accident, and every
+/// method has an obvious primary path. Arbitrary nesting was considered and declined —
+/// see docs/native-splits-direction.md. If a tree is ever wanted it REPLACES this type
+/// rather than growing out of it.
 struct TabEntry {
     id: String,
     title: String,
-    spec: TabSpec,
-    slot: TabSlot,
+    primary: Pane,
+    secondary: Option<Pane>,
+    /// Which pane has keyboard focus. Always `Primary` when `secondary` is `None`.
+    focused: PaneIdx,
+}
+
+impl TabEntry {
+    fn pane(&self, which: PaneIdx) -> Option<&Pane> {
+        match which {
+            PaneIdx::Primary => Some(&self.primary),
+            PaneIdx::Secondary => self.secondary.as_ref(),
+        }
+    }
+    fn pane_mut(&mut self, which: PaneIdx) -> Option<&mut Pane> {
+        match which {
+            PaneIdx::Primary => Some(&mut self.primary),
+            PaneIdx::Secondary => self.secondary.as_mut(),
+        }
+    }
+    /// Every live pane, primary first. The iteration order is load-bearing for teardown:
+    /// callers that free surfaces rely on it being stable.
+    fn panes_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
+        std::iter::once(&mut self.primary).chain(self.secondary.iter_mut())
+    }
+    fn panes(&self) -> impl Iterator<Item = &Pane> {
+        std::iter::once(&self.primary).chain(self.secondary.iter())
+    }
 }
 
 pub struct Registry {
@@ -113,17 +158,42 @@ impl Registry {
         self.tabs.push(TabEntry {
             id: spec.id.clone(),
             title: spec.title.clone(),
-            spec: spec.clone(),
-            slot,
+            primary: Pane {
+                spec: spec.clone(),
+                slot,
+            },
+            secondary: None,
+            focused: PaneIdx::Primary,
         });
         err.map_or(Ok(()), Err)
     }
 
+    /// Whether tab `id` currently has a second pane. Unknown tab = false.
+    pub fn is_split(&self, id: &str) -> bool {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .is_some_and(|t| t.secondary.is_some())
+    }
+
+    /// How many panes tab `id` has (1 or 2). Unknown tab = 0, so a caller can tell
+    /// "not split" from "not here" without a second lookup.
+    pub fn panes(&self, id: &str) -> usize {
+        match self.tabs.iter().find(|t| t.id == id) {
+            None => 0,
+            Some(t) => 1 + usize::from(t.secondary.is_some()),
+        }
+    }
+
+    /// Any-pane, not primary-only: a tab is "spawned" if either pane is live. This is
+    /// the check a future tab-row live dot needs (tab-level, not per-pane) — a split
+    /// tab with only its secondary live must still read as spawned.
     #[cfg(test)]
     pub fn is_spawned(&self, id: &str) -> bool {
         self.tabs
             .iter()
-            .any(|t| t.id == id && matches!(t.slot, TabSlot::Spawned(_)))
+            .find(|t| t.id == id)
+            .is_some_and(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
     }
 
     /// Is tab `id` currently a `Detached` placeholder (its live surface popped
@@ -133,10 +203,13 @@ impl Registry {
     /// whose surface it doesn't hold, or the live PTY is clobbered and `redock`
     /// loses its return slot. `id` is the same `Tab::key` (`id`-else-normalized-
     /// `dir`) the registry keys every entry on.
+    ///
+    /// Primary-only, not any-pane: pop-out is whole-tab (`detach`/`attach` only ever
+    /// touch the primary), so the primary's slot is authoritative for the tab.
     pub fn is_detached(&self, id: &str) -> bool {
         self.tabs
             .iter()
-            .any(|t| t.id == id && matches!(t.slot, TabSlot::Detached))
+            .any(|t| t.id == id && matches!(t.primary.slot, TabSlot::Detached))
     }
 
     /// Does tab `id` have a `probe` command (⇒ a presence dot the scheduler tracks)? `activate_tab`
@@ -146,7 +219,7 @@ impl Registry {
     pub fn tab_has_probe(&self, id: &str) -> bool {
         self.tabs
             .iter()
-            .any(|t| t.id == id && t.spec.probe.is_some())
+            .any(|t| t.id == id && t.primary.spec.probe.is_some())
     }
 
     /// Test-only: force tab `id`'s slot straight to `Detached`, bypassing
@@ -158,7 +231,7 @@ impl Registry {
     #[cfg(test)]
     pub fn force_detached(&mut self, id: &str) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
-            t.slot = TabSlot::Detached;
+            t.primary.slot = TabSlot::Detached;
         }
     }
 
@@ -178,15 +251,15 @@ impl Registry {
             .map(|t| TabDto {
                 id: t.id.clone(),
                 title: t.title.clone(),
-                warn: !t.spec.dir.exists(),
-                spawned: matches!(t.slot, TabSlot::Spawned(_)),
-                group: t.spec.group.clone(),
-                has_probe: t.spec.probe.is_some(),
-                has_kill: t.spec.kill.is_some(),
-                has_cmd: t.spec.startup.is_some(),
-                tree: t.spec.tree,
-                tree_path: t.spec.tree_path.clone(),
-                detached: matches!(t.slot, TabSlot::Detached),
+                warn: !t.primary.spec.dir.exists(),
+                spawned: matches!(t.primary.slot, TabSlot::Spawned(_)),
+                group: t.primary.spec.group.clone(),
+                has_probe: t.primary.spec.probe.is_some(),
+                has_kill: t.primary.spec.kill.is_some(),
+                has_cmd: t.primary.spec.startup.is_some(),
+                tree: t.primary.spec.tree,
+                tree_path: t.primary.spec.tree_path.clone(),
+                detached: matches!(t.primary.slot, TabSlot::Detached),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
@@ -199,10 +272,14 @@ impl Registry {
         self.tabs
             .iter()
             .filter_map(|t| {
-                t.spec
-                    .probe
-                    .as_ref()
-                    .map(|p| (t.id.clone(), t.spec.dir.clone(), t.title.clone(), p.clone()))
+                t.primary.spec.probe.as_ref().map(|p| {
+                    (
+                        t.id.clone(),
+                        t.primary.spec.dir.clone(),
+                        t.title.clone(),
+                        p.clone(),
+                    )
+                })
             })
             .collect()
     }
@@ -213,10 +290,11 @@ impl Registry {
     /// the surface being live — a session can exist while warden's surface is cold.
     pub fn kill_target(&self, id: &str) -> Option<(std::path::PathBuf, String, String)> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
-        t.spec
+        t.primary
+            .spec
             .kill
             .as_ref()
-            .map(|k| (t.spec.dir.clone(), t.title.clone(), k.clone()))
+            .map(|k| (t.primary.spec.dir.clone(), t.title.clone(), k.clone()))
     }
 
     /// Restart tab `id`'s session by typing its startup command into the **live** shell and
@@ -229,10 +307,10 @@ impl Registry {
         let Some(t) = self.tabs.iter().find(|t| t.id == id) else {
             return false;
         };
-        let Some(cmd) = t.spec.startup.as_ref() else {
+        let Some(cmd) = t.primary.spec.startup.as_ref() else {
             return false;
         };
-        match &t.slot {
+        match &t.primary.slot {
             TabSlot::Spawned(s) => {
                 s.run_command(cmd);
                 true
@@ -256,16 +334,16 @@ impl Registry {
     ) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
             t.title = meta.title.clone();
-            t.spec.title = meta.title.clone();
-            t.spec.group = meta.group.clone();
-            t.spec.probe = meta.probe.clone();
-            t.spec.kill = meta.kill.clone();
+            t.primary.spec.title = meta.title.clone();
+            t.primary.spec.group = meta.group.clone();
+            t.primary.spec.probe = meta.probe.clone();
+            t.primary.spec.kill = meta.kill.clone();
             // Tree-ness can flip on a kept tab when its group moves between a root
             // section and a plain group (curated↔discovered shadowing) — recomputed
             // upstream in `reconcile_ops`, so it must be applied here too, not left
             // stale from the prior render.
-            t.spec.tree = tree;
-            t.spec.tree_path = tree_path;
+            t.primary.spec.tree = tree;
+            t.primary.spec.tree_path = tree_path;
         }
     }
 
@@ -281,7 +359,7 @@ impl Registry {
     /// (`GhosttySurface::id`), if any — routes a per-surface signal (bell /
     /// notification) back to its tab.
     pub fn tab_of_surface(&self, surface_id: usize) -> Option<&str> {
-        self.tabs.iter().find_map(|t| match &t.slot {
+        self.tabs.iter().find_map(|t| match &t.primary.slot {
             TabSlot::Spawned(s) if s.id() == surface_id => Some(t.id.as_str()),
             _ => None,
         })
@@ -296,16 +374,25 @@ impl Registry {
     /// never-opened or previously unloaded — spawns a fresh surface from its spec.
     /// A spawn failure leaves the tab cold and returns the error (the caller
     /// surfaces it); the tab can be retried by activating it again. Never panics.
-    /// Spawn tab `idx`'s surface if it is `Cold`. Returns `true` iff it spawned **this call** (the
-    /// tab was cold) — the signal `activate` forwards so a caller can arm a session-start await only
-    /// when a fresh surface actually ran its `initial_input` (an already-live tab starts nothing).
-    fn ensure_spawned(&mut self, idx: usize) -> Result<bool, SurfaceError> {
-        if let TabSlot::Cold = self.tabs[idx].slot {
-            let s = GhosttySurface::new(self.ns_window, self.last_rect, &self.tabs[idx].spec)?;
-            self.tabs[idx].slot = TabSlot::Spawned(s);
-            return Ok(true);
+    /// Spawn pane `which` of tab `idx` if it is `Cold`. Returns `true` iff it spawned **this
+    /// call** (the pane was cold) — the signal `activate` forwards so a caller can arm a
+    /// session-start await only when a fresh surface actually ran its `initial_input` (an
+    /// already-live pane starts nothing). `Ok(false)`, never a panic, if the pane doesn't exist
+    /// (e.g. `Secondary` on an unsplit tab).
+    fn ensure_spawned(&mut self, idx: usize, which: PaneIdx) -> Result<bool, SurfaceError> {
+        let Some(pane) = self.tabs[idx].pane(which) else {
+            return Ok(false);
+        };
+        if !matches!(pane.slot, TabSlot::Cold) {
+            return Ok(false);
         }
-        Ok(false)
+        let spec = pane.spec.clone();
+        let s = GhosttySurface::new(self.ns_window, self.last_rect, &spec)?;
+        self.tabs[idx]
+            .pane_mut(which)
+            .expect("pane existed above")
+            .slot = TabSlot::Spawned(s);
+        Ok(true)
     }
 
     /// Kill tab `id`'s surface + PTY, returning it to cold (it respawns a fresh
@@ -317,24 +404,34 @@ impl Registry {
     /// the chrome then blanks the hole rather than waking a cold tab.
     pub fn unload(&mut self, id: &str) -> Option<String> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Cold) {
-            TabSlot::Spawned(s) => s.close(),
-            TabSlot::Cold => return None, // nothing live to kill
-            TabSlot::Detached => {
-                // No local surface to kill — it lives in another window's
-                // registry (a pop-out). Restore the placeholder; leaving it
-                // `Cold` here would make it look locally respawnable, which
-                // would spawn a second surface for the same tab identity.
-                self.tabs[idx].slot = TabSlot::Detached;
-                return None;
+        // Act on every pane: a cold split respawns split, so `secondary` (if any)
+        // stays present and only its slot moves to `Cold` alongside the primary's.
+        let mut any_closed = false;
+        for pane in self.tabs[idx].panes_mut() {
+            match std::mem::replace(&mut pane.slot, TabSlot::Cold) {
+                TabSlot::Spawned(s) => {
+                    s.close();
+                    any_closed = true;
+                }
+                TabSlot::Cold => {} // nothing live to kill; stays Cold
+                TabSlot::Detached => {
+                    // No local surface to kill — it lives in another window's
+                    // registry (a pop-out). Restore the placeholder; leaving it
+                    // `Cold` here would make it look locally respawnable, which
+                    // would spawn a second surface for the same tab identity.
+                    pane.slot = TabSlot::Detached;
+                }
             }
+        }
+        if !any_closed {
+            return None;
         }
         if self.active.as_deref() == Some(id) {
             self.active = None;
             let live: Vec<bool> = self
                 .tabs
                 .iter()
-                .map(|t| matches!(t.slot, TabSlot::Spawned(_)))
+                .map(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
                 .collect();
             if let Some(n) = shell_core::pick_live_neighbour(idx, &live) {
                 let next = self.tabs[n].id.clone();
@@ -363,14 +460,14 @@ impl Registry {
     /// a second extraction).
     pub fn detach(&mut self, id: &str) -> Option<GhosttySurface> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        match std::mem::replace(&mut self.tabs[idx].slot, TabSlot::Detached) {
+        match std::mem::replace(&mut self.tabs[idx].primary.slot, TabSlot::Detached) {
             TabSlot::Spawned(s) => Some(s),
             TabSlot::Cold => {
-                self.tabs[idx].slot = TabSlot::Cold;
+                self.tabs[idx].primary.slot = TabSlot::Cold;
                 None
             }
             TabSlot::Detached => {
-                self.tabs[idx].slot = TabSlot::Detached;
+                self.tabs[idx].primary.slot = TabSlot::Detached;
                 None
             }
         }
@@ -384,7 +481,7 @@ impl Registry {
     /// `detach` surfaces the not-found). Errors only if the spawn itself fails.
     pub fn ensure_spawned_by_id(&mut self, id: &str) -> Result<(), SurfaceError> {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
-            self.ensure_spawned(idx)?;
+            self.ensure_spawned(idx, PaneIdx::Primary)?;
         }
         Ok(())
     }
@@ -416,9 +513,9 @@ impl Registry {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return Err(surface);
         };
-        match t.slot {
+        match t.primary.slot {
             TabSlot::Cold | TabSlot::Detached => {
-                t.slot = TabSlot::Spawned(surface);
+                t.primary.slot = TabSlot::Spawned(surface);
                 Ok(())
             }
             TabSlot::Spawned(_) => Err(surface),
@@ -439,16 +536,25 @@ impl Registry {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return Ok(false);
         };
-        let spawned = self.ensure_spawned(idx);
+        // Spawn every cold pane. The primary's Result is what the caller sees (it's the one
+        // ever exercised today — nothing constructs a `secondary` yet); a secondary spawn
+        // failure doesn't block showing the tab, so it's attempted best-effort and its error
+        // discarded rather than shadowing the primary's.
+        let spawned = self.ensure_spawned(idx, PaneIdx::Primary);
+        if self.tabs[idx].secondary.is_some() {
+            let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
+        }
         let rect = self.last_rect;
         for (i, t) in self.tabs.iter().enumerate() {
-            if let TabSlot::Spawned(s) = &t.slot {
-                if i == idx {
-                    s.set_frame(rect);
-                    s.show();
-                    s.focus();
-                } else {
-                    s.hide();
+            for pane in t.panes() {
+                if let TabSlot::Spawned(s) = &pane.slot {
+                    if i == idx {
+                        s.set_frame(rect);
+                        s.show();
+                        s.focus();
+                    } else {
+                        s.hide();
+                    }
                 }
             }
         }
@@ -462,7 +568,7 @@ impl Registry {
         self.last_rect = rect;
         if let Some(active) = self.active.clone() {
             if let Some(t) = self.tabs.iter().find(|t| t.id == active) {
-                if let TabSlot::Spawned(s) = &t.slot {
+                if let TabSlot::Spawned(s) = &t.primary.slot {
                     s.set_frame(rect);
                 }
             }
@@ -472,9 +578,11 @@ impl Registry {
     /// Remove a tab; close its surface if spawned.
     pub fn remove(&mut self, id: &str) {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
-            let entry = self.tabs.remove(pos);
-            if let TabSlot::Spawned(s) = entry.slot {
-                s.close();
+            let mut entry = self.tabs.remove(pos);
+            for pane in entry.panes_mut() {
+                if let TabSlot::Spawned(s) = std::mem::replace(&mut pane.slot, TabSlot::Cold) {
+                    s.close();
+                }
             }
             if self.active.as_deref() == Some(id) {
                 self.active = None;
@@ -491,9 +599,11 @@ impl Registry {
 
     /// Destroy all surfaces (called on window close / app exit).
     pub fn close_all(&mut self) {
-        for entry in self.tabs.drain(..) {
-            if let TabSlot::Spawned(s) = entry.slot {
-                s.close();
+        for mut entry in self.tabs.drain(..) {
+            for pane in entry.panes_mut() {
+                if let TabSlot::Spawned(s) = std::mem::replace(&mut pane.slot, TabSlot::Cold) {
+                    s.close();
+                }
             }
         }
         self.active = None;
@@ -541,6 +651,21 @@ mod tests {
             tree: false,
             tree_path: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_new_tab_is_unsplit() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert!(!r.is_split("a"));
+        assert_eq!(r.panes("a"), 1);
+    }
+
+    #[test]
+    fn panes_of_unknown_tab_is_zero() {
+        let r = Registry::new(std::ptr::null_mut(), rect());
+        assert_eq!(r.panes("nope"), 0);
+        assert!(!r.is_split("nope"));
     }
 
     #[test]
