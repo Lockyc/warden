@@ -20,22 +20,74 @@ Facts here are as of 2026-09-04 and cover only what falls to warden.
 ## warden is already the shape the direction is heading toward
 
 The `TerminalSurface` seam hosts **one embedded libghostty surface per PTY**, with tabs,
-windows, banners and the pop-out detach all rendered as native chrome rather than painted
-into a terminal grid. Superlogical's multiplexer describes the same split model
-independently — native tabs/windows/splits, each with its own connection, one-to-one with
-a PTY, and deliberately *no* multiplexing within a window. That convergence is the reason
-this is a direction rather than a preference: warden does not need to become a
-multiplexer, it needs to stop delegating to one.
+windows, banners, native splits, and the pop-out detach all rendered as native chrome
+rather than painted into a terminal grid. Superlogical's multiplexer describes the same
+split model independently — native tabs/windows/splits, each with its own connection,
+one-to-one with a PTY, and deliberately *no* multiplexing within a window. That
+convergence is the reason this is a direction rather than a preference: warden does not
+need to become a multiplexer, it needs to stop delegating to one.
 
 **The unit of progress is the number of terminal emulators between warden and each PTY.**
-An `amux --frame` tab is two (frame + agent); an unframed one is one. Native splits — two
-surfaces in a tab, a shell beside the agent — removes the frame layer for local use and
-takes that count to one, without agentmux losing `--frame` for the standalone, remote and
-non-macOS cases it still serves.
+An `amux --frame` tab is two (frame + agent); an unframed one is one. Native splits — a
+second surface beside a tab's primary, a shell beside the agent — remove the frame layer
+for local use and take that count to one, without agentmux losing `--frame` for the
+standalone, remote and non-macOS cases it still serves.
 
 What that buys beyond one less parse: native scrollback and selection in the second
 surface, and a **per-client viewport**. Shared scroll across attached clients is tmux's,
 not warden's, the moment the surface is warden's own.
+
+## Native splits: shipped
+
+A tab holds a **primary pane plus an optional secondary** — two panes, not N-way — created
+at runtime (⌘D / Tab ▸ Split), closed from the ✕ on the divider between them or by the
+scratch shell exiting on its own, and resized by dragging the divider. The split is a
+**runtime layout, not config**: it persists per tab in `localStorage`, never the TOML, on
+the same reasoning as sidebar width — a split is chrome state, and the config file
+describes tabs, not panes. ⌘W (unload) and ⌘⇧O (pop-out) both act on the **whole tab** —
+unloading drops both panes to cold together, and popping out carries both surfaces to the
+detached window at the tab's own divider ratio (`shell_core::detach::DetachSpec.panes`,
+generic on purpose: a `Vec<f64>` of hole ratios, not a `warden` split type, so a future
+consumer can divide its own hole without learning warden's split concept).
+
+Mechanism: `Registry`'s `Pane`/`PaneIdx`/`TabSlot` model (`crates/warden-app/src/registry.rs`),
+the `split_pane`/`close_pane`/`focus_pane` commands (`main.rs`), and the
+chrome's pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`). The
+traps this shipped are catalogued in `CLAUDE.md`'s *Conventions & footguns* — read those
+before touching split visibility, routing, or the backstop.
+
+## Verifying splits by eye
+
+warden's chrome has no automated test harness — splits are rendering behaviour, verified
+only by eye. Each step below is written to actually fail if the feature regresses.
+
+- An unsplit tab is visually unchanged from before splits existed — no divider, no second
+  hole, no layout shift.
+- ⌘D splits the active tab; a second ⌘D on an already-split tab is a no-op (does not reset
+  a dragged ratio).
+- The divider drags smoothly and both terminals track it live, not just on release.
+- The ✕ on the divider closes the split; the primary fills the whole hole with no
+  uncovered region at any point during the collapse.
+- Typing `exit` in the scratch (secondary) pane collapses the split on its own, same as the
+  ✕, while the tab stays live.
+- The ratio survives an app restart (persisted in `localStorage`, keyed per tab).
+- Popping out an unsplit tab is unchanged — one hole, no `panes` in the detach payload.
+- Popping out a split tab carries both panes into the detached window at the same ratio.
+- Closing the detached window returns both panes to the origin, still live.
+- **The focused-pane marker** — the accent border on whichever pane last received a click —
+  cannot be checked by splitting and clicking the second pane: ⌘D splits **and activates**
+  in one command, so the pane goes live almost immediately and a click on live terminal
+  content is consumed by the native surface before the chrome ever sees it. Sequence that
+  actually exercises the chrome's click handler: split a tab, unload/kill it so **both**
+  panes show their backstops (no live surface consuming the click), click the right pane
+  (now a click the chrome receives, moving the marker), then re-select the tab so both
+  panes come live again, and confirm the accent border is **still visible** with a real
+  prompt showing underneath it.
+
+Also expect a look change, not a leak: every live terminal now paints against an always-on
+opaque per-pane ground (`--pane-ground`), so a terminal configured with a translucent
+background reads against that ground rather than the desktop wallpaper behind the window.
+That is deliberate (see the backstop footgun in `CLAUDE.md`).
 
 ## Inline images: the surface is warden's, and it already renders them
 
