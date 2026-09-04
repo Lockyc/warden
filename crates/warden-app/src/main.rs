@@ -34,6 +34,13 @@ use geometry::WebRect;
 // (YAGNI — add it there only if a sibling app wants it too).
 const MENU_WINDOW_REOPEN_LAST: &str = "window_reopen_last";
 
+/// Tab ▸ Split (⌘D) — warden-only, spliced into warden's OWN Tab submenu composition rather than
+/// shell-core's shared spine: a split is terminal-specific, and curator/lector have no equivalent
+/// (same YAGNI reasoning as `MENU_WINDOW_REOPEN_LAST`). The id doubles as the event name emitted
+/// to the focused window — the chrome's own `activeId` decides which tab to split, so the payload
+/// carries only the window label, matching Close Tab / Pop Out Tab below.
+const MENU_TAB_SPLIT: &str = "warden:split-pane";
+
 #[derive(serde::Deserialize)]
 struct RectArg {
     x: f64,
@@ -124,10 +131,16 @@ fn build_app_menu(
     for it in &nav.nav {
         tab_menu = tab_menu.item(it);
     }
+    // Split (⌘D) — warden-only (see MENU_TAB_SPLIT's doc comment). Grouped with Close Tab / Pop
+    // Out Tab as the other tab-scoped actions, ahead of the jump block below.
+    let split_pane_item = MenuItemBuilder::with_id(MENU_TAB_SPLIT, "Split")
+        .accelerator("CmdOrCtrl+D")
+        .build(app)?;
     // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
     // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
     tab_menu = tab_menu
         .separator()
+        .item(&split_pane_item)
         .item(&spine.close_tab)
         .item(&spine.pop_out_tab)
         .separator();
@@ -208,10 +221,26 @@ fn probe_now(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
     probe::bump(window.label());
 }
 
-/// Activate tab `id` within the calling window's registry. **Returns whether the tab is now live**
-/// — i.e. whether a surface actually covers the content hole.
+/// What `activate_tab` reports back to the chrome. `live` is load-bearing (see below); `split` and
+/// `focused` are Task 7's addition — the tab-switch path's own answer to "does this tab have a
+/// second pane, and which one has keyboard focus", the one place `Registry::activate`'s
+/// focus-preserving branch is ever checked (it's untestable in isolation — see the branch's own
+/// doc comment). Wires `Registry::is_split`/`focused_pane` (dead since Task 3; `Registry::panes`
+/// short-circuits the `focused_pane` lookup below, since an unsplit tab's answer is trivially
+/// always the primary).
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize)]
+struct ActivateResult {
+    live: bool,
+    split: bool,
+    focused: usize,
+}
+
+/// Activate tab `id` within the calling window's registry. **`live` reports whether the tab is
+/// now live** — i.e. whether a surface actually covers the content hole; `split`/`focused` report
+/// this tab's own pane layout (see `ActivateResult`).
 ///
-/// That return value is load-bearing, not informational. warden's window is transparent and the
+/// `live` is load-bearing, not informational. warden's window is transparent and the
 /// terminal NSView composites *above* the webview, so the hole is only ever filled by a live
 /// surface; the chrome's `#empty-state` is the opaque backstop for when it isn't. A failed lazy
 /// spawn leaves the tab cold **but still selected**, and the chrome cannot see that from the
@@ -224,22 +253,35 @@ fn activate_tab(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
     id: String,
-) -> bool {
+) -> ActivateResult {
     use tauri::Emitter;
     // Capture both the spawn outcome AND whether this call spawned a FRESH cold surface (whose
     // `initial_input` may be starting a session) for a probe-enabled tab — the two facts that
-    // decide whether to arm a session-start await below. Both read under the one lock.
-    let (spawned_fresh, has_probe, err) = {
+    // decide whether to arm a session-start await below. `split`/`focused` are this tab's OWN
+    // layout, read under the SAME lock so they can't race a concurrent split/close. Both read
+    // under the one lock.
+    let (spawned_fresh, has_probe, err, split, focused) = {
         let mut m = state.lock();
         match m.windows.get_mut(window.label()) {
             Some(ws) => {
                 let has_probe = ws.registry.tab_has_probe(&id);
-                match ws.registry.activate(&id) {
-                    Ok(fresh) => (fresh, has_probe, None),
-                    Err(e) => (false, has_probe, Some(e)),
-                }
+                let (fresh, err) = match ws.registry.activate(&id) {
+                    Ok(fresh) => (fresh, None),
+                    Err(e) => (false, Some(e)),
+                };
+                let split = ws.registry.is_split(&id);
+                // Trivially always the primary when unsplit — no need to ask `focused_pane` at all.
+                let focused = if ws.registry.panes(&id) > 1 {
+                    match ws.registry.focused_pane(&id) {
+                        Some(registry::PaneIdx::Secondary) => 1,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                };
+                (fresh, has_probe, err, split, focused)
             }
-            None => (false, false, None),
+            None => (false, false, None, false, 0),
         }
     };
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
@@ -272,7 +314,21 @@ fn activate_tab(
     } else {
         probe::bump_tab(window.label(), &id);
     }
-    live
+    // Carried finding (Task 7): `Registry::activate` also brings a split tab's cold SECONDARY
+    // live, silently — nothing before this told the chrome, so its `secondarySpawnedById` mirror
+    // could go stale the moment a split tab's secondary finally spawns here (e.g. re-activating a
+    // tab that was split while backgrounded). Push a fresh snapshot so the mirror catches up;
+    // reuses the same init_dto→emit path every other cross-cutting refresh in this file already
+    // uses, rather than inventing a narrower "just this tab's secondary" payload. `tab_dtos`'s own
+    // doc comment already budgets for being called on activate, so this isn't a new cost class.
+    if let Some(dto) = state.lock().init_dto(window.label()) {
+        let _ = window.emit("warden:refresh", dto);
+    }
+    ActivateResult {
+        live,
+        split,
+        focused,
+    }
 }
 
 /// Kill tab `id`'s terminal (surface + PTY) in the calling window; it goes cold and
@@ -289,6 +345,78 @@ fn unload_tab(
     m.windows
         .get_mut(window.label())
         .and_then(|ws| ws.registry.unload(&id))
+}
+
+/// Split tab `id`: give it a second pane (the tab's own shell, no startup command) and bring it
+/// live. `split` (Task 3) only *declares* the pane Cold; `activate` is what actually spawns and
+/// shows it, so the pair is what makes the second terminal appear on screen. Splitting is
+/// idempotent, so a double-fire from the chrome (e.g. a stray second ⌘D) can't produce a third
+/// pane — it just re-activates an already-live one.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn split_pane(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    let result = {
+        let mut m = state.lock();
+        let ws = m
+            .windows
+            .get_mut(window.label())
+            .ok_or("window not found")?;
+        ws.registry.split(&id);
+        ws.registry
+            .activate(&id)
+            .map(|_| ())
+            .map_err(|e| format!("could not open the second pane: {e}"))
+    };
+    // `activate` attempts BOTH panes regardless of the primary's own Result (see its doc
+    // comment) — the secondary's spawn outcome is exactly what the chrome's `secondarySpawnedById`
+    // mirror needs and can't know on its own (it's best-effort/discarded here, same as anywhere
+    // else that outcome is invisible). Push it on a "could not open the second pane" `Err` too,
+    // same as `activate_tab`'s carried-finding refresh — the OTHER `Err` (`window not found`, the
+    // `?` above) already returned out of the whole function before reaching here, but that's a
+    // no-op regardless: `init_dto` fails the identical lookup, so there's nothing to refresh.
+    if let Some(dto) = state.lock().init_dto(window.label()) {
+        let _ = window.emit("warden:refresh", dto);
+    }
+    result
+}
+
+/// Drop tab `id`'s secondary pane (the divider ✕). Returns whether there was one — the chrome
+/// only collapses the split layout (`setSplitVisible(false)`) on a genuine `true`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn close_pane(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) -> bool {
+    let mut m = state.lock();
+    match m.windows.get_mut(window.label()) {
+        Some(ws) => ws.registry.close_secondary(&id),
+        None => false,
+    }
+}
+
+/// Point tab `id`'s keyboard focus at pane `pane` (0 = primary, 1 = secondary). Returns false
+/// (no-op) if that pane doesn't exist — e.g. a stray click on a secondary that just closed.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn focus_pane(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+    pane: usize,
+) -> bool {
+    let which = if pane == 1 {
+        registry::PaneIdx::Secondary
+    } else {
+        registry::PaneIdx::Primary
+    };
+    let mut m = state.lock();
+    match m.windows.get_mut(window.label()) {
+        Some(ws) => ws.registry.focus_pane(&id, which),
+        None => false,
+    }
 }
 
 /// A popped-out tab's window opens at this size the FIRST time that tab is popped — a single
@@ -1005,7 +1133,16 @@ fn main() {
                 }
                 return;
             }
-            if id == shell_core::menu::ids::CLOSE_TAB {
+            if id == MENU_TAB_SPLIT {
+                // ⌘D splits the active tab. The chrome owns "which tab is active", so it drives
+                // the split_pane command on this event. Label-stamped + forMe()-filtered like
+                // every other per-window emit (emit_to leaks to sibling webviews).
+                let _ = app.emit_to(
+                    label.as_str(),
+                    MENU_TAB_SPLIT,
+                    serde_json::json!({ "label": label }),
+                );
+            } else if id == shell_core::menu::ids::CLOSE_TAB {
                 // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
                 // it does NOT close the window. The chrome owns "which tab is active" + the
                 // dot/highlight repaint, so it drives the unload_tab command on this event.
@@ -1044,6 +1181,9 @@ fn main() {
             init_tabs,
             activate_tab,
             unload_tab,
+            split_pane,
+            close_pane,
+            focus_pane,
             pop_out_tab,
             raise_popped_window,
             pop_in_tab,

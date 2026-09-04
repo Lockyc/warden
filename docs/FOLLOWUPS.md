@@ -74,6 +74,12 @@ Two related deferrals about the seam between warden and agentmux. Both are consc
 
 - `config_path_respects_env` (`crates/warden-config/src/load.rs`) mutates the process-global `WARDEN_CONFIG`. Cleanup is panic-safe (removed before the assert), but if a second test that reads `config_path()`/`WARDEN_CONFIG` is ever added, serialize them (e.g. `serial_test`) or refactor `config_path` to take an injected override — Rust runs tests in parallel threads. Inert today (no other reader).
 
+## Native splits — a click on a LIVE pane doesn't sync `Registry.focused` (Task 7)
+
+`ui/index.html`'s per-pane `mousedown` handler (`focusPane`, bound on `#pane-primary`/`#pane-secondary`) is the only thing that calls the `focus_pane` command, which is the only thing that updates `Registry`'s own `t.focused` (consulted by `activate`'s re-focus branch on a later tab switch). But a LIVE pane's terminal content is a separate native `NSView` composited **above** the webview (see `CLAUDE.md`'s module header), so a click that lands there is consumed by AppKit — `WardenHostView::becomeFirstResponder` (`surface/ghostty.rs`) — before it ever reaches the DOM. That already moves KEYBOARD focus correctly (typing lands in the clicked pane, because `becomeFirstResponder` is the real first-responder hook), but it does **not** call back into `Registry.focused`. Net effect: switching away from a split tab and back can restore focus to the wrong pane, specifically when the user's last click on that tab was directly on an already-live pane's content rather than on a cold pane or the chrome-only margin around it.
+
+**Intended fix:** route `WardenHostView::becomeFirstResponder` through the same surface→tab lookup `notify.rs` already uses for bell/notification signals (`Registry::locate_surface` → `focus_pane`), and emit a lightweight event so the chrome's `focusedPaneById`/`updateFocusMarker` mirror stays in sync with a native click too — not just chrome-driven ones. Deferred out of Task 7 (commands + menu item) because it touches a different subsystem (`surface/ghostty.rs`'s AppKit callback + a new surface-id→tab-focus routing path, mirroring `notify::init`) rather than extending the split/close/focus commands themselves. Verify by hand until then: click directly on a live secondary's content (not the empty-state backstop), switch tabs away and back, and check whether focus/the marker followed.
+
 ## `warden-app` surface-embed hardening
 
 `crates/warden-app` embeds libghostty terminal surfaces in Tauri on macOS. The following hardening is deferred, by priority:
