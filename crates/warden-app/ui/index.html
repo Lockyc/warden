@@ -231,15 +231,24 @@
       // Drop keys for tabs this window no longer has. Without it a scanned-project tab that
       // disappears leaves its key behind forever, and a later tab reusing the id inherits a
       // split nobody asked for.
+      //
+      // Fix round 1, IMPORTANT 3: the WHOLE body is wrapped, not just removeItem — where
+      // localStorage throws, it throws on EVERY member, including `.length` and `.key()`. This
+      // runs inside the snapshot builder (toComponentDto), which neither init() nor the
+      // warden:refresh listener wraps, so an unguarded read here didn't just skip eviction — it
+      // threw out of the builder before it returned, silently stopping the tab bar from ever
+      // refreshing again in any environment where storage is unavailable.
       function evictSplits(currentTabIds) {
-        const prefix = `split:${myLabel}:`;
-        const live = new Set(currentTabIds);
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith(prefix) && !live.has(k.slice(prefix.length))) {
-            try { localStorage.removeItem(k); } catch (e) {}
+        try {
+          const prefix = `split:${myLabel}:`;
+          const live = new Set(currentTabIds);
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith(prefix) && !live.has(k.slice(prefix.length))) {
+              localStorage.removeItem(k);
+            }
           }
-        }
+        } catch (e) {}
       }
 
       // In-app updates are a chrome-core capability (check / install / relaunch + the 6h re-check
@@ -528,12 +537,20 @@
       async function splitActiveTab() {
         if (!activeId) return;
         const id = activeId;
+        // Task 8 fix round 1, IMPORTANT 1: read the PREVIOUS split state before overwriting it.
+        // The Rust side tolerates a stray second ⌘D on an already-split tab as a normal no-op —
+        // this persistence must extend that tolerance, not break it. Without this guard, a
+        // redundant ⌘D on a tab the user had already dragged to a custom ratio silently
+        // overwrote the persisted ratio with 0.5, with no visible symptom until the NEXT
+        // restart, when the split reopened flattened.
+        const alreadySplit = splitById.get(id) === true;
         splitById.set(id, true);
         setSplitVisible(true);
         // Task 8: key presence IS the split flag (see saveSplit) — persist immediately rather
         // than only once the divider is dragged, so an un-dragged 50/50 split still survives a
         // restart. Undone by collapseSplit's clearSplit below if split_pane actually fails.
-        saveSplit(id, 0.5);
+        // Only seed the default for a genuinely NEW split — see the guard above.
+        if (!alreadySplit) saveSplit(id, 0.5);
         try {
           await invoke("split_pane", { id });
         } catch (err) {
@@ -603,28 +620,37 @@
               });
               if (activeId === id) {
                 // Task 8: the backend has no memory of a split across a restart — it's not in
-                // the TOML, only localStorage remembers it. `res.split` is the authoritative
-                // CURRENT answer; when it says no but a ratio is on record, recreate the split
-                // here, BEFORE setActiveId's setSplitVisible ever reveals the secondary pane, so
-                // the saved ratio is already applied on the first reportRect instead of flashing
-                // 50/50 first. Rechecked after the await for the same reason `activeId === id`
-                // is checked at all — #pane-primary/#pane-secondary are the one shared element
-                // pair every tab's layout reuses, so an unguarded write after switching away
-                // would silently repaint whatever tab is on screen now.
-                if (!res.split) {
-                  const persisted = loadSplit(id);
-                  if (persisted) {
-                    try {
-                      await invoke("split_pane", { id });
-                      if (activeId === id) applySplitFlex(persisted.ratio);
-                      res.split = true;
-                    } catch (err) {
-                      console.error("warden: IPC split_pane (restore) failed", err);
-                      clearSplit(id);
-                    }
+                // the TOML, only localStorage remembers it. `res.split` is the backend's
+                // authoritative CURRENT answer; when it says no but a ratio is on record,
+                // recreate the split structurally.
+                //
+                // Fix round 1, IMPORTANT 2: bookkeeping (`splitById`, `res.split`) lands for
+                // `id` UNCONDITIONALLY — even if the user has switched to a different tab while
+                // split_pane was in flight — because `res.split` staying false forever otherwise
+                // means the tab's split itself is lost, not just its ratio: the backend really
+                // does have it, but the `!res.split` gate below would never fire for this tab
+                // again this session, so this is the only chance to record it. Only the DOM
+                // write (further down, gated on `activeId === id` again) is unsafe to do for a
+                // tab that isn't on screen — #pane-primary/#pane-secondary are the one shared
+                // element pair every tab's layout reuses.
+                const persisted = loadSplit(id);
+                if (!res.split && persisted) {
+                  try {
+                    await invoke("split_pane", { id });
+                    splitById.set(id, true);
+                    res.split = true;
+                  } catch (err) {
+                    console.error("warden: IPC split_pane (restore) failed", err);
+                    clearSplit(id);
                   }
                 }
                 if (activeId === id) {
+                  // Re-apply the persisted ratio on EVERY activation that ends up split, not
+                  // just a freshly-restored one: the shared pane elements keep whatever flex the
+                  // last split tab shown left them at, so a tab reactivated after the race above
+                  // (or simply after another split tab's own drag) needs repainting too. Ahead
+                  // of setActiveId so it's correct on the first reportRect, never a 50/50 flash.
+                  if (res.split && persisted) applySplitFlex(persisted.ratio);
                   focusedPaneById.set(id, res.focused);
                   setActiveId(id, res.live, res.split); // ignore a stale reply for an old click
                   // Repaint the row's live/cold dot now the spawn has settled. setActiveId only
@@ -824,6 +850,11 @@
         let startX = 0;
         let startFrac = 0.5;
         let currentFrac = 0.5; // last-applied ratio; saved to localStorage when the drag ends (Task 8)
+        // Task 8 fix round 1, CHEAP: the tab being dragged, captured at mousedown — mouse and
+        // keyboard are independent, so reading `activeId` live at mouseup would save the dragged
+        // ratio under whichever tab a keyboard jump made active while the button was still held,
+        // fabricating a persisted split key for a tab the user never split.
+        let dragTabId = null;
         function setSplit(frac) {
           currentFrac = applySplitFlex(frac); // shared clamp/apply with split restoration
           reportRect();
@@ -848,7 +879,10 @@
           window.removeEventListener("blur", end);
           // Task 8: persist whatever ratio the drag settled on. A click-without-move still saves
           // the split's actual (unchanged) ratio, since currentFrac was seeded from startFrac.
-          if (activeId !== null) saveSplit(activeId, currentFrac);
+          // Saved under `dragTabId` (captured at mousedown), not the live `activeId` — see that
+          // declaration.
+          if (dragTabId !== null) saveSplit(dragTabId, currentFrac);
+          dragTabId = null;
         }
         divider.addEventListener("mousedown", (e) => {
           if (e.target.closest("#pane-close")) return; // the close control has its own handler
@@ -857,6 +891,7 @@
           const p = primaryEl.getBoundingClientRect();
           startFrac = usable > 0 ? p.width / usable : 0.5; // the CURRENT split, not a reset to 50/50
           currentFrac = startFrac;
+          dragTabId = activeId;
           startX = e.clientX;
           dragging = true;
           document.body.style.cursor = "col-resize";
