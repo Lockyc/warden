@@ -277,18 +277,6 @@ impl Registry {
         self.tabs.iter().find(|t| t.id == id).map(|t| t.focused)
     }
 
-    /// Whether ONE named pane of tab `id` is live. Distinct from `is_spawned`, which is
-    /// any-pane because it drives the tab-level dot: the chrome needs per-pane liveness to
-    /// decide whether each hole is covered, and a live primary beside a cold secondary is
-    /// exactly the state that leaks the wallpaper through the second hole.
-    pub fn is_pane_spawned(&self, id: &str, which: PaneIdx) -> bool {
-        self.tabs
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.pane(which))
-            .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_)))
-    }
-
     #[cfg(test)]
     pub fn secondary_spec_for_test(&self, id: &str) -> Option<TabSpec> {
         self.tabs
@@ -363,9 +351,9 @@ impl Registry {
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
                 detached: matches!(t.primary.slot, TabSlot::Detached),
-                // Read straight off the `TabEntry` already in hand, not `self.is_pane_spawned`
-                // (fix round 1, cheap fix #2): that method re-scans `self.tabs` to re-find `t` by
-                // id, turning this per-tab map into an O(n²) pass over the whole tab list.
+                // Read straight off the `TabEntry` already in hand rather than a per-tab lookup
+                // by id (fix round 1, cheap fix #2): re-finding `t` in `self.tabs` for every row
+                // would turn this map into an O(n²) pass over the whole tab list.
                 secondary_spawned: t
                     .secondary
                     .as_ref()
@@ -1274,26 +1262,14 @@ mod tests {
 
     #[test]
     fn a_fresh_split_pane_is_cold_not_live() {
+        // `is_spawned` is any-pane (see its own doc comment), but that's sufficient here: with
+        // `ns_window` null and no `activate` call, neither pane can leave `Cold`, so "not spawned
+        // at all" already proves both the fresh secondary and the lazily-added primary are cold.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         r.split("a");
         assert!(r.is_split("a"));
-        assert!(
-            !r.is_pane_spawned("a", PaneIdx::Secondary),
-            "split must not spawn"
-        );
-        assert!(
-            !r.is_pane_spawned("a", PaneIdx::Primary),
-            "lazily-added tab is cold too"
-        );
-    }
-
-    #[test]
-    fn is_pane_spawned_is_false_for_a_missing_pane() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("a", "/tmp/a"), false).unwrap();
-        assert!(!r.is_pane_spawned("a", PaneIdx::Secondary));
-        assert!(!r.is_pane_spawned("nope", PaneIdx::Primary));
+        assert!(!r.is_spawned("a"), "split must not spawn either pane");
     }
 
     #[test]

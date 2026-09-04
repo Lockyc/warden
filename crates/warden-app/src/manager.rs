@@ -539,9 +539,11 @@ impl WindowManager {
     ///
     /// Child-exit is per-pane: a SECONDARY's child exiting closes just that pane — the scratch
     /// shell is done, the tab and its agent are not. Unloading the whole tab here (the pre-split
-    /// behaviour) would kill a live agent because a shell beside it exited. Only a PRIMARY exit
-    /// still emits `warden:tab-exited`; that event means "the whole tab went cold" to the chrome
-    /// (`applyUnloaded`), which is wrong for a pane that merely closed.
+    /// behaviour) would kill a live agent because a shell beside it exited. A PRIMARY exit still
+    /// emits `warden:tab-exited`; that event means "the whole tab went cold" to the chrome
+    /// (`applyUnloaded`), which is wrong for a pane that merely closed — a SECONDARY exit instead
+    /// emits the narrower `warden:pane-closed`, so the chrome collapses the split without
+    /// touching the tab's own dot/highlight.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let Some((label, tab, _visible)) = state.lock().locate_surface(surface_id) else {
@@ -558,6 +560,17 @@ impl WindowManager {
             crate::registry::PaneIdx::Secondary => {
                 ws.registry.close_secondary(&tab_id);
                 drop(lock);
+                // `warden:tab-exited` means "the whole tab went cold" to the chrome
+                // (`applyUnloaded`) — wrong here, since the tab and its primary are still
+                // live. `warden:pane-closed` is the narrower signal: it tells the chrome to
+                // collapse the split (`setSplitVisible(false)`) for exactly this tab, mirroring
+                // what the divider ✕ (`close_pane`) already does client-side, without touching
+                // the tab-level dot/highlight.
+                let _ = app.emit_to(
+                    label.as_str(),
+                    "warden:pane-closed",
+                    serde_json::json!({ "label": label, "id": tab_id }),
+                );
                 return;
             }
             crate::registry::PaneIdx::Primary => ws.registry.unload(&tab_id),
