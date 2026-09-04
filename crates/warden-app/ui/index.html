@@ -10,6 +10,11 @@
          composited ABOVE the webview shows through #terminal-hole, so the sidebar is a normal DOM
          column beside a transparent hole. The window is transparent → every painted surface here
          must stay OPAQUE or it leaks the wallpaper. */
+      /* The ONE source for the pane "ground" colour — the opaque backstop colour shown wherever
+         nothing else paints. Two rules read this token (`.pane` and `#empty-state`/`#empty-state-2`,
+         below) instead of each carrying their own literal — this repo's rule against restating a
+         value that already lives somewhere. */
+      :root { --pane-ground: #0e1516; }
       html, body {
         margin: 0;
         height: 100%;
@@ -42,11 +47,24 @@
          (ui/index.html script) must report the CONTENT box (inset by this border), not the border
          box `getBoundingClientRect()` returns, or the native surface — composited ABOVE this
          webview — is sized right over the border and occludes it the instant a pane is live,
-         which is exactly when the marker matters. Only visible while split (a single unsplit pane
-         needs no "which one types" marker) — Step 3's discoverability requirement ("the focused
-         pane must be visibly marked"). #4aa3e0 matches chrome-core's own active-row accent bar
-         (`--cc-active-bar`), the app's one accent color. */
-      .pane { position: relative; background: transparent; box-sizing: border-box;
+         which is exactly when the marker matters.
+         Fix round 2, CRITICAL: that content-box inset opened a NEW gap — `#empty-state`'s own
+         `inset: 0` already resolves against the padding box (inside the border; see that rule's
+         comment), so once the native surface only covers the content box too, nothing paints the
+         1px BORDER ring itself — a hairline of desktop wallpaper on every pane, unsplit tabs
+         included (the common case, and one that never had a marker to fix). An opaque
+         `background` here covers it — CSS backgrounds paint under the border by default — the
+         same "ground always on, never toggled" ruling `#empty-state` already applies, just one
+         box further out; makes an uncovered ring unrepresentable rather than something the
+         geometry has to get exactly right. `--pane-ground` is the SAME token `#empty-state` uses
+         (declared once, at `:root`) — the two rules cover different boxes (this one the OUTER
+         border box including the ring, `#empty-state` the inner content box) for different
+         historical reasons, but they must never carry two different literals for one colour.
+         Only visible while split (a single unsplit pane needs no "which one types" marker) —
+         Step 3's discoverability requirement ("the focused pane must be visibly marked"). #4aa3e0
+         matches chrome-core's own active-row accent bar (`--cc-active-bar`), the app's one accent
+         color. */
+      .pane { position: relative; background: var(--pane-ground); box-sizing: border-box;
         border: 1px solid transparent; }
       #terminal-hole.split .pane.focused { border-color: #4aa3e0; }
       #pane-primary { flex: 1 1 0; }
@@ -78,14 +96,16 @@
          doesn't, by construction. Only the ILLUSTRATION (the child svg) stays conditional, via
          paintEmptyState — an always-visible icon would flash at the hole's edge during a live
          resize, which the ground alone (a flat colour, unnoticeable) does not. #empty-state
-         backstops #pane-primary; #empty-state-2 backstops #pane-secondary. */
+         backstops #pane-primary; #empty-state-2 backstops #pane-secondary. `background` reads
+         `--pane-ground` (declared once, at `:root`) — the SAME token `.pane`'s own background
+         reads (fix round 2, CRITICAL) — never restate the literal in a second place. */
       #empty-state, #empty-state-2 {
         position: absolute;
         inset: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: #0e1516;
+        background: var(--pane-ground);
         user-select: none;
         -webkit-user-select: none;
       }
