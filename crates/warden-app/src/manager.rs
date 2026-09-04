@@ -614,7 +614,17 @@ impl WindowManager {
     /// `detach.html`'s own `set_hole_rect` on load/resize (the detached window is not in
     /// `windows`, so the ordinary registry path can't reach it). No-op if `label` isn't a
     /// live detached window.
-    pub fn set_detached_frame(&mut self, label: &str, rect: PixelRect) {
+    ///
+    /// `which` is accepted (not yet used) to keep this call site source-compatible with
+    /// `set_hole_rect`'s per-pane routing: a detached window today holds exactly one
+    /// surface, so every pane index applies to it. Widening `DetachedSurface` to carry a
+    /// pane of its own is a later task's job, not this one's.
+    pub fn set_detached_frame(
+        &mut self,
+        label: &str,
+        _which: crate::registry::PaneIdx,
+        rect: PixelRect,
+    ) {
         if let Some(ds) = self.detached.get_mut(label) {
             ds.surface.set_frame(rect);
         }
