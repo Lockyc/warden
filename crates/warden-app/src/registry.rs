@@ -107,6 +107,14 @@ impl TabEntry {
     fn panes(&self) -> impl Iterator<Item = &Pane> {
         std::iter::once(&self.primary).chain(self.secondary.iter())
     }
+    /// Every live pane paired with its own `PaneIdx`, primary first. `activate`'s
+    /// show/focus loop iterates this to compare each pane against `focused` — see the
+    /// carried-finding note on `Registry::activate` for why the pairing (not the
+    /// resulting `.focus()` call) is what this file's null-window tests can pin.
+    fn panes_indexed(&self) -> impl Iterator<Item = (PaneIdx, &Pane)> {
+        std::iter::once((PaneIdx::Primary, &self.primary))
+            .chain(self.secondary.as_ref().map(|p| (PaneIdx::Secondary, p)))
+    }
 }
 
 pub struct Registry {
@@ -194,6 +202,90 @@ impl Registry {
             .iter()
             .find(|t| t.id == id)
             .is_some_and(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
+    }
+
+    /// Give tab `id` a second pane: the tab's own shell, in the tab's own dir, with NO
+    /// startup command — the frame's scratch terminal. Idempotent: splitting an already
+    /// split tab is a no-op, which is what keeps the two-pane cap true even if the chrome
+    /// double-fires. Unknown tab is a no-op.
+    ///
+    /// The pane is created **Cold**, not spawned: `activate` brings cold panes live, exactly
+    /// as a lazily-added tab (`add(load_on_open = false)`) already works. Spawning here would
+    /// make this method the only one in the file that must succeed against a live NSWindow,
+    /// and would make it untestable — the registry tests run against a null window.
+    /// The `split_pane` command (Task 7) calls `activate` right after, so the pane still comes
+    /// up immediately for the user.
+    ///
+    /// The secondary's `TabSpec.id` is `"<tab>::2"`, distinct from the tab id, because
+    /// surface→tab routing (`locate_surface`) and the surface event sink key on it.
+    pub fn split(&mut self, id: &str) {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if t.secondary.is_some() {
+            return;
+        }
+        let mut spec = t.primary.spec.clone();
+        spec.id = format!("{id}::2");
+        spec.startup = None;
+        t.secondary = Some(Pane {
+            spec,
+            slot: TabSlot::Cold,
+        });
+    }
+
+    /// Drop tab `id`'s second pane, freeing its surface. Returns whether there was one.
+    /// Focus falls back to the primary — leaving `focused` on a pane that no longer
+    /// exists would send keystrokes nowhere.
+    pub fn close_secondary(&mut self, id: &str) -> bool {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        let had = t.secondary.take().is_some();
+        if had {
+            t.focused = PaneIdx::Primary;
+        }
+        had
+    }
+
+    /// Point keyboard focus at one of tab `id`'s panes. Returns false (and changes
+    /// nothing) if that pane does not exist.
+    pub fn focus_pane(&mut self, id: &str, which: PaneIdx) -> bool {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        if t.pane(which).is_none() {
+            return false;
+        }
+        t.focused = which;
+        true
+    }
+
+    /// Which pane of tab `id` has focus. `None` for an unknown tab.
+    pub fn focused_pane(&self, id: &str) -> Option<PaneIdx> {
+        self.tabs.iter().find(|t| t.id == id).map(|t| t.focused)
+    }
+
+    /// Whether ONE named pane of tab `id` is live. Distinct from `is_spawned`, which is
+    /// any-pane because it drives the tab-level dot: the chrome needs per-pane liveness to
+    /// decide whether each hole is covered, and a live primary beside a cold secondary is
+    /// exactly the state that leaks the wallpaper through the second hole.
+    pub fn is_pane_spawned(&self, id: &str, which: PaneIdx) -> bool {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.pane(which))
+            .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_)))
+    }
+
+    #[cfg(test)]
+    pub fn secondary_spec_for_test(&self, id: &str) -> Option<TabSpec> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)?
+            .secondary
+            .as_ref()
+            .map(|p| p.spec.clone())
     }
 
     /// Is tab `id` currently a `Detached` placeholder (its live surface popped
@@ -546,12 +638,18 @@ impl Registry {
         }
         let rect = self.last_rect;
         for (i, t) in self.tabs.iter().enumerate() {
-            for pane in t.panes() {
+            for (which, pane) in t.panes_indexed() {
                 if let TabSlot::Spawned(s) = &pane.slot {
                     if i == idx {
                         s.set_frame(rect);
                         s.show();
-                        s.focus();
+                        // Show every pane of the active tab, but focus only the one
+                        // `focused` names — carried finding from Task 2's review: this
+                        // used to call `.focus()` on every spawned pane, so whichever
+                        // pane was iterated last silently won by construction order.
+                        if which == t.focused {
+                            s.focus();
+                        }
                     } else {
                         s.hide();
                     }
@@ -1051,5 +1149,138 @@ mod tests {
             "no startup command → nothing to send"
         );
         assert!(!r.start_session("nope"), "unknown id");
+    }
+
+    // --- split / close_secondary / focus_pane (Task 3) -----------------------
+
+    #[test]
+    fn split_adds_a_secondary_and_close_removes_it() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.split("a");
+        assert!(r.is_split("a"));
+        assert_eq!(r.panes("a"), 2);
+        assert!(r.close_secondary("a"));
+        assert!(!r.is_split("a"));
+        assert_eq!(r.panes("a"), 1);
+    }
+
+    #[test]
+    fn split_twice_is_a_noop_not_a_third_pane() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.split("a");
+        r.split("a");
+        assert_eq!(r.panes("a"), 2);
+    }
+
+    #[test]
+    fn close_secondary_on_unsplit_tab_is_false() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert!(!r.close_secondary("a"));
+    }
+
+    #[test]
+    fn the_secondary_runs_a_bare_shell_in_the_tabs_dir() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut s = spec("a", "/tmp/a");
+        s.startup = Some("amux".into());
+        r.add(&s, false).unwrap();
+        r.split("a");
+        let sec = r.secondary_spec_for_test("a").expect("secondary present");
+        assert_eq!(sec.dir, std::path::PathBuf::from("/tmp/a"));
+        assert_eq!(sec.shell, s.shell);
+        assert_eq!(
+            sec.startup, None,
+            "the scratch pane must not inherit the tab's cmd"
+        );
+        assert_ne!(sec.id, s.id, "panes need distinct ids for surface routing");
+    }
+
+    #[test]
+    fn closing_the_secondary_returns_focus_to_the_primary() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.split("a");
+        assert!(r.focus_pane("a", PaneIdx::Secondary));
+        assert_eq!(r.focused_pane("a"), Some(PaneIdx::Secondary));
+        r.close_secondary("a");
+        assert_eq!(r.focused_pane("a"), Some(PaneIdx::Primary));
+    }
+
+    #[test]
+    fn a_fresh_split_pane_is_cold_not_live() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.split("a");
+        assert!(r.is_split("a"));
+        assert!(
+            !r.is_pane_spawned("a", PaneIdx::Secondary),
+            "split must not spawn"
+        );
+        assert!(
+            !r.is_pane_spawned("a", PaneIdx::Primary),
+            "lazily-added tab is cold too"
+        );
+    }
+
+    #[test]
+    fn is_pane_spawned_is_false_for_a_missing_pane() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert!(!r.is_pane_spawned("a", PaneIdx::Secondary));
+        assert!(!r.is_pane_spawned("nope", PaneIdx::Primary));
+    }
+
+    #[test]
+    fn focusing_a_missing_secondary_is_refused() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert!(!r.focus_pane("a", PaneIdx::Secondary));
+        assert_eq!(r.focused_pane("a"), Some(PaneIdx::Primary));
+    }
+
+    // --- activate's show/focus loop must honour `focused`, not "last spawned wins" ---
+    //
+    // Carried finding from Task 2's review: `activate` used to call `.focus()` on every
+    // spawned pane of the active tab, ignoring `focused` entirely — inert only because no
+    // secondary existed yet. It's fixed by iterating `TabEntry::panes_indexed()` and
+    // comparing each pane's `PaneIdx` against `t.focused`.
+    //
+    // That fix cannot be exercised through `Registry::activate` itself in this file's unit
+    // tests: every test here runs against `ns_window = null` so panes never leave `Cold`
+    // (see the detach/attach block earlier in this file), and calling `activate` was verified to SIGSEGV
+    // even on a cold, unsplit tab — `GhosttySurface::new`'s null-window path is not the
+    // "safely returns Err" case it looks like; the crash was reproduced and is why no test
+    // in this file calls `activate` directly. So this test pins the one ingredient that
+    // *is* safely testable: that `panes_indexed()` — what the loop's `which == t.focused`
+    // comparison is applied to — pairs each pane with its own correct `PaneIdx`, primary
+    // first. A wrong pairing here (e.g. the two panes swapped) is exactly the kind of bug
+    // that would silently misroute focus; the `.focus()`/`.show()` call sequencing itself
+    // is GUI-only verifiable, the same boundary already documented for `attach`/`detach`.
+    #[test]
+    fn panes_indexed_pairs_each_pane_with_its_own_idx_primary_first() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        let t = r.tabs.iter().find(|t| t.id == "a").unwrap();
+        let idxs: Vec<PaneIdx> = t.panes_indexed().map(|(w, _)| w).collect();
+        assert_eq!(idxs, vec![PaneIdx::Primary], "unsplit tab: primary only");
+
+        r.split("a");
+        let t = r.tabs.iter().find(|t| t.id == "a").unwrap();
+        let idxs: Vec<PaneIdx> = t.panes_indexed().map(|(w, _)| w).collect();
+        assert_eq!(
+            idxs,
+            vec![PaneIdx::Primary, PaneIdx::Secondary],
+            "split tab: primary then secondary, in that order"
+        );
+        for (which, pane) in t.panes_indexed() {
+            assert_eq!(
+                pane.spec.id,
+                t.pane(which).unwrap().spec.id,
+                "panes_indexed's PaneIdx must resolve back to the SAME pane via TabEntry::pane"
+            );
+        }
     }
 }
