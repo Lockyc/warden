@@ -363,7 +363,13 @@ impl Registry {
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
                 detached: matches!(t.primary.slot, TabSlot::Detached),
-                secondary_spawned: self.is_pane_spawned(&t.id, PaneIdx::Secondary),
+                // Read straight off the `TabEntry` already in hand, not `self.is_pane_spawned`
+                // (fix round 1, cheap fix #2): that method re-scans `self.tabs` to re-find `t` by
+                // id, turning this per-tab map into an O(n²) pass over the whole tab list.
+                secondary_spawned: t
+                    .secondary
+                    .as_ref()
+                    .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_))),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
