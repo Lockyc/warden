@@ -450,11 +450,45 @@ const DETACHED_DEFAULT_HEIGHT: f64 = 640.0;
 /// before `detach.html`'s own `set_hole_rect` lands and reports the exact hole.
 #[cfg(target_os = "macos")]
 const DETACHED_BANNER_H: f64 = 36.0;
+/// Width of the drag divider `detach.html` puts between two holes (its `.divider` rule, 6px).
+/// Same standing as `DETACHED_BANNER_H` and used for the same one thing: a birth rect close
+/// enough that a split pop-out doesn't flash mis-sized for the frame before the page's own
+/// `set_hole_rect` reports the exact holes. Never a layout authority — the page is.
+#[cfg(target_os = "macos")]
+const DETACHED_DIVIDER_W: f64 = 6.0;
+/// The divider ratio a split pop-out falls back to when the chrome supplies none (or supplies
+/// a non-finite one): the same even split `detach.html` would lay out unasked.
+#[cfg(target_os = "macos")]
+const DETACHED_DEFAULT_RATIO: f64 = 0.5;
+
+/// The divider ratio a split pop-out lays out at, from the chrome's advisory `ratio`
+/// argument: absent or non-finite → the even fallback, otherwise clamped to the same
+/// `0.1..=0.9` band the chrome's own drag and `detach.html`'s drag both clamp to, so a
+/// popped-out split can never open at a width neither of them would let you drag it to.
+///
+/// One home for that decision, called twice on the pop-out path (the payload's `panes`, and
+/// the birth rects) — they must agree, and the second frame would silently paper over it if
+/// they didn't.
+#[cfg(target_os = "macos")]
+fn split_ratio(ratio: Option<f64>) -> f64 {
+    match ratio {
+        Some(r) if r.is_finite() => r.clamp(0.1, 0.9),
+        _ => DETACHED_DEFAULT_RATIO,
+    }
+}
 
 /// Pop tab `id` out of the calling window into its own detached window, preserving the live
-/// terminal (surface + PTY). The tab stays present in the origin's sidebar as a `Detached`
+/// terminal(s) (surface + PTY). The tab stays present in the origin's sidebar as a `Detached`
 /// placeholder (rendered with the ⤢ mark) until the detached window closes, at which point
 /// `redock` (wired via `shell_core::detach::wire_return`) moves it back.
+///
+/// **Pop-out is whole-tab**, so a split tab takes BOTH panes: `detach` hands back the pair,
+/// `DetachSpec.panes` asks the shared detach page for two holes at the origin's own divider
+/// ratio, and each hole's `set_hole_rect` routes to its own surface. `ratio` is that divider
+/// ratio, supplied by the chrome (which owns split geometry — Rust never stores one); it is
+/// advisory, and how many holes the window gets is decided by how many surfaces actually came
+/// back, never by `ratio` or by `is_split`. An unsplit tab is unchanged in every respect: one
+/// surface, `panes: vec![]`, and a payload byte-identical to the pre-panes one.
 ///
 /// **Lock discipline (load-bearing):** the `ManagerState` lock is held ONLY to extract the
 /// surface + read the spec inputs (phase 1) and again to store the result (phase 3). The window
@@ -468,14 +502,15 @@ fn pop_out_tab(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
     id: String,
+    ratio: Option<f64>,
 ) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let app = window.app_handle().clone();
     let origin_label = window.label().to_string();
 
-    // Phase 1 — under the lock: extract the live surface (leaves a Detached placeholder) and
-    // read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, spec, token) = {
+    // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
+    // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
+    let (surface, secondary, spec, token) = {
         let mut m = state.lock();
         let ws = m
             .windows
@@ -489,20 +524,33 @@ fn pop_out_tab(
         ws.registry
             .ensure_spawned_by_id(&id)
             .map_err(|e| format!("could not open the tab to pop it out: {e}"))?;
-        let surface = ws
+        let (surface, secondary) = ws
             .registry
             .detach(&id)
             .ok_or_else(|| "tab is not available to pop out".to_string())?;
         let title = ws.registry.tab_title(&id).unwrap_or_else(|| id.clone());
         let colour = ws.colour.clone();
+        // Two holes iff two surfaces actually came back. Keyed on the surfaces, not on
+        // `is_split`: a split tab whose secondary was cold detaches with one surface, and a
+        // second hole with nothing behind it is a transparent leak straight to the desktop.
+        let panes = if secondary.is_some() {
+            let r = split_ratio(ratio);
+            vec![r, 1.0 - r]
+        } else {
+            // The unsplit case, which is every tab that has never been split: empty, so the
+            // page lays out one undivided hole and shell-core omits `panes` from the payload
+            // entirely — byte-identical to the pre-panes emission.
+            vec![]
+        };
         let spec = shell_core::detach::DetachSpec {
             title,
             colour: Some(colour),
             width: DETACHED_DEFAULT_WIDTH,
             height: DETACHED_DEFAULT_HEIGHT,
+            panes,
         };
         let token = crate::plan::detach_window_token(&origin_label, &id);
-        (surface, spec, token)
+        (surface, secondary, spec, token)
     };
 
     // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
@@ -513,50 +561,125 @@ fn pop_out_tab(
     // tab's remembered size and position during `build()`, so for every pop-out after the first
     // those constants are stale by the time this closure runs. It arrives in logical points, which
     // is what the NSView frame wants.
+    //
+    // BOTH panes move here, and every way out of this closure leaves both surfaces reachable:
+    // a failed primary reparent has moved nothing, and a failed secondary reparent (only
+    // possible for an already-closed surface — the window lookups it shares with the primary
+    // have just succeeded) puts the primary back in the origin before returning, so
+    // `open_detached`'s `window.close()` never takes a live view down with it. `origin_nsw`
+    // is resolved HERE, before the build, because that rollback needs it and the closure has
+    // only the new window; `None` (the origin can't report an NSWindow, which is already a
+    // broken origin) costs the rollback its destination — the surfaces and their PTYs still
+    // survive into the registry below, which is the guarantee that matters.
+    let origin_nsw = window.ns_window().ok();
     let mut surface_opt = Some(surface);
+    let mut secondary_opt = secondary;
     let build = shell_core::detach::open_detached(&app, &token, &spec, "warden", |win, size| {
         let nsw = win.ns_window()?;
-        let birth_rect = crate::surface::PixelRect {
-            x: 0.0,
-            y: 0.0,
-            width: size.width,
-            height: (size.height - DETACHED_BANNER_H).max(0.0),
+        let hole_h = (size.height - DETACHED_BANNER_H).max(0.0);
+        // One hole, or the two the page divides by the same ratio `spec.panes` carries. Both
+        // are corrected by `detach.html`'s own `set_hole_rect` on load; these only keep the
+        // first frame from being visibly wrong.
+        let (primary_rect, secondary_rect) = match secondary_opt.is_some() {
+            false => (
+                crate::surface::PixelRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: size.width,
+                    height: hole_h,
+                },
+                None,
+            ),
+            true => {
+                let r = split_ratio(ratio);
+                let avail = (size.width - DETACHED_DIVIDER_W).max(0.0);
+                let left = avail * r;
+                (
+                    crate::surface::PixelRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: left,
+                        height: hole_h,
+                    },
+                    Some(crate::surface::PixelRect {
+                        x: left + DETACHED_DIVIDER_W,
+                        y: 0.0,
+                        width: avail - left,
+                        height: hole_h,
+                    }),
+                )
+            }
         };
         surface_opt
             .as_mut()
             .expect("surface present during birth")
-            .reparent(nsw as *mut std::os::raw::c_void, birth_rect)
+            .reparent(nsw as *mut std::os::raw::c_void, primary_rect)
             .map_err(|e| std::io::Error::other(format!("reparent failed: {e}")))?;
+        if let (Some(s), Some(rect)) = (secondary_opt.as_mut(), secondary_rect) {
+            if let Err(e) = s.reparent(nsw as *mut std::os::raw::c_void, rect) {
+                // Undo the primary's move: this window is about to be closed by
+                // `open_detached`, and a view left inside it would be a live PTY with
+                // nothing on screen. The rect is a placeholder — the `activate` on the
+                // failure path below re-asserts the origin's real hole rects.
+                if let Some(o) = origin_nsw {
+                    let _ = surface_opt
+                        .as_mut()
+                        .expect("surface present during birth")
+                        .reparent(o as *mut std::os::raw::c_void, manager::INITIAL_RECT);
+                }
+                return Err(std::io::Error::other(format!(
+                    "reparent of the second pane failed: {e}"
+                ))
+                .into());
+            }
+        }
         Ok(())
     });
 
     let label = match build {
         Ok(label) => label,
         Err(e) => {
-            // The window build / reparent failed. reparent only errors before it moves the
-            // view, so the surface is intact AND its view is still shown in the origin — put
-            // it back into the origin's registry slot so the tab stays live (never a permanent
-            // Detached placeholder with no window). If the origin vanished meanwhile, the
-            // surface drops here (the tab genuinely has no home).
+            // The window build / reparent failed. Both surfaces are intact and parented to
+            // the ORIGIN window (reparent only errors before it moves a view, and the
+            // secondary's failure arm above moves the primary back) — so put BOTH back into
+            // the origin's registry slot and the tab stays live, never a permanent Detached
+            // placeholder with no window. A partial restore here would leave a live PTY with
+            // no window, no slot, and no route back. If the origin vanished meanwhile, both
+            // drop here (the tab genuinely has no home).
             let surface = surface_opt.take().expect("surface held on build failure");
+            let secondary = secondary_opt.take();
             let mut m = state.lock();
             if let Some(ws) = m.windows.get_mut(&origin_label) {
-                if let Err(s) = ws.registry.attach(&id, surface) {
-                    drop(s);
+                match ws.registry.attach(&id, surface, secondary) {
+                    // Re-assert the origin's CURRENT selection (not this tab — pop-out can be
+                    // driven on a background tab, and `activate` would move the shown surface
+                    // out from under the sidebar's highlight). This is what re-applies the
+                    // real hole rects over the placeholder ones a rollback reparent used.
+                    Ok(()) => {
+                        if let Some(active) = ws.registry.active_tab().map(str::to_string) {
+                            let _ = ws.registry.activate(&active);
+                        }
+                    }
+                    Err((p, s)) => {
+                        drop(p);
+                        drop(s);
+                    }
                 }
             }
             return Err(format!("couldn't pop out tab: {e}"));
         }
     };
 
-    // Phase 3 — re-lock to store the (now reparented) surface + wire the return.
+    // Phase 3 — re-lock to store the (now reparented) surfaces + wire the return.
     let surface = surface_opt.take().expect("surface reparented on success");
+    let secondary = secondary_opt.take();
     {
         let mut m = state.lock();
         m.detached.insert(
             label.clone(),
             manager::DetachedSurface {
                 surface,
+                secondary,
                 origin_label: origin_label.clone(),
                 tab_id: id.clone(),
             },
@@ -1450,6 +1573,31 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_ratio_falls_back_and_clamps_to_the_draggable_band() {
+        // The chrome's ratio is advisory and arrives over IPC, so every non-answer has to
+        // land somewhere sane: a popped-out split must never open at a width the user could
+        // not have dragged it to, and must never be laid out from a NaN.
+        assert_eq!(split_ratio(None), DETACHED_DEFAULT_RATIO);
+        assert_eq!(split_ratio(Some(f64::NAN)), DETACHED_DEFAULT_RATIO);
+        assert_eq!(split_ratio(Some(f64::INFINITY)), DETACHED_DEFAULT_RATIO);
+        assert_eq!(split_ratio(Some(0.3)), 0.3);
+        assert_eq!(
+            split_ratio(Some(0.0)),
+            0.1,
+            "clamped to the drag's own floor"
+        );
+        assert_eq!(
+            split_ratio(Some(9.0)),
+            0.9,
+            "clamped to the drag's own ceil"
+        );
+        // The pair `pop_out_tab` builds `DetachSpec.panes` from must sum to the whole hole,
+        // or the page lays the panes out at a width neither the ratio nor the window says.
+        let r = split_ratio(Some(0.42));
+        assert!((r + (1.0 - r) - 1.0).abs() < f64::EPSILON);
+    }
 
     #[test]
     fn scrub_removes_inherited_tmux_vars() {

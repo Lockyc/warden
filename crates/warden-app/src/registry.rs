@@ -76,6 +76,22 @@ struct Pane {
     slot: TabSlot,
 }
 
+/// The spec a tab's SECOND pane runs: the tab's own shell, in the tab's own dir, with no
+/// startup command (the frame's scratch terminal), under the distinct surface id `"<tab>::2"`
+/// that surface→tab routing (`locate_surface`) and the surface event sink key on.
+///
+/// A free function with two callers — `split` (the ⌘D path) and `attach` (which recreates the
+/// slot when a popped-out split returns to an origin window that was closed and rebuilt from
+/// config, and so has no secondary pane any more). Neither may re-derive it: two spellings of
+/// one spec would drift the second pane's surface id, and a mismatched id routes its bell,
+/// notification and child-exit to nothing.
+fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
+    let mut spec = primary.clone();
+    spec.id = format!("{tab_id}::2");
+    spec.startup = None;
+    spec
+}
+
 /// A tab owns a `primary` pane and, when split, a `secondary`.
 ///
 /// `primary`/`Option<secondary>` rather than a `Vec` so the agreed TWO-PANE CAP is
@@ -218,8 +234,8 @@ impl Registry {
     /// The `split_pane` command (Task 7) calls `activate` right after, so the pane still comes
     /// up immediately for the user.
     ///
-    /// The secondary's `TabSpec.id` is `"<tab>::2"`, distinct from the tab id, because
-    /// surface→tab routing (`locate_surface`) and the surface event sink key on it.
+    /// The secondary's `TabSpec.id` is `"<tab>::2"`, distinct from the tab id — see
+    /// `secondary_spec`, the one home for that derivation.
     pub fn split(&mut self, id: &str) {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return;
@@ -227,9 +243,7 @@ impl Registry {
         if t.secondary.is_some() {
             return;
         }
-        let mut spec = t.primary.spec.clone();
-        spec.id = format!("{id}::2");
-        spec.startup = None;
+        let spec = secondary_spec(&t.primary.spec, id);
         t.secondary = Some(Pane {
             spec,
             slot: TabSlot::Cold,
@@ -286,8 +300,11 @@ impl Registry {
     /// loses its return slot. `id` is the same `Tab::key` (`id`-else-normalized-
     /// `dir`) the registry keys every entry on.
     ///
-    /// Primary-only, not any-pane: pop-out is whole-tab (`detach`/`attach` only ever
-    /// touch the primary), so the primary's slot is authoritative for the tab.
+    /// Primary-only, not any-pane, and still correct now that pop-out carries both panes:
+    /// `detach` refuses unless the PRIMARY is live and only then touches the secondary, so
+    /// a tab is detached exactly when its primary slot says so. Reading any-pane instead
+    /// would call a tab detached on the strength of a secondary alone, which no path
+    /// produces.
     pub fn is_detached(&self, id: &str) -> bool {
         self.tabs
             .iter()
@@ -312,9 +329,29 @@ impl Registry {
     /// `close_all`, a second `detach`) without ever touching a `GhosttySurface`.
     #[cfg(test)]
     pub fn force_detached(&mut self, id: &str) {
+        self.force_detached_pane(id, PaneIdx::Primary);
+    }
+
+    /// Test-only: the per-pane form of `force_detached` — pop-out now moves both panes,
+    /// so the secondary has its own `Detached` state to construct and assert against.
+    #[cfg(test)]
+    pub fn force_detached_pane(&mut self, id: &str, which: PaneIdx) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
-            t.primary.slot = TabSlot::Detached;
+            if let Some(p) = t.pane_mut(which) {
+                p.slot = TabSlot::Detached;
+            }
         }
+    }
+
+    /// Test-only: is pane `which` of tab `id` a `Detached` placeholder? `false` for a
+    /// missing tab or pane.
+    #[cfg(test)]
+    pub fn is_pane_detached(&self, id: &str, which: PaneIdx) -> bool {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.pane(which))
+            .is_some_and(|p| matches!(p.slot, TabSlot::Detached))
     }
 
     /// Snapshot every tab for the chrome.
@@ -565,44 +602,87 @@ impl Registry {
         None
     }
 
-    /// Detach tab `id`'s live surface for a move to another window's `Registry`
-    /// (pop-out): extracts the `Spawned` surface and leaves the slot `Detached`
-    /// — a placeholder that keeps the tab present for `reconcile` (not missing
-    /// → no respawn; not stale → no duplicate) while the actual `GhosttySurface`
-    /// moves to the caller (Task 11's manager code reparents its AppKit view and
-    /// calls `attach` on the destination registry). The surface is **returned,
-    /// never closed** — closing it here would kill the PTY the whole feature
-    /// exists to preserve.
+    /// Detach tab `id`'s live surfaces for a move to another window's `Registry`
+    /// (pop-out): extracts the `Spawned` surface of **every** pane the tab has and
+    /// leaves each slot `Detached` — a placeholder that keeps the tab present for
+    /// `reconcile` (not missing → no respawn; not stale → no duplicate) while the
+    /// actual `GhosttySurface`s move to the caller (the manager reparents their
+    /// AppKit views and calls `attach` on the destination registry). The surfaces
+    /// are **returned, never closed** — closing one here would kill the PTY the
+    /// whole feature exists to preserve.
     ///
-    /// `None` for: an unknown id; a `Cold` tab (nothing live to move — restored
-    /// to `Cold`, not left `Detached`, since there is no surface anywhere to
-    /// stand the placeholder in for); or a tab already `Detached` (restored to
-    /// `Detached` — already gone elsewhere, calling this twice is a no-op, not
-    /// a second extraction).
-    pub fn detach(&mut self, id: &str) -> Option<GhosttySurface> {
+    /// Pop-out is whole-tab, so a split tab travels as a pair: `(primary,
+    /// Some(secondary))`. The secondary is `None` both for an unsplit tab and for a
+    /// split tab whose second pane is `Cold` (nothing live to carry — that slot stays
+    /// `Cold` and simply respawns in place on the next `activate`). The pane count the
+    /// caller lays the detached window out with therefore derives from what actually
+    /// came back, never from `is_split`: a hole with no surface behind it is a
+    /// transparent leak to the desktop.
+    ///
+    /// `None` (nothing extracted, **no slot touched**) for: an unknown id; a `Cold`
+    /// primary (restored to `Cold`, not left `Detached`, since there is no surface
+    /// anywhere to stand the placeholder in for); or a primary already `Detached`
+    /// (restored to `Detached` — already gone elsewhere, calling this twice is a
+    /// no-op, not a second extraction). The primary is decided **first**, so a
+    /// refused detach leaves the secondary untouched rather than half-extracting a
+    /// tab that isn't going anywhere.
+    pub fn detach(&mut self, id: &str) -> Option<(GhosttySurface, Option<GhosttySurface>)> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        match std::mem::replace(&mut self.tabs[idx].primary.slot, TabSlot::Detached) {
-            TabSlot::Spawned(s) => Some(s),
+        let primary = match std::mem::replace(&mut self.tabs[idx].primary.slot, TabSlot::Detached) {
+            TabSlot::Spawned(s) => s,
             TabSlot::Cold => {
                 self.tabs[idx].primary.slot = TabSlot::Cold;
-                None
+                return None;
             }
             TabSlot::Detached => {
                 self.tabs[idx].primary.slot = TabSlot::Detached;
-                None
+                return None;
             }
-        }
+        };
+        let secondary = match self.tabs[idx].secondary.as_mut() {
+            None => None,
+            Some(p) => match std::mem::replace(&mut p.slot, TabSlot::Detached) {
+                TabSlot::Spawned(s) => Some(s),
+                TabSlot::Cold => {
+                    p.slot = TabSlot::Cold;
+                    None
+                }
+                TabSlot::Detached => {
+                    p.slot = TabSlot::Detached;
+                    None
+                }
+            },
+        };
+        Some((primary, secondary))
     }
 
-    /// Bring tab `id` live in place if it is `Cold`, spawning its surface against this
+    /// Bring tab `id` live in place if it is `Cold`, spawning its surface(s) against this
     /// window — so a never-opened tab can be popped out (pop-out then `detach`s the now-live
-    /// surface and reparents it into its own window). No-op if the tab is already `Spawned`
+    /// surfaces and reparents them into its own window). No-op for a pane already `Spawned`
     /// or `Detached` (a detached tab's live surface is in another window — never respawn a
     /// second one), and a no-op returning `Ok` if `id` is unknown (the caller's follow-up
-    /// `detach` surfaces the not-found). Errors only if the spawn itself fails.
+    /// `detach` surfaces the not-found).
+    ///
+    /// A split tab's SECOND pane is spawned too, best-effort: pop-out takes the whole tab, so
+    /// leaving a cold secondary behind would pop the tab out at half its content and strand
+    /// the other pane in the origin. Its error is discarded rather than shadowing the
+    /// primary's — the same asymmetry `activate` uses, and for the same reason: a secondary
+    /// that won't spawn must not cost the user the pop-out. `detach` then simply carries one
+    /// surface instead of two, and the detached window lays out one hole.
+    ///
+    /// That second spawn is gated on the PRIMARY being live **in this registry**, which is
+    /// what keeps the whole call a no-op on an already-`Detached` tab: its surfaces are in
+    /// another window, `detach` will refuse, and spawning its secondary here would leave a
+    /// stray surface in a window the tab isn't showing in — with no pop-out to carry it out
+    /// again.
     pub fn ensure_spawned_by_id(&mut self, id: &str) -> Result<(), SurfaceError> {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
             self.ensure_spawned(idx, PaneIdx::Primary)?;
+            if matches!(self.tabs[idx].primary.slot, TabSlot::Spawned(_))
+                && self.tabs[idx].secondary.is_some()
+            {
+                let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
+            }
         }
         Ok(())
     }
@@ -623,24 +703,59 @@ impl Registry {
     ///
     /// On failure — unknown `id`, or a slot that is already `Spawned` (a
     /// live surface already occupies it; overwriting would leak that surface's
-    /// PTY) — the surface is handed **back** as `Err(surface)` rather than
-    /// silently dropped. A `bool` return (as the task brief's other suggested
-    /// shape) was rejected for this reason: on the failure path the `surface`
-    /// parameter would simply fall out of scope and hit `GhosttySurface`'s
-    /// `Drop` safety net, closing a surface the caller doesn't expect to lose.
-    /// Returning it keeps that decision with the caller instead of making it
+    /// PTY) — the surfaces are handed **back** as `Err((primary, secondary))`
+    /// rather than silently dropped. A `bool` return (as the task brief's other
+    /// suggested shape) was rejected for this reason: on the failure path the
+    /// parameters would simply fall out of scope and hit `GhosttySurface`'s
+    /// `Drop` safety net, closing surfaces the caller doesn't expect to lose.
+    /// Returning them keeps that decision with the caller instead of making it
     /// silently here.
-    pub fn attach(&mut self, id: &str, surface: GhosttySurface) -> Result<(), GhosttySurface> {
+    ///
+    /// **Both panes land, or neither does.** Every slot is validated before any is
+    /// written, so a refusal hands the caller back exactly what it passed in and the
+    /// registry is unchanged — there is no "the primary landed, the secondary didn't"
+    /// state for a caller to discover, and no shape in the `Err` that could express one.
+    ///
+    /// A returning `secondary` whose tab has **no** secondary pane recreates the pane
+    /// (`secondary_spec`, the same derivation `split` uses) rather than refusing. That
+    /// is a real path, not a defensive one: a split lives in the chrome and the registry,
+    /// never in the config, so an origin window the user closed while the tab was popped
+    /// out is rebuilt *unsplit* — and refusing there would drop a live PTY on the floor
+    /// purely because the slot it left from had since been rebuilt without it.
+    pub fn attach(
+        &mut self,
+        id: &str,
+        primary: GhosttySurface,
+        secondary: Option<GhosttySurface>,
+    ) -> Result<(), (GhosttySurface, Option<GhosttySurface>)> {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
-            return Err(surface);
+            return Err((primary, secondary));
         };
-        match t.primary.slot {
-            TabSlot::Cold | TabSlot::Detached => {
-                t.primary.slot = TabSlot::Spawned(surface);
-                Ok(())
-            }
-            TabSlot::Spawned(_) => Err(surface),
+        // Validate BOTH slots first — see the all-or-nothing note above.
+        if matches!(t.primary.slot, TabSlot::Spawned(_)) {
+            return Err((primary, secondary));
         }
+        if secondary.is_some()
+            && t.secondary
+                .as_ref()
+                .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_)))
+        {
+            return Err((primary, secondary));
+        }
+        t.primary.slot = TabSlot::Spawned(primary);
+        if let Some(s) = secondary {
+            match t.secondary.as_mut() {
+                Some(p) => p.slot = TabSlot::Spawned(s),
+                None => {
+                    let spec = secondary_spec(&t.primary.spec, id);
+                    t.secondary = Some(Pane {
+                        spec,
+                        slot: TabSlot::Spawned(s),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Show + focus the tab `id` (spawning it first if declared); hide all others.
@@ -976,6 +1091,92 @@ mod tests {
     }
 
     #[test]
+    fn detach_of_a_split_cold_tab_leaves_both_panes_alone() {
+        // The primary is decided first: a refused detach must not half-extract the tab by
+        // marking the SECONDARY detached on the way past. Nothing is live here, so nothing
+        // moves — and neither slot may end up a placeholder for a surface that is still here.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        assert!(r.detach("t0").is_none());
+        assert!(!r.is_pane_detached("t0", PaneIdx::Primary));
+        assert!(
+            !r.is_pane_detached("t0", PaneIdx::Secondary),
+            "the second pane must not be marked Detached when nothing was detached"
+        );
+        assert!(r.is_split("t0"), "the tab is still split, just cold");
+    }
+
+    #[test]
+    fn detach_of_an_already_detached_split_tab_is_a_noop_on_both_panes() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        r.force_detached_pane("t0", PaneIdx::Primary);
+        r.force_detached_pane("t0", PaneIdx::Secondary);
+        assert!(
+            r.detach("t0").is_none(),
+            "nothing live here to extract a second time"
+        );
+        assert!(r.is_pane_detached("t0", PaneIdx::Primary));
+        assert!(
+            r.is_pane_detached("t0", PaneIdx::Secondary),
+            "both placeholders must survive — their surfaces are in the popped-out window"
+        );
+    }
+
+    #[test]
+    fn a_detached_split_tab_reads_as_detached_and_not_secondary_spawned() {
+        // What the chrome sees for a popped-out split: one detached row, no local surface in
+        // either pane (so neither hole is claimed live while the terminals are elsewhere).
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        r.force_detached_pane("t0", PaneIdx::Primary);
+        r.force_detached_pane("t0", PaneIdx::Secondary);
+        let dto = r.tab_dtos().into_iter().find(|d| d.id == "t0").unwrap();
+        assert!(dto.detached);
+        assert!(!dto.spawned);
+        assert!(!dto.secondary_spawned);
+    }
+
+    #[test]
+    fn unload_of_a_detached_split_tab_keeps_both_placeholders() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        r.force_detached_pane("t0", PaneIdx::Primary);
+        r.force_detached_pane("t0", PaneIdx::Secondary);
+        assert_eq!(r.unload("t0"), None, "no local surfaces to kill");
+        assert!(r.is_pane_detached("t0", PaneIdx::Primary));
+        assert!(
+            r.is_pane_detached("t0", PaneIdx::Secondary),
+            "a Detached secondary must not fall back to Cold — that would make it look \
+             locally respawnable and duplicate the popped-out surface"
+        );
+    }
+
+    #[test]
+    fn attach_recreates_a_missing_secondary_slot_with_the_split_spec() {
+        // `attach` recreating the slot (redock into an origin that was closed and rebuilt
+        // unsplit) must produce the SAME spec `split` does, or the returning surface's
+        // events route nowhere. Both go through `secondary_spec`; this pins that they agree.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        let from_split = r.secondary_spec_for_test("t0").unwrap();
+        let from_attach = secondary_spec(&spec("t0", "/tmp"), "t0");
+        assert_eq!(from_split.id, from_attach.id, "same surface id");
+        assert_eq!(from_split.dir, from_attach.dir);
+        assert_eq!(from_split.startup, from_attach.startup);
+        assert_eq!(from_attach.id, "t0::2");
+        assert!(
+            from_attach.startup.is_none(),
+            "the second pane runs a shell"
+        );
+    }
+
+    #[test]
     fn detached_tab_is_still_listed_by_describe() {
         // reconcile-relevant: the placeholder keeps the tab present (not
         // missing → no respawn attempt; not stale → no duplicate add).
@@ -999,10 +1200,12 @@ mod tests {
     // construct one from — see the module-level note above), so both its
     // success arms (Cold -> Spawned, when redock reopened the origin, and
     // Detached -> Spawned, when the origin stayed open) and its Err-returns-the-
-    // surface failure arm (a `Spawned` slot) need a live surface to even call it
+    // surfaces failure arm (a `Spawned` slot) need a live surface to even call it
     // with. The slot gate it relies on is exercised structurally above via
-    // `force_detached` + `is_detached`. See the task report for the GUI-driven
-    // verification plan.
+    // `force_detached` + `is_detached`, and the one piece of its two-pane path that
+    // needs no surface — the spec it recreates a missing secondary slot with — is
+    // pinned by `attach_recreates_a_missing_secondary_slot_with_the_split_spec`.
+    // See the task report for the GUI-driven verification plan.
 
     #[test]
     fn unload_of_detached_tab_is_noop_and_stays_detached() {
@@ -1028,6 +1231,15 @@ mod tests {
         assert!(r.ensure_spawned_by_id("t0").is_ok());
         assert!(r.is_detached("t0"), "must stay Detached, not respawn");
         assert!(!r.is_spawned("t0"), "no second surface spawned here");
+        // Same for its SECOND pane: this call spawns a cold secondary for the pop-out that
+        // follows, but a Detached tab has no pop-out to follow — a surface spawned here would
+        // sit in a window the tab isn't in, with nothing to carry it out again.
+        r.split("t0");
+        assert!(r.ensure_spawned_by_id("t0").is_ok());
+        assert!(
+            !r.is_spawned("t0"),
+            "neither pane of a Detached tab may spawn locally"
+        );
         assert!(
             r.ensure_spawned_by_id("does-not-exist").is_ok(),
             "unknown id is a clean no-op"

@@ -16,7 +16,11 @@ use warden_config::{Config, Reconciliation};
 
 /// Initial surface rect: offset by the 160px sidebar so the surface never
 /// overlaps it before the first JS rect report arrives. (Matches the spike.)
-const INITIAL_RECT: PixelRect = PixelRect {
+///
+/// `pub(crate)` for one more caller than `redock`: `pop_out_tab`'s reparent-rollback needs
+/// the same "any plausible rect, corrected by the next `activate`" placeholder, and a second
+/// literal there would be a copy of this fact that could drift from it.
+pub(crate) const INITIAL_RECT: PixelRect = PixelRect {
     x: 160.0,
     y: 0.0,
     width: 740.0,
@@ -166,10 +170,15 @@ pub struct WindowState {
     pub spawn_error: Option<String>,
 }
 
-/// A tab that has been popped out into its own detached window. Holds the live surface
+/// A tab that has been popped out into its own detached window. Holds the live surface(s)
 /// (moved out of its origin `WindowState`'s `Registry`, which keeps a `Detached`
-/// placeholder in its slot) plus the bookkeeping needed to return it when the detached
-/// window closes: which origin window/tab it belongs to.
+/// placeholder in each slot) plus the bookkeeping needed to return them when the detached
+/// window closes: which origin window/tab they belong to.
+///
+/// Pop-out is **whole-tab**, so a split tab brings its second pane along: `secondary` is
+/// `Some` exactly when `Registry::detach` handed back a live second surface. The detached
+/// window then lays out two holes and `set_detached_frame` routes each hole's rect to its
+/// own surface.
 ///
 /// These live in `WindowManager::detached`, **separate from `windows`**, so hot-reload
 /// `reconcile` (which only walks `windows`) never sees them and can't close or duplicate
@@ -178,6 +187,10 @@ pub struct WindowState {
 /// surface doesn't pop up while a detached window is the only thing on screen.
 pub struct DetachedSurface {
     pub surface: GhosttySurface,
+    /// The tab's second pane, when it had a live one at pop-out time. `None` for an
+    /// unsplit tab (and for a split tab whose secondary was still cold — nothing live to
+    /// carry, so the window opens with one hole rather than one it can't fill).
+    pub secondary: Option<GhosttySurface>,
     pub origin_label: String,
     pub tab_id: String,
 }
@@ -645,18 +658,29 @@ impl WindowManager {
     /// `windows`, so the ordinary registry path can't reach it). No-op if `label` isn't a
     /// live detached window.
     ///
-    /// `which` is accepted (not yet used) to keep this call site source-compatible with
-    /// `set_hole_rect`'s per-pane routing: a detached window today holds exactly one
-    /// surface, so every pane index applies to it. Widening `DetachedSurface` to carry a
-    /// pane of its own is a later task's job, not this one's.
+    /// `which` names the hole the rect came from, mirroring the ordinary registry path's
+    /// per-pane routing. A single-hole detached window's page omits `pane` entirely, which
+    /// `set_hole_rect` reads as `Primary` — so an unsplit pop-out lands here exactly as it
+    /// did before there were panes at all. A `Secondary` rect for a window that carries no
+    /// second surface is dropped rather than applied to the primary: it can only mean the
+    /// page and this map disagree about how many panes there are, and re-pointing the one
+    /// live surface at the other hole would move the terminal the user is typing in.
     pub fn set_detached_frame(
         &mut self,
         label: &str,
-        _which: crate::registry::PaneIdx,
+        which: crate::registry::PaneIdx,
         rect: PixelRect,
     ) {
-        if let Some(ds) = self.detached.get_mut(label) {
-            ds.surface.set_frame(rect);
+        let Some(ds) = self.detached.get_mut(label) else {
+            return;
+        };
+        match which {
+            crate::registry::PaneIdx::Primary => ds.surface.set_frame(rect),
+            crate::registry::PaneIdx::Secondary => {
+                if let Some(s) = ds.secondary.as_ref() {
+                    s.set_frame(rect);
+                }
+            }
         }
     }
 
@@ -674,6 +698,11 @@ impl WindowManager {
     ///    never overwriting a live one.
     /// 3. **Origin removed from config entirely** — the tab has no home, so the surface is
     ///    dropped (kills its PTY): the one place a live surface is intentionally dropped.
+    ///
+    /// Every step treats the pair as one unit: both surfaces reparent into the origin, both
+    /// go back through one `attach`, and case 3 drops both. A split that returns to a window
+    /// case 2 rebuilt *unsplit* keeps its second pane — `attach` recreates the slot rather
+    /// than refusing (see its doc), so the second PTY survives the round trip too.
     pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<String> {
         // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's
         // `Destroyed`): don't reopen an origin window or reparent a surface mid-teardown —
@@ -686,6 +715,7 @@ impl WindowManager {
 
         let DetachedSurface {
             mut surface,
+            mut secondary,
             origin_label,
             tab_id,
         } = self.detached.remove(detached_label)?;
@@ -697,20 +727,28 @@ impl WindowManager {
         }
 
         match self.windows.get_mut(&origin_label) {
-            // Case 3: origin gone from config — the tab genuinely ends. Dropping the surface
-            // closes its PTY (the only intentional live-surface drop in the whole flow).
-            None => drop(surface),
+            // Case 3: origin gone from config — the tab genuinely ends. Dropping the surfaces
+            // closes their PTYs (the only intentional live-surface drop in the whole flow).
+            None => {
+                drop(surface);
+                drop(secondary);
+            }
             Some(ws) => {
                 // Kill any fresh surface a reopen spawned for this tab (→ Cold) so `attach`
                 // never overwrites a `Spawned` slot; on the origin-stayed-open path the slot
-                // is `Detached` and this is a no-op.
+                // is `Detached` and this is a no-op. Acts on BOTH panes (see `unload`).
                 ws.registry.unload(&tab_id);
                 if let Ok(nsw) = ws.window.ns_window() {
                     // reparent only errors before it moves the view, so a failure here leaves
-                    // the surface intact for `attach` below to re-home in the registry.
+                    // the surface intact for `attach` below to re-home in the registry. Both
+                    // panes come back — leaving the secondary parented to the window that is
+                    // being destroyed would strand a live PTY with no view on screen.
                     let _ = surface.reparent(nsw as *mut c_void, INITIAL_RECT);
+                    if let Some(s) = secondary.as_mut() {
+                        let _ = s.reparent(nsw as *mut c_void, INITIAL_RECT);
+                    }
                 }
-                match ws.registry.attach(&tab_id, surface) {
+                match ws.registry.attach(&tab_id, surface, secondary) {
                     // Re-assert the origin's CURRENT selection — NOT the returned tab. The chrome
                     // owns selection (warden passes no `active`), so force-activating the returned
                     // tab here would show its terminal while the sidebar still highlights whatever
@@ -728,9 +766,14 @@ impl WindowManager {
                             .unwrap_or_else(|| tab_id.clone());
                         let _ = ws.registry.activate(&show);
                     }
-                    // Defensive: slot wasn't Cold/Detached (shouldn't happen) — hand-back the
-                    // surface and drop it rather than leak, keeping the decision explicit.
-                    Err(s) => drop(s),
+                    // Defensive: a slot wasn't Cold/Detached (shouldn't happen — `unload`
+                    // above just cleared both) — take the hand-back and drop it rather than
+                    // leak, keeping the decision explicit. `attach` is all-or-nothing, so
+                    // this is both surfaces or neither, never a half-restored tab.
+                    Err((p, s)) => {
+                        drop(p);
+                        drop(s);
+                    }
                 }
             }
         }
