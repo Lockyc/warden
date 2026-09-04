@@ -29,6 +29,17 @@ pub struct TabDto {
     /// backstop: a live primary beside a cold secondary must still cover the secondary's hole
     /// with `#empty-state-2`, or it leaks the desktop through the transparent window.
     pub secondary_spawned: bool,
+    /// Whether this tab STRUCTURALLY has a second pane — distinct from `secondary_spawned`
+    /// above, which is that pane's LIVENESS. Both are needed, and forwarding only the second
+    /// is what let the chrome and the registry disagree: a hot-reload `respawn_tabs` rebuilds
+    /// a split tab via `remove` + `add`, i.e. **unsplit** (a split lives in the chrome and the
+    /// registry, never in the config), and the `warden:refresh` that follows carried no
+    /// structural answer at all — so the chrome kept its `splitById` `true` and went on
+    /// rendering a divider and a permanently empty second pane over a tab that no longer had
+    /// one, self-healing only on the next `onSelect` for that tab, which never comes if that
+    /// tab stays selected. Carrying it on every snapshot makes `activate_tab`'s `res.split` a
+    /// fast path rather than the sole reconciler.
+    pub split: bool,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -257,7 +268,20 @@ impl Registry {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
         };
-        let had = t.secondary.take().is_some();
+        // `close()`, never a bare `take()` that lets `Drop` free it: `GhosttySurface::drop`
+        // treats being dropped without `close()` as a registry bug and says so in debug
+        // builds, so a plain take made the divider ✕ — the ordinary way a split ends — print a
+        // false bug report every time. Same `mem::replace` + `close()` shape as `unload`,
+        // `remove` and `close_all`.
+        let had = match t.secondary.take() {
+            Some(mut pane) => {
+                if let TabSlot::Spawned(s) = std::mem::replace(&mut pane.slot, TabSlot::Cold) {
+                    s.close();
+                }
+                true
+            }
+            None => false,
+        };
         if had {
             t.focused = PaneIdx::Primary;
         }
@@ -386,6 +410,7 @@ impl Registry {
                     .secondary
                     .as_ref()
                     .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_))),
+                split: t.secondary.is_some(),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
@@ -670,7 +695,8 @@ impl Registry {
     /// that won't spawn must not cost the user the pop-out. `detach` then simply carries one
     /// surface instead of two, and the detached window lays out one hole.
     ///
-    /// That second spawn is gated on the PRIMARY being live **in this registry**, which is
+    /// That second spawn is gated on the PRIMARY being live **in this registry** — the same
+    /// gate `activate` carries, and the two must stay in step — which is
     /// what keeps the whole call a no-op on an already-`Detached` tab: its surfaces are in
     /// another window, `detach` will refuse, and spawning its secondary here would leave a
     /// stray surface in a window the tab isn't showing in — with no pop-out to carry it out
@@ -772,12 +798,22 @@ impl Registry {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return Ok(false);
         };
-        // Spawn every cold pane. The primary's Result is what the caller sees (it's the one
-        // ever exercised today — nothing constructs a `secondary` yet); a secondary spawn
-        // failure doesn't block showing the tab, so it's attempted best-effort and its error
-        // discarded rather than shadowing the primary's.
+        // Spawn every cold pane. The primary's Result is what the caller sees; a secondary
+        // spawn failure doesn't block showing the tab, so it's attempted best-effort and its
+        // error discarded rather than shadowing the primary's.
+        //
+        // Gated on the primary being live **in this registry**, exactly as
+        // `ensure_spawned_by_id` gates its own second spawn — the two sites must stay in step,
+        // because they answer one question ("may this registry birth a secondary surface?") and
+        // a registry that answered it two ways is how the stray gets born. Concretely: pop out a
+        // split tab whose secondary spawn failed and the primary is `Detached` while the
+        // secondary is still `Cold`, so an ungated `activate` on that id would spawn a surface
+        // in the ORIGIN window for a tab that isn't showing there — with no pop-out left to
+        // carry it out again.
         let spawned = self.ensure_spawned(idx, PaneIdx::Primary);
-        if self.tabs[idx].secondary.is_some() {
+        if matches!(self.tabs[idx].primary.slot, TabSlot::Spawned(_))
+            && self.tabs[idx].secondary.is_some()
+        {
             let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
         }
         for (i, t) in self.tabs.iter().enumerate() {
@@ -1244,6 +1280,41 @@ mod tests {
             r.ensure_spawned_by_id("does-not-exist").is_ok(),
             "unknown id is a clean no-op"
         );
+    }
+
+    #[test]
+    fn activate_never_spawns_a_secondary_for_a_detached_tab() {
+        // The same gate `ensure_spawned_by_id` carries, asserted on the OTHER site that can birth
+        // a secondary — the two must stay in step. Reachable shape: pop out a split tab whose
+        // secondary spawn failed, so the primary is Detached and the secondary still Cold; an
+        // ungated `activate` on that id would put a surface in the ORIGIN window for a tab that
+        // isn't showing there, with no pop-out left to carry it out again.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        r.force_detached_pane("t0", PaneIdx::Primary);
+        assert!(r.activate("t0").is_ok());
+        assert!(
+            !r.is_spawned("t0"),
+            "neither pane of a Detached tab may spawn locally"
+        );
+    }
+
+    #[test]
+    fn tab_dto_carries_the_structural_split_flag_not_just_liveness() {
+        // `split` is STRUCTURE (does a secondary pane exist), `secondary_spawned` is LIVENESS.
+        // Forwarding only the second is what let a hot-reload rebuild (remove + add → unsplit)
+        // leave the chrome rendering a divider over a tab with no second pane.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        let dto = |r: &Registry| r.tab_dtos().into_iter().find(|d| d.id == "a").unwrap();
+        assert!(!dto(&r).split, "a fresh tab is unsplit");
+        r.split("a");
+        let d = dto(&r);
+        assert!(d.split, "structurally split the instant `split` runs…");
+        assert!(!d.secondary_spawned, "…even though nothing is live yet");
+        r.close_secondary("a");
+        assert!(!dto(&r).split);
     }
 
     #[test]

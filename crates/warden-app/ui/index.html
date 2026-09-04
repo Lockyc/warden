@@ -197,10 +197,12 @@
       // with no way to tell whether the AUTHORITATIVE answer (`activate_tab`'s own `res.split`)
       // had already landed for this id — so whichever of onSelect's own call or a later
       // `warden:refresh`'s `applyDto` happened to run LAST would win, and they could disagree.
-      // Written only by writers that KNOW the true answer — onSelect's `res.split`, `splitActiveTab`
-      // (`Registry::split` is infallible, so structurally true the instant it's called), and
-      // `collapseSplit` (false) — and read by EVERY `setActiveId` call, hinted or not, so all of
-      // them converge on the same value once any one of them has recorded it.
+      // Written only by writers that KNOW the true answer — every snapshot (`toComponentDto`
+      // rebuilds it from `TabDto.split`, the registry's own structural fact), onSelect's
+      // `res.split`, `splitActiveTab` (`Registry::split` is infallible, so structurally true the
+      // instant it's called), and `collapseSplit` (false) — and read by EVERY `setActiveId` call,
+      // hinted or not, so all of them converge on the same value once any one of them has
+      // recorded it.
       const splitById = new Map();
       // tab id → 'on' | 'ghost' | 'off' (probe presence), for probe-enabled tabs. The backend
       // sends these strings verbatim (they ARE chrome-core's wire values) — do not re-derive
@@ -440,6 +442,15 @@
         dto.tabs.forEach((t) => {
           if (t.detached) detached.add(t.id);
           secondarySpawnedById.set(t.id, !!t.secondary_spawned);
+          // Rebuilt from EVERY snapshot, the same way `detached` above is — `TabDto.split` is
+          // the registry's own structural answer, so a snapshot is as authoritative as
+          // `activate_tab`'s `res.split` and arrives on paths `onSelect` never runs on. Without
+          // it a hot-reload `respawn_tabs` (remove + add → the tab comes back UNSPLIT) left
+          // `splitById` stuck on `true`, rendering a divider and a permanently empty second pane
+          // over a tab with no secondary, self-healing only on the next `onSelect` for that tab
+          // — which never comes if that tab stays selected. `res.split` is now a fast path, not
+          // the sole reconciler.
+          splitById.set(t.id, !!t.split);
         });
         return {
           title: dto.title,

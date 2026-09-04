@@ -569,8 +569,10 @@ fn pop_out_tab(
     // `open_detached`'s `window.close()` never takes a live view down with it. `origin_nsw`
     // is resolved HERE, before the build, because that rollback needs it and the closure has
     // only the new window; `None` (the origin can't report an NSWindow, which is already a
-    // broken origin) costs the rollback its destination — the surfaces and their PTYs still
-    // survive into the registry below, which is the guarantee that matters.
+    // broken origin) costs the rollback its destination, so the closure refuses up front in
+    // exactly the case that would need one — see its own guard — rather than moving the
+    // primary into a window it could not move it back out of. Either way the surfaces and
+    // their PTYs survive into the registry below, which is the guarantee that matters.
     let origin_nsw = window.ns_window().ok();
     let mut surface_opt = Some(surface);
     let mut secondary_opt = secondary;
@@ -610,6 +612,20 @@ fn pop_out_tab(
                 )
             }
         };
+        // Refuse BEFORE moving anything when the rollback below has no destination: the
+        // secondary's failure arm needs `origin_nsw` to put the primary back, so with a
+        // secondary in hand and no origin NSWindow the only reachable failure is the one that
+        // strands the primary's view inside a window `open_detached` then closes. Bailing here
+        // costs nothing that isn't already lost (an origin that can't report an NSWindow is
+        // broken, and both surfaces still survive into the rollback registry below), and it
+        // buys the cheap guarantee that no branch past this point moves a view it cannot move
+        // back. Unsplit is untouched — with no secondary there is no second move to fail.
+        if origin_nsw.is_none() && secondary_opt.is_some() {
+            return Err(std::io::Error::other(
+                "origin window has no NSWindow to roll a split pop-out back into",
+            )
+            .into());
+        }
         surface_opt
             .as_mut()
             .expect("surface present during birth")
