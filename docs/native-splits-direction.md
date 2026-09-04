@@ -37,29 +37,36 @@ What that buys beyond one less parse: native scrollback and selection in the sec
 surface, and a **per-client viewport**. Shared scroll across attached clients is tmux's,
 not warden's, the moment the surface is warden's own.
 
-## Inline images: the surface is warden's, and libghostty can now do it
+## Inline images: the surface is warden's, and it already renders them
 
 An agent's own image output cannot be rendered inline in its TUI — the wall is inside the
 agent, upstream of any multiplexer (mechanism and closed upstream issues: the agentmux
 doc above). The only shape that works is **out-of-band**: a surface the agent's renderer
 does not own. warden panes are exactly that, and are a better target than a tmux popup.
 
-libghostty gained kitty graphics protocol support, which makes this a warden capability
-with no multiplexer involvement at all. Three things shape how it must be wired:
+**The capability is live now, at the current pin, with no warden code.** Verified 2026-09-04
+against the vendored `35e1a01`: a kitty graphics escape written to a warden tab renders
+inline for both PNG (`f=100`) and direct RGB (`f=24`). warden embeds Ghostty's own surface
+and renderer, which have carried the protocol all along, and the vendored `libghostty.a`
+statically links libpng. Nothing here is gated on moving the pin, and there is no image
+budget, decoder or transfer-medium wiring for warden to do — it inherits Ghostty's defaults.
 
-- **PNG decoding is an optional, runtime-swappable `sys` callback**, not a built-in —
-  libghostty keeps its no-runtime-dependency property, so the embedder supplies a decoder
-  (a Rust PNG crate, here). Without one the protocol still works for direct RGB; only PNG
-  transfers fail.
-- **The embedder default image budget is conservative** (far below the Ghostty GUI's), so
-  it must be raised deliberately rather than assumed.
-- **File-based and shared-memory transfer mediums are opt-in**, because libghostty will
-  not touch the filesystem without the embedder saying so. Enabling them is a decision
-  with a blast radius, not a default to flip.
+- **Footgun: upstream's `include/ghostty/vt/kitty_graphics.h` and `vt/sys.h` are a DIFFERENT
+  library and do not apply to warden.** They belong to **libghostty-vt**, the standalone VT
+  parser, whose kitty API is a *query* surface (placement iterator, image pixel data,
+  geometry) for an embedder writing its own renderer — and whose `sys.h` is where the
+  swappable PNG-decode callback, the conservative image budget and the opt-in file/shm
+  mediums live. warden consumes the *embedding* API (`include/ghostty.h`,
+  `ghostty_surface_*`), which carries no image symbols at all. Reading vt's headers as
+  warden's contract yields a wiring task that does not exist.
 
-This lands behind the existing rule that libghostty's embedding C API is unstable and
-pinned: the pin has to move to a rev carrying kitty graphics before any of it is
-reachable.
+**Through tmux, images transit but are not managed** (measured, same session). With
+`allow-passthrough on`, a kitty escape wrapped in tmux's DCS (`ESC P tmux; …`, inner `ESC`
+doubled) renders; the same escape unwrapped is swallowed, with the control string leaking
+into the window title. But tmux's grid has no idea the pixel region is occupied — the next
+line of text draws straight over the image. So a multiplexer hop cannot own image
+placement across scroll, reflow or redraw, which is why the out-of-band surface has to be
+warden's own rather than a tmux popup.
 
 ## Not yet
 
