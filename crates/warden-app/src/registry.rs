@@ -195,15 +195,6 @@ impl Registry {
             .is_some_and(|t| t.secondary.is_some())
     }
 
-    /// How many panes tab `id` has (1 or 2). Unknown tab = 0, so a caller can tell
-    /// "not split" from "not here" without a second lookup.
-    pub fn panes(&self, id: &str) -> usize {
-        match self.tabs.iter().find(|t| t.id == id) {
-            None => 0,
-            Some(t) => 1 + usize::from(t.secondary.is_some()),
-        }
-    }
-
     /// Any-pane, not primary-only: a tab is "spawned" if either pane is live. This is
     /// the check a future tab-row live dot needs (tab-level, not per-pane) — a split
     /// tab with only its secondary live must still read as spawned.
@@ -807,13 +798,11 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         assert!(!r.is_split("a"));
-        assert_eq!(r.panes("a"), 1);
     }
 
     #[test]
-    fn panes_of_unknown_tab_is_zero() {
+    fn is_split_of_unknown_tab_is_false() {
         let r = Registry::new(std::ptr::null_mut(), rect());
-        assert_eq!(r.panes("nope"), 0);
         assert!(!r.is_split("nope"));
     }
 
@@ -1210,19 +1199,21 @@ mod tests {
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         r.split("a");
         assert!(r.is_split("a"));
-        assert_eq!(r.panes("a"), 2);
         assert!(r.close_secondary("a"));
         assert!(!r.is_split("a"));
-        assert_eq!(r.panes("a"), 1);
     }
 
     #[test]
     fn split_twice_is_a_noop_not_a_third_pane() {
+        // "Not a third pane" is enforced by the TYPE, not this assertion — `TabEntry.secondary`
+        // is `Option<Pane>`, not a `Vec`, so a third pane is unrepresentable regardless of how
+        // many times `split` runs. What this proves is the idempotency half: a second `split`
+        // call doesn't somehow clear `secondary` back to `None`.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         r.split("a");
         r.split("a");
-        assert_eq!(r.panes("a"), 2);
+        assert!(r.is_split("a"));
     }
 
     #[test]

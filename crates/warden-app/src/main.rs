@@ -225,9 +225,9 @@ fn probe_now(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
 /// `focused` are Task 7's addition — the tab-switch path's own answer to "does this tab have a
 /// second pane, and which one has keyboard focus", the one place `Registry::activate`'s
 /// focus-preserving branch is ever checked (it's untestable in isolation — see the branch's own
-/// doc comment). Wires `Registry::is_split`/`focused_pane` (dead since Task 3; `Registry::panes`
+/// doc comment). Wires `Registry::is_split`/`focused_pane` (dead since Task 3) — `split` also
 /// short-circuits the `focused_pane` lookup below, since an unsplit tab's answer is trivially
-/// always the primary).
+/// always the primary.
 #[cfg(target_os = "macos")]
 #[derive(serde::Serialize)]
 struct ActivateResult {
@@ -260,7 +260,7 @@ fn activate_tab(
     // decide whether to arm a session-start await below. `split`/`focused` are this tab's OWN
     // layout, read under the SAME lock so they can't race a concurrent split/close. Both read
     // under the one lock.
-    let (spawned_fresh, has_probe, err, split, focused, panes) = {
+    let (spawned_fresh, has_probe, err, split, focused) = {
         let mut m = state.lock();
         match m.windows.get_mut(window.label()) {
             Some(ws) => {
@@ -279,18 +279,9 @@ fn activate_tab(
                 } else {
                     0
                 };
-                // Fix round 1: gates the refresh-push below. This asks the SAME underlying
-                // question `split` already answered (`Registry::panes(&id) > 1` and
-                // `Registry::is_split(&id)` are both `secondary.is_some()`) — a second registry
-                // scan for one fact, not two distinct ones. Kept as its own call, rather than
-                // reusing `split`, because `Registry::panes` has no OTHER production caller and a
-                // round-1 review confirmed the pre-existing dead-code gate treats a method with
-                // only `#[cfg(test)]` callers as dead; deleting it (as suggested) isn't safe
-                // either — 4 tests in registry.rs call it directly. See the fix report.
-                let panes = ws.registry.panes(&id);
-                (fresh, has_probe, err, split, focused, panes)
+                (fresh, has_probe, err, split, focused)
             }
-            None => (false, false, None, false, 0, 0),
+            None => (false, false, None, false, 0),
         }
     };
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
@@ -330,7 +321,7 @@ fn activate_tab(
     // reuses the same init_dto→emit path every other cross-cutting refresh in this file already
     // uses, rather than inventing a narrower "just this tab's secondary" payload.
     //
-    // Fix round 1 (IMPORTANT 2): gated on `panes > 1` — this used to run on EVERY activation, so
+    // Fix round 1 (IMPORTANT 2): gated on `split` — this used to run on EVERY activation, so
     // every ordinary (unsplit) tab click built a full DTO snapshot, emitted it, and drove the
     // chrome through a second `applyDto` → `sb.update()` → `setActiveId` → `reportRect` pass on
     // top of the one `onSelect` already does with THIS call's own `ActivateResult` — real IPC and
@@ -338,7 +329,11 @@ fn activate_tab(
     // only thing this push exists to correct is `secondarySpawnedById` staleness for a tab that
     // HAS a secondary; an unsplit tab's `secondarySpawnedById` entry can't go stale (there's
     // nothing there to spawn), so gating out the common case changes nothing it needs to report.
-    if panes > 1 {
+    // Fix round 2 (finding 3): reuses `split` directly rather than a second `Registry::panes`
+    // read — `Registry::panes` is deleted; it answered the identical `secondary.is_some()`
+    // question `is_split` already had in hand, and keeping it alive purely to give a lint a
+    // production call site was the wrong fix (see the fix report).
+    if split {
         if let Some(dto) = state.lock().init_dto(window.label()) {
             let _ = window.emit("warden:refresh", dto);
         }
