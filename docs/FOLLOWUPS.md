@@ -106,3 +106,22 @@ keep of "which pane was last focused" — only one of the two ways a pane gets f
 - **`macos-private-api` is now enabled** (`Cargo.toml` / `tauri.conf.json`) because windows are built at runtime and `WebviewWindowBuilder::transparent` is gated behind that feature on macOS. This uses private AppKit API, so it **bars Mac App Store distribution** — fine for the current direct-distribution target, but revisit if MAS shipping is ever wanted (would need a non-private transparency route or an opaque-window design).
 - **Global `open_on_start` default (cascading window default).** `open_on_start` is a per-`[[window]]` flag only (default true, no cascade) — there's no global toggle to flip the default so individual windows opt *in* via `open_on_start = true` instead of opting out. Per-window control already covers the "some windows start closed" need; a global default is deferred until an "open nothing by default, opt windows in" workflow is actually wanted.
 - **Decide ghostty argv passthrough.** `main.rs` (the `ghostty_init` block in `main`) forwards the full process `std::env::args()` into `ghostty_init`, so any ghostty CLI flag is injectable via warden's own argv. Decide: support passthrough (keep) vs pass a fixed `["warden"]` argv (recommended unless passthrough is a wanted feature). Also: those argv `CString` pointers are cast `*const`→`*mut c_char` for `char**` — verify ghostty treats argv as read-only, else hand it owned mutable buffers.
+
+## Native splits — two residues from the branch review (both non-behavioural today)
+
+**`activate`'s primary-liveness gate is unpinned, and the test that looks like it pins it cannot fail.**
+`Registry::activate` gates the secondary spawn on the primary being `Spawned` in this registry, mirroring
+`ensure_spawned_by_id` — without it, an `activate` on a popped-out tab whose secondary spawn failed births a
+surface in the origin window with no pop-out to carry it out. `activate_never_spawns_a_secondary_for_a_detached_tab`
+asserts the gate but passes identically against un-gated code: in the test process `shared_app()` returns null, so
+`GhosttySurface::new` fails with `AppCreateFailed` before it ever touches the null `ns_window` — which is also why
+`Registry::new(null_mut(), …)` does not segfault — and `is_spawned` is therefore false either way. **The gate is
+correct by inspection only.** Pinning it needs a fake surface behind the `TerminalSurface` seam; that seam exists
+precisely for this, and a test double is the unlock. Until then the two gate sites must be kept in step by hand,
+and the comment at each says so.
+
+**`pop_out_tab`'s origin-gone arm drops live surfaces without `close()`.** At the `attach`-failure branch, both
+`GhosttySurface`es are dropped directly — the same pattern removed from `close_secondary` in the branch review,
+which `GhosttySurface::drop` reports as `"bug: a registry path bypassed close()"` under `debug_assertions`. Reachable
+only if the origin window disappears mid-pop-out, so it costs a spurious debug line on a path that already lost its
+window. Fix is the same shape as the others: `mem::replace` + `close()` before the drop.
