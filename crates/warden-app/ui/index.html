@@ -35,13 +35,17 @@
          semantics/JS convenience (`secEl.hidden` reads) — setSplitVisible is the only place that
          ever sets either, so they cannot diverge. */
       #terminal-hole { flex: 1; background: transparent; position: relative; display: flex; }
-      /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the
-         reported hole rect (reportRect reads getBoundingClientRect()) identical whether or not
-         `.focused` is applied — only the border's COLOR changes, never the box's outer size, so
-         toggling focus can never jitter the native surface's geometry for a frame. Only visible
-         while split (a single unsplit pane needs no "which one types" marker) — Step 3's
-         discoverability requirement ("the focused pane must be visibly marked"). #4aa3e0 matches
-         chrome-core's own active-row accent bar (`--cc-active-bar`), the app's one accent color. */
+      /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the pane's
+         OUTER box identical whether or not `.focused` is applied — only the border's COLOR
+         changes, never the box's size, so toggling focus can never jitter layout for a frame.
+         Fix round 1, IMPORTANT 1: this alone does NOT make the marker visible — `reportRect`
+         (ui/index.html script) must report the CONTENT box (inset by this border), not the border
+         box `getBoundingClientRect()` returns, or the native surface — composited ABOVE this
+         webview — is sized right over the border and occludes it the instant a pane is live,
+         which is exactly when the marker matters. Only visible while split (a single unsplit pane
+         needs no "which one types" marker) — Step 3's discoverability requirement ("the focused
+         pane must be visibly marked"). #4aa3e0 matches chrome-core's own active-row accent bar
+         (`--cc-active-bar`), the app's one accent color. */
       .pane { position: relative; background: transparent; box-sizing: border-box;
         border: 1px solid transparent; }
       #terminal-hole.split .pane.focused { border-color: #4aa3e0; }
@@ -167,6 +171,17 @@
       // mousedown (focus_pane), a split (defaults to primary), and a close (resets to primary) —
       // so it can't drift from backend truth through any path this chrome doesn't also drive.
       const focusedPaneById = new Map();
+      // tab id → whether it STRUCTURALLY has a secondary pane (Registry::is_split) — distinct
+      // from `secondarySpawnedById` (LIVENESS: is that secondary actually spawned). Fix round 1,
+      // IMPORTANT 2: `setActiveId` used to derive split-visibility from the liveness proxy alone,
+      // with no way to tell whether the AUTHORITATIVE answer (`activate_tab`'s own `res.split`)
+      // had already landed for this id — so whichever of onSelect's own call or a later
+      // `warden:refresh`'s `applyDto` happened to run LAST would win, and they could disagree.
+      // Written only by writers that KNOW the true answer — onSelect's `res.split`, `splitActiveTab`
+      // (`Registry::split` is infallible, so structurally true the instant it's called), and
+      // `collapseSplit` (false) — and read by EVERY `setActiveId` call, hinted or not, so all of
+      // them converge on the same value once any one of them has recorded it.
+      const splitById = new Map();
       // tab id → 'on' | 'ghost' | 'off' (probe presence), for probe-enabled tabs. The backend
       // sends these strings verbatim (they ARE chrome-core's wire values) — do not re-derive
       // them from a boolean; presence has been 3-state since exit 3 ("recoverable") shipped.
@@ -180,16 +195,41 @@
 
       const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
 
-      // Report each VISIBLE pane's CSS rect to the native layer so its libghostty surface tracks
-      // it, by pane index (0 = primary, 1 = secondary — Task 4's `set_hole_rect` contract). The
-      // secondary is only reported while its pane is un-hidden — Rust never sees a rect for a
+      // Fix round 1, IMPORTANT 1: the rect handed to `set_hole_rect` must be the pane's CONTENT
+      // box, not its border box. `getBoundingClientRect()` returns the border box, and the native
+      // surface is sized to exactly what's reported here — so reporting the border box put the
+      // surface right over the `.focused` marker's border (see the CSS comment on `.pane`),
+      // occluding it the instant a pane went live, which is exactly when it matters. Read the
+      // ACTUAL computed border width rather than hardcoding "1px" so this can never silently
+      // drift from the CSS rule that draws it. `#empty-state`/`#empty-state-2`'s `inset: 0` are
+      // unaffected — `inset` on an absolutely-positioned child is already relative to its
+      // positioned ancestor's PADDING box (inside the border), so they already matched this
+      // content box before the native surface did.
+      function contentRect(el) {
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        const bl = parseFloat(cs.borderLeftWidth) || 0;
+        const bt = parseFloat(cs.borderTopWidth) || 0;
+        const br = parseFloat(cs.borderRightWidth) || 0;
+        const bb = parseFloat(cs.borderBottomWidth) || 0;
+        return {
+          x: r.x + bl,
+          y: r.y + bt,
+          width: Math.max(0, r.width - bl - br),
+          height: Math.max(0, r.height - bt - bb),
+        };
+      }
+
+      // Report each VISIBLE pane's CONTENT rect to the native layer so its libghostty surface
+      // tracks it, by pane index (0 = primary, 1 = secondary — Task 4's `set_hole_rect` contract).
+      // The secondary is only reported while its pane is un-hidden — Rust never sees a rect for a
       // pane the chrome isn't showing.
       function reportRect() {
-        const p = document.getElementById("pane-primary").getBoundingClientRect();
+        const p = contentRect(document.getElementById("pane-primary"));
         invokeSafe("set_hole_rect", { rect: { x: p.x, y: p.y, width: p.width, height: p.height }, pane: 0 });
         const secEl = document.getElementById("pane-secondary");
         if (!secEl.hidden) {
-          const s = secEl.getBoundingClientRect();
+          const s = contentRect(secEl);
           invokeSafe("set_hole_rect", { rect: { x: s.x, y: s.y, width: s.width, height: s.height }, pane: 1 });
         }
       }
@@ -217,18 +257,20 @@
       // `secondaryLive` is derived here, not threaded through every caller: it mirrors whatever the
       // last TabDto snapshot said for this tab's secondary pane (see `secondarySpawnedById`, set
       // alongside `spawned`/activeLive's own source in `toComponentDto`).
-      // `splitHint` is the AUTHORITATIVE answer (`activate_tab`'s own `split` field — see its Rust
-      // doc comment) for the one caller that has it: onSelect, right after activate_tab resolves.
-      // Every other caller (a hot-reload refresh, unload's neighbour-follow, the pre-resolve
-      // optimistic call) doesn't know this tab's true pane count yet, so it's left undefined and
-      // this falls back to `secondaryLive` (liveness) as the best available proxy — exact in the
-      // common case (a split's secondary spawns immediately alongside it), imprecise only in the
-      // rare case a secondary fails to spawn at all (structurally split, but never live).
+      // `splitHint`, when given, is the AUTHORITATIVE answer (`activate_tab`'s own `split` field —
+      // see its Rust doc comment) — the caller that HAS it (onSelect, right after activate_tab
+      // resolves) records it into `splitById` here. Every call — hinted or not — then reads
+      // `splitById` first and only falls back to `secondaryLive` (liveness) when that id has no
+      // recorded answer yet. Fix round 1, IMPORTANT 2: this is what makes the two writers agree
+      // regardless of arrival order — a hot-reload refresh landing before OR after onSelect's own
+      // resolution reads the SAME `splitById` entry once either has written it, instead of one
+      // writer's proxy silently overwriting the other's authoritative answer.
       function setActiveId(id, live, splitHint) {
         activeId = id;
         activeLive = !!live;
         secondaryLive = id !== null && !!secondarySpawnedById.get(id);
-        const split = splitHint !== undefined ? !!splitHint : secondaryLive;
+        if (id !== null && splitHint !== undefined) splitById.set(id, !!splitHint);
+        const split = id !== null && splitById.has(id) ? splitById.get(id) : secondaryLive;
         // THIS tab's own split state, not whatever `#terminal-hole` was left showing for the tab
         // switched away from — `setSplitVisible` is the sole authority (carried finding #1), so
         // every path that lands here (tab switch, refresh, unload's neighbour-follow) re-asserts
@@ -283,6 +325,7 @@
       // must not repaint a hole showing a different tab.
       function collapseSplit(id) {
         secondarySpawnedById.set(id, false);
+        splitById.set(id, false); // the authoritative answer, not just the liveness proxy
         focusedPaneById.set(id, 0);
         if (id === activeId) {
           secondaryLive = false; // kept in step with the map read above, not just left for the
@@ -300,6 +343,7 @@
         badges.forEach((id) => { if (!ids.has(id)) badges.delete(id); });
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
         secondarySpawnedById.forEach((_, id) => { if (!ids.has(id)) secondarySpawnedById.delete(id); });
+        splitById.forEach((_, id) => { if (!ids.has(id)) splitById.delete(id); });
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
         detached.clear();
@@ -348,8 +392,14 @@
           // is covered (a hot-reload may have respawned or dropped the selected tab's surface).
           const t = dto.tabs.find((t) => t.id === activeId);
           setActiveId(activeId, !!(t && t.spawned));
+        } else {
+          // Tabs exist but nothing is selected yet — chrome-core's own onSelect will follow and
+          // call setActiveId (which reports both holes itself). Fix round 1, cheap item 4:
+          // `setActiveId` already calls `reportRect()` via `setSplitVisible`, so a trailing call
+          // here would just repeat it on both branches above — kept only for this one case, where
+          // neither branch ran.
+          reportRect();
         }
-        reportRect();
       }
 
       // The chrome state after a tab went cold: row shows cold, and the highlight follows whichever
@@ -396,17 +446,27 @@
 
       // ⌘D / Tab ▸ Split: give the active tab a second pane. Optimistic — `Registry::split` always
       // succeeds in creating the secondary entry (Task 3), so the layout shows immediately (its
-      // own empty-state backstop covers it until `activate` finishes spawning); `split_pane` can
-      // only fail on the PRIMARY's spawn (see its doc comment), which is a pre-existing failure
-      // mode this doesn't need to special-case beyond surfacing it.
+      // own empty-state backstop covers it until `activate` finishes spawning) and `splitById` is
+      // recorded as the authoritative answer right away, not left to a later refresh.
+      //
+      // Fix round 1, cheap item 2: on a genuine `split_pane` failure — reachable only when the
+      // WINDOW itself wasn't found (see the Rust doc comment on `split_pane`'s early `?` — the
+      // "could not open the second pane" arm still means `Registry::split` ran, so the secondary
+      // genuinely exists there) — NOTHING was actually created server-side, so the optimistic
+      // split above must be undone: without this, the ✕ would call `close_pane`, get back `false`
+      // (there is no secondary to close), and never run `collapseSplit`, leaving the layout stuck
+      // split until an unrelated tab switch happened to reset it.
       async function splitActiveTab() {
         if (!activeId) return;
+        const id = activeId;
+        splitById.set(id, true);
         setSplitVisible(true);
         try {
-          await invoke("split_pane", { id: activeId });
+          await invoke("split_pane", { id });
         } catch (err) {
           console.error("warden: IPC split_pane failed", err);
           if (sb) sb.setError("⚠ " + err);
+          collapseSplit(id);
         }
       }
 
@@ -422,9 +482,14 @@
           console.error("warden: IPC focus_pane failed", err);
           return false;
         });
-        if (!ok && id === activeId) {
+        if (!ok) {
+          // Fix round 1, cheap item 3: reset the MIRROR unconditionally — if the user switched to
+          // a different tab before this refusal landed, `id`'s own entry must still correct itself
+          // (it's still wrong for a later re-select of `id`), even though there's no visible
+          // marker to repaint for it right now. Only the REPAINT is gated on `id` still being the
+          // one on screen.
           focusedPaneById.set(id, 0);
-          updateFocusMarker();
+          if (id === activeId) updateFocusMarker();
         }
       }
 
@@ -453,8 +518,8 @@
               // Focusing a tab clears its unread badge (it's now visible).
               badges.delete(id);
               sb.setAttention(id, null);
-              setActiveId(id, false); // not known live until the spawn returns
-              reportRect();
+              setActiveId(id, false); // not known live until the spawn returns; already reports
+                                       // both holes via setSplitVisible (fix round 1, cheap item 4)
               // activate_tab reports whether a surface now covers the hole, PLUS (Task 7) this
               // tab's own split/focused layout — the authoritative answer `setActiveId`'s third
               // arg exists for (see its own doc comment): this is the ONE place a tab switch's
