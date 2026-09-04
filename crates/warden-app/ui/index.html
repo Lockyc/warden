@@ -23,11 +23,28 @@
          adds `.cc-root` (opaque flex column). Width is the density-aware token, overridden inline by
          the resize controller. */
       #sidebar { width: var(--cc-sidebar-w, 240px); flex: none; }
-      #terminal-hole { flex: 1; background: transparent; position: relative; }
+      /* #terminal-hole is a flex row of at most two panes plus a divider between them. Unsplit
+         (the common case), #pane-secondary and #pane-divider are `hidden` and #pane-primary alone
+         fills the row — behaviour identical to the pre-split single hole. */
+      #terminal-hole { flex: 1; background: transparent; position: relative; display: flex; }
+      .pane { position: relative; background: transparent; }
+      #pane-primary { flex: 1 1 0; }
+      #pane-secondary { flex: 1 1 0; }
+      /* The divider carries the pane-close control, so the control is ALWAYS VISIBLE without
+         floating an ✕ over terminal content — the discoverability rule (no hover-reveal) and
+         the "don't obscure the terminal" constraint are satisfied by the same element. */
+      #pane-divider { flex: 0 0 6px; cursor: col-resize; background: rgba(255,255,255,.18);
+        display: flex; align-items: center; justify-content: center; }
+      #pane-close { width: 14px; height: 14px; line-height: 14px; text-align: center;
+        font-size: 10px; border-radius: 3px; background: rgba(0,0,0,.45); color: #fff;
+        cursor: pointer; user-select: none; }
       /* Empty-state placeholder (warden's shield mark) — shown by the controller whenever no LIVE
-         surface covers the hole (no tab selected, or the selected tab is cold), composited BEHIND
-         the native surface (so a live tab occludes it). OPAQUE. */
-      #empty-state {
+         surface covers a hole (no tab selected, or the selected tab / pane is cold), composited
+         BEHIND the native surface (so a live pane occludes it). OPAQUE — the window is transparent
+         and the terminal NSView composites ABOVE the webview, so an uncovered hole leaks the
+         desktop. #empty-state backstops #pane-primary; #empty-state-2 backstops #pane-secondary,
+         PER HOLE — see paintEmptyState. */
+      #empty-state, #empty-state-2 {
         position: absolute;
         inset: 0;
         display: none;
@@ -37,7 +54,7 @@
         user-select: none;
         -webkit-user-select: none;
       }
-      #empty-state svg { width: 160px; height: auto; opacity: 0.9; }
+      #empty-state svg, #empty-state-2 svg { width: 160px; height: auto; opacity: 0.9; }
     </style>
   </head>
   <body>
@@ -48,17 +65,39 @@
            `sidebar_drag`). -->
       <aside id="sidebar" data-tauri-drag-region></aside>
       <div id="terminal-hole">
-        <div id="empty-state">
-          <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
-            <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
-                  fill="#283034"/>
-            <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M 186 126 L 270 230 L 186 334" stroke-width="18" opacity="0.3"/>
-              <path d="M 208 152 L 270 230 L 208 308" stroke-width="20" opacity="0.55"/>
-              <path d="M 230 178 L 270 230 L 230 282" stroke-width="26" opacity="1"/>
-            </g>
-            <rect x="296" y="210" width="34" height="40" rx="7" fill="#5c676c"/>
-          </svg>
+        <div id="pane-primary" class="pane">
+          <div id="empty-state">
+            <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
+              <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
+                    fill="#283034"/>
+              <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M 186 126 L 270 230 L 186 334" stroke-width="18" opacity="0.3"/>
+                <path d="M 208 152 L 270 230 L 208 308" stroke-width="20" opacity="0.55"/>
+                <path d="M 230 178 L 270 230 L 230 282" stroke-width="26" opacity="1"/>
+              </g>
+              <rect x="296" y="210" width="34" height="40" rx="7" fill="#5c676c"/>
+            </svg>
+          </div>
+        </div>
+        <!-- Hidden when unsplit — the common case, identical to the single-hole layout. Task 7
+             wires the commands that ever un-hide these (split_pane/close_pane); this task makes
+             the layout correct once they do. -->
+        <div id="pane-divider" hidden>
+          <div id="pane-close" title="Close split">✕</div>
+        </div>
+        <div id="pane-secondary" class="pane" hidden>
+          <div id="empty-state-2">
+            <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="secondary pane empty">
+              <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
+                    fill="#283034"/>
+              <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M 186 126 L 270 230 L 186 334" stroke-width="18" opacity="0.3"/>
+                <path d="M 208 152 L 270 230 L 208 308" stroke-width="20" opacity="0.55"/>
+                <path d="M 230 178 L 270 230 L 230 282" stroke-width="26" opacity="1"/>
+              </g>
+              <rect x="296" y="210" width="34" height="40" rx="7" fill="#5c676c"/>
+            </svg>
+          </div>
         </div>
       </div>
     </div>
@@ -79,9 +118,15 @@
       let myLabel = null; // this window's Tauri label — emit_to leaks to siblings, so filter on it
       let sb = null;
       let activeId = null; // controller mirror of the active tab, for the empty-state placeholder
-      let activeLive = false; // …and whether a live surface actually covers the hole for it
+      let activeLive = false; // …and whether a live surface actually covers the PRIMARY hole for it
+      let secondaryLive = false; // …and the SECONDARY hole, when the active tab is split
       const badges = new Set(); // tab ids with an unread notification/bell badge
       const detached = new Set(); // tab ids popped out into their own window (onSelect → raise it)
+      // tab id → whether its secondary pane is live, mirrored from TabDto.secondary_spawned on
+      // every snapshot (init_tabs / warden:refresh) — the same tab-liveness payload `spawned`
+      // (primary) already rides in. setActiveId reads this by id so secondaryLive tracks the
+      // active tab without every caller having to thread a second liveness bool through.
+      const secondarySpawnedById = new Map();
       // tab id → 'on' | 'ghost' | 'off' (probe presence), for probe-enabled tabs. The backend
       // sends these strings verbatim (they ARE chrome-core's wire values) — do not re-derive
       // them from a boolean; presence has been 3-state since exit 3 ("recoverable") shipped.
@@ -95,28 +140,47 @@
 
       const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
 
-      // Report the terminal-hole's CSS rect to the native layer so the libghostty surface tracks it.
+      // Report each VISIBLE pane's CSS rect to the native layer so its libghostty surface tracks
+      // it, by pane index (0 = primary, 1 = secondary — Task 4's `set_hole_rect` contract). The
+      // secondary is only reported while its pane is un-hidden — Rust never sees a rect for a
+      // pane the chrome isn't showing.
       function reportRect() {
-        const r = document.getElementById("terminal-hole").getBoundingClientRect();
-        invokeSafe("set_hole_rect", { rect: { x: r.x, y: r.y, width: r.width, height: r.height } });
+        const p = document.getElementById("pane-primary").getBoundingClientRect();
+        invokeSafe("set_hole_rect", { rect: { x: p.x, y: p.y, width: p.width, height: p.height }, pane: 0 });
+        const secEl = document.getElementById("pane-secondary");
+        if (!secEl.hidden) {
+          const s = secEl.getBoundingClientRect();
+          invokeSafe("set_hole_rect", { rect: { x: s.x, y: s.y, width: s.width, height: s.height }, pane: 1 });
+        }
       }
 
-      // The empty-state is the opaque backstop for an UNCOVERED hole. The window is transparent and
-      // the terminal NSView composites above the webview, so the hole is filled only while a *live*
-      // surface sits in it — and "a tab is selected" is not the same thing: a tab whose lazy spawn
-      // failed stays selected but cold, and keying on selection alone left that hole uncovered,
-      // leaking the wallpaper (the very leak this element exists to stop). So key on liveness of the
-      // selected tab: no selection, or a selected-but-cold tab → paint it.
+      // The empty-state elements are the opaque backstop for an UNCOVERED hole. The window is
+      // transparent and the terminal NSView composites above the webview, so a hole is filled only
+      // while a *live* surface sits in it — and "a tab is selected" is not the same thing: a tab
+      // whose lazy spawn failed stays selected but cold, and keying on selection alone left that
+      // hole uncovered, leaking the wallpaper (the very leak these elements exist to stop).
+      //
+      // Per-hole, not per-tab: a live primary beside a COLD secondary leaves the secondary's hole
+      // uncovered, and a single tab-level backstop would leave it transparent — the exact wallpaper
+      // leak #empty-state exists to stop. So each hole is decided on its OWN pane's liveness.
       function paintEmptyState() {
-        const covered = activeId !== null && activeLive;
-        document.getElementById("empty-state").style.display = covered ? "none" : "flex";
+        const coveredP = activeId !== null && activeLive;
+        document.getElementById("empty-state").style.display = coveredP ? "none" : "flex";
+        const secEl = document.getElementById("pane-secondary");
+        const coveredS = !secEl.hidden && activeId !== null && secondaryLive;
+        document.getElementById("empty-state-2").style.display =
+          secEl.hidden || coveredS ? "none" : "flex";
       }
-      // `live` = does a surface cover the hole for this tab? Callers that can't know yet (a click,
-      // before the spawn returns) pass false; the placeholder they briefly paint is invisible anyway
-      // (any live surface composites over it), so an honest false never flickers.
+      // `live` = does a surface cover the PRIMARY hole for this tab? Callers that can't know yet (a
+      // click, before the spawn returns) pass false; the placeholder they briefly paint is invisible
+      // anyway (any live surface composites over it), so an honest false never flickers.
+      // `secondaryLive` is derived here, not threaded through every caller: it mirrors whatever the
+      // last TabDto snapshot said for this tab's secondary pane (see `secondarySpawnedById`, set
+      // alongside `spawned`/activeLive's own source in `toComponentDto`).
       function setActiveId(id, live) {
         activeId = id;
         activeLive = !!live;
+        secondaryLive = id !== null && !!secondarySpawnedById.get(id);
         paintEmptyState();
       }
 
@@ -128,10 +192,14 @@
         const ids = new Set(dto.tabs.map((t) => t.id));
         badges.forEach((id) => { if (!ids.has(id)) badges.delete(id); });
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
+        secondarySpawnedById.forEach((_, id) => { if (!ids.has(id)) secondarySpawnedById.delete(id); });
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
         detached.clear();
-        dto.tabs.forEach((t) => { if (t.detached) detached.add(t.id); });
+        dto.tabs.forEach((t) => {
+          if (t.detached) detached.add(t.id);
+          secondarySpawnedById.set(t.id, !!t.secondary_spawned);
+        });
         return {
           title: dto.title,
           colour: dto.colour ?? null,
@@ -416,10 +484,66 @@
         }
       });
 
-      // The terminal surface tracks the hole: re-report on any layout change, and re-clamp the
-      // sidebar on window resize (a shrunk window must pull an over-wide sidebar back in).
+      // The terminal surfaces track their holes: re-report on any layout change, and re-clamp the
+      // sidebar on window resize (a shrunk window must pull an over-wide sidebar back in). Observes
+      // both panes, not #terminal-hole itself — un-hiding #pane-secondary (a split) changes ITS box
+      // without necessarily changing the hole's, and that's exactly the transition that must
+      // re-report both holes (see reportRect).
       const ro = new ResizeObserver(() => reportRect());
-      ro.observe(document.getElementById("terminal-hole"));
+      ro.observe(document.getElementById("pane-primary"));
+      ro.observe(document.getElementById("pane-secondary"));
+
+      // Divider drag-to-resize: chrome owns split geometry — Rust never sees a ratio, only the
+      // rects reportRect derives from these panes' live flex-basis. Same mousedown→mousemove→mouseup
+      // shape as chrome-core's sidebar resize handle (ui/chrome-core.js's `_initResize`), including
+      // the same fix for the same footgun: the terminal NSView composites ABOVE this webview, so a
+      // mouseup released over either pane's live surface never reaches this window at all — onMove
+      // unsticks itself the instant `e.buttons` reads 0 rather than trusting `mouseup` to fire.
+      (function () {
+        const divider = document.getElementById("pane-divider");
+        const primaryEl = document.getElementById("pane-primary");
+        const secondaryEl = document.getElementById("pane-secondary");
+        let dragging = false;
+        function setSplit(frac) {
+          const f = Math.max(0.1, Math.min(0.9, frac));
+          primaryEl.style.flex = f + " 1 0";
+          secondaryEl.style.flex = (1 - f) + " 1 0";
+          reportRect();
+        }
+        function onMove(e) {
+          if (!dragging) return;
+          if (e.buttons === 0) { end(); return; }
+          const hole = document.getElementById("terminal-hole").getBoundingClientRect();
+          const dividerW = divider.getBoundingClientRect().width;
+          const usable = hole.width - dividerW;
+          if (usable > 0) setSplit((e.clientX - hole.x) / usable);
+        }
+        function end() {
+          if (!dragging) return;
+          dragging = false;
+          document.body.style.cursor = "";
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", end);
+          window.removeEventListener("blur", end);
+        }
+        divider.addEventListener("mousedown", (e) => {
+          if (e.target.closest("#pane-close")) return; // the close control has its own handler
+          e.preventDefault();
+          dragging = true;
+          document.body.style.cursor = "col-resize";
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", end);
+          window.addEventListener("blur", end);
+        });
+        // Closing the split is Task 7's `close_pane` command (persisted via Task 8) — this wires
+        // the call site so the always-visible control (never a hover-reveal, never floating over
+        // terminal content — see the CSS comment above) works the moment that command lands.
+        document.getElementById("pane-close").addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (activeId) invokeSafe("close_pane", { id: activeId });
+        });
+      })();
+
       window.addEventListener("resize", () => {
         const sidebar = document.getElementById("sidebar");
         const cur = parseInt(getComputedStyle(sidebar).width, 10);

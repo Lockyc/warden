@@ -1112,6 +1112,7 @@ mod tests {
             tree: false,
             tree_path: Vec::new(),
             detached: false,
+            secondary_spawned: false,
             presence: None,
         }
     }

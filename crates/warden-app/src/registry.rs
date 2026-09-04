@@ -23,6 +23,12 @@ pub struct TabDto {
     /// (`Registry::detach`) — it is present here as a placeholder only, has no
     /// local surface, and `spawned` is always false alongside this.
     pub detached: bool,
+    /// Whether this tab's SECONDARY pane is live — `false` both when the tab is unsplit (no
+    /// secondary exists) and when a split's secondary is cold. `spawned` above is primary-only
+    /// (see `tab_dtos`), so the chrome needs this alongside it to decide the second hole's own
+    /// backstop: a live primary beside a cold secondary must still cover the secondary's hole
+    /// with `#empty-state-2`, or it leaks the desktop through the transparent window.
+    pub secondary_spawned: bool,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -357,6 +363,7 @@ impl Registry {
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
                 detached: matches!(t.primary.slot, TabSlot::Detached),
+                secondary_spawned: self.is_pane_spawned(&t.id, PaneIdx::Secondary),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
