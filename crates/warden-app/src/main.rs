@@ -593,10 +593,16 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
     probe::bump_all(&app);
 }
 
-/// Update the calling window's active-surface frame from a web-coordinate rect.
+/// Update the calling window's pane frame from a web-coordinate rect. `pane` is the hole's
+/// pane index: `None`/`Some(0)` = primary, `Some(1)` = secondary.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, rect: RectArg) {
+fn set_hole_rect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    rect: RectArg,
+    pane: Option<usize>,
+) {
     // Reject non-finite values before they reach NSView or libghostty.
     if !rect.x.is_finite()
         || !rect.y.is_finite()
@@ -629,14 +635,22 @@ fn set_hole_rect(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
         view_h,
     );
 
+    let which = match pane {
+        Some(1) => crate::registry::PaneIdx::Secondary,
+        // None is the single-hole caller (shell-core's detach.html when it declares no
+        // panes, and any older chrome). Anything unexpected is the primary rather than an
+        // error: a bad index must not leave a hole unpositioned and transparent.
+        _ => crate::registry::PaneIdx::Primary,
+    };
+
     let mut m = state.lock();
     if let Some(ws) = m.windows.get_mut(window.label()) {
-        ws.registry.set_active_frame(view_rect);
+        ws.registry.set_pane_frame(which, view_rect);
     } else {
         // A detached (popped-out) window lives outside `windows`; its banner-shell page
         // (`detach.html`) reports its own hole rect via this same command, so route it to
         // the detached surface. No-op if the label is neither a real nor a detached window.
-        m.set_detached_frame(window.label(), view_rect);
+        m.set_detached_frame(window.label(), which, view_rect);
     }
 }
 

@@ -121,7 +121,11 @@ pub struct Registry {
     ns_window: *mut c_void,
     tabs: Vec<TabEntry>,
     active: Option<String>,
+    /// Last reported rect per pane. Two, not one, because a cold pane that spawns later must
+    /// be born at ITS hole's size — using the other pane's rect makes a freshly-spawned
+    /// secondary render at the primary's width for one frame.
     last_rect: PixelRect,
+    last_rect_secondary: PixelRect,
 }
 
 // SAFETY: `ns_window` is a raw `NSWindow *` that is only ever read on the main
@@ -136,6 +140,7 @@ impl Registry {
             tabs: Vec::new(),
             active: None,
             last_rect: initial_rect,
+            last_rect_secondary: initial_rect,
         }
     }
 
@@ -462,6 +467,14 @@ impl Registry {
         self.active.as_deref()
     }
 
+    /// The last reported rect for whichever hole pane `which` occupies.
+    fn rect_for(&self, which: PaneIdx) -> PixelRect {
+        match which {
+            PaneIdx::Primary => self.last_rect,
+            PaneIdx::Secondary => self.last_rect_secondary,
+        }
+    }
+
     /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
     /// never-opened or previously unloaded — spawns a fresh surface from its spec.
     /// A spawn failure leaves the tab cold and returns the error (the caller
@@ -479,7 +492,11 @@ impl Registry {
             return Ok(false);
         }
         let spec = pane.spec.clone();
-        let s = GhosttySurface::new(self.ns_window, self.last_rect, &spec)?;
+        // Born at ITS OWN hole's rect, not the primary's — see the doc comment on
+        // `last_rect_secondary`. A freshly-spawned secondary that started at the primary's
+        // rect would render at the wrong width for one frame.
+        let rect = self.rect_for(which);
+        let s = GhosttySurface::new(self.ns_window, rect, &spec)?;
         self.tabs[idx]
             .pane_mut(which)
             .expect("pane existed above")
@@ -636,12 +653,15 @@ impl Registry {
         if self.tabs[idx].secondary.is_some() {
             let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
         }
-        let rect = self.last_rect;
         for (i, t) in self.tabs.iter().enumerate() {
             for (which, pane) in t.panes_indexed() {
                 if let TabSlot::Spawned(s) = &pane.slot {
                     if i == idx {
-                        s.set_frame(rect);
+                        // Each pane gets ITS OWN hole's last-reported rect, not a shared
+                        // one — see `rect_for`'s doc comment. Applying the primary's rect
+                        // to the secondary here would immediately undo the size
+                        // `ensure_spawned` just gave a freshly-spawned secondary above.
+                        s.set_frame(self.rect_for(which));
                         s.show();
                         // Show every pane of the active tab, but focus only the one
                         // `focused` names — carried finding from Task 2's review: this
@@ -660,17 +680,27 @@ impl Registry {
         spawned
     }
 
-    /// Update the geometry of the active surface; store for hidden surfaces
-    /// to receive on their next `activate`.
-    pub fn set_active_frame(&mut self, rect: PixelRect) {
-        self.last_rect = rect;
-        if let Some(active) = self.active.clone() {
-            if let Some(t) = self.tabs.iter().find(|t| t.id == active) {
-                if let TabSlot::Spawned(s) = &t.primary.slot {
+    /// Apply a hole's rect to the pane that occupies it, and remember it for later spawns.
+    pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) {
+        match which {
+            PaneIdx::Primary => self.last_rect = rect,
+            PaneIdx::Secondary => self.last_rect_secondary = rect,
+        }
+        let Some(active) = self.active.clone() else {
+            return;
+        };
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == active) {
+            if let Some(p) = t.pane_mut(which) {
+                if let TabSlot::Spawned(s) = &p.slot {
                     s.set_frame(rect);
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn last_rect_for_test(&self, which: PaneIdx) -> PixelRect {
+        self.rect_for(which)
     }
 
     /// Remove a tab; close its surface if spawned.
@@ -1282,5 +1312,21 @@ mod tests {
                 "panes_indexed's PaneIdx must resolve back to the SAME pane via TabEntry::pane"
             );
         }
+    }
+
+    // --- per-pane geometry (Task 4) -------------------------------------------
+
+    #[test]
+    fn a_pane_rect_is_remembered_for_later_spawns() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        let wide = PixelRect {
+            x: 1.0,
+            y: 2.0,
+            width: 300.0,
+            height: 400.0,
+        };
+        r.set_pane_frame(PaneIdx::Primary, wide);
+        assert_eq!(r.last_rect_for_test(PaneIdx::Primary), wide);
     }
 }
