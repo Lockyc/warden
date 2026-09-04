@@ -128,6 +128,15 @@ is distinguished from a clean non-zero exit and logged via `eprintln!` (still "n
 diagnosable) so a misconfigured probe isn't a silent permanently-hollow dot. Keep warden
 tmux/amux-agnostic — the command is the user's, warden only reads its exit code.
 
+**Probe cost is CPU, and it is the probe command's — not the scheduler's.** A probe is ~92% CPU
+(mostly `sys`: it is `fork`/`exec` work, not a blocking socket wait), so a sweep's peak scales with
+pool width, and a burst of the canonical `amux --probe` shows up as a periodic kernel-time spike on
+the E-cores — the background QoS puts it there deliberately. `probe_interval` cannot bound any of
+this: the burst rate is fixed, so raising the floor only widens the gaps between bursts. The levers
+are the probe command's own cost and the tab count. `probe.rs::MAX_PROBE_CONCURRENCY` carries the
+measured per-probe decomposition and where the time actually goes; the fix for a slow canonical
+probe belongs in amux, which owns the session naming and socket layout.
+
 ## The scheduler is the single probe driver — never reintroduce a one-shot reprobe
 
 Every trigger pushes a window into a fast burst via a `bump`, and **none** call
