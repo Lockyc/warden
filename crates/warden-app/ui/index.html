@@ -227,6 +227,18 @@
           return Number.isFinite(r) && r > 0.05 && r < 0.95 ? { ratio: r } : { ratio: 0.5 };
         } catch (e) { return null; }
       }
+      // The divider ratio a pop-out of `tabId` should carry, or null for an unsplit tab.
+      // Pop-out is whole-tab, so a split tab's second pane goes with it and the detached
+      // window has to lay out two holes at the SAME ratio the tab has here — otherwise the
+      // terminal visibly jumps width the moment it pops out. Read from the persisted split
+      // (written both when the split is created and when a drag ends), which is the only
+      // ratio that outlives the drag handler's own closure. The backend treats this as
+      // advisory: it decides the hole count from the surfaces it actually detached, so a
+      // stale or absent value can only cost the right WIDTH, never a hole with no terminal.
+      function popOutRatio(tabId) {
+        const p = loadSplit(tabId);
+        return p ? p.ratio : null;
+      }
 
       // Drop keys for tabs this window no longer has. Without it a scanned-project tab that
       // disappears leaves its key behind forever, and a later tab reusing the id inherits a
@@ -667,7 +679,7 @@
               // detaches the surface, opens a detached window, reparents into it, and pushes a
               // refresh so this row re-renders detached. chrome-core only offers this control on a
               // not-already-detached tab.
-              invokeSafe("pop_out_tab", { id });
+              invokeSafe("pop_out_tab", { id, ratio: popOutRatio(id) });
             },
             onPopIn(id) {
               // Dock a popped-out tab back in (the ↩ overlay on a detached row's tile). Closing
@@ -792,7 +804,7 @@
       // tab that's already detached (its window is elsewhere — nothing to pop out).
       listen("warden:pop-out-tab", (e) => {
         if (!forMe(e)) return;
-        if (activeId && !detached.has(activeId)) invokeSafe("pop_out_tab", { id: activeId });
+        if (activeId && !detached.has(activeId)) invokeSafe("pop_out_tab", { id: activeId, ratio: popOutRatio(activeId) });
       });
 
       // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).
