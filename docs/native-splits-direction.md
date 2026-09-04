@@ -68,8 +68,14 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - The divider drags smoothly and both terminals track it live, not just on release.
 - The ✕ on the divider closes the split; the primary fills the whole hole with no
   uncovered region at any point during the collapse.
-- Typing `exit` in the scratch (secondary) pane collapses the split on its own, same as the
-  ✕, while the tab stays live.
+- Typing `exit` in the scratch (secondary) pane of a **docked** tab collapses the split on
+  its own, same as the ✕, while the tab stays live. Only docked: the routing walks
+  `WindowManager::locate_surface`, which searches `self.windows` and never `self.detached`,
+  so a scratch pane exiting inside a **popped-out** window is not routed anywhere — the
+  split stays open with libghostty's "Process exited" overlay left live in it. Recover by
+  closing the detached window (both panes return to the origin). Not yet fixed: the fix is
+  to give the detached surfaces the same routing, which is a change to how `detached`
+  entries are searched rather than to splits.
 - The ratio survives an app restart (persisted in `localStorage`, keyed per tab).
 - Popping out an unsplit tab is unchanged — one hole, no `panes` in the detach payload.
 - Popping out a split tab carries both panes into the detached window at the same ratio.
@@ -84,10 +90,10 @@ only by eye. Each step below is written to actually fail if the feature regresse
   panes come live again, and confirm the accent border is **still visible** with a real
   prompt showing underneath it.
 
-Also expect a look change, not a leak: every live terminal now paints against an always-on
-opaque per-pane ground (`--pane-ground`), so a terminal configured with a translucent
-background reads against that ground rather than the desktop wallpaper behind the window.
-That is deliberate (see the backstop footgun in `CLAUDE.md`).
+Expect no look change to a live terminal: each surface's own render layer is already opaque
+(`#0e1516`, `surface/ghostty.rs::new`), so it is never the pane ground a terminal composites
+against. The always-on `--pane-ground` backstops only what no surface covers — the 1px focus
+border ring, and a hole with no live surface in it (see the backstop footgun in `CLAUDE.md`).
 
 ## Inline images: the surface is warden's, and it already renders them
 

@@ -559,10 +559,15 @@ impl WindowManager {
     /// touching the tab's own dot/highlight.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
-        let Some((label, tab, _visible)) = state.lock().locate_surface(surface_id) else {
+        let mut lock = state.lock();
+        // The WINDOW lookup only — its tab id is deliberately discarded. Resolving the tab twice
+        // (once here, once from the window's own registry below) meant emitting `warden:tab-exited`
+        // for one answer while unloading the other; they cannot disagree today, and collapsing to
+        // the registry's `(tab_id, which)` as the single answer is what keeps it that way. One
+        // lock is held across both, so the window set can't change between them either.
+        let Some((label, _, _)) = lock.locate_surface(surface_id) else {
             return;
         };
-        let mut lock = state.lock();
         let Some(ws) = lock.windows.get_mut(&label) else {
             return;
         };
@@ -594,7 +599,7 @@ impl WindowManager {
         let _ = app.emit_to(
             label.as_str(),
             "warden:tab-exited",
-            serde_json::json!({ "label": label, "id": tab, "newActive": new_active }),
+            serde_json::json!({ "label": label, "id": tab_id, "newActive": new_active }),
         );
     }
 
@@ -1169,6 +1174,7 @@ mod tests {
             tree_path: Vec::new(),
             detached: false,
             secondary_spawned: false,
+            split: false,
             presence: None,
         }
     }
