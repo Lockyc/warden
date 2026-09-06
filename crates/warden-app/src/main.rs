@@ -462,6 +462,20 @@ fn split_ratio(ratio: Option<f64>) -> f64 {
     }
 }
 
+/// The two hole ratios a split pop-out asks the detach page for, in the page's own
+/// left-to-right order. `primary` is the PRIMARY's share (what the chrome's `ratio` carries),
+/// and `mirrored` (a `side = "left"` split — `PaneIdx::hole`) puts the secondary's share
+/// first, so the popped-out tab keeps the side its config declared rather than opening
+/// primary-left. The pair sums to the whole hole either way.
+#[cfg(target_os = "macos")]
+fn hole_ratios(primary: f64, mirrored: bool) -> Vec<f64> {
+    if mirrored {
+        vec![1.0 - primary, primary]
+    } else {
+        vec![primary, 1.0 - primary]
+    }
+}
+
 /// Pop tab `id` out of the calling window into its own detached window, preserving the live
 /// terminal(s) (surface + PTY). The tab stays present in the origin's sidebar as a `Detached`
 /// placeholder (rendered with the ⤢ mark) until the detached window closes, at which point
@@ -495,7 +509,7 @@ fn pop_out_tab(
 
     // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
     // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, secondary, spec, token) = {
+    let (surface, secondary, secondary_left, spec, token) = {
         let mut m = state.lock();
         let ws = m
             .windows
@@ -515,12 +529,18 @@ fn pop_out_tab(
             .ok_or_else(|| "tab is not available to pop out".to_string())?;
         let title = ws.registry.tab_title(&id).unwrap_or_else(|| id.clone());
         let colour = ws.colour.clone();
+        // The side is the registry's (config) fact, not the chrome's: the docked chrome
+        // derives `.secondary-left` from the same `split_layout`, so the two agree by
+        // construction, and a runtime split has no side (never mirrored).
+        let secondary_left = ws.registry.split_side(&id) == Some(warden_config::SplitSide::Left);
         // Two holes iff two surfaces actually came back. Keyed on the surfaces, not on
         // `is_split`: a split tab whose secondary was cold detaches with one surface, and a
         // second hole with nothing behind it is a transparent leak straight to the desktop.
+        // Hole order is the page's left-to-right order, so a left-side split lists the
+        // secondary's share first (`hole_ratios`) — `secondary_left` alone decides that here
+        // because a secondary is in hand (the same `mirrored` `DetachedSurface` will report).
         let panes = if secondary.is_some() {
-            let r = split_ratio(ratio);
-            vec![r, 1.0 - r]
+            hole_ratios(split_ratio(ratio), secondary_left)
         } else {
             // The unsplit case, which is every tab that has never been split: empty, so the
             // page lays out one undivided hole and shell-core omits `panes` from the payload
@@ -535,7 +555,7 @@ fn pop_out_tab(
             panes,
         };
         let token = crate::plan::detach_window_token(&origin_label, &id);
-        (surface, secondary, spec, token)
+        (surface, secondary, secondary_left, spec, token)
     };
 
     // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
@@ -564,9 +584,11 @@ fn pop_out_tab(
     let build = shell_core::detach::open_detached(&app, &token, &spec, "warden", |win, size| {
         let nsw = win.ns_window()?;
         let hole_h = (size.height - DETACHED_BANNER_H).max(0.0);
-        // One hole, or the two the page divides by the same ratio `spec.panes` carries. Both
-        // are corrected by `detach.html`'s own `set_hole_rect` on load; these only keep the
-        // first frame from being visibly wrong.
+        // One hole, or the two the page divides by the same ratios `spec.panes` carries —
+        // laid out by HOLE (left-to-right, the page's order) and then handed to the pane each
+        // hole belongs to, so a left-side split's primary is born in the RIGHT hole, the way
+        // the page will report it. Both are corrected by `detach.html`'s own `set_hole_rect`
+        // on load; these only keep the first frame from being visibly wrong.
         let (primary_rect, secondary_rect) = match secondary_opt.is_some() {
             false => (
                 crate::surface::PixelRect {
@@ -578,22 +600,27 @@ fn pop_out_tab(
                 None,
             ),
             true => {
-                let r = split_ratio(ratio);
+                let ratios = hole_ratios(split_ratio(ratio), secondary_left);
                 let avail = (size.width - DETACHED_DIVIDER_W).max(0.0);
-                let left = avail * r;
-                (
+                let left_w = avail * ratios[0];
+                let hole_rects = [
                     crate::surface::PixelRect {
                         x: 0.0,
                         y: 0.0,
-                        width: left,
+                        width: left_w,
                         height: hole_h,
                     },
-                    Some(crate::surface::PixelRect {
-                        x: left + DETACHED_DIVIDER_W,
+                    crate::surface::PixelRect {
+                        x: left_w + DETACHED_DIVIDER_W,
                         y: 0.0,
-                        width: avail - left,
+                        width: avail - left_w,
                         height: hole_h,
-                    }),
+                    },
+                ];
+                use crate::registry::PaneIdx;
+                (
+                    hole_rects[PaneIdx::Primary.hole(secondary_left)],
+                    Some(hole_rects[PaneIdx::Secondary.hole(secondary_left)]),
                 )
             }
         };
@@ -678,6 +705,7 @@ fn pop_out_tab(
             manager::DetachedSurface {
                 surface,
                 secondary,
+                secondary_left,
                 origin_label: origin_label.clone(),
                 tab_id: id.clone(),
             },
@@ -905,18 +933,23 @@ fn set_hole_rect(
     );
 
     // None is the single-hole caller (shell-core's detach.html when it declares no panes, and
-    // any older chrome); anything unexpected floors to the primary (`from_index`) rather than
-    // erroring, so a bad index can't leave a hole unpositioned and transparent.
-    let which = crate::registry::PaneIdx::from_index(pane.unwrap_or(0));
+    // any older chrome); anything unexpected floors to the primary (`from_index`/`from_hole`)
+    // rather than erroring, so a bad index can't leave a hole unpositioned and transparent.
+    let hole = pane.unwrap_or(0);
 
     let mut m = state.lock();
     if let Some(ws) = m.windows.get_mut(window.label()) {
-        ws.registry.set_pane_frame(which, view_rect);
+        // The docked chrome's index IS the pane (`reportRect`'s 0 = primary, 1 = secondary,
+        // whichever side the CSS draws them on).
+        ws.registry
+            .set_pane_frame(crate::registry::PaneIdx::from_index(hole), view_rect);
     } else {
         // A detached (popped-out) window lives outside `windows`; its banner-shell page
         // (`detach.html`) reports its own hole rect via this same command, so route it to
-        // the detached surface. No-op if the label is neither a real nor a detached window.
-        m.set_detached_frame(window.label(), which, view_rect);
+        // the detached surface — by HOLE, which that window resolves to a pane itself (a
+        // left-side split's first hole is the secondary). No-op if the label is neither a
+        // real nor a detached window.
+        m.set_detached_frame(window.label(), hole, view_rect);
     }
 }
 
@@ -1573,6 +1606,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hole_ratios_put_the_secondary_first_only_when_mirrored() {
+        // Hole order is the detach page's left-to-right order; `primary` is the primary's
+        // share. A right-side split (and a runtime one) lists it first; a left-side split
+        // lists the secondary's share first, so the popped-out tab keeps its config's side.
+        assert_eq!(hole_ratios(0.3, false), vec![0.3, 0.7]);
+        assert_eq!(hole_ratios(0.3, true), vec![0.7, 0.3]);
+        for mirrored in [false, true] {
+            let v = hole_ratios(0.42, mirrored);
+            assert!(
+                (v[0] + v[1] - 1.0).abs() < 1e-9,
+                "must sum to the whole hole"
+            );
+            // The primary's own hole carries the primary's share, whichever side it sits.
+            use crate::registry::PaneIdx;
+            assert_eq!(v[PaneIdx::Primary.hole(mirrored)], 0.42);
+            assert_eq!(v[PaneIdx::Secondary.hole(mirrored)], 1.0 - 0.42);
+        }
+    }
 
     #[test]
     fn split_ratio_falls_back_and_clamps_to_the_draggable_band() {
