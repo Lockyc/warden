@@ -1,5 +1,5 @@
 //! Hand-written bindings to the libghostty embedding C API, transcribed from
-//! vendor/ghostty.h at the pinned commit. The API is officially unstable —
+//! the xcframework's `Headers/ghostty.h` at the pinned commit. The API is officially unstable —
 //! keep this module minimal and isolated; nothing else in the crate calls C.
 #![allow(non_camel_case_types, dead_code)]
 

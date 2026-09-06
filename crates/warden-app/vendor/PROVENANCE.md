@@ -8,7 +8,7 @@ links:
 
 # Vendored libghostty
 
-`GhosttyKit.xcframework` (macOS slice only) + `ghostty.h` + `resources/` are
+`GhosttyKit.xcframework` (macOS slice only, its `Headers/ghostty.h` included) + `resources/` are
 **[Ghostty](https://github.com/ghostty-org/ghostty) compiled from a pinned, unmodified upstream
 commit** by our own CI: **[github.com/lockyc/libghostty-build](https://github.com/lockyc/libghostty-build)**.
 Ghostty is MIT-licensed; the notice travels with the compiled bytes in `LICENSE-ghostty` (this
