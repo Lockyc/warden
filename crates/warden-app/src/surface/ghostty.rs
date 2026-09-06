@@ -330,13 +330,13 @@ unsafe extern "C" fn write_clipboard_cb(
     pb.clearContents();
     pb.setString_forType(&NSString::from_str(text), NSPasteboardTypeString);
 }
-/// libghostty asks the app to close a surface — for warden, that IS a child exit. On a normal
-/// exit `Surface.childExited` prints its "Process exited. Press any key to close the terminal."
-/// overlay and then calls this; libghostty has done its part and is waiting on ours. (An
-/// *abnormal* exit — runtime under `abnormal-command-exit-runtime`, which a user config may set
-/// to 0 so that path never fires — goes through `SHOW_CHILD_EXITED` in `action_cb` instead; both
-/// land on the same `ChildExited`.) A no-op here is exactly the stuck overlay: every ordinary
-/// `exit` left a dead pane on screen, and only the abnormal path ever unloaded a tab.
+/// libghostty asks the app to close a surface — for warden, that IS a child exit, reached only as
+/// the FALLBACK: `Surface.childExited` (pinned source) first offers every exit, normal or abnormal,
+/// as the `SHOW_CHILD_EXITED` action, which `action_cb` takes and unloads on at once. Only if the
+/// app declines it does libghostty print "Process exited. Press any key to close the terminal."
+/// and, on that key, call this. Wired to the same `ChildExited` so a declined action (a tag the
+/// decoder doesn't know) still ends the pane rather than stranding the overlay — but if this is
+/// the path that fires, the action match is broken; fix that, don't lean on this.
 ///
 /// `userdata` is the surface's own host view (set in `new`) — the only identity this callback
 /// carries; its `surface` ivar is the handle the app layer routes on. `process_alive == true` is
