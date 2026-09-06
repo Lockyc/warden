@@ -178,7 +178,8 @@ pub struct WindowState {
 /// Pop-out is **whole-tab**, so a split tab brings its second pane along: `secondary` is
 /// `Some` exactly when `Registry::detach` handed back a live second surface. The detached
 /// window then lays out two holes and `set_detached_frame` routes each hole's rect to its
-/// own surface.
+/// own surface — through [`DetachedSurface::mirrored`], since a `side = "left"` split puts
+/// the secondary in the FIRST hole (the docked layout, carried out; see `PaneIdx::hole`).
 ///
 /// These live in `WindowManager::detached`, **separate from `windows`**, so hot-reload
 /// `reconcile` (which only walks `windows`) never sees them and can't close or duplicate
@@ -223,8 +224,22 @@ pub struct DetachedSurface {
     /// unsplit tab (and for a split tab whose secondary was still cold — nothing live to
     /// carry, so the window opens with one hole rather than one it can't fill).
     pub secondary: Option<GhosttySurface>,
+    /// The tab's config split declares `side = "left"` — its second pane sits BEFORE the
+    /// primary, docked and popped out alike. `false` for a right-side split, a runtime (⌘D)
+    /// split (no `side`, always right) and an unsplit tab. Read only through [`Self::mirrored`].
+    pub secondary_left: bool,
     pub origin_label: String,
     pub tab_id: String,
+}
+
+impl DetachedSurface {
+    /// Whether this window's holes are laid out secondary-first: a left-side split with its
+    /// second pane still live. Once the secondary is gone the one remaining hole is the
+    /// primary's whatever the side was, so this is keyed on `secondary`'s presence, not just
+    /// the flag — the `mirrored` argument every `PaneIdx::hole`/`from_hole` call here passes.
+    pub fn mirrored(&self) -> bool {
+        self.secondary_left && self.secondary.is_some()
+    }
 }
 
 pub struct WindowManager {
@@ -658,6 +673,7 @@ impl WindowManager {
             }
             crate::registry::PaneIdx::Primary => {
                 let DetachedSurface {
+                    secondary_left: _,
                     surface,
                     secondary,
                     origin_label,
@@ -708,8 +724,14 @@ impl WindowManager {
             let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
                 return;
             };
+            // The page's ring is per HOLE, not per pane — a left-side split's primary is
+            // its second hole.
+            let hole = match lock.detached.get(&dlabel) {
+                Some(ds) => which.hole(ds.mirrored()),
+                None => return,
+            };
             drop(lock);
-            let _ = shell_core::detach::set_focused_hole(app, &dlabel, which.index());
+            let _ = shell_core::detach::set_focused_hole(app, &dlabel, hole);
             return;
         };
         let Some(ws) = lock.windows.get_mut(&label) else {
@@ -818,22 +840,24 @@ impl WindowManager {
     /// `windows`, so the ordinary registry path can't reach it). No-op if `label` isn't a
     /// live detached window.
     ///
-    /// `which` names the hole the rect came from, mirroring the ordinary registry path's
-    /// per-pane routing. A single-hole detached window's page omits `pane` entirely, which
-    /// `set_hole_rect` reads as `Primary` — so an unsplit pop-out lands here exactly as it
-    /// did before there were panes at all. A `Secondary` rect for a window that carries no
-    /// second surface is dropped rather than applied to the primary: it can only mean the
-    /// page and this map disagree about how many panes there are, and re-pointing the one
-    /// live surface at the other hole would move the terminal the user is typing in.
-    pub fn set_detached_frame(
-        &mut self,
-        label: &str,
-        which: crate::registry::PaneIdx,
-        rect: PixelRect,
-    ) {
+    /// `hole` is the page's own index for the slice the rect came from — left-to-right
+    /// position, which is all shell-core's detach page knows — resolved to a pane here via
+    /// `PaneIdx::from_hole` under this window's [`DetachedSurface::mirrored`], so a
+    /// left-side split's first hole lands on the SECONDARY. A single-hole detached window's
+    /// page omits `pane` entirely, which `set_hole_rect` reads as hole 0 — the primary, once
+    /// the secondary is gone — so an unsplit pop-out lands here exactly as it did before there
+    /// were panes at all. A rect resolving to `Secondary` for a window that carries no second
+    /// surface is dropped rather than applied to the primary: it can only mean the page and
+    /// this map disagree about how many panes there are, and re-pointing the one live
+    /// surface at the other hole would move the terminal the user is typing in. (Between
+    /// `close_detached_secondary` taking the secondary and the page's `set_panes` relayout, a
+    /// mirrored window's in-flight hole-0 report resolves to the primary for one frame — the
+    /// relayout's own report corrects it, same as a docked collapse.)
+    pub fn set_detached_frame(&mut self, label: &str, hole: usize, rect: PixelRect) {
         let Some(ds) = self.detached.get_mut(label) else {
             return;
         };
+        let which = crate::registry::PaneIdx::from_hole(hole, ds.mirrored());
         match which {
             crate::registry::PaneIdx::Primary => ds.surface.set_frame(rect),
             crate::registry::PaneIdx::Secondary => {
@@ -874,6 +898,7 @@ impl WindowManager {
         }
 
         let DetachedSurface {
+            secondary_left: _,
             mut surface,
             mut secondary,
             origin_label,

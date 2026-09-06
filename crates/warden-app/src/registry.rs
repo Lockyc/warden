@@ -114,6 +114,36 @@ impl PaneIdx {
             PaneIdx::Primary
         }
     }
+
+    /// The **hole** (left-to-right slice of a detached window's content) this pane occupies —
+    /// the one home for the hole↔pane mapping, the detached counterpart of
+    /// [`index`](Self::index). shell-core's detach page knows holes only by position
+    /// (`DetachSpec.panes` order = report/focus index), and it must not learn what a "split"
+    /// is; so a `side = "left"` split — which the docked chrome draws with the secondary
+    /// FIRST (`.secondary-left`, a flex `order` over an untouched pane→index contract) — is
+    /// mirrored here, on warden's side of the seam: `mirrored` → the secondary is hole 0
+    /// and the primary hole 1. Unmirrored (secondary on the right, or a single hole) the
+    /// hole is the pane's ordinary `index`. Without this the popped-out tab lays out
+    /// primary-left whatever side the config declared.
+    pub fn hole(self, mirrored: bool) -> usize {
+        match (self, mirrored) {
+            (PaneIdx::Primary, true) => 1,
+            (PaneIdx::Secondary, true) => 0,
+            (which, false) => which.index(),
+        }
+    }
+    /// Inverse of [`hole`](Self::hole): which pane a detached window's hole `i` reports for.
+    /// Same floor as [`from_index`](Self::from_index) — anything past the second hole is the
+    /// primary, never an error — so a stale rect for a hole that has since collapsed can't
+    /// leave a surface unpositioned.
+    pub fn from_hole(i: usize, mirrored: bool) -> Self {
+        match (i, mirrored) {
+            (0, true) => PaneIdx::Secondary,
+            (1, true) => PaneIdx::Primary,
+            (i, false) => PaneIdx::from_index(i),
+            (_, true) => PaneIdx::Primary,
+        }
+    }
 }
 
 /// One terminal within a tab: its spawn recipe plus its live/cold/detached slot.
@@ -568,6 +598,19 @@ impl Registry {
             t.primary.spec.tree = tree;
             t.primary.spec.tree_path = tree_path;
         }
+    }
+
+    /// Which side tab `id`'s CONFIG split puts its second pane on, or `None` for an unknown
+    /// tab, an unsplit one, or a runtime (⌘D) split — that one has no `side` and always sits
+    /// on the right, exactly as the docked chrome draws it (`.secondary-left` keys off
+    /// `split_layout`, which a runtime split never carries). Pop-out reads this to decide
+    /// whether the detached window's holes are mirrored (`PaneIdx::hole`).
+    pub fn split_side(&self, id: &str) -> Option<warden_config::SplitSide> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.primary.spec.split.as_ref())
+            .map(|s| s.side)
     }
 
     /// The display title of tab `id` (for a detached window's banner), or `None` if unknown.
@@ -1852,6 +1895,46 @@ mod tests {
         assert_eq!(PaneIdx::from_index(0), PaneIdx::Primary);
         assert_eq!(PaneIdx::from_index(1), PaneIdx::Secondary);
         assert_eq!(PaneIdx::from_index(7), PaneIdx::Primary, "never an error");
+    }
+
+    #[test]
+    fn hole_mapping_is_identity_unless_mirrored() {
+        // Unmirrored (secondary on the right, or one hole): hole i IS pane i.
+        assert_eq!(PaneIdx::Primary.hole(false), 0);
+        assert_eq!(PaneIdx::Secondary.hole(false), 1);
+        assert_eq!(PaneIdx::from_hole(0, false), PaneIdx::Primary);
+        assert_eq!(PaneIdx::from_hole(1, false), PaneIdx::Secondary);
+        assert_eq!(
+            PaneIdx::from_hole(7, false),
+            PaneIdx::Primary,
+            "never an error"
+        );
+        // Mirrored (a `side = "left"` split): the secondary takes the FIRST hole.
+        assert_eq!(PaneIdx::Primary.hole(true), 1);
+        assert_eq!(PaneIdx::Secondary.hole(true), 0);
+        assert_eq!(PaneIdx::from_hole(0, true), PaneIdx::Secondary);
+        assert_eq!(PaneIdx::from_hole(1, true), PaneIdx::Primary);
+        assert_eq!(
+            PaneIdx::from_hole(7, true),
+            PaneIdx::Primary,
+            "never an error"
+        );
+        for which in [PaneIdx::Primary, PaneIdx::Secondary] {
+            for mirrored in [false, true] {
+                assert_eq!(PaneIdx::from_hole(which.hole(mirrored), mirrored), which);
+            }
+        }
+    }
+
+    #[test]
+    fn split_side_reports_the_config_split_only() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_split("a", None), false).unwrap(); // side = Left
+        r.add(&spec("b", "/tmp/b"), false).unwrap();
+        r.split("b"); // a runtime ⌘D split has no side — it is never mirrored
+        assert_eq!(r.split_side("a"), Some(warden_config::SplitSide::Left));
+        assert_eq!(r.split_side("b"), None);
+        assert_eq!(r.split_side("nope"), None);
     }
 
     #[test]
