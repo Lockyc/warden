@@ -16,12 +16,15 @@
          value that already lives somewhere. */
       :root { --pane-ground: #0e1516; }
       /* The pane's corner radius = the WINDOW's own corner radius (16pt, measured on macOS 26),
-         so a pane at the window's edge curves with the window instead of its ring running
-         square into a corner the window has already rounded off. All four corners, so each pane
-         reads as one rounded card against the sidebar and the divider, not a shape that changes
-         with where it sits. The native surface's render layer carries the concentric inner
-         radius (`SURFACE_CORNER_RADIUS` in surface/ghostty.rs — this less the 1px border);
-         change both together. shell-core's detach.html mirrors it as `--hole-radius`. */
+         applied ONLY to a pane corner that IS a window corner, so the ring curves with the window
+         there instead of running square into a corner the window has already rounded off — and
+         stays square everywhere else (at the divider, against the sidebar), where a curve would
+         open a notch of ground the window has not rounded. Which corners qualify is a per-pane
+         rule below (`#pane-primary` / `#pane-secondary`). The native surface's render layer
+         carries the concentric inner radius (`SURFACE_CORNER_RADIUS` in surface/ghostty.rs — this
+         less the 1px border) and decides the same corners from its own frame vs the window
+         (`apply_corner_mask`); change the radius in both together. shell-core's detach.html
+         mirrors it as `--hole-radius`. */
       :root { --pane-radius: 16px; }
       html, body {
         margin: 0;
@@ -47,11 +50,12 @@
          `hidden` attribute being present). `hidden` is kept in lockstep with `.split` purely for
          semantics/JS convenience (`secEl.hidden` reads) — setSplitVisible is the only place that
          ever sets either, so they cannot diverge. */
-      /* The hole paints the pane ground itself: the panes are rounded (`--pane-radius`), so the
-         notch outside each corner is the hole's own canvas — transparent, it would be four
-         slivers of wallpaper per pane. Same always-on-ground ruling as `.pane`/`#empty-state`,
-         one box further out again. `overflow: hidden` clips the focused pane's halo — see
-         `.pane.focused`. */
+      /* The hole paints the pane ground itself: a pane's window corners are rounded
+         (`--pane-radius`), so the notch outside each is the hole's own canvas. The window's own
+         corner mask trims exactly that notch today, but the ground is on regardless — the same
+         always-on-ground ruling as `.pane`/`#empty-state`, one box further out again, so a
+         corner that is rounded but not masked (a radius mismatch, a future edge) can never leak
+         wallpaper. `overflow: hidden` clips the focused pane's halo — see `.pane.focused`. */
       #terminal-hole { flex: 1; background: var(--pane-ground); position: relative; display: flex;
         overflow: hidden; }
       /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the pane's
@@ -99,7 +103,18 @@
          box, so a square-cornered child can never paint over the ring's curve; it does not clip
          the pane's own `box-shadow` halo (that is outside the box, clipped by #terminal-hole). */
       .pane { position: relative; background: var(--pane-ground); box-sizing: border-box;
-        border: 1px solid transparent; border-radius: var(--pane-radius); overflow: hidden; }
+        border: 1px solid transparent; overflow: hidden; }
+      /* WHICH corners round (see `--pane-radius`): in the docked window the hole's TOP is the
+         window's top (Overlay titlebar — nothing sits above the hole), its RIGHT is the window's
+         right, and its LEFT is the sidebar, so the only pane corners that are window corners are
+         the two RIGHT corners of the RIGHTMOST pane. Rightmost = the primary, except when a split
+         puts the secondary on the right (`side = "right"`, i.e. `.split` without
+         `.secondary-left`) — then the secondary takes them and the primary goes square. Every
+         other corner stays 0 (the `.pane` default). */
+      #pane-primary { border-radius: 0 var(--pane-radius) var(--pane-radius) 0; }
+      #terminal-hole.split:not(.secondary-left) #pane-primary { border-radius: 0; }
+      #terminal-hole.split:not(.secondary-left) #pane-secondary {
+        border-radius: 0 var(--pane-radius) var(--pane-radius) 0; }
       #terminal-hole.split .pane.focused { z-index: 1;
         --ring: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62);
         border-color: var(--ring); box-shadow: 0 0 6px var(--ring); }
