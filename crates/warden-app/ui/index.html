@@ -70,28 +70,27 @@
       #pane-primary { flex: 1 1 0; }
       #pane-secondary { flex: 1 1 0; display: none; }
       #terminal-hole.split #pane-secondary { display: block; }
-      /* The divider carries the pane-close control, so the control is ALWAYS VISIBLE without
-         floating an ✕ over terminal content — the discoverability rule (no hover-reveal) and
-         the "don't obscure the terminal" constraint are satisfied by the same element.
-         OPAQUE background — fix round 1, IMPORTANT 1: this 6px column is its own box, painted
-         directly on the (transparent) webview canvas — it sits BETWEEN the two panes, not over
-         either one's backstop, so the original rgba(255,255,255,.18) blended straight through
-         to the desktop wallpaper behind the window, a faint but real leak even with the divider
-         correctly hidden the rest of the time. #393f40 is a flat, fully opaque neutral in the
-         same register as the app's dark chrome (close to what that translucent white read as
-         against a dark backdrop), with no transparency left to blend with anything behind it. */
-      #pane-divider { flex: 0 0 6px; cursor: col-resize; background: #393f40;
-        display: none; align-items: center; justify-content: center; }
-      #terminal-hole.split #pane-divider { display: flex; }
+      /* The divider is a 1px line inside a 5px grab strip: 2px of pane ground either side of
+         the line, all OPAQUE. This column is its own box, painted directly on the (transparent)
+         webview canvas — it sits BETWEEN the two panes, not over either one's backstop — so a
+         translucent colour here blends straight through to the desktop wallpaper behind the
+         window (the original rgba(255,255,255,.18) was a faint but real leak). The strip's ground
+         is `--pane-ground` (the panes' own colour, so the strip reads as the gap between two
+         terminals, not a bar) and the line is #393f40, a flat neutral in the same register as the
+         app's dark chrome. The strip is wider than the line because a 1px target cannot be
+         grabbed; the extra width is invisible by construction. No close control rides it — a
+         split ends only by the second shell exiting (`warden:pane-closed`), never from the chrome.
+         (Same values, same reasoning, as shell-core's `.divider` in the detached page.) */
+      #pane-divider { flex: 0 0 5px; cursor: col-resize; display: none;
+        background: linear-gradient(to right, var(--pane-ground) 2px, #393f40 2px, #393f40 3px,
+          var(--pane-ground) 3px); }
+      #terminal-hole.split #pane-divider { display: block; }
       /* A config split with `side = "left"` puts the SECOND pane first. Flex `order` only —
          the DOM order (primary, divider, secondary) and the pane→index contract
          (`reportRect`'s 0 = primary, 1 = secondary) are untouched, so every rect, focus and
          close path stays index-based. Toggled by setSplitVisible alongside `.split`. */
       #terminal-hole.secondary-left #pane-secondary { order: -2; }
       #terminal-hole.secondary-left #pane-divider { order: -1; }
-      #pane-close { width: 14px; height: 14px; line-height: 14px; text-align: center;
-        font-size: 10px; border-radius: 3px; background: rgba(0,0,0,.45); color: #fff;
-        cursor: pointer; user-select: none; }
       /* Empty-state — the opaque backstop for a hole with no live surface. The window is
          transparent and the terminal NSView composites ABOVE the webview, so an uncovered hole
          leaks the desktop. Fix round 1, IMPORTANT 4 (a ruling, not a bug fix): the GROUND
@@ -142,11 +141,9 @@
         </div>
         <!-- Hidden when unsplit — the common case, identical to the single-hole layout — via
              setSplitVisible(false), the SOLE toggle for both `.split` and `hidden` (see the
-             CSS comment above #terminal-hole). Task 7 wires the commands that ever call it with
-             `true` (split_pane/close_pane); this task makes the layout correct once they do. -->
-        <div id="pane-divider" hidden>
-          <div id="pane-close" title="Close split">✕</div>
-        </div>
+             CSS comment above #terminal-hole). `split_pane` and a config split turn it on; the
+             second shell exiting (`warden:pane-closed`) turns it off. -->
+        <div id="pane-divider" hidden></div>
         <div id="pane-secondary" class="pane" hidden>
           <div id="empty-state-2">
             <svg id="empty-state-2-art" viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="secondary pane empty">
@@ -190,7 +187,7 @@
       // active tab without every caller having to thread a second liveness bool through.
       const secondarySpawnedById = new Map();
       // tab id → which pane last received a focus_pane() call: 0 (primary, the default — matches
-      // the Registry's own default and what `close_pane`/a fresh `split_pane` reset to) or 1
+      // the Registry's own default and what a fresh `split_pane` resets to) or 1
       // (secondary). Read by updateFocusMarker so the visible marker (Step 3) survives a tab
       // switch, mirroring how `secondarySpawnedById` mirrors backend liveness. This mirror is
       // written ONLY by the things that actually change `Registry`'s own `t.focused` — a pane
@@ -213,7 +210,7 @@
       const splitById = new Map();
       // tab id → { side, size } from `TabDto.split_layout`, rebuilt on every snapshot. Presence
       // here is the chrome's one test for "this tab's split is declared in config": such a tab
-      // never touches localStorage (the config is its memory), ✕ holds only until relaunch, and
+      // never touches localStorage (the config is its memory), a closed pane holds only until relaunch, and
       // a drag is remembered in `ratioOverride` below rather than persisted.
       const splitLayoutById = new Map();
       // tab id → the PRIMARY's dragged fraction for a config-split tab, held only while the
@@ -432,7 +429,7 @@
       // for semantics/JS convenience, so the two mechanisms can never contradict each other (fix
       // round 1, CRITICAL 1). Closing always resets the drag ratio. Its real callers: `setActiveId`
       // (every tab switch/refresh re-asserts THIS tab's own split state), `splitActiveTab`/
-      // `collapseSplit` (⌘D / the divider ✕ / a secondary exiting on its own). Never poke
+      // `collapseSplit` (⌘D / a secondary exiting on its own). Never poke
       // `hidden`/`.split` directly.
       function setSplitVisible(isSplit) {
         const hole = document.getElementById("terminal-hole");
@@ -454,8 +451,8 @@
         updateFocusMarker();
       }
 
-      // Shared tail for both ways a split ends: the divider ✕ (close_pane, a user action) and a
-      // secondary's process exiting on its own (`warden:pane-closed`, Task 7 carried finding #4).
+      // The tail for a split ending — a secondary's process exiting on its own
+      // (`warden:pane-closed`, docked or in a popped-out window) is the only way one ends.
       // Mirrors `Registry::close_secondary` always resetting focus to the primary, so
       // `focusedPaneById` can't drift from backend truth (see its own doc comment). Only touches
       // the DOM when `id` is the tab actually on screen — a background tab's split collapsing
@@ -609,9 +606,9 @@
       // WINDOW itself wasn't found (see the Rust doc comment on `split_pane`'s early `?` — the
       // "could not open the second pane" arm still means `Registry::split` ran, so the secondary
       // genuinely exists there) — NOTHING was actually created server-side, so the optimistic
-      // split above must be undone: without this, the ✕ would call `close_pane`, get back `false`
-      // (there is no secondary to close), and never run `collapseSplit`, leaving the layout stuck
-      // split until an unrelated tab switch happened to reset it.
+      // split above must be undone: without this, nothing would ever run `collapseSplit` (there
+      // is no secondary whose exit could), leaving the layout stuck split until an unrelated tab
+      // switch happened to reset it.
       async function splitActiveTab() {
         if (!activeId) return;
         const id = activeId;
@@ -714,8 +711,8 @@
                 // tab that isn't on screen — #pane-primary/#pane-secondary are the one shared
                 // element pair every tab's layout reuses.
                 const persisted = loadSplit(id);
-                // A config split the backend says is closed was ✕'d on purpose and holds until
-                // relaunch — never re-split it from here.
+                // A config split the backend says is closed had its shell exit on purpose and holds
+                // closed until relaunch — never re-split it from here.
                 if (!res.split && persisted && !splitLayoutById.has(id)) {
                   try {
                     await invoke("split_pane", { id });
@@ -969,7 +966,6 @@
           dragTabId = null;
         }
         divider.addEventListener("mousedown", (e) => {
-          if (e.target.closest("#pane-close")) return; // the close control has its own handler
           e.preventDefault();
           const usable = usableWidth();
           const p = primaryEl.getBoundingClientRect();
@@ -982,20 +978,6 @@
           window.addEventListener("mousemove", onMove);
           window.addEventListener("mouseup", end);
           window.addEventListener("blur", end);
-        });
-        // Closing the split: the always-visible control (never a hover-reveal, never floating
-        // over terminal content — see the CSS comment above). `close_pane` returns whether there
-        // was a secondary to drop — only a genuine `true` collapses the layout (`collapseSplit`
-        // is the same tail `warden:pane-closed` uses for a secondary exiting on its own).
-        document.getElementById("pane-close").addEventListener("click", async (e) => {
-          e.stopPropagation();
-          if (!activeId) return;
-          const id = activeId;
-          const had = await invoke("close_pane", { id }).catch((err) => {
-            console.error("warden: IPC close_pane failed", err);
-            return false;
-          });
-          if (had) collapseSplit(id);
         });
       })();
 
@@ -1027,8 +1009,8 @@
         splitActiveTab();
       });
 
-      // A split's secondary process exited on its own (Task 7 carried finding #4) — collapse the
-      // layout without touching the tab's own dot/highlight (unlike `warden:tab-exited`).
+      // A split's secondary process exited — the one way a split ends — collapse the layout
+      // without touching the tab's own dot/highlight (unlike `warden:tab-exited`).
       listen("warden:pane-closed", (e) => {
         if (!forMe(e)) return;
         const p = e.payload;

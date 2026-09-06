@@ -48,17 +48,18 @@ comes from one of two places, and which one decides where its geometry is rememb
   second pane runs `split.cmd` (bare shell when absent) in the tab's own shell and dir, and
   `split.size`/`split.side` seed the divider. A drag overrides the ratio **in memory only**,
   for as long as the tab's terminals are live: unload, a child exit, a hot-reload respawn
-  and an app restart all bring the config ratio back. The divider ✕ closes the pane for the
-  same lifetime — `Registry::unload` re-declares it, so it is back on the next spawn — and
-  ⌘D recreates it from config. This is the frame-less shape of an `amux --frame` tab: the
+  and an app restart all bring the config ratio back. `exit` in the second shell closes the
+  pane for the same lifetime — `Registry::unload` re-declares it, so it is back on the next
+  spawn — and ⌘D recreates it from config. This is the frame-less shape of an `amux --frame` tab: the
   scratch shell beside the agent, with warden owning the split instead of tmux.
 - **Created at runtime** (⌘D / Tab ▸ Split) on a tab with no config split. Its ratio and
   existence persist per tab in `localStorage` (keyed on window label + tab id, same home as
   sidebar width) and are restored on the next activation. A config-split tab never touches
   that store — the config is its source of truth — and a stale key for one is evicted.
 
-Both are closed from the ✕ on the divider or by the secondary shell exiting on its own, and
-resized by dragging the divider. ⌘W (unload) and ⌘⇧O (pop-out) both act on the **whole
+Both are closed only by the secondary shell exiting (`exit` in it), and resized by dragging
+the divider — a 1px line in a 5px grab strip that carries no close control, by choice: the
+one route out of a split is the shell's own end, docked or popped out alike. ⌘W (unload) and ⌘⇧O (pop-out) both act on the **whole
 tab** — unloading drops both panes to cold together, and popping out carries both surfaces
 to the detached window at the tab's current effective ratio
 (`shell_core::detach::DetachSpec.panes`, generic on purpose: a `Vec<f64>` of hole ratios,
@@ -70,7 +71,7 @@ Mechanism: `warden-config`'s `Tab.split: Option<Split>` (`resolve.rs::resolve_sp
 `side`/`size` change to `set_meta`), `Registry`'s `Pane`/`PaneIdx`/`TabSlot` model
 (`crates/warden-app/src/registry.rs` — `add` declares a config split's second pane, one
 `secondary_spec` derives its startup), `TabDto.split_layout` → the chrome's
-`splitLayoutById`/`ratioOverride`, the `split_pane`/`close_pane`/`focus_pane` commands
+`splitLayoutById`/`ratioOverride`, the `split_pane`/`focus_pane` commands
 (`main.rs`), and the chrome's pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`). The
 traps this shipped are catalogued in `CLAUDE.md`'s *Conventions & footguns* — read those
 before touching split visibility, routing, or the backstop.
@@ -85,18 +86,19 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - ⌘D splits the active tab; a second ⌘D on an already-split tab is a no-op (does not reset
   a dragged ratio).
 - The divider drags smoothly and both terminals track it live, not just on release.
-- The ✕ on the divider closes the split; the primary fills the whole hole with no
-  uncovered region at any point during the collapse.
-- Typing `exit` in the scratch (secondary) pane collapses the split on its own, same as
-  the ✕, while the tab stays live — docked, and inside a popped-out window alike (the
-  detached window drops to one hole; the origin forgets the persisted ratio).
+- The divider renders as a single 1px line with no control on it, and the cursor turns to
+  col-resize over the few pixels either side of it.
+- Typing `exit` in the scratch (secondary) pane collapses the split; the primary fills the
+  whole hole with no uncovered region at any point during the collapse, while the tab stays
+  live — docked, and inside a popped-out window alike (the detached window drops to one hole;
+  the origin forgets the persisted ratio).
 - A popped-out tab whose primary shell exits comes home cold: the detached window closes,
   the origin row goes hollow (click to respawn), and the sidebar leans to a live neighbour
   exactly as a docked exit does.
 - The ratio survives an app restart (persisted in `localStorage`, keyed per tab).
 - Popping out an unsplit tab is unchanged — one hole, no `panes` in the detach payload.
 - Popping out a split tab carries both panes into the detached window at the same ratio,
-  with the same divider, ✕ and focus ring; the ✕ closes the second pane there too, and
+  with the same divider and focus ring; `exit` in the second pane closes it there too, and
   clicking either pane moves the ring.
 - Closing the detached window returns both panes to the origin, still live.
 - **The focused-pane marker** — the accent border — follows every click, into live terminal
@@ -109,8 +111,8 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - Resizing the window keeps the 30/70 proportion.
 - Dragging the divider changes it; ⌘W then re-clicking the tab brings back 30/70. So does
   `exit` in the primary, and an app restart.
-- ✕ on a config split closes the pane; ⌘W then re-clicking the tab brings it back; ⌘D on the
-  closed split brings it back immediately, still on the left at 30%.
+- `exit` in a config split's second pane closes it; ⌘W then re-clicking the tab brings it
+  back; ⌘D on the closed split brings it back immediately, still on the left at 30%.
 - Editing `size` in the config re-lays out the live split on save without respawning either
   terminal (scrollback survives) — with no drag on record for that tab (a dragged ratio holds
   until the terminals relaunch, per the rule above). Editing `split.cmd` or removing the block

@@ -399,18 +399,6 @@ fn split_pane(
     result
 }
 
-/// Drop tab `id`'s secondary pane (the divider ✕). Returns whether there was one — the chrome
-/// only collapses the split layout (`setSplitVisible(false)`) on a genuine `true`.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn close_pane(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) -> bool {
-    let mut m = state.lock();
-    match m.windows.get_mut(window.label()) {
-        Some(ws) => ws.registry.close_secondary(&id),
-        None => false,
-    }
-}
-
 /// Point tab `id`'s keyboard focus at pane `pane` (0 = primary, 1 = secondary). Returns false
 /// (no-op) if that pane doesn't exist — e.g. a stray click on a secondary that just closed.
 #[cfg(target_os = "macos")]
@@ -426,23 +414,6 @@ fn focus_pane(
     match m.windows.get_mut(window.label()) {
         Some(ws) => ws.registry.focus_pane(&id, which),
         None => false,
-    }
-}
-
-/// The close control on a divider in a popped-out window — shell-core's `close_hole { pane }`
-/// contract, only ever invoked with 2+ holes, so `pane` names warden's secondary or nothing.
-/// Same teardown and the same chrome tail as the scratch shell exiting there.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn close_hole(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, pane: usize) {
-    use tauri::Manager;
-    if registry::PaneIdx::from_index(pane) != registry::PaneIdx::Secondary {
-        return;
-    }
-    let app = window.app_handle().clone();
-    let closed = state.lock().close_detached_secondary(window.label());
-    if let Some((origin, tab)) = closed {
-        manager::announce_detached_secondary_closed(&app, window.label(), &origin, &tab);
     }
 }
 
@@ -1343,9 +1314,7 @@ fn main() {
             activate_tab,
             unload_tab,
             split_pane,
-            close_pane,
             focus_pane,
-            close_hole,
             pop_out_tab,
             raise_popped_window,
             pop_in_tab,
