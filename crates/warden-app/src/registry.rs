@@ -81,6 +81,27 @@ pub enum PaneIdx {
     Secondary,
 }
 
+impl PaneIdx {
+    /// The wire index the chrome and `set_hole_rect` use: 0 = primary, 1 = secondary. The one
+    /// home for that mapping in both directions — every command and event that carries a pane
+    /// number goes through these two.
+    pub fn index(self) -> usize {
+        match self {
+            PaneIdx::Primary => 0,
+            PaneIdx::Secondary => 1,
+        }
+    }
+    /// Inverse of [`index`](Self::index). Anything that isn't `1` is the primary rather than an
+    /// error: a bad index must never leave a hole unpositioned or a click unrouted.
+    pub fn from_index(i: usize) -> Self {
+        if i == 1 {
+            PaneIdx::Secondary
+        } else {
+            PaneIdx::Primary
+        }
+    }
+}
+
 /// One terminal within a tab: its spawn recipe plus its live/cold/detached slot.
 struct Pane {
     spec: TabSpec,
@@ -610,19 +631,50 @@ impl Registry {
             return None;
         }
         if self.active.as_deref() == Some(id) {
-            self.active = None;
-            let live: Vec<bool> = self
-                .tabs
-                .iter()
-                .map(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
-                .collect();
-            if let Some(n) = shell_core::pick_live_neighbour(idx, &live) {
-                let next = self.tabs[n].id.clone();
-                // The neighbour is already live (pick_live_neighbour only returns
-                // spawned tabs), so this activate never spawns and can't fail.
-                let _ = self.activate(&next);
-                return Some(next);
+            return self.lean_to_live_neighbour(idx);
+        }
+        None
+    }
+
+    /// The active tab at `idx` just lost its terminal: move `active` to an already-**live**
+    /// neighbour and return its id, or `None` (hole left blank) when nothing live remains — never
+    /// spawning a cold tab just to fill the hole. Shared by `unload` and `clear_detached`, the two
+    /// ways a tab's terminal ends, so both leave the sidebar in the same place.
+    fn lean_to_live_neighbour(&mut self, idx: usize) -> Option<String> {
+        self.active = None;
+        let live: Vec<bool> = self
+            .tabs
+            .iter()
+            .map(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
+            .collect();
+        let n = shell_core::pick_live_neighbour(idx, &live)?;
+        let next = self.tabs[n].id.clone();
+        // The neighbour is already live (pick_live_neighbour only returns spawned tabs), so
+        // this activate never spawns and can't fail.
+        let _ = self.activate(&next);
+        Some(next)
+    }
+
+    /// Retire tab `id`'s `Detached` placeholders to `Cold`: its popped-out surfaces ended (the
+    /// primary's child exited inside the detached window — `WindowManager::handle_child_exited`)
+    /// and are never coming back through `attach`. A `Cold` secondary never left and is
+    /// untouched. Returns what `unload` would: the live neighbour the sidebar leans to when this
+    /// was the active tab, else `None` — the same "this tab's terminal is gone" outcome, reached
+    /// from another window.
+    pub fn clear_detached(&mut self, id: &str) -> Option<String> {
+        let idx = self.tabs.iter().position(|t| t.id == id)?;
+        let mut any = false;
+        for pane in self.tabs[idx].panes_mut() {
+            if matches!(pane.slot, TabSlot::Detached) {
+                pane.slot = TabSlot::Cold;
+                any = true;
             }
+        }
+        if !any {
+            return None;
+        }
+        if self.active.as_deref() == Some(id) {
+            return self.lean_to_live_neighbour(idx);
         }
         None
     }
@@ -769,8 +821,8 @@ impl Registry {
             return Err((primary, secondary));
         }
         t.primary.slot = TabSlot::Spawned(primary);
-        if let Some(s) = secondary {
-            match t.secondary.as_mut() {
+        match secondary {
+            Some(s) => match t.secondary.as_mut() {
                 Some(p) => p.slot = TabSlot::Spawned(s),
                 None => {
                     let spec = secondary_spec(&t.primary.spec, id);
@@ -778,6 +830,22 @@ impl Registry {
                         spec,
                         slot: TabSlot::Spawned(s),
                     });
+                }
+            },
+            None => {
+                // A secondary that left with the tab (`Detached`) and didn't come back ended
+                // while it was out — its child exited in the detached window and
+                // `handle_child_exited` closed it. Retire the pane, or the tab reads as split
+                // forever around a placeholder no `attach` will ever fill. A `Cold` secondary
+                // never left and stays: it respawns on the next `activate`. (Needs a live
+                // surface to exercise, so it is pinned by inspection only — the same test-double
+                // gap `docs/FOLLOWUPS.md` records for `activate`'s gate.)
+                if t.secondary
+                    .as_ref()
+                    .is_some_and(|p| matches!(p.slot, TabSlot::Detached))
+                {
+                    t.secondary = None;
+                    t.focused = PaneIdx::Primary;
                 }
             }
         }
@@ -1638,6 +1706,51 @@ mod tests {
     }
 
     // --- surface→tab routing (Task 5) ------------------------------------------
+
+    #[test]
+    fn pane_index_round_trips_and_floors_to_primary() {
+        assert_eq!(PaneIdx::Primary.index(), 0);
+        assert_eq!(PaneIdx::Secondary.index(), 1);
+        assert_eq!(PaneIdx::from_index(0), PaneIdx::Primary);
+        assert_eq!(PaneIdx::from_index(1), PaneIdx::Secondary);
+        assert_eq!(PaneIdx::from_index(7), PaneIdx::Primary, "never an error");
+    }
+
+    #[test]
+    fn clear_detached_returns_every_detached_pane_to_cold() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        r.force_detached_pane("t0", PaneIdx::Primary);
+        r.force_detached_pane("t0", PaneIdx::Secondary);
+        assert!(r.is_detached("t0"));
+        // Not the active tab, nothing live elsewhere → no neighbour to lean to.
+        assert_eq!(r.clear_detached("t0"), None);
+        assert!(!r.is_detached("t0"));
+        assert!(!r.is_pane_detached("t0", PaneIdx::Secondary));
+        assert!(
+            r.is_split("t0"),
+            "the split structure survives; only the slots go cold"
+        );
+        assert!(!r.is_spawned("t0"));
+    }
+
+    #[test]
+    fn clear_detached_leaves_a_cold_secondary_and_unknown_tabs_alone() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let _ = r.add(&spec("t0", "/tmp"), false);
+        r.split("t0");
+        r.force_detached_pane("t0", PaneIdx::Primary); // secondary stayed Cold (never carried)
+        assert_eq!(r.clear_detached("t0"), None);
+        assert!(!r.is_detached("t0"));
+        assert!(r.is_split("t0"));
+        assert_eq!(
+            r.clear_detached("t0"),
+            None,
+            "nothing detached any more → no-op"
+        );
+        assert_eq!(r.clear_detached("nope"), None);
+    }
 
     #[test]
     fn locate_surface_is_none_for_an_unknown_id() {

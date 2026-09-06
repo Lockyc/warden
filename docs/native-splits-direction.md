@@ -68,27 +68,20 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - The divider drags smoothly and both terminals track it live, not just on release.
 - The ✕ on the divider closes the split; the primary fills the whole hole with no
   uncovered region at any point during the collapse.
-- Typing `exit` in the scratch (secondary) pane of a **docked** tab collapses the split on
-  its own, same as the ✕, while the tab stays live. Only docked: the routing walks
-  `WindowManager::locate_surface`, which searches `self.windows` and never `self.detached`,
-  so a scratch pane exiting inside a **popped-out** window is not routed anywhere — the
-  split stays open with libghostty's "Process exited" overlay left live in it. Recover by
-  closing the detached window (both panes return to the origin). Not yet fixed: the fix is
-  to give the detached surfaces the same routing, which is a change to how `detached`
-  entries are searched rather than to splits.
+- Typing `exit` in the scratch (secondary) pane collapses the split on its own, same as
+  the ✕, while the tab stays live — docked, and inside a popped-out window alike (the
+  detached window drops to one hole; the origin forgets the persisted ratio).
+- A popped-out tab whose primary shell exits comes home cold: the detached window closes,
+  the origin row goes hollow (click to respawn), and the sidebar leans to a live neighbour
+  exactly as a docked exit does.
 - The ratio survives an app restart (persisted in `localStorage`, keyed per tab).
 - Popping out an unsplit tab is unchanged — one hole, no `panes` in the detach payload.
 - Popping out a split tab carries both panes into the detached window at the same ratio.
 - Closing the detached window returns both panes to the origin, still live.
-- **The focused-pane marker** — the accent border on whichever pane last received a click —
-  cannot be checked by splitting and clicking the second pane: ⌘D splits **and activates**
-  in one command, so the pane goes live almost immediately and a click on live terminal
-  content is consumed by the native surface before the chrome ever sees it. Sequence that
-  actually exercises the chrome's click handler: split a tab, unload/kill it so **both**
-  panes show their backstops (no live surface consuming the click), click the right pane
-  (now a click the chrome receives, moving the marker), then re-select the tab so both
-  panes come live again, and confirm the accent border is **still visible** with a real
-  prompt showing underneath it.
+- **The focused-pane marker** — the accent border — follows every click, into live terminal
+  content and onto a cold pane's backstop alike, and after switching tabs away and back it
+  is on the pane you last typed in. A popped-out tab shows no marker in its origin window
+  (its panes are elsewhere).
 
 Expect no look change to a live terminal: each surface's own render layer is already opaque
 (`#0e1516`, `surface/ghostty.rs::new`), so it is never the pane ground a terminal composites

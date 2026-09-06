@@ -74,20 +74,6 @@ Two related deferrals about the seam between warden and agentmux. Both are consc
 
 - `config_path_respects_env` (`crates/warden-config/src/load.rs`) mutates the process-global `WARDEN_CONFIG`. Cleanup is panic-safe (removed before the assert), but if a second test that reads `config_path()`/`WARDEN_CONFIG` is ever added, serialize them (e.g. `serial_test`) or refactor `config_path` to take an injected override — Rust runs tests in parallel threads. Inert today (no other reader).
 
-## Native splits — a click on a LIVE pane doesn't sync `Registry.focused` (Task 7)
-
-**This is stale bookkeeping ACROSS A TAB SWITCH, not a broken marker.** The visible focus marker
-(the `.focused` accent border, `ui/index.html`) works correctly while you're actually looking at a
-split tab — clicking either pane moves both keyboard focus and the border, live or cold, for every
-click this chrome sees (fix round 1 fixed the case that made it look broken: `reportRect` now
-reports each pane's CONTENT box, inset by the marker's border width, so the native surface no
-longer paints directly over the border). What's still gapped is the RECORD `Registry`/the chrome
-keep of "which pane was last focused" — only one of the two ways a pane gets focused updates it.
-
-`ui/index.html`'s per-pane `mousedown` handler (`focusPane`, bound on `#pane-primary`/`#pane-secondary`) is the only thing that calls the `focus_pane` command, which is the only thing that updates `Registry`'s own `t.focused` (consulted by `activate`'s re-focus branch on a later tab switch) and the chrome's own `focusedPaneById`/`splitById` mirrors. But a LIVE pane's terminal content is a separate native `NSView` composited **above** the webview (see `CLAUDE.md`'s module header), so a click that lands there is consumed by AppKit — `WardenHostView::becomeFirstResponder` (`surface/ghostty.rs`) — before it ever reaches the DOM. That already moves KEYBOARD focus correctly (typing lands in the clicked pane, because `becomeFirstResponder` is the real first-responder hook), but it does **not** call back into `Registry.focused` or tell the chrome anything. Net effect: while you're on the tab, everything stays consistent (the click just typed there, so of course the marker shows it there); the RECORD only goes stale once you switch AWAY and back — `activate`'s re-focus branch reads whatever `Registry.focused` last has, which is whatever `focus_pane` most recently set, not necessarily where the user was actually last typing.
-
-**Intended fix:** route `WardenHostView::becomeFirstResponder` through the same surface→tab lookup `notify.rs` already uses for bell/notification signals (`Registry::locate_surface` → `focus_pane`), and emit a lightweight event so the chrome's `focusedPaneById`/`splitById` mirrors stay in sync with a native click too — not just chrome-driven ones. Deferred out of Task 7 (commands + menu item) because it touches a different subsystem (`surface/ghostty.rs`'s AppKit callback + a new surface-id→tab-focus routing path, mirroring `notify::init`) rather than extending the split/close/focus commands themselves. Verify by hand until then: click directly on a live secondary's content (not the empty-state backstop, so its border correctly shows), switch tabs away and back, and check whether focus/the marker followed — that's the one case still exercising the gap.
-
 ## `warden-app` surface-embed hardening
 
 `crates/warden-app` embeds libghostty terminal surfaces in Tauri on macOS. The following hardening is deferred, by priority:

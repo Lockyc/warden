@@ -187,9 +187,10 @@
       // the Registry's own default and what `close_pane`/a fresh `split_pane` reset to) or 1
       // (secondary). Read by updateFocusMarker so the visible marker (Step 3) survives a tab
       // switch, mirroring how `secondarySpawnedById` mirrors backend liveness. This mirror is
-      // written ONLY by the actions that actually change `Registry`'s own `t.focused` — a pane
-      // mousedown (focus_pane), a split (defaults to primary), and a close (resets to primary) —
-      // so it can't drift from backend truth through any path this chrome doesn't also drive.
+      // written ONLY by the things that actually change `Registry`'s own `t.focused` — a pane
+      // mousedown (focus_pane), a split (defaults to primary), a close (resets to primary), and
+      // the backend's own `warden:pane-focused` for a native click — so it can't drift from
+      // backend truth through any path that doesn't also report here.
       const focusedPaneById = new Map();
       // tab id → whether it STRUCTURALLY has a secondary pane (Registry::is_split) — distinct
       // from `secondarySpawnedById` (LIVENESS: is that secondary actually spawned). Fix round 1,
@@ -363,7 +364,9 @@
       // the `.pane.focused` rule), so this runs unconditionally rather than every caller having
       // to know the split state.
       function updateFocusMarker() {
-        const f = activeId !== null ? focusedPaneById.get(activeId) || 0 : 0;
+        // No marker for a popped-out tab: its panes are in the detached window and these two
+        // are empty, so a ring here would point at nothing.
+        const f = activeId !== null && !detached.has(activeId) ? focusedPaneById.get(activeId) || 0 : -1;
         document.getElementById("pane-primary").classList.toggle("focused", f === 0);
         document.getElementById("pane-secondary").classList.toggle("focused", f === 1);
       }
@@ -938,25 +941,27 @@
         });
       })();
 
-      // Step 3: clicking a pane moves keyboard focus to it. Bound on the pane elements
-      // themselves (carried finding #2) — the always-present empty-state backstops sit inside
-      // them, so a handler assuming the backstop is absent would miss a click on a cold pane.
-      //
-      // KNOWN GAP: a LIVE pane's own terminal content is a separate native NSView composited
-      // ABOVE this webview (see the module header), so a click that lands there is consumed by
-      // AppKit before it ever reaches this DOM listener — libghostty's own `becomeFirstResponder`
-      // (see `ghostty.rs`) moves KEYBOARD focus correctly (typing lands in the clicked pane), but
-      // it does NOT call back into `Registry`'s own `t.focused` bookkeeping, which is what
-      // `activate` consults to decide which pane to re-focus on a later tab switch. So this
-      // handler reliably keeps `Registry`/this mirror in sync for a COLD pane (no surface on top
-      // yet — the common case right after a fresh split) and for any margin outside the live
-      // surface's exact rect, but a click squarely inside an ALREADY-LIVE pane's content can move
-      // keyboard focus there natively without this handler — or `focus_pane` — ever firing. The
-      // practical effect: switching away from a split tab and back could restore focus to the
-      // WRONG pane if the user's last click was on a live pane rather than through this handler.
-      // Confirm this by hand (see the manual steps) — it is not fixable from the chrome alone.
+      // Clicking a pane moves keyboard focus to it. Two routes, one registry record:
+      //  - a COLD pane has only its backstop on top, so the click reaches this DOM listener →
+      //    `focusPane` → the `focus_pane` command (bound on the pane elements themselves, since
+      //    the backstops sit inside them);
+      //  - a LIVE pane's terminal content is a native NSView composited ABOVE this webview, which
+      //    consumes the click before the DOM sees it — that route arrives instead as
+      //    `warden:pane-focused` (below), raised from the view's own `becomeFirstResponder`.
       document.getElementById("pane-primary").addEventListener("mousedown", () => focusPane(0));
       document.getElementById("pane-secondary").addEventListener("mousedown", () => focusPane(1));
+
+      // A pane became first responder natively — a click on live terminal content, or activate's
+      // own re-focus on a tab switch. The backend has already moved `Registry.focused`; mirror it
+      // so the marker follows. Bookkeeping lands for the id unconditionally (a later re-select
+      // reads it); only the repaint is gated on that tab being the one on screen.
+      listen("warden:pane-focused", (e) => {
+        if (!forMe(e)) return;
+        const p = e.payload;
+        if (!p || !p.id) return;
+        focusedPaneById.set(p.id, p.pane === 1 ? 1 : 0);
+        if (p.id === activeId) updateFocusMarker();
+      });
 
       // Tab ▸ Split (⌘D). emit_to leaks → forMe filter, same as every other menu-routed event.
       listen("warden:split-pane", (e) => {
