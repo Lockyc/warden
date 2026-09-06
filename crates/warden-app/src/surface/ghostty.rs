@@ -540,14 +540,14 @@ declare_class!(
         // apps/windows away and back left libghostty's focus flag stale: a surface stayed focused
         // (filled cursor) in a now-non-key window, or stayed hollow after the window came back. These
         // two observers (registered per-window in `new`, scoped via `object: window`) track key state
-        // directly. Gate on `!isHidden()` so only the active tab's view in the keyed window reacts —
-        // every tab view in a window receives the notification, but exactly one is unhidden (show()/
-        // hide()), the same disambiguation performKeyEquivalent: uses.
+        // directly. Every tab view in a window receives the notification; only the one that owns
+        // the window's keys reacts (`owns_window_keys` — the same disambiguation
+        // performKeyEquivalent: uses, so a split's two visible panes never both claim focus).
         #[method(windowDidBecomeKey:)]
         fn window_did_become_key(&self, _notification: &NSNotification) {
             let surface = self.ivars().surface.get();
             // SAFETY: notifications are delivered on the main thread.
-            if surface.is_null() || unsafe { self.isHidden() } {
+            if surface.is_null() || !unsafe { self.owns_window_keys() } {
                 return;
             }
             FOCUSED_SURFACE.store(surface, Ordering::Release);
@@ -621,16 +621,10 @@ declare_class!(
             }
 
             let surface = self.ivars().surface.get();
-            // Disambiguate sibling tab views: the hidden views in this window ALSO receive
-            // performKeyEquivalent:, but exactly one host view per window is unhidden — the
-            // active tab (show()/hide() enforce this). Gate on visibility, NOT a match against
-            // FOCUSED_SURFACE: only the key window's hierarchy receives this event, so the lone
-            // unhidden view here is the focused surface globally — even when focus arrived by a
-            // click that never ran activate() (clicking another window's terminal or sidebar).
-            // Keying the gate on activate()-set state was the bug: ⌘C/⌘V went dead in a window
-            // focused by click until a tab row was clicked.
+            // Disambiguate sibling views — every host view in the window receives this event
+            // (see `owns_window_keys` for the rule and why it is NOT a FOCUSED_SURFACE match).
             // SAFETY: performKeyEquivalent: is delivered on the main thread.
-            if surface.is_null() || unsafe { self.isHidden() } {
+            if surface.is_null() || !unsafe { self.owns_window_keys() } {
                 return objc2::runtime::Bool::NO;
             }
             // This chord proves THIS surface is the focused one. Make it the global paste/focus
@@ -822,6 +816,48 @@ struct HostIvars {
 impl WardenHostView {
     fn set_surface(&self, surface: ffi::ghostty_surface_t) {
         self.ivars().surface.set(surface);
+    }
+
+    /// Is this the ONE host view in its window that window-scoped key traffic belongs to —
+    /// `performKeyEquivalent:` (⌘-chords AND every function key: arrows, F-keys, Home/End —
+    /// AppKit routes those through the key-equivalent pass, not `keyDown:`) and the
+    /// `windowDidBecomeKey:` focus restore? Both are delivered to EVERY host view in the window,
+    /// so without a single answer the first subview in order (the primary pane) claims them.
+    ///
+    /// The rule, in two parts:
+    /// 1. Hidden views never own keys — the inactive tabs of a window (show()/hide()).
+    /// 2. Among the unhidden ones, if the window's first responder IS a host view, only that
+    ///    view owns keys. A split shows two unhidden panes; the typing one is the first
+    ///    responder (`becomeFirstResponder` keeps libghostty in step with AppKit), so this is
+    ///    exactly "the pane the user is in". The bug this replaced: the gate was visibility
+    ///    alone (written when one view per window was ever unhidden), so with a split the
+    ///    primary's view answered every arrow key first, stole libghostty focus to itself, and
+    ///    the arrow landed in the OTHER terminal — "pressing → in the left pane moves the cursor
+    ///    to the right pane" — while plain typing (`keyDown:`, first-responder-routed) stayed
+    ///    put.
+    ///
+    /// When the first responder is NOT a host view (the sidebar's webview took it on a click),
+    /// every unhidden view still qualifies, the way it always has: only the key window's
+    /// hierarchy receives these events, so an unhidden view here is the focused terminal even
+    /// when focus arrived by a click that never ran activate(). This is deliberately not a
+    /// FOCUSED_SURFACE match — that pointer can name a surface in ANOTHER window, and gating on
+    /// it once made ⌘C/⌘V dead in a window focused by click until a tab row was clicked. In a
+    /// split in that no-pane-typing state the primary wins the tie, which is also the pane
+    /// `focus_pane` defaults to.
+    ///
+    /// SAFETY: must run on the main thread (reads AppKit window state).
+    unsafe fn owns_window_keys(&self) -> bool {
+        if self.isHidden() {
+            return false;
+        }
+        let Some(window) = self.window() else { return false };
+        match window.firstResponder() {
+            Some(fr) if fr.is_kind_of::<WardenHostView>() => {
+                let me: &NSResponder = self;
+                ptr::eq(&*fr as *const NSResponder, me as *const NSResponder)
+            }
+            _ => true,
+        }
     }
 }
 
