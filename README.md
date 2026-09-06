@@ -103,6 +103,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `probe` | none | Session-presence check, run per tab (cwd = the tab's dir): exit 0 ⇒ cyan dot, exit 3 ⇒ ghost (restorable), anything else ⇒ hollow. Cascades. |
 | `probe_interval` | `5` | Slow-poll floor in seconds once a burst settles. `0` = event-driven only (still bursts on triggers, no steady poll). |
 | `kill` | none | Session-kill command, run on a two-step confirm click of the presence dot. Cascades. Only reachable on a tab that also sets `probe`. |
+| `split` | none | Give every tab a second pane. A table: `side` (`"left"`/`"right"`, default right), `size` (the second pane's share, `0.1`–`0.9`, default `0.5`), `cmd` (typed into it; absent = bare shell). Cascades as a whole table; `false` opts a level out, `true` = the default split. |
 | `format_on_save` | `false` | Rewrite this file in house style on each clean save (same formatting as `warden fmt`). |
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
 | `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
@@ -118,7 +119,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `colour` | neutral | Banner accent, `#rgb` or `#rrggbb`. |
 | `width` / `height` | `1500` / `1000` | Initial size in px; the window's saved size/position wins after the first launch. |
 | `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu. |
-| `shell` / `cmd` / `probe` / `kill` | inherited from global | Per-window overrides for every tab in it. |
+| `shell` / `cmd` / `probe` / `kill` / `split` | inherited from global | Per-window overrides for every tab in it. |
 
 **`[[window.tab]]`** (and `[[window.group.tab]]`) — one project terminal each:
 
@@ -128,7 +129,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `title` | basename of `dir` | Display label. Purely cosmetic — may repeat within a window. |
 | `id` | unset | Stable identity, needed only to disambiguate two tabs that share a `dir`. Otherwise the `dir` *is* the identity. |
 | `load_on_open` | `false` | Spawn at launch and keep running in the background. Otherwise a tab spawns lazily on first focus. |
-| `shell` / `cmd` / `probe` / `kill` | inherited from the window | Per-tab overrides. |
+| `shell` / `cmd` / `probe` / `kill` / `split` | inherited from the window | Per-tab overrides. |
 
 **`[[window.group]]`** — a labelled sidebar section:
 
@@ -143,9 +144,9 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `dir` | *required* | Dir to scan. The walk stops at each `.git` (never descends into a repo) and skips hidden dirs and symlinks. |
 | `name` | basename of `dir` | Section header for the discovered tree. |
 | `depth` | `6` | How deep to scan; must be ≥ 1. |
-| `shell` / `cmd` / `probe` / `kill` | inherited from the window | Overrides applied to every project discovered under this root. |
+| `shell` / `cmd` / `probe` / `kill` / `split` | inherited from the window | Overrides applied to every project discovered under this root. |
 
-Three rules the tables can't carry. **`cmd` is typed *into* the shell, not exec'd** — so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` resolves, and you drop back to a live prompt when it exits. **The cascading keys resolve nearest-level-wins** — global → window → tab, with `""` opting a level out of an inherited value (`cmd = ""` gives you a bare shell under a global `cmd`); projects discovered under a `[[window.root]]` have no tab level, so they cascade root → window → global instead. And **grouping is cosmetic** — `[[window.group]]` only sections the sidebar; loose `[[window.tab]]`s appear first in a headerless section.
+Three rules the tables can't carry. **`cmd` is typed *into* the shell, not exec'd** — so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` resolves, and you drop back to a live prompt when it exits. **The cascading keys resolve nearest-level-wins** — global → window → tab, with `""` opting a level out of an inherited value (`cmd = ""` gives you a bare shell under a global `cmd`); projects discovered under a `[[window.root]]` have no tab level, so they cascade root → window → global instead. `split` cascades the same way but as a **whole table** — the nearest table wins entirely, and `split = false` is its `""`. And **grouping is cosmetic** — `[[window.group]]` only sections the sidebar; loose `[[window.tab]]`s appear first in a headerless section.
 
 Everything above hot-reloads on save, `auto_update` aside.
 
