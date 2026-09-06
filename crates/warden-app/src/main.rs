@@ -272,10 +272,9 @@ fn activate_tab(
                 let split = ws.registry.is_split(&id);
                 // Trivially always the primary when unsplit — no need to ask `focused_pane` at all.
                 let focused = if split {
-                    match ws.registry.focused_pane(&id) {
-                        Some(registry::PaneIdx::Secondary) => 1,
-                        _ => 0,
-                    }
+                    ws.registry
+                        .focused_pane(&id)
+                        .map_or(0, registry::PaneIdx::index)
                 } else {
                     0
                 };
@@ -421,11 +420,7 @@ fn focus_pane(
     id: String,
     pane: usize,
 ) -> bool {
-    let which = if pane == 1 {
-        registry::PaneIdx::Secondary
-    } else {
-        registry::PaneIdx::Primary
-    };
+    let which = registry::PaneIdx::from_index(pane);
     let mut m = state.lock();
     match m.windows.get_mut(window.label()) {
         Some(ws) => ws.registry.focus_pane(&id, which),
@@ -913,13 +908,10 @@ fn set_hole_rect(
         view_h,
     );
 
-    let which = match pane {
-        Some(1) => crate::registry::PaneIdx::Secondary,
-        // None is the single-hole caller (shell-core's detach.html when it declares no
-        // panes, and any older chrome). Anything unexpected is the primary rather than an
-        // error: a bad index must not leave a hole unpositioned and transparent.
-        _ => crate::registry::PaneIdx::Primary,
-    };
+    // None is the single-hole caller (shell-core's detach.html when it declares no panes, and
+    // any older chrome); anything unexpected floors to the primary (`from_index`) rather than
+    // erroring, so a bad index can't leave a hole unpositioned and transparent.
+    let which = crate::registry::PaneIdx::from_index(pane.unwrap_or(0));
 
     let mut m = state.lock();
     if let Some(ws) = m.windows.get_mut(window.label()) {

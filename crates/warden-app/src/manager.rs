@@ -570,6 +570,17 @@ impl WindowManager {
     /// (`applyUnloaded`), which is wrong for a pane that merely closed — a SECONDARY exit instead
     /// emits the narrower `warden:pane-closed`, so the chrome collapses the split without
     /// touching the tab's own dot/highlight.
+    ///
+    /// **Popped-out surfaces route too.** A surface not found in any `windows` registry is looked
+    /// up in `detached` — the same two outcomes, reached from the detached window: a secondary
+    /// exit closes that surface and asks the shared detach page to relayout to one hole
+    /// (`shell_core::detach::set_panes`), telling the origin's chrome the same `warden:pane-closed`
+    /// the docked path would (so its persisted ratio goes too); a primary exit ends the tab — both
+    /// surfaces closed, the origin's `Detached` placeholders retired to `Cold`
+    /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told
+    /// `warden:tab-exited` exactly as if the exit had happened docked. Before this the popped-out
+    /// case was unrouted, and the "Process exited" overlay sat in the detached window until the
+    /// user closed it by hand.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
@@ -578,6 +589,114 @@ impl WindowManager {
         // for one answer while unloading the other; they cannot disagree today, and collapsing to
         // the registry's `(tab_id, which)` as the single answer is what keeps it that way. One
         // lock is held across both, so the window set can't change between them either.
+        if let Some((label, _, _)) = lock.locate_surface(surface_id) {
+            let Some(ws) = lock.windows.get_mut(&label) else {
+                return;
+            };
+            let Some((tab_id, which)) = ws.registry.locate_surface(surface_id) else {
+                return;
+            };
+            let new_active = match which {
+                crate::registry::PaneIdx::Secondary => {
+                    ws.registry.close_secondary(&tab_id);
+                    drop(lock);
+                    // `warden:tab-exited` means "the whole tab went cold" to the chrome
+                    // (`applyUnloaded`) — wrong here, since the tab and its primary are still
+                    // live. `warden:pane-closed` is the narrower signal: it tells the chrome to
+                    // collapse the split (`setSplitVisible(false)`) for exactly this tab, mirroring
+                    // what the divider ✕ (`close_pane`) already does client-side, without touching
+                    // the tab-level dot/highlight.
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        "warden:pane-closed",
+                        serde_json::json!({ "label": label, "id": tab_id }),
+                    );
+                    return;
+                }
+                crate::registry::PaneIdx::Primary => ws.registry.unload(&tab_id),
+            };
+            drop(lock);
+            // Per-window event: `emit_to` leaks to sibling webviews, so stamp the label and let the
+            // chrome filter (see CLAUDE.md).
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:tab-exited",
+                serde_json::json!({ "label": label, "id": tab_id, "newActive": new_active }),
+            );
+            return;
+        }
+
+        // Not docked anywhere: a popped-out tab's surface, held by a detached window's entry.
+        let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
+            return; // already gone (redocked or closed) — drop the signal
+        };
+        match which {
+            crate::registry::PaneIdx::Secondary => {
+                let (origin_label, tab_id) = {
+                    let ds = lock.detached.get_mut(&dlabel).expect("located above");
+                    if let Some(s) = ds.secondary.take() {
+                        s.close();
+                    }
+                    (ds.origin_label.clone(), ds.tab_id.clone())
+                };
+                drop(lock);
+                // Surface retired FIRST, then the page collapses: its immediate re-report is for
+                // pane 0 only, and `set_detached_frame` drops any stale pane-1 rect on the floor
+                // now that `secondary` is `None`.
+                let _ = shell_core::detach::set_panes(app, &dlabel, &[]);
+                let _ = app.emit_to(
+                    origin_label.as_str(),
+                    "warden:pane-closed",
+                    serde_json::json!({ "label": origin_label, "id": tab_id }),
+                );
+            }
+            crate::registry::PaneIdx::Primary => {
+                let DetachedSurface {
+                    surface,
+                    secondary,
+                    origin_label,
+                    tab_id,
+                } = lock.detached.remove(&dlabel).expect("located above");
+                // The whole tab ends, scratch pane included — the same one-dead-tab semantic the
+                // docked primary path applies via `unload`.
+                close_both(surface, secondary);
+                let new_active = lock
+                    .windows
+                    .get_mut(&origin_label)
+                    .and_then(|ws| ws.registry.clear_detached(&tab_id));
+                // The entry is gone from `detached`, so `is_empty` may now be true (origin closed
+                // while the tab was out): the home surface must appear, exactly as it would after
+                // `redock`. The window's own `Destroyed` → `redock` finds no entry and is a no-op.
+                lock.sync_empty_surface(app);
+                let dto = lock.init_dto(&origin_label);
+                drop(lock);
+                if let Some(win) = app.get_window(&dlabel) {
+                    let _ = win.close();
+                }
+                // Snapshot first (the row stops rendering detached, reads cold), then the same
+                // tail a docked exit runs.
+                if let Some(dto) = dto {
+                    let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
+                }
+                let _ = app.emit_to(
+                    origin_label.as_str(),
+                    "warden:tab-exited",
+                    serde_json::json!({ "label": origin_label, "id": tab_id, "newActive": new_active }),
+                );
+            }
+        }
+    }
+
+    /// Record that the surface `surface_id` became first responder — the user clicked into it, or
+    /// `activate` focused it — as the focused pane of its tab (`Registry::focus_pane`), and tell
+    /// that window's chrome (`warden:pane-focused`) so the focused-pane marker follows. This is
+    /// the one route that catches a click on LIVE terminal content: the native `NSView` sits above
+    /// the webview and consumes the click, so the chrome's own per-pane `mousedown` (which drives
+    /// `focus_pane` for a cold pane's backstop) never fires for it. Both routes land on the same
+    /// registry record. A surface in a detached window is ignored — that window carries no marker.
+    pub fn handle_surface_focused(app: &AppHandle, surface_id: usize) {
+        let state = app.state::<ManagerState>();
+        let mut lock = state.lock();
         let Some((label, _, _)) = lock.locate_surface(surface_id) else {
             return;
         };
@@ -587,33 +706,32 @@ impl WindowManager {
         let Some((tab_id, which)) = ws.registry.locate_surface(surface_id) else {
             return;
         };
-        let new_active = match which {
-            crate::registry::PaneIdx::Secondary => {
-                ws.registry.close_secondary(&tab_id);
-                drop(lock);
-                // `warden:tab-exited` means "the whole tab went cold" to the chrome
-                // (`applyUnloaded`) — wrong here, since the tab and its primary are still
-                // live. `warden:pane-closed` is the narrower signal: it tells the chrome to
-                // collapse the split (`setSplitVisible(false)`) for exactly this tab, mirroring
-                // what the divider ✕ (`close_pane`) already does client-side, without touching
-                // the tab-level dot/highlight.
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:pane-closed",
-                    serde_json::json!({ "label": label, "id": tab_id }),
-                );
-                return;
-            }
-            crate::registry::PaneIdx::Primary => ws.registry.unload(&tab_id),
-        };
+        if !ws.registry.focus_pane(&tab_id, which) {
+            return;
+        }
         drop(lock);
-        // Per-window event: `emit_to` leaks to sibling webviews, so stamp the label and let the
-        // chrome filter (see CLAUDE.md).
         let _ = app.emit_to(
             label.as_str(),
-            "warden:tab-exited",
-            serde_json::json!({ "label": label, "id": tab_id, "newActive": new_active }),
+            "warden:pane-focused",
+            serde_json::json!({ "label": label, "id": tab_id, "pane": which.index() }),
         );
+    }
+
+    /// Which detached window (by label) holds the surface `surface_id`, and as which pane —
+    /// the `detached` counterpart of `locate_surface`, for signals from a popped-out tab.
+    pub fn locate_detached_surface(
+        &self,
+        surface_id: usize,
+    ) -> Option<(String, crate::registry::PaneIdx)> {
+        self.detached.iter().find_map(|(label, ds)| {
+            if ds.surface.id() == surface_id {
+                Some((label.clone(), crate::registry::PaneIdx::Primary))
+            } else if ds.secondary.as_ref().is_some_and(|s| s.id() == surface_id) {
+                Some((label.clone(), crate::registry::PaneIdx::Secondary))
+            } else {
+                None
+            }
+        })
     }
 
     /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and

@@ -22,6 +22,12 @@ pub enum SurfaceSignal {
     /// libghostty's "Process exited" overlay until the app tears it down, so the app layer unloads
     /// the tab back to **cold** (its dot goes dark; focusing it respawns).
     ChildExited { exit_code: u32 },
+    /// The surface became its window's first responder — the user clicked into it, or the app
+    /// focused it. The app layer records which pane the tab is now typing in (`Registry::
+    /// focus_pane`), which `activate` re-focuses from on a later tab switch. Without it a click
+    /// on live terminal content moved keyboard focus natively while that record — and the
+    /// chrome's focused-pane marker — stayed on whichever pane the chrome last saw a click on.
+    Focused,
 }
 
 /// A signal from a specific surface. `surface_id` is the opaque surface handle as a `usize`

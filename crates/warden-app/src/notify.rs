@@ -195,6 +195,10 @@ pub fn init(app: AppHandle, debug: bool) {
         SurfaceSignal::ChildExited { .. } => {
             crate::manager::WindowManager::handle_child_exited(&app, event.surface_id)
         }
+        // Likewise a focus change is tab bookkeeping (which pane types), not attention.
+        SurfaceSignal::Focused => {
+            crate::manager::WindowManager::handle_surface_focused(&app, event.surface_id)
+        }
         _ => handle(&app, event),
     });
     setup_banners();
@@ -251,6 +255,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
             }
             // Routed to the manager before reaching here (see the sink in `init`).
             SurfaceSignal::ChildExited { exit_code } => format!("ChildExited({exit_code})"),
+            SurfaceSignal::Focused => "Focused (routed to the manager)".to_string(),
         };
         dbglog(&format!(
             "handle: signal={kind} surface={}",

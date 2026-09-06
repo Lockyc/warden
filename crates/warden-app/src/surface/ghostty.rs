@@ -482,6 +482,23 @@ declare_class!(
             if !surface.is_null() {
                 FOCUSED_SURFACE.store(surface, Ordering::Release);
                 unsafe { ffi::ghostty_surface_set_focus(surface, true) };
+                // Report the focus change to the app layer (which pane of which tab is now
+                // typing). DEFERRED to the next main-queue turn, never delivered here: this
+                // method also runs synchronously inside `focus()` → `makeFirstResponder`, which
+                // `Registry::activate` calls while the `ManagerState` lock is held — a sink that
+                // re-locked from inside it would deadlock. Same trampoline as the child-exit
+                // path, for the same reason.
+                let event = Box::new(SurfaceEvent {
+                    surface_id: surface as usize,
+                    signal: SurfaceSignal::Focused,
+                });
+                unsafe {
+                    dispatch_async_f(
+                        main_queue(),
+                        Box::into_raw(event) as *mut c_void,
+                        emit_event_trampoline,
+                    )
+                };
             }
             true
         }
