@@ -100,6 +100,10 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - Popping out a split tab carries both panes into the detached window at the same ratio,
   with the same divider and focus ring; `exit` in the second pane closes it there too, and
   clicking either pane moves the ring.
+- Popping out a `side = "left"` split keeps the second pane on the LEFT (same sides as
+  docked — `PaneIdx::hole`); dragging the divider there resizes the pane under the cursor,
+  and `exit` in the left pane collapses the window to the primary alone. A ⌘D (runtime)
+  split pops out secondary-right, as docked.
 - Closing the detached window returns both panes to the origin, still live.
 - Arrow keys pressed in the second pane stay in it: the cursor, the focus ring and the
   keystroke all remain on the pane you typed in (arrows travel a different AppKit route
@@ -169,9 +173,10 @@ tmux layer and is what makes that layer removable at all. Blocked on agentmux's 
 backend seam existing; revisit once it does — not before, or warden ends up owning chrome
 for a backend that is still the only one.
 
-**A popped-out left-side split lays out primary-left.** The detached shell lays holes out in
-payload order and reports each hole by that index, and warden maps hole *i* to pane *i*, so
-a `side = "left"` tab pops out mirrored. Unlock: a hole→pane index map on warden's
-detached-window `set_hole_rect`/focus/close handlers (a warden-side mapping — shell-core's
-generic ratio list needs no side concept). Not done now because pop-out is the rarer flow
-and the mirrored layout is fully usable.
+**A popped-out left-side split's focus ring starts on the wrong hole.** shell-core's detach
+page focuses its FIRST hole on every layout, which for a mirrored (`side = "left"`) pop-out
+is the secondary; the ring is right the moment either pane is clicked (`handle_surface_focused`
+→ `set_focused_hole`, by hole). Unlock: an initial-focus hole index in `DetachSpec`/the detach
+payload (a layout fact, generic enough for shell-core) — an emit from warden right after
+`open_detached` returns can race the page's own listener registration and be lost, so the
+payload is the reliable route. Not done now because it is one click's worth of wrongness.
