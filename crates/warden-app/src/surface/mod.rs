@@ -85,6 +85,11 @@ pub struct TabSpec {
     /// own dir name excluded). Empty for a non-tree tab, or a tree tab sitting
     /// directly under its root.
     pub tree_path: Vec<String>,
+    /// The tab's declared second pane (config `split`), or `None` for a tab that only
+    /// splits at runtime. The registry declares the pane from it at `add`, derives the
+    /// pane's startup from it (`secondary_spec`), and reports its layout to the chrome
+    /// (`TabDto.split_layout`); the surface layer itself never reads it.
+    pub split: Option<warden_config::Split>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

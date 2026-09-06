@@ -38,6 +38,7 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 group: Some(root.name.clone()),
                 probe: root.probe.clone(),
                 kill: root.kill.clone(),
+                split: root.split.clone(),
             }
         })
         .collect()
@@ -73,6 +74,7 @@ mod tests {
             startup: None,
             probe: None,
             kill: None,
+            split: None,
         };
         // Two roots pointing at the SAME dir → the same project discovered twice.
         let cfg = Config {
@@ -115,6 +117,7 @@ mod tests {
             startup: None,
             probe: None,
             kill: None,
+            split: None,
         };
         // A curated tab with no explicit `id`, whose `dir` is the SAME project the root
         // discovers: its key collapses to the normalized dir (`resolve.rs::normalize_dir_key`),
@@ -132,6 +135,7 @@ mod tests {
             group: None,
             probe: None,
             kill: None,
+            split: None,
         };
         let cfg = Config {
             windows: vec![Window {
@@ -182,6 +186,7 @@ mod tests {
             startup: Some("run".into()),
             probe: Some("p".into()),
             kill: None,
+            split: None,
         };
         let mut tabs = synthesize_tabs(&root);
         tabs.sort_by(|a, b| a.key.cmp(&b.key));

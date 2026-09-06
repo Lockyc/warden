@@ -5,6 +5,14 @@ use std::os::raw::c_void;
 /// runner substitutes `{dir}`/`{title}` into `probe_cmd` and runs it with cwd = dir.
 pub type ProbeTarget = (String, std::path::PathBuf, String, String);
 
+/// The chrome-facing shape of a declared split — the two layout facts the chrome seeds the
+/// divider from. `side` is the wire string the chrome's `.secondary-left` class keys on.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SplitLayoutDto {
+    pub side: &'static str,
+    pub size: f64,
+}
+
 /// Display descriptor sent to the web chrome.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TabDto {
@@ -40,6 +48,11 @@ pub struct TabDto {
     /// tab stays selected. Carrying it on every snapshot makes `activate_tab`'s `res.split` a
     /// fast path rather than the sole reconciler.
     pub split: bool,
+    /// The declared (config) split's layout, or `None` for a tab with no config split — a
+    /// runtime ⌘D split reports `None` here and `split: true` above. The chrome keys its
+    /// "config split vs runtime split" behaviour (where the ratio is remembered, whether ✕
+    /// is permanent) on this field's presence.
+    pub split_layout: Option<SplitLayoutDto>,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -108,9 +121,10 @@ struct Pane {
     slot: TabSlot,
 }
 
-/// The spec a tab's SECOND pane runs: the tab's own shell, in the tab's own dir, with no
-/// startup command (the frame's scratch terminal), under the distinct surface id `"<tab>::2"`
-/// that surface→tab routing (`locate_surface`) and the surface event sink key on.
+/// The spec a tab's SECOND pane runs: the tab's own shell, in the tab's own dir, with the
+/// config split's `cmd` as its startup (a runtime split has none — the frame's scratch
+/// terminal), under the distinct surface id `"<tab>::2"` that surface→tab routing
+/// (`locate_surface`) and the surface event sink key on.
 ///
 /// A free function with two callers — `split` (the ⌘D path) and `attach` (which recreates the
 /// slot when a popped-out split returns to an origin window that was closed and rebuilt from
@@ -120,7 +134,9 @@ struct Pane {
 fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
     spec.id = format!("{tab_id}::2");
-    spec.startup = None;
+    // A config split names what the second pane runs; a runtime split is a bare scratch shell.
+    spec.startup = primary.split.as_ref().and_then(|s| s.startup.clone());
+    spec.split = None;
     spec
 }
 
@@ -232,6 +248,28 @@ impl Registry {
             secondary: None,
             focused: PaneIdx::Primary,
         });
+        // A config split is STRUCTURAL: declare the pane now so the tab reads as split from its
+        // first snapshot, and spawn it alongside an eager primary so `load_on_open` brings both
+        // panes up together (a lazy tab's `activate` already spawns every cold pane).
+        if spec.split.is_some() {
+            let idx = self.tabs.len() - 1;
+            self.split(&spec.id);
+            if matches!(self.tabs[idx].primary.slot, TabSlot::Spawned(_)) {
+                match self.ensure_spawned(idx, PaneIdx::Secondary) {
+                    Ok(_) => {
+                        if let Some(TabSlot::Spawned(s)) =
+                            self.tabs[idx].secondary.as_ref().map(|p| &p.slot)
+                        {
+                            s.hide();
+                        }
+                    }
+                    Err(e) => eprintln!(
+                        "warden: secondary spawn failed for tab {:?}: {e}",
+                        spec.title
+                    ),
+                }
+            }
+        }
         err.map_or(Ok(()), Err)
     }
 
@@ -432,6 +470,13 @@ impl Registry {
                     .as_ref()
                     .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_))),
                 split: t.secondary.is_some(),
+                split_layout: t.primary.spec.split.as_ref().map(|s| SplitLayoutDto {
+                    side: match s.side {
+                        warden_config::SplitSide::Left => "left",
+                        warden_config::SplitSide::Right => "right",
+                    },
+                    size: s.size,
+                }),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
@@ -510,6 +555,7 @@ impl Registry {
             t.primary.spec.group = meta.group.clone();
             t.primary.spec.probe = meta.probe.clone();
             t.primary.spec.kill = meta.kill.clone();
+            t.primary.spec.split = meta.split.clone();
             // Tree-ness can flip on a kept tab when its group moves between a root
             // section and a plain group (curated↔discovered shadowing) — recomputed
             // upstream in `reconcile_ops`, so it must be applied here too, not left
@@ -626,6 +672,11 @@ impl Registry {
                     pane.slot = TabSlot::Detached;
                 }
             }
+        }
+        // A config split the user ✕'d comes back on relaunch — this is the relaunch. Declared
+        // cold; the next `activate` spawns it with the primary.
+        if self.tabs[idx].secondary.is_none() && self.tabs[idx].primary.spec.split.is_some() {
+            self.split(id);
         }
         if !any_closed {
             return None;
@@ -995,6 +1046,7 @@ mod tests {
             kill: None,
             tree: false,
             tree_path: Vec::new(),
+            split: None,
         }
     }
     fn spec_with_probe(id: &str, dir: &str, probe: Option<&str>) -> TabSpec {
@@ -1009,6 +1061,7 @@ mod tests {
             kill: None,
             tree: false,
             tree_path: Vec::new(),
+            split: None,
         }
     }
 
@@ -1104,6 +1157,7 @@ mod tests {
                 group: Some("backend".into()),
                 probe: Some("probe-x".into()),
                 kill: Some("kill-y".into()),
+                split: None,
             },
             true,
             vec!["gh".into(), "lockyc".into()],
@@ -1125,6 +1179,7 @@ mod tests {
                 group: None,
                 probe: None,
                 kill: None,
+                split: None,
             },
             false,
             Vec::new(),
@@ -1552,6 +1607,84 @@ mod tests {
         assert!(r.is_split("a"));
         assert!(r.close_secondary("a"));
         assert!(!r.is_split("a"));
+    }
+
+    fn spec_with_split(id: &str, cmd: Option<&str>) -> TabSpec {
+        let mut s = spec(id, "/tmp/a");
+        s.split = Some(warden_config::Split {
+            side: warden_config::SplitSide::Left,
+            size: 0.3,
+            startup: cmd.map(String::from),
+        });
+        s
+    }
+
+    #[test]
+    fn add_with_config_split_declares_the_secondary_cold_with_its_cmd() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_split("a", Some("scratch")), false)
+            .unwrap();
+        assert!(
+            r.is_split("a"),
+            "a config split is declared at add, not on first ⌘D"
+        );
+        let sec = r.secondary_spec_for_test("a").unwrap();
+        assert_eq!(sec.id, "a::2");
+        assert_eq!(sec.startup.as_deref(), Some("scratch"));
+        assert_eq!(
+            sec.split, None,
+            "the second pane carries no split of its own"
+        );
+        let dto = &r.tab_dtos()[0];
+        assert!(dto.split && !dto.secondary_spawned);
+        let layout = dto.split_layout.as_ref().unwrap();
+        assert_eq!((layout.side, layout.size), ("left", 0.3));
+    }
+
+    #[test]
+    fn config_split_closed_by_x_comes_back_on_unload() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_split("a", None), false).unwrap();
+        assert!(r.close_secondary("a"));
+        assert!(!r.is_split("a"));
+        // Nothing is live, so `unload` returns None — but it still re-declares the pane, which
+        // is what "✕ holds only until the tab is relaunched" means structurally.
+        assert_eq!(r.unload("a"), None);
+        assert!(r.is_split("a"));
+        assert_eq!(r.tab_dtos()[0].split_layout.as_ref().unwrap().size, 0.3);
+    }
+
+    #[test]
+    fn runtime_split_on_unsplit_config_has_no_layout_and_no_cmd() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.split("a");
+        assert_eq!(r.secondary_spec_for_test("a").unwrap().startup, None);
+        assert!(r.tab_dtos()[0].split_layout.is_none());
+    }
+
+    #[test]
+    fn set_meta_updates_the_split_layout_live() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_split("a", None), false).unwrap();
+        r.set_meta(
+            "a",
+            &warden_config::TabMeta {
+                group: None,
+                probe: None,
+                kill: None,
+                title: "a".into(),
+                split: Some(warden_config::Split {
+                    side: warden_config::SplitSide::Right,
+                    size: 0.6,
+                    startup: None,
+                }),
+            },
+            false,
+            Vec::new(),
+        );
+        let layout = r.tab_dtos()[0].split_layout.clone().unwrap();
+        assert_eq!((layout.side, layout.size), ("right", 0.6));
     }
 
     #[test]
