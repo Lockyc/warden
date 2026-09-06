@@ -15,17 +15,65 @@
          below) instead of each carrying their own literal — this repo's rule against restating a
          value that already lives somewhere. */
       :root { --pane-ground: #0e1516; }
-      /* The pane's corner radius = the WINDOW's own corner radius (16pt, measured on macOS 26),
-         applied ONLY to a pane corner that IS a window corner, so the ring curves with the window
+      /* The pane's corner = the WINDOW's own corner: Apple's CONTINUOUS curve (CALayer's
+         `kCACornerCurveContinuous`, SwiftUI's `.continuous`) at 16pt, measured on macOS 26 off the
+         window's own alpha mask — NOT a 16px circle. At a 1px ring the two are visibly different
+         shapes: a circle of r leaves the edge r from the corner, the continuous curve at ~1.53r
+         and it runs tighter at the diagonal, so a `border-radius` ring lifted off the window edge
+         and left a wedge of ground outside itself (shipped, then fixed). WebKit has no
+         `corner-shape`, so the curve is drawn as the three cubic Béziers per corner Apple draws
+         (`--sq` below, via `clip-path: shape()`); this token is the RADIUS those scale from.
+         Applied ONLY to a pane corner that IS a window corner, so the ring curves with the window
          there instead of running square into a corner the window has already rounded off — and
          stays square everywhere else (at the divider, against the sidebar), where a curve would
          open a notch of ground the window has not rounded. Which corners qualify is a per-pane
-         rule below (`#pane-primary` / `#pane-secondary`). The native surface's render layer
-         carries the concentric inner radius (`SURFACE_CORNER_RADIUS` in surface/ghostty.rs — this
-         less the 1px border) and decides the same corners from its own frame vs the window
-         (`apply_corner_mask`); change the radius in both together. shell-core's detach.html
-         mirrors it as `--hole-radius`. */
+         rule below (`#pane-primary` / `#pane-secondary`, setting `--c-tr`/`--c-br`). The native
+         surface's render layer carries the concentric inner curve (`SURFACE_CORNER_RADIUS` in
+         surface/ghostty.rs — this less the 1px border, with the same continuous corner curve) and
+         decides the same corners from its own frame vs the window (`apply_corner_mask`); change
+         the radius in both together. shell-core's detach.html mirrors it as `--hole-radius`. */
       :root { --pane-radius: 16px; }
+      /* `--sq`: a rect outline whose corners are Apple continuous corners of radii `--sq-tl` /
+         `--sq-tr` / `--sq-br` / `--sq-bl` (0 = square), for `clip-path: shape(var(--sq))`. The
+         constants are the control points of the three cubic Béziers Apple draws per corner
+         (dumped from SwiftUI's `RoundedRectangle(cornerRadius:style:.continuous).path(in:)`,
+         normalised to the radius; the same construction CALayer renders for the native surface,
+         so the two sides of the seam agree by construction): the curve leaves the edge 1.528665r
+         from the corner and its Béziers run tangent through 1.088490r / 0.868407r. A `var()`
+         inside a custom property is resolved on the element that COMPUTES the property, so this
+         is declared once on the selector list of every element that reads it — each gets the
+         path at its OWN `--sq-*` — rather than on :root, where it would resolve once with no
+         radii and be invalid everywhere. The ring (`.pane::before`, the OUTER outline at the
+         pane's radii) and the ground cover (`#empty-state`, the INNER outline at the radii less
+         the ring's 1px, on the padding box) are this one path at two sizes; the ring is whatever
+         shows between them. Same block, same reasoning, as shell-core's `detach.html` — the two
+         must stay identical. */
+      .pane, .pane::before, #empty-state, #empty-state-2 { --sq:
+        from 0 calc(1.528665 * var(--sq-tl)),
+        curve to calc(0.074911 * var(--sq-tl)) calc(0.631494 * var(--sq-tl)) with 0 calc(1.088490 * var(--sq-tl)) / 0 calc(0.868407 * var(--sq-tl)),
+        curve to calc(0.631494 * var(--sq-tl)) calc(0.074911 * var(--sq-tl)) with calc(0.169060 * var(--sq-tl)) calc(0.372824 * var(--sq-tl)) / calc(0.372824 * var(--sq-tl)) calc(0.169060 * var(--sq-tl)),
+        curve to calc(1.528665 * var(--sq-tl)) 0 with calc(0.868407 * var(--sq-tl)) 0 / calc(1.088490 * var(--sq-tl)) 0,
+        line to calc(100% - 1.528665 * var(--sq-tr)) 0,
+        curve to calc(100% - 0.631494 * var(--sq-tr)) calc(0.074911 * var(--sq-tr)) with calc(100% - 1.088490 * var(--sq-tr)) 0 / calc(100% - 0.868407 * var(--sq-tr)) 0,
+        curve to calc(100% - 0.074911 * var(--sq-tr)) calc(0.631494 * var(--sq-tr)) with calc(100% - 0.372824 * var(--sq-tr)) calc(0.169060 * var(--sq-tr)) / calc(100% - 0.169060 * var(--sq-tr)) calc(0.372824 * var(--sq-tr)),
+        curve to 100% calc(1.528665 * var(--sq-tr)) with 100% calc(0.868407 * var(--sq-tr)) / 100% calc(1.088490 * var(--sq-tr)),
+        line to 100% calc(100% - 1.528665 * var(--sq-br)),
+        curve to calc(100% - 0.074911 * var(--sq-br)) calc(100% - 0.631494 * var(--sq-br)) with 100% calc(100% - 1.088490 * var(--sq-br)) / 100% calc(100% - 0.868407 * var(--sq-br)),
+        curve to calc(100% - 0.631494 * var(--sq-br)) calc(100% - 0.074911 * var(--sq-br)) with calc(100% - 0.169060 * var(--sq-br)) calc(100% - 0.372824 * var(--sq-br)) / calc(100% - 0.372824 * var(--sq-br)) calc(100% - 0.169060 * var(--sq-br)),
+        curve to calc(100% - 1.528665 * var(--sq-br)) 100% with calc(100% - 0.868407 * var(--sq-br)) 100% / calc(100% - 1.088490 * var(--sq-br)) 100%,
+        line to calc(1.528665 * var(--sq-bl)) 100%,
+        curve to calc(0.631494 * var(--sq-bl)) calc(100% - 0.074911 * var(--sq-bl)) with calc(1.088490 * var(--sq-bl)) 100% / calc(0.868407 * var(--sq-bl)) 100%,
+        curve to calc(0.074911 * var(--sq-bl)) calc(100% - 0.631494 * var(--sq-bl)) with calc(0.372824 * var(--sq-bl)) calc(100% - 0.169060 * var(--sq-bl)) / calc(0.169060 * var(--sq-bl)) calc(100% - 0.372824 * var(--sq-bl)),
+        curve to 0 calc(100% - 1.528665 * var(--sq-bl)) with 0 calc(100% - 0.868407 * var(--sq-bl)) / 0 calc(100% - 1.088490 * var(--sq-bl)),
+        close; }
+      /* The OUTER outline (ring, pane) is at the pane's own corner radii `--c-*` (0 when unset);
+         the INNER outline (the ground cover on the padding box) is those less the ring's 1px,
+         floored at 0 so a square corner stays square. */
+      .pane, .pane::before { --sq-tl: var(--c-tl, 0px); --sq-tr: var(--c-tr, 0px);
+        --sq-br: var(--c-br, 0px); --sq-bl: var(--c-bl, 0px); }
+      #empty-state, #empty-state-2 { --sq-tl: max(var(--c-tl, 0px) - 1px, 0px);
+        --sq-tr: max(var(--c-tr, 0px) - 1px, 0px); --sq-br: max(var(--c-br, 0px) - 1px, 0px);
+        --sq-bl: max(var(--c-bl, 0px) - 1px, 0px); }
       html, body {
         margin: 0;
         height: 100%;
@@ -95,24 +143,36 @@
          Ring ONLY — no `box-shadow` halo. The native surface covers the content box, so a glow
          could show nowhere but the 5px divider strip, where it bled across the gap and read as
          one thick coloured line at the divider (shipped, then pulled). The "electric" is the
-         colour alone. */
-      /* `overflow: hidden` clips `#empty-state` (and anything else inside) to the rounded padding
-         box, so a square-cornered child can never paint over the ring's curve. */
+         colour alone.
+
+         The ring is PAINTED by `.pane::before`, not by the border: the border stays (transparent)
+         purely as the 1px layout inset the content-box report needs, because a CSS border can
+         only curve as a circle (`border-radius`) and the window's corner is not one (see
+         `--pane-radius`). `::before` covers the border box (`inset: -1px` from the padding box)
+         clipped to the OUTER continuous outline; `#empty-state` covers the padding box clipped to
+         the INNER one, and paints above it (tree order — a `::before` precedes the children); the
+         native surface, when live, covers the same content box with the same inner curve. So the
+         ring is the strip left between the outer clip and whichever cover is on top, and its
+         corner is the window's own curve. No `overflow: hidden` on the pane — it would clip the
+         ring's `::before` to the padding box; `#empty-state`'s own clip-path is what keeps its
+         square corners (and its svg) off the ring's curve. */
       .pane { position: relative; background: var(--pane-ground); box-sizing: border-box;
-        border: 1px solid transparent; overflow: hidden; }
+        border: 1px solid transparent; }
+      .pane::before { content: ""; position: absolute; inset: -1px; pointer-events: none;
+        background: transparent; clip-path: shape(var(--sq)); }
       /* WHICH corners round (see `--pane-radius`): in the docked window the hole's TOP is the
          window's top (Overlay titlebar — nothing sits above the hole), its RIGHT is the window's
          right, and its LEFT is the sidebar, so the only pane corners that are window corners are
          the two RIGHT corners of the RIGHTMOST pane. Rightmost = the primary, except when a split
          puts the secondary on the right (`side = "right"`, i.e. `.split` without
          `.secondary-left`) — then the secondary takes them and the primary goes square. Every
-         other corner stays 0 (the `.pane` default). */
-      #pane-primary { border-radius: 0 var(--pane-radius) var(--pane-radius) 0; }
-      #terminal-hole.split:not(.secondary-left) #pane-primary { border-radius: 0; }
+         other corner stays 0 (the `--c-*` fallback). */
+      #pane-primary { --c-tr: var(--pane-radius); --c-br: var(--pane-radius); }
+      #terminal-hole.split:not(.secondary-left) #pane-primary { --c-tr: 0px; --c-br: 0px; }
       #terminal-hole.split:not(.secondary-left) #pane-secondary {
-        border-radius: 0 var(--pane-radius) var(--pane-radius) 0; }
-      #terminal-hole.split .pane.focused {
-        border-color: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
+        --c-tr: var(--pane-radius); --c-br: var(--pane-radius); }
+      #terminal-hole.split .pane.focused::before {
+        background: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
       #pane-primary { flex: 1 1 0; }
       #pane-secondary { flex: 1 1 0; display: none; }
       #terminal-hole.split #pane-secondary { display: block; }
@@ -149,7 +209,10 @@
          resize, which the ground alone (a flat colour, unnoticeable) does not. #empty-state
          backstops #pane-primary; #empty-state-2 backstops #pane-secondary. `background` reads
          `--pane-ground` (declared once, at `:root`) — the SAME token `.pane`'s own background
-         reads (fix round 2, CRITICAL) — never restate the literal in a second place. */
+         reads (fix round 2, CRITICAL) — never restate the literal in a second place. Clipped to
+         the INNER continuous outline (`--sq` at the pane's radii less 1px) so its square corners
+         and its svg never paint over the focus ring's curve — this is the cold-pane half of the
+         ring's inner edge (the live surface's own corner curve is the other). */
       #empty-state, #empty-state-2 {
         position: absolute;
         inset: 0;
@@ -157,6 +220,7 @@
         align-items: center;
         justify-content: center;
         background: var(--pane-ground);
+        clip-path: shape(var(--sq));
         user-select: none;
         -webkit-user-select: none;
       }
