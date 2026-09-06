@@ -60,11 +60,13 @@ kill = '"$HOME/.agentmux/bin/amux" --kill'
   [[window.tab]]
     title = "dotfiles"
     dir   = "examples/projects/personal/dotfiles"
-  [[window.tab]] # cmd = "" opts out of amux → plain shell; load_on_open runs it from launch
+  [[window.tab]] # cmd = "" opts out of amux → plain shell; load_on_open runs it from launch;
+    # split = false opts out of the global split so ⌘D's runtime split stays exercisable
     title        = "blog"
     dir          = "examples/projects/personal/blog"
     cmd          = ""
     load_on_open = true
+    split        = false
   [[window.tab]] # also a plain shell (no agent) for quick notes
     title = "notes"
     dir   = "examples/projects/personal/notes"

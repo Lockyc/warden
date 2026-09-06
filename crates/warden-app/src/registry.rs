@@ -296,8 +296,9 @@ impl Registry {
             .is_some_and(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
     }
 
-    /// Give tab `id` a second pane: the tab's own shell, in the tab's own dir, with NO
-    /// startup command — the frame's scratch terminal. Idempotent: splitting an already
+    /// Give tab `id` a second pane: the tab's own shell, in the tab's own dir, running the
+    /// config split's `cmd` when the tab has one, else no startup command — the frame's
+    /// scratch terminal (`secondary_spec` decides). Idempotent: splitting an already
     /// split tab is a no-op, which is what keeps the two-pane cap true even if the chrome
     /// double-fires. Unknown tab is a no-op.
     ///
