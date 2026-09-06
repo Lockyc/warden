@@ -2,6 +2,23 @@ use crate::Colour;
 use config_core::{Density, TabDigitKeys};
 use std::path::PathBuf;
 
+/// Which side of the hole a tab's SECOND pane sits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitSide {
+    Left,
+    Right,
+}
+
+/// A tab's declared second pane, fully resolved (the cascade is collapsed). `size` is the
+/// second pane's share of the hole; `startup` is typed into its shell (`None` = bare shell).
+/// The pane's shell and dir are the tab's own — that's why they aren't here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Split {
+    pub side: SplitSide,
+    pub size: f64,
+    pub startup: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub windows: Vec<Window>,
@@ -68,6 +85,8 @@ pub struct Root {
     pub probe: Option<String>,
     /// Resolved session-kill command for discovered projects (`None` = no kill affordance).
     pub kill: Option<String>,
+    /// Resolved second-pane split for discovered projects (`None` = no split).
+    pub split: Option<Split>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,4 +119,7 @@ pub struct Tab {
     /// `""` opts out). `None` = no kill affordance. Opaque to the crate — the app
     /// runs it via `sh -c` when the user confirms killing the tab's session.
     pub kill: Option<String>,
+    /// Resolved second pane for this tab (cascaded tab→window→global, whole-table). `None`
+    /// = no split (a single pane).
+    pub split: Option<Split>,
 }

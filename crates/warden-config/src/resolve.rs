@@ -1,5 +1,5 @@
-use crate::model::{Config, Root, Tab, Window};
-use crate::raw::{RawConfig, RawWindow};
+use crate::model::{Config, Root, Split, SplitSide, Tab, Window};
+use crate::raw::{RawConfig, RawSplit, RawWindow};
 use crate::{Colour, ColourError};
 use config_core::{Density, TabDigitKeys, Warning};
 use std::collections::HashSet;
@@ -29,6 +29,14 @@ pub const DEFAULT_WIDTH: u32 = 1500;
 /// Default window height when `height` is omitted. Matches curator's default.
 pub const DEFAULT_HEIGHT: u32 = 1000;
 
+/// A declared split's default share for the second pane, and the band `size` must fall in.
+/// The band is the chrome's own drag clamp (`applySplitFlex` in `ui/index.html`) and
+/// `split_ratio`'s in `main.rs` — one value, three readers, so a config can never declare a
+/// width the divider would refuse to be dragged to.
+pub const DEFAULT_SPLIT_SIZE: f64 = 0.5;
+pub const SPLIT_SIZE_MIN: f64 = 0.1;
+pub const SPLIT_SIZE_MAX: f64 = 0.9;
+
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
 /// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
@@ -38,6 +46,54 @@ fn cascade<'a>(
     global: Option<&'a str>,
 ) -> Option<&'a str> {
     tab.or(window).or(global).filter(|s| !s.trim().is_empty())
+}
+
+/// Resolve ONE level's `split`. Three outcomes, and the cascade needs all three distinct:
+/// `None` = unset (inherit from above), `Some(None)` = `split = false` (opts this level out),
+/// `Some(Some(_))` = a declared split. Validated here, per level, so a bad global table is an
+/// error even when no tab inherits it.
+fn resolve_split_level(raw: Option<&RawSplit>) -> Result<Option<Option<Split>>, ResolveError> {
+    match raw {
+        None => Ok(None),
+        Some(RawSplit::Off(false)) => Ok(Some(None)),
+        Some(RawSplit::Off(true)) => Ok(Some(Some(Split {
+            side: SplitSide::Right,
+            size: DEFAULT_SPLIT_SIZE,
+            startup: None,
+        }))),
+        Some(RawSplit::On(t)) => {
+            let side = match t.side.as_deref().map(str::trim) {
+                None | Some("") | Some("right") => SplitSide::Right,
+                Some("left") => SplitSide::Left,
+                Some(other) => return Err(ResolveError::BadSplitSide(other.to_string())),
+            };
+            let size = t.size.unwrap_or(DEFAULT_SPLIT_SIZE);
+            if !(size.is_finite() && (SPLIT_SIZE_MIN..=SPLIT_SIZE_MAX).contains(&size)) {
+                return Err(ResolveError::BadSplitSize(size));
+            }
+            let startup = t
+                .cmd
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(String::from);
+            Ok(Some(Some(Split {
+                side,
+                size,
+                startup,
+            })))
+        }
+    }
+}
+
+/// The split cascade: nearest SET level wins as a whole table (a tab table that sets only
+/// `size` does not inherit the global table's `side` — same "set level wins" rule as
+/// `cascade`, lifted to a table). `Some(None)` at the nearest level is the opt-out.
+fn cascade_split(
+    tab: Option<&Option<Split>>,
+    window: Option<&Option<Split>>,
+    global: Option<&Option<Split>>,
+) -> Option<Split> {
+    tab.or(window).or(global).cloned().flatten()
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -80,6 +136,10 @@ pub enum ResolveError {
     DuplicateSection { window: String, name: String },
     #[error("window {window:?} has a root with invalid depth {depth} (must be >= 1)")]
     InvalidRootDepth { window: String, depth: u32 },
+    #[error("invalid split side {0:?} (expected \"left\" or \"right\")")]
+    BadSplitSide(String),
+    #[error("invalid split size {0} (expected {min}..={max})", min = SPLIT_SIZE_MIN, max = SPLIT_SIZE_MAX)]
+    BadSplitSize(f64),
 }
 
 /// Parse the global `tab_digit_keys` setting. Missing/empty → the default
@@ -154,6 +214,7 @@ pub fn resolve_with(
     let global_cmd = raw.cmd.as_deref();
     let global_probe = raw.probe.as_deref();
     let global_kill = raw.kill.as_deref();
+    let global_split = resolve_split_level(raw.split.as_ref())?;
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
     let mut seen_windows = HashSet::new();
@@ -177,6 +238,7 @@ pub fn resolve_with(
             global_cmd,
             global_probe,
             global_kill,
+            global_split.as_ref(),
             &mut warnings,
         )?);
     }
@@ -203,8 +265,10 @@ fn resolve_window(
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
     global_kill: Option<&str>,
+    global_split: Option<&Option<Split>>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
+    let window_split = resolve_split_level(rp.split.as_ref())?;
     let colour = match rp.colour.as_deref() {
         None => DEFAULT_COLOUR,
         Some(s) => Colour::parse(s).map_err(|source| ResolveError::BadColour {
@@ -242,6 +306,8 @@ fn resolve_window(
             global_cmd,
             global_probe,
             global_kill,
+            window_split.as_ref(),
+            global_split,
             &mut seen_keys,
             warnings,
         )?);
@@ -277,6 +343,8 @@ fn resolve_window(
                 global_cmd,
                 global_probe,
                 global_kill,
+                window_split.as_ref(),
+                global_split,
                 &mut seen_keys,
                 warnings,
             )?);
@@ -293,6 +361,8 @@ fn resolve_window(
             global_cmd,
             global_probe,
             global_kill,
+            window_split.as_ref(),
+            global_split,
             warnings,
         )?;
         if !seen_sections.insert(root.name.clone()) {
@@ -329,6 +399,8 @@ fn resolve_tab(
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
     global_kill: Option<&str>,
+    window_split: Option<&Option<Split>>,
+    global_split: Option<&Option<Split>>,
     seen_keys: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
@@ -383,6 +455,8 @@ fn resolve_tab(
     let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
     let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
     let kill = cascade(rt.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
+    let tab_split = resolve_split_level(rt.split.as_ref())?;
+    let split = cascade_split(tab_split.as_ref(), window_split, global_split);
     Ok(Tab {
         id,
         key,
@@ -394,6 +468,7 @@ fn resolve_tab(
         group,
         probe,
         kill,
+        split,
     })
 }
 
@@ -425,6 +500,8 @@ fn resolve_root(
     global_cmd: Option<&str>,
     global_probe: Option<&str>,
     global_kill: Option<&str>,
+    window_split: Option<&Option<Split>>,
+    global_split: Option<&Option<Split>>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Root, ResolveError> {
     // name/dir/depth validation + tilde expansion + basename default are shared with lector via
@@ -445,6 +522,8 @@ fn resolve_root(
     let startup = cascade(rr.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
     let probe = cascade(rr.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
     let kill = cascade(rr.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
+    let root_split = resolve_split_level(rr.split.as_ref())?;
+    let split = cascade_split(root_split.as_ref(), window_split, global_split);
     Ok(Root {
         name: root_dir.name,
         dir: root_dir.dir,
@@ -453,6 +532,7 @@ fn resolve_root(
         startup,
         probe,
         kill,
+        split,
     })
 }
 
@@ -1771,5 +1851,135 @@ title = "w"
         // empty id = unset; trailing slash normalized away.
         assert_eq!(cfg.windows[0].tabs[0].key, "/tmp/a");
         assert_eq!(cfg.windows[0].tabs[0].id, None);
+    }
+
+    #[test]
+    fn split_cascades_whole_table_nearest_level_winning() {
+        let (cfg, _) = resolve_str(
+            r##"
+[split]
+side = "left"
+size = 0.3
+cmd = "scratch-global"
+[[window]]
+title = "work"
+colour = "#000000"
+  [[window.tab]]
+  title = "inherits"
+  dir = "/tmp/a"
+  [[window.tab]]
+  title = "overrides"
+  dir = "/tmp/b"
+  [window.tab.split]
+  size = 0.4
+  [[window.tab]]
+  title = "opts-out"
+  dir = "/tmp/c"
+  split = false
+  [[window.tab]]
+  title = "default-split"
+  dir = "/tmp/d"
+  split = true
+[[window]]
+title = "plain"
+colour = "#000000"
+split = false
+  [[window.tab]]
+  title = "window-opted-out"
+  dir = "/tmp/e"
+"##,
+        )
+        .unwrap();
+        let work = &cfg.windows[0].tabs;
+        let inherited = work[0].split.as_ref().unwrap();
+        assert_eq!(inherited.side, SplitSide::Left);
+        assert_eq!(inherited.size, 0.3);
+        assert_eq!(inherited.startup.as_deref(), Some("scratch-global"));
+        // The nearest table wins WHOLE — the tab's own table sets only `size`, so side and
+        // cmd fall back to the table's own defaults, not the global table's values.
+        let own = work[1].split.as_ref().unwrap();
+        assert_eq!(own.side, SplitSide::Right);
+        assert_eq!(own.size, 0.4);
+        assert_eq!(own.startup, None);
+        assert_eq!(work[2].split, None, "split = false opts the tab out");
+        let dflt = work[3].split.as_ref().unwrap();
+        assert_eq!(
+            (dflt.side, dflt.size, dflt.startup.as_deref()),
+            (SplitSide::Right, DEFAULT_SPLIT_SIZE, None)
+        );
+        assert_eq!(
+            cfg.windows[1].tabs[0].split, None,
+            "a window-level false opts every tab out"
+        );
+    }
+
+    #[test]
+    fn split_cmd_empty_is_bare_shell_and_root_cascades_root_window_global() {
+        let (cfg, _) = resolve_str(
+            r##"
+[split]
+cmd = "scratch-global"
+[[window]]
+title = "work"
+colour = "#000000"
+  [window.split]
+  cmd = ""
+  [[window.root]]
+  dir = "/tmp/roots"
+  [window.root.split]
+  side = "left"
+"##,
+        )
+        .unwrap();
+        let root = cfg.windows[0].roots[0].split.as_ref().unwrap();
+        assert_eq!(root.side, SplitSide::Left);
+        assert_eq!(
+            root.startup, None,
+            "the root's own table has no cmd → bare shell"
+        );
+    }
+
+    #[test]
+    fn split_validation_rejects_bad_side_and_size() {
+        let bad_side = resolve_str(
+            r##"
+[split]
+side = "top"
+[[window]]
+title = "w"
+colour = "#000000"
+"##,
+        );
+        assert_eq!(
+            bad_side.unwrap_err(),
+            ResolveError::BadSplitSide("top".into())
+        );
+        let bad_size = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [window.tab.split]
+  size = 0.95
+"##,
+        );
+        assert_eq!(bad_size.unwrap_err(), ResolveError::BadSplitSize(0.95));
+    }
+
+    #[test]
+    fn no_split_anywhere_resolves_none() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].split, None);
     }
 }
