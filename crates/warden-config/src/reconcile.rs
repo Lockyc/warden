@@ -169,7 +169,9 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                             || ot.group != nt.group
                             || ot.probe != nt.probe
                             || ot.kill != nt.kill
-                            || layout(ot) != layout(nt)
+                            || (ot.split.is_some()
+                                && nt.split.is_some()
+                                && layout(ot) != layout(nt))
                         {
                             set_meta.push((
                                 nt.key.clone(),
@@ -763,6 +765,7 @@ colour = "#0f8a8a"
             let r = reconcile(a, b);
             assert_eq!(r.update.len(), 1);
             assert_eq!(r.update[0].respawn_tabs.len(), 1, "{a:?} → {b:?}");
+            assert!(r.update[0].set_meta.is_empty(), "{a:?} → {b:?}");
         }
         // Identical splits → no update at all.
         assert!(reconcile(&with, &with).update.is_empty());
