@@ -39,20 +39,39 @@ not warden's, the moment the surface is warden's own.
 
 ## Native splits: shipped
 
-A tab holds a **primary pane plus an optional secondary** — two panes, not N-way — created
-at runtime (⌘D / Tab ▸ Split), closed from the ✕ on the divider between them or by the
-scratch shell exiting on its own, and resized by dragging the divider. The split is a
-**runtime layout, not config**: it persists per tab in `localStorage`, never the TOML, on
-the same reasoning as sidebar width — a split is chrome state, and the config file
-describes tabs, not panes. ⌘W (unload) and ⌘⇧O (pop-out) both act on the **whole tab** —
-unloading drops both panes to cold together, and popping out carries both surfaces to the
-detached window at the tab's own divider ratio (`shell_core::detach::DetachSpec.panes`,
-generic on purpose: a `Vec<f64>` of hole ratios, not a `warden` split type, so a future
-consumer can divide its own hole without learning warden's split concept).
+A tab holds a **primary pane plus an optional secondary** — two panes, not N-way. A split
+comes from one of two places, and which one decides where its geometry is remembered:
 
-Mechanism: `Registry`'s `Pane`/`PaneIdx`/`TabSlot` model (`crates/warden-app/src/registry.rs`),
-the `split_pane`/`close_pane`/`focus_pane` commands (`main.rs`), and the
-chrome's pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`). The
+- **Declared in config** (`split` — cascading global → window → tab, and root → window →
+  global for discovered projects; schema in `docs/config.md`). The tab is created with its
+  second pane already declared, both spawn together (also under `load_on_open`), the
+  second pane runs `split.cmd` (bare shell when absent) in the tab's own shell and dir, and
+  `split.size`/`split.side` seed the divider. A drag overrides the ratio **in memory only**,
+  for as long as the tab's terminals are live: unload, a child exit, a hot-reload respawn
+  and an app restart all bring the config ratio back. The divider ✕ closes the pane for the
+  same lifetime — `Registry::unload` re-declares it, so it is back on the next spawn — and
+  ⌘D recreates it from config. This is the frame-less shape of an `amux --frame` tab: the
+  scratch shell beside the agent, with warden owning the split instead of tmux.
+- **Created at runtime** (⌘D / Tab ▸ Split) on a tab with no config split. Its ratio and
+  existence persist per tab in `localStorage` (keyed on window label + tab id, same home as
+  sidebar width) and are restored on the next activation. A config-split tab never touches
+  that store — the config is its source of truth — and a stale key for one is evicted.
+
+Both are closed from the ✕ on the divider or by the secondary shell exiting on its own, and
+resized by dragging the divider. ⌘W (unload) and ⌘⇧O (pop-out) both act on the **whole
+tab** — unloading drops both panes to cold together, and popping out carries both surfaces
+to the detached window at the tab's current effective ratio
+(`shell_core::detach::DetachSpec.panes`, generic on purpose: a `Vec<f64>` of hole ratios,
+not a `warden` split type, so a future consumer can divide its own hole without learning
+warden's split concept).
+
+Mechanism: `warden-config`'s `Tab.split: Option<Split>` (`resolve.rs::resolve_split_level` +
+`cascade_split`; `reconcile.rs` routes a presence/`cmd` change to `respawn_tabs` and a
+`side`/`size` change to `set_meta`), `Registry`'s `Pane`/`PaneIdx`/`TabSlot` model
+(`crates/warden-app/src/registry.rs` — `add` declares a config split's second pane, one
+`secondary_spec` derives its startup), `TabDto.split_layout` → the chrome's
+`splitLayoutById`/`ratioOverride`, the `split_pane`/`close_pane`/`focus_pane` commands
+(`main.rs`), and the chrome's pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`). The
 traps this shipped are catalogued in `CLAUDE.md`'s *Conventions & footguns* — read those
 before touching split visibility, routing, or the backstop.
 
@@ -84,6 +103,18 @@ only by eye. Each step below is written to actually fail if the feature regresse
   content and onto a cold pane's backstop alike, and after switching tabs away and back it
   is on the pane you last typed in. A popped-out tab shows no marker in its origin window
   (its panes are elsewhere).
+- A tab under a `[split] side = "left" size = 0.3` block opens already split, the second
+  pane on the LEFT at 30% of the hole, the primary on the right running the tab's `cmd`,
+  with focus (the accent ring) on the primary.
+- Resizing the window keeps the 30/70 proportion.
+- Dragging the divider changes it; ⌘W then re-clicking the tab brings back 30/70. So does
+  `exit` in the primary, and an app restart.
+- ✕ on a config split closes the pane; ⌘W then re-clicking the tab brings it back; ⌘D on the
+  closed split brings it back immediately, still on the left at 30%.
+- Editing `size` in the config re-lays out the live split on save without respawning either
+  terminal (scrollback survives). Editing `split.cmd` or removing the block respawns the tab.
+- A tab with no config split still ⌘D-splits on the right at 50/50, and that split survives
+  a restart (the `localStorage` path is untouched).
 
 Expect no look change to a live terminal: each surface's own render layer is already opaque
 (`#0e1516`, `surface/ghostty.rs::new`), so it is never the pane ground a terminal composites
@@ -130,3 +161,10 @@ indicators are already that client. This is the expensive half of removing the *
 tmux layer and is what makes that layer removable at all. Blocked on agentmux's session
 backend seam existing; revisit once it does — not before, or warden ends up owning chrome
 for a backend that is still the only one.
+
+**A popped-out left-side split lays out primary-left.** The detached shell lays holes out in
+payload order and reports each hole by that index, and warden maps hole *i* to pane *i*, so
+a `side = "left"` tab pops out mirrored. Unlock: a hole→pane index map on warden's
+detached-window `set_hole_rect`/focus/close handlers (a warden-side mapping — shell-core's
+generic ratio list needs no side concept). Not done now because pop-out is the rarer flow
+and the mirrored layout is fully usable.
