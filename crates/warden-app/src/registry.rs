@@ -40,8 +40,9 @@ pub struct TabDto {
     /// Whether this tab STRUCTURALLY has a second pane — distinct from `secondary_spawned`
     /// above, which is that pane's LIVENESS. Both are needed, and forwarding only the second
     /// is what let the chrome and the registry disagree: a hot-reload `respawn_tabs` rebuilds
-    /// a split tab via `remove` + `add`, i.e. **unsplit** (a split lives in the chrome and the
-    /// registry, never in the config), and the `warden:refresh` that follows carried no
+    /// a split tab via `remove` + `add`, i.e. **unsplit** for a runtime (⌘D) split — only a
+    /// config-declared split survives a rebuild, because `add` re-declares it from
+    /// `TabSpec.split` — and the `warden:refresh` that follows carried no
     /// structural answer at all — so the chrome kept its `splitById` `true` and went on
     /// rendering a divider and a permanently empty second pane over a tab that no longer had
     /// one, self-healing only on the next `onSelect` for that tab, which never comes if that
@@ -850,8 +851,8 @@ impl Registry {
     ///
     /// A returning `secondary` whose tab has **no** secondary pane recreates the pane
     /// (`secondary_spec`, the same derivation `split` uses) rather than refusing. That
-    /// is a real path, not a defensive one: a split lives in the chrome and the registry,
-    /// never in the config, so an origin window the user closed while the tab was popped
+    /// is a real path, not a defensive one: a runtime (⌘D) split lives in the chrome and the
+    /// registry, not the config, so an origin window the user closed while the tab was popped
     /// out is rebuilt *unsplit* — and refusing there would drop a live PTY on the floor
     /// purely because the slot it left from had since been rebuilt without it.
     pub fn attach(
