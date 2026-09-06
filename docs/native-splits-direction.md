@@ -101,6 +101,9 @@ only by eye. Each step below is written to actually fail if the feature regresse
   with the same divider and focus ring; `exit` in the second pane closes it there too, and
   clicking either pane moves the ring.
 - Closing the detached window returns both panes to the origin, still live.
+- Arrow keys pressed in the second pane stay in it: the cursor, the focus ring and the
+  keystroke all remain on the pane you typed in (arrows travel a different AppKit route
+  from letters — `WardenHostView::owns_window_keys` in `CLAUDE.md`'s footguns).
 - **The focused-pane marker** — the accent border — follows every click, into live terminal
   content and onto a cold pane's backstop alike, and after switching tabs away and back it
   is on the pane you last typed in. A popped-out tab shows no marker in its origin window
