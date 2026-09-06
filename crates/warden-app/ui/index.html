@@ -258,11 +258,11 @@
       // The divider ratio a pop-out of `tabId` should carry, or null for an unsplit tab.
       // Pop-out is whole-tab, so a split tab's second pane goes with it and the detached
       // window has to lay out two holes at the SAME ratio the tab has here — otherwise the
-      // terminal visibly jumps width the moment it pops out. Read from the persisted split
-      // (written both when the split is created and when a drag ends), which is the only
-      // ratio that outlives the drag handler's own closure. The backend treats this as
-      // advisory: it decides the hole count from the surfaces it actually detached, so a
-      // stale or absent value can only cost the right WIDTH, never a hole with no terminal.
+      // terminal visibly jumps width the moment it pops out. Read via `loadSplit`, which
+      // resolves a config split to its in-memory override (or its declared `size` if none)
+      // and a runtime split to its persisted ratio. The backend treats this as advisory: it
+      // decides the hole count from the surfaces it actually detached, so a stale or absent
+      // value can only cost the right WIDTH, never a hole with no terminal.
       function popOutRatio(tabId) {
         const p = loadSplit(tabId);
         return p ? p.ratio : null;
@@ -409,8 +409,8 @@
         document.getElementById("pane-secondary").style.flex = "";
       }
       // Sets the divider ratio on both panes' flex-basis WITHOUT touching visibility — shared by
-      // the live drag handler (the divider IIFE, below) and split restoration (loadSplit, Task
-      // 8), so there is exactly one clamp (matching the drag's own bounds) and one place either
+      // the live drag handler (the divider IIFE, below) and split restoration (setSplitVisible),
+      // so there is exactly one clamp (matching the drag's own bounds) and one place either
       // applies a ratio. Callers decide when to reveal the result and re-report rects; calling
       // this before the pane is un-hidden is what lets a restored split appear at its saved
       // ratio on the FIRST reportRect rather than flashing 50/50 first.
@@ -420,13 +420,15 @@
         document.getElementById("pane-secondary").style.flex = (1 - f) + " 1 0";
         return f;
       }
-      // The SOLE authority for split visibility: toggles `.split` on #terminal-hole (which the
-      // CSS keys #pane-divider's and #pane-secondary's `display` off — see that comment) and
-      // keeps the `hidden` attribute in lockstep on both elements purely for semantics/JS
-      // convenience, so the two mechanisms can never contradict each other (fix round 1,
-      // CRITICAL 1). Closing always resets the drag ratio. Its real callers: `setActiveId` (every
-      // tab switch/refresh re-asserts THIS tab's own split state), `splitActiveTab`/`collapseSplit`
-      // (⌘D / the divider ✕ / a secondary exiting on its own). Never poke `hidden`/`.split` directly.
+      // The SOLE authority for split visibility, AND the one place a split's side
+      // (`.secondary-left`) and ratio are applied when showing one: toggles `.split` on
+      // #terminal-hole (which the CSS keys #pane-divider's and #pane-secondary's `display` off
+      // — see that comment) and keeps the `hidden` attribute in lockstep on both elements purely
+      // for semantics/JS convenience, so the two mechanisms can never contradict each other (fix
+      // round 1, CRITICAL 1). Closing always resets the drag ratio. Its real callers: `setActiveId`
+      // (every tab switch/refresh re-asserts THIS tab's own split state), `splitActiveTab`/
+      // `collapseSplit` (⌘D / the divider ✕ / a secondary exiting on its own). Never poke
+      // `hidden`/`.split` directly.
       function setSplitVisible(isSplit) {
         const hole = document.getElementById("terminal-hole");
         hole.classList.toggle("split", !!isSplit);
@@ -457,7 +459,9 @@
         secondarySpawnedById.set(id, false);
         splitById.set(id, false); // the authoritative answer, not just the liveness proxy
         focusedPaneById.set(id, 0);
-        clearSplit(id); // Task 8: the split is gone — drop its persisted ratio too
+        clearSplit(id); // the split is gone — drop its persisted ratio AND its in-memory
+                        // override; dropping the override is what lets a later ⌘D come back
+                        // at the declared ratio instead of a stale drag position
         if (id === activeId) {
           secondaryLive = false; // kept in step with the map read above, not just left for the
                                   // next setActiveId to notice
