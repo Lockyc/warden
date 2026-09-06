@@ -25,7 +25,7 @@ pub use config_core::{
     DEFAULT_ROOT_DEPTH,
 };
 pub use load::{config_path, load, load_with, LoadError, Loaded};
-pub use model::{Config, Root, Tab, Window};
+pub use model::{Config, Root, Split, SplitSide, Tab, Window};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, WindowUpdate};
 pub use resolve::ResolveError;
 pub use watch::Watcher;

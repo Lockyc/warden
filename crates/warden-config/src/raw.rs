@@ -6,6 +6,28 @@ use serde::Deserialize;
 // `probe_intervall`) into a parse error surfaced via warden's error-banner path, instead of the key
 // being silently dropped. NOTE: this is incompatible with `#[serde(flatten)]` — none of these
 // structs flatten, so keep it that way (or this must be reworked).
+/// `split` at any cascade level — a table declaring the tab's second pane, or a bool:
+/// `false` opts the level out of an inherited split (the table-valued analogue of
+/// `cmd = ""`), `true` declares the default split (right side, half the hole, bare shell).
+/// Untagged so TOML accepts both `split = false` and `[window.tab.split]`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum RawSplit {
+    Off(bool),
+    On(RawSplitTable),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSplitTable {
+    // "left" | "right" (default right — the side ⌘D puts a runtime split on). Validated in resolve.rs.
+    pub side: Option<String>,
+    // The SECOND pane's share of the hole, 0.1..=0.9 (default 0.5). Validated in resolve.rs.
+    pub size: Option<f64>,
+    // Typed into the second pane's shell on spawn; absent or "" = bare shell.
+    pub cmd: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawConfig {
@@ -13,6 +35,7 @@ pub struct RawConfig {
     pub cmd: Option<String>,
     pub probe: Option<String>,
     pub kill: Option<String>,
+    pub split: Option<RawSplit>,
     /// Seconds between background session-probe passes (global only). `None` →
     /// default 5; `Some(0)` → focus/refresh-only (no timer). See resolve.rs.
     pub probe_interval: Option<u64>,
@@ -51,6 +74,7 @@ pub struct RawWindow {
     pub cmd: Option<String>,
     pub probe: Option<String>,
     pub kill: Option<String>,
+    pub split: Option<RawSplit>,
     // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,
     // rendered in a headerless section before any named groups.
     #[serde(default, rename = "tab")]
@@ -85,6 +109,7 @@ pub struct RawRoot {
     pub cmd: Option<String>,
     pub probe: Option<String>,
     pub kill: Option<String>,
+    pub split: Option<RawSplit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -102,6 +127,7 @@ pub struct RawTab {
     pub cmd: Option<String>,
     pub probe: Option<String>,
     pub kill: Option<String>,
+    pub split: Option<RawSplit>,
     #[serde(default)]
     pub load_on_open: bool,
 }
@@ -309,5 +335,40 @@ title = "work"
             err.to_string().contains("colour"),
             "error should name the unknown key: {err}"
         );
+    }
+
+    #[test]
+    fn parses_split_as_table_or_bool_at_every_level() {
+        let cfg = parse(
+            r##"
+[split]
+side = "left"
+size = 0.3
+[[window]]
+title = "w"
+split = false
+  [[window.tab]]
+  dir = "/tmp/a"
+  split = true
+  [[window.root]]
+  dir = "/tmp/r"
+  [window.root.split]
+  cmd = "x"
+"##,
+        )
+        .unwrap();
+        assert!(
+            matches!(cfg.split, Some(RawSplit::On(ref t)) if t.side.as_deref() == Some("left") && t.size == Some(0.3))
+        );
+        assert_eq!(cfg.windows[0].split, Some(RawSplit::Off(false)));
+        assert_eq!(cfg.windows[0].tabs[0].split, Some(RawSplit::Off(true)));
+        assert!(
+            matches!(cfg.windows[0].roots[0].split, Some(RawSplit::On(ref t)) if t.cmd.as_deref() == Some("x"))
+        );
+    }
+
+    #[test]
+    fn split_rejects_unknown_fields() {
+        assert!(parse("[split]\nratio = 0.3\n").is_err());
     }
 }
