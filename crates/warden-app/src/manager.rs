@@ -185,6 +185,19 @@ pub struct WindowState {
 /// them — the detached-label prefix exclusion is thus never even reached for these,
 /// because they aren't in the reconciled set at all. `is_empty` counts them so the home
 /// surface doesn't pop up while a detached window is the only thing on screen.
+/// Tear down a popped-out tab's surfaces on purpose — the one place a live PTY is
+/// intentionally ended by the pop-out/redock flow (and its failure arms). Goes through
+/// `close()`, never a bare `drop`: `GhosttySurface::drop` treats a surface dropped without
+/// `close()` as a registry bug and says so in debug builds, so a bare drop here reported a
+/// false bug on every deliberate teardown. One helper for every site so the pair can't be
+/// half-closed.
+pub(crate) fn close_both(primary: GhosttySurface, secondary: Option<GhosttySurface>) {
+    primary.close();
+    if let Some(s) = secondary {
+        s.close();
+    }
+}
+
 pub struct DetachedSurface {
     pub surface: GhosttySurface,
     /// The tab's second pane, when it had a live one at pop-out time. `None` for an
@@ -732,12 +745,9 @@ impl WindowManager {
         }
 
         match self.windows.get_mut(&origin_label) {
-            // Case 3: origin gone from config — the tab genuinely ends. Dropping the surfaces
-            // closes their PTYs (the only intentional live-surface drop in the whole flow).
-            None => {
-                drop(surface);
-                drop(secondary);
-            }
+            // Case 3: origin gone from config — the tab genuinely ends. Closing the surfaces
+            // ends their PTYs (the only intentional live-surface teardown in the whole flow).
+            None => close_both(surface, secondary),
             Some(ws) => {
                 // Kill any fresh surface a reopen spawned for this tab (→ Cold) so `attach`
                 // never overwrites a `Spawned` slot; on the origin-stayed-open path the slot
@@ -772,13 +782,10 @@ impl WindowManager {
                         let _ = ws.registry.activate(&show);
                     }
                     // Defensive: a slot wasn't Cold/Detached (shouldn't happen — `unload`
-                    // above just cleared both) — take the hand-back and drop it rather than
+                    // above just cleared both) — take the hand-back and close it rather than
                     // leak, keeping the decision explicit. `attach` is all-or-nothing, so
                     // this is both surfaces or neither, never a half-restored tab.
-                    Err((p, s)) => {
-                        drop(p);
-                        drop(s);
-                    }
+                    Err((p, s)) => close_both(p, s),
                 }
             }
         }

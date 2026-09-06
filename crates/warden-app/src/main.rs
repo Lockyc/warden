@@ -661,7 +661,7 @@ fn pop_out_tab(
             // the origin's registry slot and the tab stays live, never a permanent Detached
             // placeholder with no window. A partial restore here would leave a live PTY with
             // no window, no slot, and no route back. If the origin vanished meanwhile, both
-            // drop here (the tab genuinely has no home).
+            // are closed here (the tab genuinely has no home).
             let surface = surface_opt.take().expect("surface held on build failure");
             let secondary = secondary_opt.take();
             let mut m = state.lock();
@@ -676,10 +676,7 @@ fn pop_out_tab(
                             let _ = ws.registry.activate(&active);
                         }
                     }
-                    Err((p, s)) => {
-                        drop(p);
-                        drop(s);
-                    }
+                    Err((p, s)) => manager::close_both(p, s),
                 }
             }
             return Err(format!("couldn't pop out tab: {e}"));
