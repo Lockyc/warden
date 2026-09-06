@@ -107,7 +107,7 @@ keep of "which pane was last focused" — only one of the two ways a pane gets f
 - **Global `open_on_start` default (cascading window default).** `open_on_start` is a per-`[[window]]` flag only (default true, no cascade) — there's no global toggle to flip the default so individual windows opt *in* via `open_on_start = true` instead of opting out. Per-window control already covers the "some windows start closed" need; a global default is deferred until an "open nothing by default, opt windows in" workflow is actually wanted.
 - **Decide ghostty argv passthrough.** `main.rs` (the `ghostty_init` block in `main`) forwards the full process `std::env::args()` into `ghostty_init`, so any ghostty CLI flag is injectable via warden's own argv. Decide: support passthrough (keep) vs pass a fixed `["warden"]` argv (recommended unless passthrough is a wanted feature). Also: those argv `CString` pointers are cast `*const`→`*mut c_char` for `char**` — verify ghostty treats argv as read-only, else hand it owned mutable buffers.
 
-## Native splits — two residues from the branch review (both non-behavioural today)
+## Native splits — a residue from the branch review (non-behavioural today)
 
 **`activate`'s primary-liveness gate is unpinned, and the test that looks like it pins it cannot fail.**
 `Registry::activate` gates the secondary spawn on the primary being `Spawned` in this registry, mirroring
@@ -119,9 +119,3 @@ asserts the gate but passes identically against un-gated code: in the test proce
 correct by inspection only.** Pinning it needs a fake surface behind the `TerminalSurface` seam; that seam exists
 precisely for this, and a test double is the unlock. Until then the two gate sites must be kept in step by hand,
 and the comment at each says so.
-
-**`pop_out_tab`'s origin-gone arm drops live surfaces without `close()`.** At the `attach`-failure branch, both
-`GhosttySurface`es are dropped directly — the same pattern removed from `close_secondary` in the branch review,
-which `GhosttySurface::drop` reports as `"bug: a registry path bypassed close()"` under `debug_assertions`. Reachable
-only if the origin window disappears mid-pop-out, so it costs a spurious debug line on a path that already lost its
-window. Fix is the same shape as the others: `mem::replace` + `close()` before the drop.
