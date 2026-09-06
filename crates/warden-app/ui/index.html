@@ -414,6 +414,11 @@
       // applies a ratio. Callers decide when to reveal the result and re-report rects; calling
       // this before the pane is un-hidden is what lets a restored split appear at its saved
       // ratio on the FIRST reportRect rather than flashing 50/50 first.
+      //
+      // The 0.1/0.9 band mirrors warden-config's SPLIT_SIZE_MIN/SPLIT_SIZE_MAX
+      // (crates/warden-config/src/resolve.rs) — this JS can't reach that Rust constant across
+      // the IPC boundary, so it carries the same band as a literal that must be kept in
+      // agreement by hand if that band ever moves.
       function applySplitFlex(frac) {
         const f = Math.max(0.1, Math.min(0.9, frac));
         document.getElementById("pane-primary").style.flex = f + " 1 0";

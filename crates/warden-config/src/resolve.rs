@@ -30,9 +30,11 @@ pub const DEFAULT_WIDTH: u32 = 1500;
 pub const DEFAULT_HEIGHT: u32 = 1000;
 
 /// A declared split's default share for the second pane, and the band `size` must fall in.
-/// The band is the chrome's own drag clamp (`applySplitFlex` in `ui/index.html`) and
-/// `split_ratio`'s in `main.rs` — one value, three readers, so a config can never declare a
-/// width the divider would refuse to be dragged to.
+/// The Rust readers of this band (`split_ratio` in warden-app's `main.rs`) read these
+/// constants directly, so a config can never declare a width the divider would refuse to be
+/// dragged to. The chrome's own drag clamp (`applySplitFlex` in `ui/index.html`) can't reach a
+/// Rust constant across the IPC boundary and carries the same band as a literal instead — that
+/// is the one site that must be kept in agreement by hand if this band ever moves.
 pub const DEFAULT_SPLIT_SIZE: f64 = 0.5;
 pub const SPLIT_SIZE_MIN: f64 = 0.1;
 pub const SPLIT_SIZE_MAX: f64 = 0.9;
@@ -1981,5 +1983,69 @@ colour = "#000000"
         )
         .unwrap();
         assert_eq!(cfg.windows[0].tabs[0].split, None);
+    }
+
+    #[test]
+    fn split_size_nan_is_rejected() {
+        // NaN != NaN, so the error has to be matched structurally rather than compared by
+        // equality — a naive `assert_eq!` against `BadSplitSize(f64::NAN)` would never pass.
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [window.tab.split]
+  size = nan
+"##,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ResolveError::BadSplitSize(n) if n.is_nan()),
+            "expected BadSplitSize(NaN), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn split_side_is_trimmed_before_matching() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [window.tab.split]
+  side = " left "
+"##,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.windows[0].tabs[0].split.as_ref().unwrap().side,
+            SplitSide::Left
+        );
+    }
+
+    #[test]
+    fn root_inherits_window_opt_out_over_global_split() {
+        let (cfg, _) = resolve_str(
+            r##"
+[split]
+side = "left"
+size = 0.3
+[[window]]
+title = "w"
+colour = "#000000"
+split = false
+  [[window.root]]
+  dir = "/tmp/roots"
+"##,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.windows[0].roots[0].split, None,
+            "a window-level false opts a root out too, over the global table"
+        );
     }
 }

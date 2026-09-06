@@ -360,7 +360,8 @@ fn unload_tab(
         .and_then(|ws| ws.registry.unload(&id))
 }
 
-/// Split tab `id`: give it a second pane (the tab's own shell, no startup command) and bring it
+/// Split tab `id`: give it a second pane (the tab's own shell, running the config split's `cmd`
+/// when the tab has one, else no startup command — `secondary_spec` decides) and bring it
 /// live. `split` (Task 3) only *declares* the pane Cold; `activate` is what actually spawns and
 /// shows it, so the pair is what makes the second terminal appear on screen. Splitting is
 /// idempotent, so a double-fire from the chrome (e.g. a stray second ⌘D) can't produce a third
@@ -483,8 +484,9 @@ const DETACHED_DEFAULT_RATIO: f64 = 0.5;
 /// they didn't.
 #[cfg(target_os = "macos")]
 fn split_ratio(ratio: Option<f64>) -> f64 {
+    use warden_config::resolve::{SPLIT_SIZE_MAX, SPLIT_SIZE_MIN};
     match ratio {
-        Some(r) if r.is_finite() => r.clamp(0.1, 0.9),
+        Some(r) if r.is_finite() => r.clamp(SPLIT_SIZE_MIN, SPLIT_SIZE_MAX),
         _ => DETACHED_DEFAULT_RATIO,
     }
 }

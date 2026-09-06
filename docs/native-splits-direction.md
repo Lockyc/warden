@@ -112,7 +112,9 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - ✕ on a config split closes the pane; ⌘W then re-clicking the tab brings it back; ⌘D on the
   closed split brings it back immediately, still on the left at 30%.
 - Editing `size` in the config re-lays out the live split on save without respawning either
-  terminal (scrollback survives). Editing `split.cmd` or removing the block respawns the tab.
+  terminal (scrollback survives) — with no drag on record for that tab (a dragged ratio holds
+  until the terminals relaunch, per the rule above). Editing `split.cmd` or removing the block
+  respawns the tab.
 - A tab with no config split still ⌘D-splits on the right at 50/50, and that split survives
   a restart (the `localStorage` path is untouched).
 

@@ -1,5 +1,24 @@
 use std::path::PathBuf;
-use warden_config::{config_path, fmt_cli, load_with};
+use warden_config::{config_path, fmt_cli, load_with, Split, SplitSide};
+
+/// A compact `split=…` rendering for `validate`'s tree, in place of raw `{:?}` Debug
+/// (`Some(Split { side: Left, size: 0.3, startup: None })`): `split=none` when unset, else
+/// `split=left/0.3` and, with a declared `cmd`, `split=left/0.3/"amux"`.
+fn fmt_split(split: &Option<Split>) -> String {
+    match split {
+        None => "split=none".to_string(),
+        Some(s) => {
+            let side = match s.side {
+                SplitSide::Left => "left",
+                SplitSide::Right => "right",
+            };
+            match &s.startup {
+                Some(cmd) => format!("split={side}/{}/{cmd:?}", s.size),
+                None => format!("split={side}/{}", s.size),
+            }
+        }
+    }
+}
 
 /// The shell warden defaults an unset tab to — the user's login shell, run as a login shell,
 /// like a terminal. `$SHELL` (falling back to the macOS default), with `-l`. Detected here in
@@ -33,13 +52,13 @@ fn main() {
                                 .map(|g| format!(" group={g:?}"))
                                 .unwrap_or_default();
                             println!(
-                                "    tab {:?} dir={} shell={:?} startup={:?} load_on_open={} split={:?}{}",
+                                "    tab {:?} dir={} shell={:?} startup={:?} load_on_open={} {}{}",
                                 t.title,
                                 t.dir.display(),
                                 t.shell,
                                 t.startup,
                                 t.load_on_open,
-                                t.split,
+                                fmt_split(&t.split),
                                 group
                             );
                         }
@@ -49,7 +68,7 @@ fn main() {
                         // deceptively empty.
                         for r in &p.roots {
                             println!(
-                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} split={:?}",
+                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} {}",
                                 r.name,
                                 r.dir.display(),
                                 r.depth,
@@ -57,7 +76,7 @@ fn main() {
                                 r.startup,
                                 r.probe,
                                 r.kill,
-                                r.split
+                                fmt_split(&r.split)
                             );
                         }
                     }
