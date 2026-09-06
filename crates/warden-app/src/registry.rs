@@ -250,7 +250,10 @@ impl Registry {
         });
         // A config split is STRUCTURAL: declare the pane now so the tab reads as split from its
         // first snapshot, and spawn it alongside an eager primary so `load_on_open` brings both
-        // panes up together (a lazy tab's `activate` already spawns every cold pane).
+        // panes up together (a lazy tab's `activate` already spawns every cold pane). This eager
+        // path (`load_on_open` + a config split) is pinned by inspection only — the registry
+        // tests run against a null NSWindow and never spawn — the same test-double gap `attach`'s
+        // `Detached`-retire branch records.
         if spec.split.is_some() {
             let idx = self.tabs.len() - 1;
             self.split(&spec.id);
