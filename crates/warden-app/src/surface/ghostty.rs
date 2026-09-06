@@ -83,8 +83,10 @@ const NS_KEYCODE_GRAVE: u16 = 0x32;
 /// (`--pane-radius` in ui/index.html, mirrored by `--hole-radius` in shell-core's detach.html)
 /// is the WINDOW's own corner — Apple's CONTINUOUS curve at 16pt, measured on macOS 26 off the
 /// window's alpha mask, not a circle — so a pane corner that IS a window corner curves with it;
-/// this is that radius less the ring's 1px border, so the surface's curve sits concentrically
-/// inside the ring's. The layer's corner CURVE is set to continuous beside the radius (in `new`):
+/// this is that radius less the ring's width (`--ring-w`, 2px — the border the surface sits
+/// inside), so the surface's curve sits concentrically inside the ring's; the inset squircle at
+/// r − w is a true 1:1 offset of the outer to within 1.5%, measured. The layer's corner CURVE is
+/// set to continuous beside the radius (in `new`):
 /// the page draws the ring with Apple's own per-corner Béziers, and CALayer's continuous curve
 /// is the same construction, so the surface's edge and the ring's inner edge coincide. A
 /// circular layer corner under a continuous ring (or vice versa) shows as a sliver of ring or
@@ -92,13 +94,13 @@ const NS_KEYCODE_GRAVE: u16 = 0x32;
 /// live on opposite sides of the native/web seam (same precedent as the layer ground colour set
 /// beside it in `new`, which matches `--pane-ground`); change both together. WHICH corners
 /// round is not a constant — see [`apply_corner_mask`].
-const SURFACE_CORNER_RADIUS: f64 = 15.0;
+const SURFACE_CORNER_RADIUS: f64 = 14.0;
 
 /// How close (points) a surface's edge must sit to the window's edge to count as touching it,
-/// for [`apply_corner_mask`]. The ring's 1px border insets every edge-hugging surface by 1pt,
-/// and web→AppKit rect conversion can land on a fraction; 2pt covers both with no risk of a
-/// pane on the far side of the 5px divider strip ever qualifying.
-const CORNER_TOUCH_EPS: f64 = 2.0;
+/// for [`apply_corner_mask`]. The ring's border (`--ring-w`, 2px) insets every edge-hugging
+/// surface by 2pt, and web→AppKit rect conversion can land on a fraction; 3pt covers both with
+/// no risk of a pane on the far side of the 5px divider strip (inset ≥ 7pt) ever qualifying.
+const CORNER_TOUCH_EPS: f64 = 3.0;
 
 /// Round ONLY the corners of a surface that coincide with the window's own corners — the
 /// chrome's rule (`.pane`/`.hole` per-corner radii) restated on the native side, derived here

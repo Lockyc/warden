@@ -125,7 +125,7 @@ only by eye. Each step below is written to actually fail if the feature regresse
 
 Expect no look change to a live terminal: each surface's own render layer is already opaque
 (`#0e1516`, `surface/ghostty.rs::new`), so it is never the pane ground a terminal composites
-against. The always-on `--pane-ground` backstops only what no surface covers — the 1px focus
+against. The always-on `--pane-ground` backstops only what no surface covers — the `--ring-w` focus
 border ring, and a hole with no live surface in it (see the backstop footgun in `CLAUDE.md`).
 
 ## Inline images: the surface is warden's, and it already renders them
