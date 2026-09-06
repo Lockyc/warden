@@ -50,6 +50,10 @@ probe_interval = 5
 # fallback.) Only reachable on a tab that also sets `probe` (no probe ⇒ no dot to click).
 kill = '"$HOME/.agentmux/bin/amux" --kill'
 
+[split] # every tab opens split: a scratch shell on the left, 30% wide
+  side = "left"
+  size = 0.3
+
 [[window]]
   title  = "personal"
   colour = "#1f9e8a"

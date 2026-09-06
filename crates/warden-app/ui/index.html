@@ -83,6 +83,12 @@
       #pane-divider { flex: 0 0 6px; cursor: col-resize; background: #393f40;
         display: none; align-items: center; justify-content: center; }
       #terminal-hole.split #pane-divider { display: flex; }
+      /* A config split with `side = "left"` puts the SECOND pane first. Flex `order` only —
+         the DOM order (primary, divider, secondary) and the pane→index contract
+         (`reportRect`'s 0 = primary, 1 = secondary) are untouched, so every rect, focus and
+         close path stays index-based. Toggled by setSplitVisible alongside `.split`. */
+      #terminal-hole.secondary-left #pane-secondary { order: -2; }
+      #terminal-hole.secondary-left #pane-divider { order: -1; }
       #pane-close { width: 14px; height: 14px; line-height: 14px; text-align: center;
         font-size: 10px; border-radius: 3px; background: rgba(0,0,0,.45); color: #fff;
         cursor: pointer; user-select: none; }
@@ -205,23 +211,42 @@
       // hinted or not, so all of them converge on the same value once any one of them has
       // recorded it.
       const splitById = new Map();
+      // tab id → { side, size } from `TabDto.split_layout`, rebuilt on every snapshot. Presence
+      // here is the chrome's one test for "this tab's split is declared in config": such a tab
+      // never touches localStorage (the config is its memory), ✕ holds only until relaunch, and
+      // a drag is remembered in `ratioOverride` below rather than persisted.
+      const splitLayoutById = new Map();
+      // tab id → the PRIMARY's dragged fraction for a config-split tab, held only while the
+      // tab's terminals are live — cleared when it goes cold (applyUnloaded, a snapshot with no
+      // live pane) and when its split collapses. An app restart clears it by construction.
+      const ratioOverride = new Map();
+      const primaryFracFromLayout = (layout) => 1 - layout.size; // `size` is the SECOND pane's share
       // tab id → 'on' | 'ghost' | 'off' (probe presence), for probe-enabled tabs. The backend
       // sends these strings verbatim (they ARE chrome-core's wire values) — do not re-derive
       // them from a boolean; presence has been 3-state since exit 3 ("recoverable") shipped.
       const session = new Map();
 
-      // Split layout persists OUTSIDE the TOML, deliberately: the config file describes tabs,
-      // and a runtime split is not a tab. Same home as the sidebar width. Key presence IS the
+      // A RUNTIME split persists here, outside the TOML; a config split's memory is the config
+      // itself (see `splitLayoutById`). Same home as the sidebar width. Key presence IS the
       // split flag; the value carries only the divider ratio.
       const splitKey = (tabId) => `split:${myLabel}:${tabId}`;
 
       function saveSplit(tabId, ratio) {
+        if (splitLayoutById.has(tabId)) { ratioOverride.set(tabId, ratio); return; }
         try { localStorage.setItem(splitKey(tabId), JSON.stringify({ ratio })); } catch (e) {}
       }
       function clearSplit(tabId) {
+        ratioOverride.delete(tabId);
         try { localStorage.removeItem(splitKey(tabId)); } catch (e) {}
       }
+      // The ratio a split of `tabId` should show: a config split's in-memory override, else its
+      // declared size; a runtime split's persisted ratio. `null` = no split on record.
       function loadSplit(tabId) {
+        const layout = splitLayoutById.get(tabId);
+        if (layout) {
+          const o = ratioOverride.get(tabId);
+          return { ratio: Number.isFinite(o) ? o : primaryFracFromLayout(layout) };
+        }
         try {
           const raw = localStorage.getItem(splitKey(tabId));
           if (!raw) return null;
@@ -256,7 +281,9 @@
       function evictSplits(currentTabIds) {
         try {
           const prefix = `split:${myLabel}:`;
-          const live = new Set(currentTabIds);
+          // A tab that gained a config split evicts too — its key would otherwise re-split it
+          // from stale memory if the config split were later removed.
+          const live = new Set([...currentTabIds].filter((id) => !splitLayoutById.has(id)));
           for (let i = localStorage.length - 1; i >= 0; i--) {
             const k = localStorage.key(i);
             if (k && k.startsWith(prefix) && !live.has(k.slice(prefix.length))) {
@@ -401,10 +428,20 @@
       // tab switch/refresh re-asserts THIS tab's own split state), `splitActiveTab`/`collapseSplit`
       // (⌘D / the divider ✕ / a secondary exiting on its own). Never poke `hidden`/`.split` directly.
       function setSplitVisible(isSplit) {
-        document.getElementById("terminal-hole").classList.toggle("split", !!isSplit);
+        const hole = document.getElementById("terminal-hole");
+        hole.classList.toggle("split", !!isSplit);
         document.getElementById("pane-divider").hidden = !isSplit;
         document.getElementById("pane-secondary").hidden = !isSplit;
-        if (!isSplit) resetSplit();
+        const layout = isSplit && activeId !== null ? splitLayoutById.get(activeId) : null;
+        hole.classList.toggle("secondary-left", !!layout && layout.side === "left");
+        if (isSplit && activeId !== null) {
+          // THIS tab's own ratio, every time — the shared pane elements keep whatever flex the
+          // last split tab shown left them at. Ahead of reportRect so the first report is right.
+          const p = loadSplit(activeId);
+          applySplitFlex(p ? p.ratio : 0.5);
+        } else {
+          resetSplit();
+        }
         reportRect();
         paintEmptyState();
         updateFocusMarker();
@@ -438,7 +475,8 @@
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
         secondarySpawnedById.forEach((_, id) => { if (!ids.has(id)) secondarySpawnedById.delete(id); });
         splitById.forEach((_, id) => { if (!ids.has(id)) splitById.delete(id); });
-        evictSplits(ids); // Task 8: same sweep — drop persisted ratios for tabs that no longer exist
+        splitLayoutById.forEach((_, id) => { if (!ids.has(id)) splitLayoutById.delete(id); });
+        ratioOverride.forEach((_, id) => { if (!ids.has(id)) ratioOverride.delete(id); });
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
         detached.clear();
@@ -453,8 +491,12 @@
           // over a tab with no secondary, self-healing only on the next `onSelect` for that tab
           // — which never comes if that tab stays selected. `res.split` is now a fast path, not
           // the sole reconciler.
+          if (t.split_layout) splitLayoutById.set(t.id, t.split_layout); else splitLayoutById.delete(t.id);
+          // Cold everywhere (a respawn, a child exit, a fresh window) → the dragged ratio is gone.
+          if (!t.spawned && !t.secondary_spawned && !t.detached) ratioOverride.delete(t.id);
           splitById.set(t.id, !!t.split);
         });
+        evictSplits(ids); // Task 8: same sweep — drop persisted ratios for tabs that no longer exist
         return {
           title: dto.title,
           colour: dto.colour ?? null,
@@ -517,6 +559,7 @@
         // that's actually dead (fix round 1, IMPORTANT 3) — the reverse, stale-false, is
         // harmless (a backstop painted under a live surface is simply invisible).
         secondarySpawnedById.set(id, false);
+        ratioOverride.delete(id);
         sb.setLive(id, false);
         if (newActive) {
           sb.setActive(newActive);
@@ -571,12 +614,13 @@
         // restart, when the split reopened flattened.
         const alreadySplit = splitById.get(id) === true;
         splitById.set(id, true);
-        setSplitVisible(true);
         // Task 8: key presence IS the split flag (see saveSplit) — persist immediately rather
         // than only once the divider is dragged, so an un-dragged 50/50 split still survives a
         // restart. Undone by collapseSplit's clearSplit below if split_pane actually fails.
-        // Only seed the default for a genuinely NEW split — see the guard above.
-        if (!alreadySplit) saveSplit(id, 0.5);
+        // Only seed the default for a genuinely NEW split — see the guard above. A config-split
+        // tab already has a declared ratio; saving 0.5 here would wrongly override it.
+        if (!alreadySplit && !splitLayoutById.has(id)) saveSplit(id, 0.5);
+        setSplitVisible(true);
         try {
           await invoke("split_pane", { id });
         } catch (err) {
@@ -660,7 +704,9 @@
                 // tab that isn't on screen — #pane-primary/#pane-secondary are the one shared
                 // element pair every tab's layout reuses.
                 const persisted = loadSplit(id);
-                if (!res.split && persisted) {
+                // A config split the backend says is closed was ✕'d on purpose and holds until
+                // relaunch — never re-split it from here.
+                if (!res.split && persisted && !splitLayoutById.has(id)) {
                   try {
                     await invoke("split_pane", { id });
                     splitById.set(id, true);
@@ -676,7 +722,6 @@
                   // last split tab shown left them at, so a tab reactivated after the race above
                   // (or simply after another split tab's own drag) needs repainting too. Ahead
                   // of setActiveId so it's correct on the first reportRect, never a 50/50 flash.
-                  if (res.split && persisted) applySplitFlex(persisted.ratio);
                   focusedPaneById.set(id, res.focused);
                   setActiveId(id, res.live, res.split); // ignore a stale reply for an old click
                   // Repaint the row's live/cold dot now the spawn has settled. setActiveId only
@@ -894,7 +939,10 @@
           if (!dragging) return;
           if (e.buttons === 0) { end(); return; }
           const usable = usableWidth();
-          if (usable > 0) setSplit(startFrac + (e.clientX - startX) / usable);
+          // The primary is on the RIGHT under `.secondary-left`, so pointer movement to the
+          // right shrinks it.
+          const sign = document.getElementById("terminal-hole").classList.contains("secondary-left") ? -1 : 1;
+          if (usable > 0) setSplit(startFrac + sign * (e.clientX - startX) / usable);
         }
         function end() {
           if (!dragging) return;
