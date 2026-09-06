@@ -168,7 +168,9 @@ unsafe extern "C" fn action_cb(
     if let Some(exit_code) = action.child_exited() {
         let event = Box::new(SurfaceEvent {
             surface_id: surface as usize,
-            signal: SurfaceSignal::ChildExited { exit_code },
+            signal: SurfaceSignal::ChildExited {
+                exit_code: Some(exit_code),
+            },
         });
         dispatch_async_f(
             main_queue(),
@@ -328,9 +330,39 @@ unsafe extern "C" fn write_clipboard_cb(
     pb.clearContents();
     pb.setString_forType(&NSString::from_str(text), NSPasteboardTypeString);
 }
-/// Surface requested close (e.g. shell exited). The spike keeps the window;
-/// teardown is `GhosttySurface::close`. No-op here.
-unsafe extern "C" fn close_surface_cb(_userdata: *mut c_void, _process_alive: bool) {}
+/// libghostty asks the app to close a surface — for warden, that IS a child exit. On a normal
+/// exit `Surface.childExited` prints its "Process exited. Press any key to close the terminal."
+/// overlay and then calls this; libghostty has done its part and is waiting on ours. (An
+/// *abnormal* exit — runtime under `abnormal-command-exit-runtime`, which a user config may set
+/// to 0 so that path never fires — goes through `SHOW_CHILD_EXITED` in `action_cb` instead; both
+/// land on the same `ChildExited`.) A no-op here is exactly the stuck overlay: every ordinary
+/// `exit` left a dead pane on screen, and only the abnormal path ever unloaded a tab.
+///
+/// `userdata` is the surface's own host view (set in `new`) — the only identity this callback
+/// carries; its `surface` ivar is the handle the app layer routes on. `process_alive == true` is
+/// a close *request* for a live process (a libghostty keybind such as `close_surface`) and is
+/// ignored: warden never lets libghostty end a running terminal — its own ⌘W/✕ do that.
+/// Deferred to the next main-queue turn exactly like the action path: this is called from inside
+/// libghostty, which is still standing on the surface.
+unsafe extern "C" fn close_surface_cb(userdata: *mut c_void, process_alive: bool) {
+    if userdata.is_null() || process_alive {
+        return;
+    }
+    let view: &WardenHostView = &*(userdata as *const WardenHostView);
+    let surface = view.ivars().surface.get();
+    if surface.is_null() {
+        return;
+    }
+    let event = Box::new(SurfaceEvent {
+        surface_id: surface as usize,
+        signal: SurfaceSignal::ChildExited { exit_code: None },
+    });
+    dispatch_async_f(
+        main_queue(),
+        Box::into_raw(event) as *mut c_void,
+        emit_event_trampoline,
+    );
+}
 
 // --- Shared app -------------------------------------------------------------
 /// Build the ghostty app exactly once. Returns 0 on failure.
@@ -1092,7 +1124,10 @@ impl GhosttySurface {
 
             // Build the surface config from defaults, then override platform/dir/shell/startup.
             let mut cfg = ffi::ghostty_surface_config_new();
-            cfg.userdata = ptr::null_mut();
+            // The host view is this surface's identity in the one runtime callback that carries
+            // no surface handle (`close_surface_cb`); it outlives the surface (dropped with this
+            // struct, after `ghostty_surface_free`), so the pointer is valid for every callback.
+            cfg.userdata = Retained::as_ptr(&host_view) as *mut c_void;
             cfg.platform_tag = ffi::ghostty_platform_e::GHOSTTY_PLATFORM_MACOS;
             cfg.platform = ffi::ghostty_platform_u {
                 macos: ffi::ghostty_platform_macos_s {

@@ -185,6 +185,25 @@ pub struct WindowState {
 /// them — the detached-label prefix exclusion is thus never even reached for these,
 /// because they aren't in the reconciled set at all. `is_empty` counts them so the home
 /// surface doesn't pop up while a detached window is the only thing on screen.
+/// The chrome half of retiring a popped-out tab's second pane, run with the lock RELEASED after
+/// [`WindowManager::close_detached_secondary`]: the detached page collapses to one hole (the
+/// surface is already gone, so its immediate re-report for pane 0 lands on the primary, and a
+/// stale pane-1 rect is dropped by `set_detached_frame`), and the origin's chrome gets the same
+/// `warden:pane-closed` a docked exit sends, so its persisted ratio goes too.
+pub fn announce_detached_secondary_closed(
+    app: &AppHandle,
+    dlabel: &str,
+    origin_label: &str,
+    tab_id: &str,
+) {
+    let _ = shell_core::detach::set_panes(app, dlabel, &[]);
+    let _ = app.emit_to(
+        origin_label,
+        "warden:pane-closed",
+        serde_json::json!({ "label": origin_label, "id": tab_id }),
+    );
+}
+
 /// Tear down a popped-out tab's surfaces on purpose — the one place a live PTY is
 /// intentionally ended by the pop-out/redock flow (and its failure arms). Goes through
 /// `close()`, never a bare `drop`: `GhosttySurface::drop` treats a surface dropped without
@@ -632,23 +651,11 @@ impl WindowManager {
         };
         match which {
             crate::registry::PaneIdx::Secondary => {
-                let (origin_label, tab_id) = {
-                    let ds = lock.detached.get_mut(&dlabel).expect("located above");
-                    if let Some(s) = ds.secondary.take() {
-                        s.close();
-                    }
-                    (ds.origin_label.clone(), ds.tab_id.clone())
+                let Some((origin_label, tab_id)) = lock.close_detached_secondary(&dlabel) else {
+                    return;
                 };
                 drop(lock);
-                // Surface retired FIRST, then the page collapses: its immediate re-report is for
-                // pane 0 only, and `set_detached_frame` drops any stale pane-1 rect on the floor
-                // now that `secondary` is `None`.
-                let _ = shell_core::detach::set_panes(app, &dlabel, &[]);
-                let _ = app.emit_to(
-                    origin_label.as_str(),
-                    "warden:pane-closed",
-                    serde_json::json!({ "label": origin_label, "id": tab_id }),
-                );
+                announce_detached_secondary_closed(app, &dlabel, &origin_label, &tab_id);
             }
             crate::registry::PaneIdx::Primary => {
                 let DetachedSurface {
@@ -693,11 +700,17 @@ impl WindowManager {
     /// the one route that catches a click on LIVE terminal content: the native `NSView` sits above
     /// the webview and consumes the click, so the chrome's own per-pane `mousedown` (which drives
     /// `focus_pane` for a cold pane's backstop) never fires for it. Both routes land on the same
-    /// registry record. A surface in a detached window is ignored — that window carries no marker.
+    /// registry record. A surface in a detached window drives that page's own ring instead, via
+    /// shell-core's `set_focused_hole` — the popped-out tab shows the same marker it did docked.
     pub fn handle_surface_focused(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
         let Some((label, _, _)) = lock.locate_surface(surface_id) else {
+            let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
+                return;
+            };
+            drop(lock);
+            let _ = shell_core::detach::set_focused_hole(app, &dlabel, which.index());
             return;
         };
         let Some(ws) = lock.windows.get_mut(&label) else {
@@ -715,6 +728,18 @@ impl WindowManager {
             "warden:pane-focused",
             serde_json::json!({ "label": label, "id": tab_id, "pane": which.index() }),
         );
+    }
+
+    /// Retire a popped-out tab's second pane: close its surface and forget it. Returns the
+    /// `(origin_label, tab_id)` the caller announces with [`announce_detached_secondary_closed`]
+    /// once the lock is released (it emits). `None` if `dlabel` isn't a detached window or has
+    /// no live secondary. Two triggers land here — the ✕ on the detached page's divider
+    /// (`close_hole`) and the scratch shell exiting on its own — one teardown.
+    pub fn close_detached_secondary(&mut self, dlabel: &str) -> Option<(String, String)> {
+        let ds = self.detached.get_mut(dlabel)?;
+        let s = ds.secondary.take()?;
+        s.close();
+        Some((ds.origin_label.clone(), ds.tab_id.clone()))
     }
 
     /// Which detached window (by label) holds the surface `surface_id`, and as which pane —

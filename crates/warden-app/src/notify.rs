@@ -254,7 +254,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
                 format!("Notification(title={title:?}, body={body:?})")
             }
             // Routed to the manager before reaching here (see the sink in `init`).
-            SurfaceSignal::ChildExited { exit_code } => format!("ChildExited({exit_code})"),
+            SurfaceSignal::ChildExited { exit_code } => format!("ChildExited({exit_code:?})"),
             SurfaceSignal::Focused => "Focused (routed to the manager)".to_string(),
         };
         dbglog(&format!(

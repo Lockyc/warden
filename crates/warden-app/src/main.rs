@@ -428,6 +428,23 @@ fn focus_pane(
     }
 }
 
+/// The close control on a divider in a popped-out window — shell-core's `close_hole { pane }`
+/// contract, only ever invoked with 2+ holes, so `pane` names warden's secondary or nothing.
+/// Same teardown and the same chrome tail as the scratch shell exiting there.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn close_hole(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, pane: usize) {
+    use tauri::Manager;
+    if registry::PaneIdx::from_index(pane) != registry::PaneIdx::Secondary {
+        return;
+    }
+    let app = window.app_handle().clone();
+    let closed = state.lock().close_detached_secondary(window.label());
+    if let Some((origin, tab)) = closed {
+        manager::announce_detached_secondary_closed(&app, window.label(), &origin, &tab);
+    }
+}
+
 /// A popped-out tab's window opens at this size the FIRST time that tab is popped — a single
 /// terminal needs far less than a full multi-tab window's config-resolved default (1500×1000).
 ///
@@ -1326,6 +1343,7 @@ fn main() {
             split_pane,
             close_pane,
             focus_pane,
+            close_hole,
             pop_out_tab,
             raise_popped_window,
             pop_in_tab,
