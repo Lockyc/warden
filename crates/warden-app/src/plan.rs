@@ -46,6 +46,7 @@ pub fn tab_to_plan(root_dirs: &HashMap<&str, &Path>, t: &Tab) -> TabPlan {
             kill: t.kill.clone(),
             tree,
             tree_path,
+            split: t.split.clone(),
         },
         load_on_open: t.load_on_open,
     }
@@ -568,6 +569,7 @@ colour = "#0f8a8a"
                 group: Some("Dev".into()),
                 probe: None,
                 kill: None,
+                split: None,
             }],
             roots: vec![Root {
                 name: "Dev".into(),
@@ -577,6 +579,7 @@ colour = "#0f8a8a"
                 startup: None,
                 probe: None,
                 kill: None,
+                split: None,
             }],
         };
         let spec = window_to_spec(&win, "dev".into());
@@ -846,6 +849,7 @@ colour = "#111111"
             group: Some("Dev".into()),
             probe: None,
             kill: None,
+            split: None,
         };
         let recon = Reconciliation {
             open: Vec::new(),
@@ -876,6 +880,7 @@ colour = "#111111"
                     startup: None,
                     probe: None,
                     kill: None,
+                    split: None,
                 }],
             }],
             format_on_save: false,
@@ -925,6 +930,7 @@ colour = "#111111"
             startup: None,
             probe: None,
             kill: None,
+            split: None,
         };
         let mk_window = |tabs: Vec<Tab>| Window {
             title: "w".into(),
@@ -958,6 +964,7 @@ colour = "#111111"
             group: Some("Developer".into()),
             probe: None,
             kill: None,
+            split: None,
         };
         let old = mk_cfg(vec![discovered]);
 
@@ -974,6 +981,7 @@ colour = "#111111"
             group: Some("tools".into()),
             probe: None,
             kill: None,
+            split: None,
         };
         let new = mk_cfg(vec![curated]);
 

@@ -1241,6 +1241,7 @@ mod tests {
             kill: None,
             tree: false,
             tree_path: Vec::new(),
+            split: None,
         }
     }
 
@@ -1325,6 +1326,7 @@ mod tests {
             detached: false,
             secondary_spawned: false,
             split: false,
+            split_layout: None,
             presence: None,
         }
     }
