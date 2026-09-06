@@ -1,4 +1,4 @@
-use crate::model::{Config, Tab, Window};
+use crate::model::{Config, Split, Tab, Window};
 use crate::Colour;
 
 /// The in-place, non-respawn metadata of a kept tab — fields a consumer can apply to a *live*
@@ -14,6 +14,11 @@ pub struct TabMeta {
     /// re-renders the row without respawning its terminal. Always carried (it's the
     /// tab's current title), so a metadata update always relabels to the current title.
     pub title: String,
+    /// The kept tab's current declared split. Carried on every metadata update (like
+    /// `title`); a `side`/`size`-only change is a live re-layout, so it rides here. A change
+    /// to the split's PRESENCE or `startup` is a terminal-spec change and rides
+    /// `respawn_tabs` instead — the second pane has to be (re)spawned to run it.
+    pub split: Option<Split>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,12 +40,14 @@ pub struct Reconciliation {
 ///   `tab_order` always carries the full new ordered key list so the consumer
 ///   can reorder the live tab strip without killing sessions.
 /// - `set_meta`: a kept tab's in-place metadata (the display `title`, `group`,
-///   `probe`, or `kill`) changed. Each entry is `(key, TabMeta)` carrying the new
-///   values; the consumer applies them WITHOUT respawning (presentation +
-///   externally-run commands).
-/// - `respawn_tabs`: a kept tab's terminal spec (`dir`, `shell`, `cmd`, or
-///   `load_on_open`) changed. The consumer tears down and respawns that tab in
-///   place, carrying its new full `Tab`.
+///   `probe`, `kill`, or split `side`/`size`) changed. Each entry is `(key, TabMeta)`
+///   carrying the new values; the consumer applies them WITHOUT respawning (presentation +
+///   externally-run commands + live re-layout). A split `side`/`size`-only change is a
+///   live re-layout; split presence or `startup` change rides `respawn_tabs` instead.
+/// - `respawn_tabs`: a kept tab's terminal spec (`dir`, `shell`, `startup`, `load_on_open`,
+///   or split presence/`startup`) changed. The consumer tears down and respawns that tab in
+///   place, carrying its new full `Tab`. Split presence or `startup` change is a terminal-spec
+///   change because the second pane has to be (re)spawned to run it.
 ///
 /// **What is NOT detected:**
 /// - A kept window's `width` or `height` change. Window size is owned by
@@ -83,9 +90,11 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 /// - For a kept window: colour change, tab add/remove (by `Tab::key` —
 ///   `id`-else-normalized-`dir` for a curated tab, absolute project path for a discovered one), tab
 ///   reorder (via `tab_order`), in-place metadata changes (the display `title`,
-///   `group`, `probe`, `kill`) via `set_meta`, and a kept tab's terminal-spec
-///   change (`dir`/`shell`/`cmd`/`load_on_open`) via `respawn_tabs` (respawn in
-///   place).
+///   `group`, `probe`, `kill`, and split `side`/`size`) via `set_meta`, and a kept tab's
+///   terminal-spec change (`dir`/`shell`/`startup`/`load_on_open` or split presence/`startup`)
+///   via `respawn_tabs` (respawn in place). Split `side`/`size`-only change is a live re-layout
+///   and rides `set_meta`; split presence or `startup` change is a terminal-spec change and
+///   rides `respawn_tabs`.
 ///
 /// **What is NOT detected:**
 /// - A kept window's `width` or `height` change. Window size is owned by
@@ -148,16 +157,19 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 let order_changed = kept_old != kept_new;
                 let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
                 // Kept-tab in-place diffs. Two independent signals per kept tab:
-                //  - metadata (title/group/probe/kill) → live apply, no respawn.
-                //  - terminal spec (dir/shell/startup/load_on_open) → respawn in place.
+                //  - metadata (title/group/probe/kill/split side+size) → live apply, no respawn.
+                //  - terminal spec (dir/shell/startup/load_on_open/split presence+startup) → respawn in place.
                 let mut set_meta: Vec<(String, TabMeta)> = Vec::new();
                 let mut respawn_tabs: Vec<Tab> = Vec::new();
                 for nt in &np.tabs {
                     if let Some(ot) = op.tabs.iter().find(|ot| ot.key == nt.key) {
+                        let layout = |t: &Tab| t.split.as_ref().map(|s| (s.side, s.size));
+                        let second_cmd = |t: &Tab| t.split.as_ref().map(|s| s.startup.clone());
                         if ot.title != nt.title
                             || ot.group != nt.group
                             || ot.probe != nt.probe
                             || ot.kill != nt.kill
+                            || layout(ot) != layout(nt)
                         {
                             set_meta.push((
                                 nt.key.clone(),
@@ -166,6 +178,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                                     probe: nt.probe.clone(),
                                     kill: nt.kill.clone(),
                                     title: nt.title.clone(),
+                                    split: nt.split.clone(),
                                 },
                             ));
                         }
@@ -173,6 +186,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                             || ot.shell != nt.shell
                             || ot.startup != nt.startup
                             || ot.load_on_open != nt.load_on_open
+                            || second_cmd(ot) != second_cmd(nt)
                         {
                             respawn_tabs.push(nt.clone());
                         }
@@ -414,6 +428,7 @@ colour = "#0f8a8a"
                     probe: None,
                     kill: None,
                     title: "api".to_string(),
+                    split: None,
                 }
             )]
         );
@@ -452,6 +467,7 @@ colour = "#0f8a8a"
                     probe: None,
                     kill: None,
                     title: "api".to_string(),
+                    split: None,
                 }
             )]
         );
@@ -492,6 +508,7 @@ colour = "#0f8a8a"
                     probe: Some("probe-new".to_string()),
                     kill: None,
                     title: "api".to_string(),
+                    split: None,
                 }
             )]
         );
@@ -533,6 +550,7 @@ colour = "#0f8a8a"
                     probe: None,
                     kill: Some("kill-new".to_string()),
                     title: "api".to_string(),
+                    split: None,
                 }
             )]
         );
@@ -684,5 +702,69 @@ colour = "#0f8a8a"
 "##;
         let r = reconcile(&cfg(same), &cfg(same));
         assert!(r.update.is_empty(), "identical grouped config is a no-op");
+    }
+
+    /// A kept tab whose split `size` changes is a live relabel (set_meta), never a respawn.
+    #[test]
+    fn split_size_change_rides_set_meta_not_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  dir = "/tmp/alpha"
+  [window.tab.split]
+  size = 0.3
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  dir = "/tmp/alpha"
+  [window.tab.split]
+  size = 0.4
+  side = "left"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert!(u.respawn_tabs.is_empty());
+        assert_eq!(u.set_meta.len(), 1);
+        let s = u.set_meta[0].1.split.as_ref().unwrap();
+        assert_eq!((s.side, s.size), (crate::SplitSide::Left, 0.4));
+    }
+
+    /// Adding/removing the split, or changing its cmd, is a terminal-spec change → respawn.
+    #[test]
+    fn split_presence_or_cmd_change_rides_respawn() {
+        let none = cfg(BASE);
+        let with = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/alpha"
+  [window.tab.split]
+  cmd = "scratch"
+"##);
+        let other_cmd = cfg(r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/alpha"
+  [window.tab.split]
+  cmd = "other"
+"##);
+        for (a, b) in [(&none, &with), (&with, &none), (&with, &other_cmd)] {
+            let r = reconcile(a, b);
+            assert_eq!(r.update.len(), 1);
+            assert_eq!(r.update[0].respawn_tabs.len(), 1, "{a:?} → {b:?}");
+        }
+        // Identical splits → no update at all.
+        assert!(reconcile(&with, &with).update.is_empty());
     }
 }
