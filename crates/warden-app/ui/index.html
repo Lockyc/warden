@@ -55,9 +55,8 @@
          corner mask trims exactly that notch today, but the ground is on regardless — the same
          always-on-ground ruling as `.pane`/`#empty-state`, one box further out again, so a
          corner that is rounded but not masked (a radius mismatch, a future edge) can never leak
-         wallpaper. `overflow: hidden` clips the focused pane's halo — see `.pane.focused`. */
-      #terminal-hole { flex: 1; background: var(--pane-ground); position: relative; display: flex;
-        overflow: hidden; }
+         wallpaper. */
+      #terminal-hole { flex: 1; background: var(--pane-ground); position: relative; display: flex; }
       /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the pane's
          OUTER box identical whether or not `.focused` is applied — only the border's COLOR
          changes, never the box's size, so toggling focus can never jitter layout for a frame.
@@ -93,15 +92,12 @@
          reasoning, as shell-core's `.hole.focused` in `detach.html` — the two rules must stay
          identical, the way the two dividers do.
 
-         The halo (`box-shadow`) is the "electric" glow. The native surface composites ABOVE this
-         webview and covers the content box, so an INSET glow would be invisible; an OUTER one
-         shows in the divider strip between the panes — exactly where the eye looks to answer
-         "which one is typing". `z-index: 1` paints it over the divider (a later sibling of the
-         primary), and `#terminal-hole` clips it so it never spills onto the sidebar or the
-         transparent canvas at the window edge. */
+         Ring ONLY — no `box-shadow` halo. The native surface covers the content box, so a glow
+         could show nowhere but the 5px divider strip, where it bled across the gap and read as
+         one thick coloured line at the divider (shipped, then pulled). The "electric" is the
+         colour alone. */
       /* `overflow: hidden` clips `#empty-state` (and anything else inside) to the rounded padding
-         box, so a square-cornered child can never paint over the ring's curve; it does not clip
-         the pane's own `box-shadow` halo (that is outside the box, clipped by #terminal-hole). */
+         box, so a square-cornered child can never paint over the ring's curve. */
       .pane { position: relative; background: var(--pane-ground); box-sizing: border-box;
         border: 1px solid transparent; overflow: hidden; }
       /* WHICH corners round (see `--pane-radius`): in the docked window the hole's TOP is the
@@ -115,9 +111,8 @@
       #terminal-hole.split:not(.secondary-left) #pane-primary { border-radius: 0; }
       #terminal-hole.split:not(.secondary-left) #pane-secondary {
         border-radius: 0 var(--pane-radius) var(--pane-radius) 0; }
-      #terminal-hole.split .pane.focused { z-index: 1;
-        --ring: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62);
-        border-color: var(--ring); box-shadow: 0 0 6px var(--ring); }
+      #terminal-hole.split .pane.focused {
+        border-color: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
       #pane-primary { flex: 1 1 0; }
       #pane-secondary { flex: 1 1 0; display: none; }
       #terminal-hole.split #pane-secondary { display: block; }
