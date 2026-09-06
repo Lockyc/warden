@@ -888,14 +888,20 @@ fn set_hole_rect(
         return;
     };
     let view_h = size.height as f64 / scale;
-    let view_rect = geometry::web_rect_to_view(
-        WebRect {
-            x,
-            y,
-            width,
-            height,
-        },
-        view_h,
+    // Snapped INWARD to the device-pixel grid: the page's flex layout puts a divider edge on a
+    // fractional pixel at some window widths, and a frame rounded any other way spills over the
+    // focus ring's column there — see `geometry::snap_inward`.
+    let view_rect = geometry::snap_inward(
+        geometry::web_rect_to_view(
+            WebRect {
+                x,
+                y,
+                width,
+                height,
+            },
+            view_h,
+        ),
+        scale,
     );
 
     // None is the single-hole caller (shell-core's detach.html when it declares no panes, and
