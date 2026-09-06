@@ -20,8 +20,10 @@ pub enum SurfaceSignal {
     Notification { title: String, body: String },
     /// The surface's child process exited — the terminal is dead. The surface stays alive rendering
     /// libghostty's "Process exited" overlay until the app tears it down, so the app layer unloads
-    /// the tab back to **cold** (its dot goes dark; focusing it respawns).
-    ChildExited { exit_code: u32 },
+    /// the tab back to **cold** (its dot goes dark; focusing it respawns). Raised from two
+    /// libghostty entry points: the runtime's `close_surface_cb` for a normal exit (no exit code
+    /// travels with it → `None`) and the `SHOW_CHILD_EXITED` action for an abnormal one.
+    ChildExited { exit_code: Option<u32> },
     /// The surface became its window's first responder — the user clicked into it, or the app
     /// focused it. The app layer records which pane the tab is now typing in (`Registry::
     /// focus_pane`), which `activate` re-focuses from on a later tab switch. Without it a click

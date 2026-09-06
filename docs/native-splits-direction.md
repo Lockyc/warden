@@ -76,7 +76,9 @@ only by eye. Each step below is written to actually fail if the feature regresse
   exactly as a docked exit does.
 - The ratio survives an app restart (persisted in `localStorage`, keyed per tab).
 - Popping out an unsplit tab is unchanged — one hole, no `panes` in the detach payload.
-- Popping out a split tab carries both panes into the detached window at the same ratio.
+- Popping out a split tab carries both panes into the detached window at the same ratio,
+  with the same divider, ✕ and focus ring; the ✕ closes the second pane there too, and
+  clicking either pane moves the ring.
 - Closing the detached window returns both panes to the origin, still live.
 - **The focused-pane marker** — the accent border — follows every click, into live terminal
   content and onto a cold pane's backstop alike, and after switching tabs away and back it
