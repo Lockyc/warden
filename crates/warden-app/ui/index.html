@@ -15,6 +15,14 @@
          below) instead of each carrying their own literal — this repo's rule against restating a
          value that already lives somewhere. */
       :root { --pane-ground: #0e1516; }
+      /* The pane's corner radius = the WINDOW's own corner radius (16pt, measured on macOS 26),
+         so a pane at the window's edge curves with the window instead of its ring running
+         square into a corner the window has already rounded off. All four corners, so each pane
+         reads as one rounded card against the sidebar and the divider, not a shape that changes
+         with where it sits. The native surface's render layer carries the concentric inner
+         radius (`SURFACE_CORNER_RADIUS` in surface/ghostty.rs — this less the 1px border);
+         change both together. shell-core's detach.html mirrors it as `--hole-radius`. */
+      :root { --pane-radius: 16px; }
       html, body {
         margin: 0;
         height: 100%;
@@ -39,8 +47,13 @@
          `hidden` attribute being present). `hidden` is kept in lockstep with `.split` purely for
          semantics/JS convenience (`secEl.hidden` reads) — setSplitVisible is the only place that
          ever sets either, so they cannot diverge. */
-      #terminal-hole { flex: 1; background: transparent; position: relative; display: flex;
-        overflow: hidden; /* clips the focused pane's halo — see `.pane.focused` */ }
+      /* The hole paints the pane ground itself: the panes are rounded (`--pane-radius`), so the
+         notch outside each corner is the hole's own canvas — transparent, it would be four
+         slivers of wallpaper per pane. Same always-on-ground ruling as `.pane`/`#empty-state`,
+         one box further out again. `overflow: hidden` clips the focused pane's halo — see
+         `.pane.focused`. */
+      #terminal-hole { flex: 1; background: var(--pane-ground); position: relative; display: flex;
+        overflow: hidden; }
       /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the pane's
          OUTER box identical whether or not `.focused` is applied — only the border's COLOR
          changes, never the box's size, so toggling focus can never jitter layout for a frame.
@@ -82,8 +95,11 @@
          "which one is typing". `z-index: 1` paints it over the divider (a later sibling of the
          primary), and `#terminal-hole` clips it so it never spills onto the sidebar or the
          transparent canvas at the window edge. */
+      /* `overflow: hidden` clips `#empty-state` (and anything else inside) to the rounded padding
+         box, so a square-cornered child can never paint over the ring's curve; it does not clip
+         the pane's own `box-shadow` halo (that is outside the box, clipped by #terminal-hole). */
       .pane { position: relative; background: var(--pane-ground); box-sizing: border-box;
-        border: 1px solid transparent; }
+        border: 1px solid transparent; border-radius: var(--pane-radius); overflow: hidden; }
       #terminal-hole.split .pane.focused { z-index: 1;
         --ring: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62);
         border-color: var(--ring); box-shadow: 0 0 6px var(--ring); }
