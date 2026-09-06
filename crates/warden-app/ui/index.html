@@ -693,10 +693,11 @@
                 return { live: false, split: false, focused: 0 };
               });
               if (activeId === id) {
-                // Task 8: the backend has no memory of a split across a restart — it's not in
-                // the TOML, only localStorage remembers it. `res.split` is the backend's
-                // authoritative CURRENT answer; when it says no but a ratio is on record,
-                // recreate the split structurally.
+                // A RUNTIME (⌘D) split is not in the TOML, so the backend has no memory of it
+                // across a restart — only localStorage remembers it. `res.split` is the
+                // backend's authoritative CURRENT answer; when it says no but a ratio is on
+                // record for a tab with no config split, recreate the split structurally. (A
+                // config split needs no restore: `Registry::add` declares it from `TabSpec.split`.)
                 //
                 // Fix round 1, IMPORTANT 2: bookkeeping (`splitById`, `res.split`) lands for
                 // `id` UNCONDITIONALLY — even if the user has switched to a different tab while
