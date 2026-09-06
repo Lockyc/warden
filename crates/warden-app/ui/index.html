@@ -39,7 +39,8 @@
          `hidden` attribute being present). `hidden` is kept in lockstep with `.split` purely for
          semantics/JS convenience (`secEl.hidden` reads) — setSplitVisible is the only place that
          ever sets either, so they cannot diverge. */
-      #terminal-hole { flex: 1; background: transparent; position: relative; display: flex; }
+      #terminal-hole { flex: 1; background: transparent; position: relative; display: flex;
+        overflow: hidden; /* clips the focused pane's halo — see `.pane.focused` */ }
       /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the pane's
          OUTER box identical whether or not `.focused` is applied — only the border's COLOR
          changes, never the box's size, so toggling focus can never jitter layout for a frame.
@@ -61,12 +62,31 @@
          border box including the ring, `#empty-state` the inner content box) for different
          historical reasons, but they must never carry two different literals for one colour.
          Only visible while split (a single unsplit pane needs no "which one types" marker) —
-         Step 3's discoverability requirement ("the focused pane must be visibly marked"). #4aa3e0
-         matches chrome-core's own active-row accent bar (`--cc-active-bar`), the app's one accent
-         color. */
+         Step 3's discoverability requirement ("the focused pane must be visibly marked").
+
+         The ring colour is the WINDOW's colour (`--accent`, set on the root by `applyDto` from the
+         window DTO — the same value chrome-core paints the banner) pushed to an "electric"
+         register with relative colour syntax: the window's own HUE, saturation floored at 85 and
+         lightness pinned at 62, so a dark navy window rings electric blue and a forest green rings
+         neon green — the pane belongs to its window at a glance, and the ring still pops against
+         the dark ground whatever the user picked. The same lift-the-hue idea as chrome-core's
+         `liftColour` for the sidebar's active bar, so the two accents read as one. The neutral
+         no-colour fallback (chrome-core's `NEUTRAL_COLOUR` slate, hue ≈220) resolves to an
+         electric blue, so a colourless window gets a ring, not grey. Same formula, same
+         reasoning, as shell-core's `.hole.focused` in `detach.html` — the two rules must stay
+         identical, the way the two dividers do.
+
+         The halo (`box-shadow`) is the "electric" glow. The native surface composites ABOVE this
+         webview and covers the content box, so an INSET glow would be invisible; an OUTER one
+         shows in the divider strip between the panes — exactly where the eye looks to answer
+         "which one is typing". `z-index: 1` paints it over the divider (a later sibling of the
+         primary), and `#terminal-hole` clips it so it never spills onto the sidebar or the
+         transparent canvas at the window edge. */
       .pane { position: relative; background: var(--pane-ground); box-sizing: border-box;
         border: 1px solid transparent; }
-      #terminal-hole.split .pane.focused { border-color: #4aa3e0; }
+      #terminal-hole.split .pane.focused { z-index: 1;
+        --ring: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62);
+        border-color: var(--ring); box-shadow: 0 0 6px var(--ring); }
       #pane-primary { flex: 1 1 0; }
       #pane-secondary { flex: 1 1 0; display: none; }
       #terminal-hole.split #pane-secondary { display: block; }
@@ -537,6 +557,11 @@
 
       function applyDto(dto) {
         sb.update(toComponentDto(dto));
+        // The window colour on the ROOT, for the pane focus ring (`.pane.focused` reads it —
+        // the panes sit outside chrome-core's sidebar root, so its own tokens never reach them).
+        // Hot-reload re-runs this, so a `colour` edit re-tints the ring with the banner.
+        if (dto.colour) document.documentElement.style.setProperty("--accent", dto.colour);
+        else document.documentElement.style.removeProperty("--accent");
         if (!dto.tabs.length) {
           setActiveId(null, false); // zero tabs → blank; the ≥1 case fires onSelect
         } else if (activeId !== null) {
