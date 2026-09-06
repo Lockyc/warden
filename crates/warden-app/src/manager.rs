@@ -622,9 +622,8 @@ impl WindowManager {
                     // `warden:tab-exited` means "the whole tab went cold" to the chrome
                     // (`applyUnloaded`) — wrong here, since the tab and its primary are still
                     // live. `warden:pane-closed` is the narrower signal: it tells the chrome to
-                    // collapse the split (`setSplitVisible(false)`) for exactly this tab, mirroring
-                    // what the divider ✕ (`close_pane`) already does client-side, without touching
-                    // the tab-level dot/highlight.
+                    // collapse the split (`setSplitVisible(false)`) for exactly this tab, without
+                    // touching the tab-level dot/highlight.
                     let _ = app.emit_to(
                         label.as_str(),
                         "warden:pane-closed",
@@ -733,8 +732,8 @@ impl WindowManager {
     /// Retire a popped-out tab's second pane: close its surface and forget it. Returns the
     /// `(origin_label, tab_id)` the caller announces with [`announce_detached_secondary_closed`]
     /// once the lock is released (it emits). `None` if `dlabel` isn't a detached window or has
-    /// no live secondary. Two triggers land here — the ✕ on the detached page's divider
-    /// (`close_hole`) and the scratch shell exiting on its own — one teardown.
+    /// no live secondary. The scratch shell exiting on its own is what lands here (the detached
+    /// page's divider carries no close control).
     pub fn close_detached_secondary(&mut self, dlabel: &str) -> Option<(String, String)> {
         let ds = self.detached.get_mut(dlabel)?;
         let s = ds.secondary.take()?;

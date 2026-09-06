@@ -51,8 +51,8 @@ pub struct TabDto {
     pub split: bool,
     /// The declared (config) split's layout, or `None` for a tab with no config split — a
     /// runtime ⌘D split reports `None` here and `split: true` above. The chrome keys its
-    /// "config split vs runtime split" behaviour (where the ratio is remembered, whether ✕
-    /// is permanent) on this field's presence.
+    /// "config split vs runtime split" behaviour (where the ratio is remembered, whether a
+    /// closed pane stays closed) on this field's presence.
     pub split_layout: Option<SplitLayoutDto>,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
@@ -334,7 +334,7 @@ impl Registry {
         };
         // `close()`, never a bare `take()` that lets `Drop` free it: `GhosttySurface::drop`
         // treats being dropped without `close()` as a registry bug and says so in debug
-        // builds, so a plain take made the divider ✕ — the ordinary way a split ends — print a
+        // builds, so a plain take made the second shell exiting — the way a split ends — print a
         // false bug report every time. Same `mem::replace` + `close()` shape as `unload`,
         // `remove` and `close_all`.
         let had = match t.secondary.take() {
@@ -678,7 +678,7 @@ impl Registry {
                 }
             }
         }
-        // A config split the user ✕'d comes back on relaunch — this is the relaunch. Declared
+        // A config split whose shell exited comes back on relaunch — this is the relaunch. Declared
         // cold; the next `activate` spawns it with the primary.
         if self.tabs[idx].secondary.is_none() && self.tabs[idx].primary.spec.split.is_some() {
             self.split(id);
@@ -1653,7 +1653,7 @@ mod tests {
         assert!(r.close_secondary("a"));
         assert!(!r.is_split("a"));
         // Nothing is live, so `unload` returns None — but it still re-declares the pane, which
-        // is what "✕ holds only until the tab is relaunched" means structurally.
+        // is what "a closed pane holds only until the tab is relaunched" means structurally.
         assert_eq!(r.unload("a"), None);
         assert!(r.is_split("a"));
         assert_eq!(r.tab_dtos()[0].split_layout.as_ref().unwrap().size, 0.3);
