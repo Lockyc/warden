@@ -81,12 +81,17 @@ const NS_KEYCODE_GRAVE: u16 = 0x32;
 
 /// Corner radius (AppKit points) of a surface's render layer. The chrome's pane ring
 /// (`--pane-radius` in ui/index.html, mirrored by `--hole-radius` in shell-core's detach.html)
-/// is the WINDOW's own corner radius — 16pt, measured on macOS 26 — so a pane corner that IS a
-/// window corner curves with it; this is that radius less the ring's 1px border, so the
-/// surface's curve sits concentrically inside the ring's. Restated here rather than read from
-/// the page because the two live on opposite sides of the native/web seam (same precedent as
-/// the layer ground colour set beside it in `new`, which matches `--pane-ground`); change both
-/// together. WHICH corners round is not a constant — see [`apply_corner_mask`].
+/// is the WINDOW's own corner — Apple's CONTINUOUS curve at 16pt, measured on macOS 26 off the
+/// window's alpha mask, not a circle — so a pane corner that IS a window corner curves with it;
+/// this is that radius less the ring's 1px border, so the surface's curve sits concentrically
+/// inside the ring's. The layer's corner CURVE is set to continuous beside the radius (in `new`):
+/// the page draws the ring with Apple's own per-corner Béziers, and CALayer's continuous curve
+/// is the same construction, so the surface's edge and the ring's inner edge coincide. A
+/// circular layer corner under a continuous ring (or vice versa) shows as a sliver of ring or
+/// ground at every window corner. Restated here rather than read from the page because the two
+/// live on opposite sides of the native/web seam (same precedent as the layer ground colour set
+/// beside it in `new`, which matches `--pane-ground`); change both together. WHICH corners
+/// round is not a constant — see [`apply_corner_mask`].
 const SURFACE_CORNER_RADIUS: f64 = 15.0;
 
 /// How close (points) a surface's edge must sit to the window's edge to count as touching it,
@@ -1308,7 +1313,12 @@ impl GhosttySurface {
                 // layer's own background. WHICH corners: `apply_corner_mask`, from geometry. The
                 // corner cost is a sliver of the outermost cells' corners, inside libghostty's
                 // default 2pt window padding; the same trade Ghostty.app makes at its own corners.
+                // The curve is CONTINUOUS (`kCACornerCurveContinuous`, the string "continuous"),
+                // matching the window's own corner and the ring's Béziers — see the
+                // `SURFACE_CORNER_RADIUS` doc comment.
                 let _: () = msg_send![layer, setCornerRadius: SURFACE_CORNER_RADIUS];
+                let curve = NSString::from_str("continuous");
+                let _: () = msg_send![layer, setCornerCurve: &*curve];
                 let _: () = msg_send![layer, setMasksToBounds: true];
                 apply_corner_mask(&host_view);
             }
