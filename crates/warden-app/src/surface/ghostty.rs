@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use objc2::rc::{Allocated, Retained};
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{
     class, declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass,
 };
@@ -850,7 +850,9 @@ impl WardenHostView {
         if self.isHidden() {
             return false;
         }
-        let Some(window) = self.window() else { return false };
+        let Some(window) = self.window() else {
+            return false;
+        };
         match window.firstResponder() {
             Some(fr) if fr.is_kind_of::<WardenHostView>() => {
                 let me: &NSResponder = self;
