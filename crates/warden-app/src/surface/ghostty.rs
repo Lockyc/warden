@@ -79,6 +79,15 @@ const NS_FLAG_COMMAND: usize = 1 << 20;
 // across keyboard layouts (the shortcut follows the physical key, not the "`" character).
 const NS_KEYCODE_GRAVE: u16 = 0x32;
 
+/// Corner radius (AppKit points) of a surface's render layer. The chrome's pane ring
+/// (`--pane-radius` in ui/index.html, mirrored by `--hole-radius` in shell-core's detach.html)
+/// is the WINDOW's own corner radius — 16pt, measured on macOS 26 — so a pane at the window's
+/// edge curves with it; this is that radius less the ring's 1px border, so the surface's
+/// curve sits concentrically inside the ring's. Restated here rather than read from the page
+/// because the two live on opposite sides of the native/web seam (same precedent as the layer
+/// ground colour set beside it in `new`, which matches `--pane-ground`); change both together.
+const SURFACE_CORNER_RADIUS: f64 = 15.0;
+
 // --- Process-global state ---------------------------------------------------
 // The shared ghostty app handle (created once). Stored as usize so the static
 // is trivially Send/Sync; reconstituted to a pointer on read.
@@ -1237,6 +1246,16 @@ impl GhosttySurface {
                 // `CGColor` is autoreleased (Get rule); setBackgroundColor: retains it.
                 let cg: *mut CGColor = msg_send![color, CGColor];
                 let _: () = msg_send![layer, setBackgroundColor: cg];
+                // Round the surface's corners to sit concentrically inside the chrome's rounded
+                // pane ring (`.pane`'s `border-radius` in ui/index.html, and `.hole`'s in shell-
+                // core's detach.html): the surface composites ABOVE the webview, so without this
+                // its square corners paint straight over the ring's curve. `masksToBounds` is what
+                // actually clips the Metal contents — `cornerRadius` alone rounds only the layer's
+                // own background. The corner cost is a sliver of the outermost cells' corners,
+                // inside libghostty's default 2pt window padding; the same trade Ghostty.app makes
+                // at its window corners.
+                let _: () = msg_send![layer, setCornerRadius: SURFACE_CORNER_RADIUS];
+                let _: () = msg_send![layer, setMasksToBounds: true];
             }
 
             // Let a surface-targeted action reach this view (mouse-cursor shape). Removed in
