@@ -81,12 +81,66 @@ const NS_KEYCODE_GRAVE: u16 = 0x32;
 
 /// Corner radius (AppKit points) of a surface's render layer. The chrome's pane ring
 /// (`--pane-radius` in ui/index.html, mirrored by `--hole-radius` in shell-core's detach.html)
-/// is the WINDOW's own corner radius — 16pt, measured on macOS 26 — so a pane at the window's
-/// edge curves with it; this is that radius less the ring's 1px border, so the surface's
-/// curve sits concentrically inside the ring's. Restated here rather than read from the page
-/// because the two live on opposite sides of the native/web seam (same precedent as the layer
-/// ground colour set beside it in `new`, which matches `--pane-ground`); change both together.
+/// is the WINDOW's own corner radius — 16pt, measured on macOS 26 — so a pane corner that IS a
+/// window corner curves with it; this is that radius less the ring's 1px border, so the
+/// surface's curve sits concentrically inside the ring's. Restated here rather than read from
+/// the page because the two live on opposite sides of the native/web seam (same precedent as
+/// the layer ground colour set beside it in `new`, which matches `--pane-ground`); change both
+/// together. WHICH corners round is not a constant — see [`apply_corner_mask`].
 const SURFACE_CORNER_RADIUS: f64 = 15.0;
+
+/// How close (points) a surface's edge must sit to the window's edge to count as touching it,
+/// for [`apply_corner_mask`]. The ring's 1px border insets every edge-hugging surface by 1pt,
+/// and web→AppKit rect conversion can land on a fraction; 2pt covers both with no risk of a
+/// pane on the far side of the 5px divider strip ever qualifying.
+const CORNER_TOUCH_EPS: f64 = 2.0;
+
+/// Round ONLY the corners of a surface that coincide with the window's own corners — the
+/// chrome's rule (`.pane`/`.hole` per-corner radii) restated on the native side, derived here
+/// from geometry rather than plumbed through the rect report: a corner is a window corner iff
+/// BOTH its edges touch the content view's matching edges. So a pane's corners at the divider,
+/// against the sidebar, or under the detached window's banner stay square, and the two sides of
+/// the seam agree by construction (the chrome can only round a corner that is at the window's
+/// edge, which is exactly what this measures). Called wherever the frame is set — `new`,
+/// `set_frame`, `reparent` — since a resize, a split, or a move to another window can change
+/// which corners qualify. AppKit's non-flipped coordinates: `MinY` is the BOTTOM.
+///
+/// SAFETY: main thread; `host_view` is in a window (so `superview` is its content view) and
+/// its layer exists (libghostty made it layer-hosting in `ghostty_surface_new`).
+unsafe fn apply_corner_mask(host_view: &WardenHostView) {
+    // CACornerMask bits.
+    const MIN_X_MIN_Y: usize = 1 << 0;
+    const MAX_X_MIN_Y: usize = 1 << 1;
+    const MIN_X_MAX_Y: usize = 1 << 2;
+    const MAX_X_MAX_Y: usize = 1 << 3;
+    let Some(content) = host_view.superview() else {
+        return;
+    };
+    let layer: *mut AnyObject = msg_send![host_view, layer];
+    if layer.is_null() {
+        return;
+    }
+    let f = host_view.frame();
+    let b = content.bounds();
+    let left = f.origin.x <= b.origin.x + CORNER_TOUCH_EPS;
+    let right = f.origin.x + f.size.width >= b.origin.x + b.size.width - CORNER_TOUCH_EPS;
+    let bottom = f.origin.y <= b.origin.y + CORNER_TOUCH_EPS;
+    let top = f.origin.y + f.size.height >= b.origin.y + b.size.height - CORNER_TOUCH_EPS;
+    let mut mask = 0usize;
+    if left && bottom {
+        mask |= MIN_X_MIN_Y;
+    }
+    if right && bottom {
+        mask |= MAX_X_MIN_Y;
+    }
+    if left && top {
+        mask |= MIN_X_MAX_Y;
+    }
+    if right && top {
+        mask |= MAX_X_MAX_Y;
+    }
+    let _: () = msg_send![layer, setMaskedCorners: mask];
+}
 
 // --- Process-global state ---------------------------------------------------
 // The shared ghostty app handle (created once). Stored as usize so the static
@@ -1246,16 +1300,17 @@ impl GhosttySurface {
                 // `CGColor` is autoreleased (Get rule); setBackgroundColor: retains it.
                 let cg: *mut CGColor = msg_send![color, CGColor];
                 let _: () = msg_send![layer, setBackgroundColor: cg];
-                // Round the surface's corners to sit concentrically inside the chrome's rounded
-                // pane ring (`.pane`'s `border-radius` in ui/index.html, and `.hole`'s in shell-
-                // core's detach.html): the surface composites ABOVE the webview, so without this
-                // its square corners paint straight over the ring's curve. `masksToBounds` is what
-                // actually clips the Metal contents — `cornerRadius` alone rounds only the layer's
-                // own background. The corner cost is a sliver of the outermost cells' corners,
-                // inside libghostty's default 2pt window padding; the same trade Ghostty.app makes
-                // at its window corners.
+                // Round the surface's window corners to sit concentrically inside the chrome's
+                // rounded pane ring (`.pane`'s per-corner radii in ui/index.html, `.hole`'s in
+                // shell-core's detach.html): the surface composites ABOVE the webview, so without
+                // this its square corners paint straight over the ring's curve. `masksToBounds` is
+                // what actually clips the Metal contents — `cornerRadius` alone rounds only the
+                // layer's own background. WHICH corners: `apply_corner_mask`, from geometry. The
+                // corner cost is a sliver of the outermost cells' corners, inside libghostty's
+                // default 2pt window padding; the same trade Ghostty.app makes at its own corners.
                 let _: () = msg_send![layer, setCornerRadius: SURFACE_CORNER_RADIUS];
                 let _: () = msg_send![layer, setMasksToBounds: true];
+                apply_corner_mask(&host_view);
             }
 
             // Let a surface-targeted action reach this view (mouse-cursor shape). Removed in
@@ -1376,6 +1431,7 @@ impl GhosttySurface {
                 NSSize::new(rect.width, rect.height),
             );
             self.host_view.setFrame(frame);
+            apply_corner_mask(&self.host_view);
             let scale = self.window.backingScaleFactor();
             apply_surface_geometry(self.surface, rect.width, rect.height, scale);
 
@@ -1406,6 +1462,7 @@ impl TerminalSurface for GhosttySurface {
                 NSSize::new(rect.width, rect.height),
             );
             self.host_view.setFrame(frame);
+            apply_corner_mask(&self.host_view);
             let scale = self.window.backingScaleFactor();
             apply_surface_geometry(self.surface, rect.width, rect.height, scale);
         }
