@@ -35,6 +35,9 @@ pub struct Config {
     /// Whether the sidebar chrome is a window-move drag handle. Default true.
     /// Whole-app concern — no per-window cascade.
     pub sidebar_drag: bool,
+    /// Whether the sidebar pins a section listing the currently-open tabs above the
+    /// main list. Default false. Whole-app concern — no per-window cascade.
+    pub open_tabs_section: bool,
     /// Whether warden checks for a new release on launch. Default true; `false`
     /// suppresses the automatic check (the Check-for-Updates menu item still works).
     /// Whole-app concern — no per-window cascade.

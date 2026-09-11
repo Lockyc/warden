@@ -148,6 +148,11 @@ pub struct InitDto {
     /// `sidebar_drag` config (default true). Carried per-window (it's global) so
     /// every snapshot — init and hot-reload refresh — applies the current mode.
     pub sidebar_drag: bool,
+    /// Whether the sidebar pins a section of the currently-open tabs above the main
+    /// list, from the global `open_tabs_section` config (default false). Carried
+    /// per-window (it's global) so every snapshot — init and hot-reload refresh —
+    /// applies the current mode.
+    pub open_tabs_section: bool,
     /// Whether warden checks for a new release on launch, from the global
     /// `auto_update` config (default true). Carried per-window (it's global); the
     /// chrome gates its launch-time update check on it (the menu check ignores it).
@@ -295,6 +300,7 @@ impl WindowManager {
             probe_interval: 5,
             density: warden_config::Density::default(),
             sidebar_drag: true,
+            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };
@@ -564,6 +570,7 @@ impl WindowManager {
                 colour: ws.colour.clone(),
                 density: self.last_good.density.as_str().to_string(),
                 sidebar_drag: self.last_good.sidebar_drag,
+                open_tabs_section: self.last_good.open_tabs_section,
                 auto_update: self.last_good.auto_update,
                 tabs,
                 error: ws.spawn_error.clone(),
@@ -1042,14 +1049,15 @@ impl WindowManager {
     /// in place and pushes a fresh snapshot so the chrome rebuilds its sidebar.
     /// `new_config` is the *new* effective config (roots already expanded) — its
     /// windows/roots are looked up by `reconcile_ops` to derive tree metadata for
-    /// tabs added by this reconcile, and its global settings (density, sidebar_drag)
-    /// are stamped into the refresh DTOs so a hot-reload that flips either updates the
-    /// chrome (at apply time `self.last_good` is still the old config — the caller
-    /// swaps it after apply).
+    /// tabs added by this reconcile, and its global settings (density, sidebar_drag,
+    /// open_tabs_section) are stamped into the refresh DTOs so a hot-reload that flips
+    /// any of them updates the chrome (at apply time `self.last_good` is still the old
+    /// config — the caller swaps it after apply).
     pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, new_config: &Config) {
         let ops = reconcile_ops(recon, new_config, &self.names, &self.taken_labels());
         let density = new_config.density.as_str();
         let sidebar_drag = new_config.sidebar_drag;
+        let open_tabs_section = new_config.open_tabs_section;
         let auto_update = new_config.auto_update;
         for op in ops {
             match op {
@@ -1158,6 +1166,7 @@ impl WindowManager {
                             colour: ws.colour.clone(),
                             density: density.to_string(),
                             sidebar_drag,
+                            open_tabs_section,
                             auto_update,
                             tabs,
                             // Refresh carries no spawn error; a hot-reload add

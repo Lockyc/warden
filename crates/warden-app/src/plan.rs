@@ -888,6 +888,7 @@ colour = "#111111"
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
+            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };
@@ -948,6 +949,7 @@ colour = "#111111"
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
+            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };

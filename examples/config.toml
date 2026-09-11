@@ -31,6 +31,11 @@ density        = "comfortable" # chrome sizing: "comfortable" (default) or "comp
 sidebar_drag   = true          # drag the sidebar chrome to move the window (default on; false = off)
 auto_update    = true          # check for a new release on launch (default on; menu check always works)
 
+# Pin a mirror list of the tabs that are currently open — a live terminal, or one popped out into
+# its own window — in an "Open" section above the main list. The mirrored tab keeps its row in its
+# own group/tree too, so the list below never shuffles as terminals come and go. Default off.
+open_tabs_section = false
+
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
 # dot when it exits 0. `amux --probe` exits 0 when the tab's amux session exists — the agent OR a
 # lingering frame (so the dot stays lit if the agent exits but the frame wrapper is still up). amux

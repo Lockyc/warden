@@ -252,6 +252,7 @@ pub fn resolve_with(
             probe_interval: raw.probe_interval.unwrap_or(5),
             density,
             sidebar_drag: raw.sidebar_drag.unwrap_or(true),
+            open_tabs_section: raw.open_tabs_section.unwrap_or(false),
             auto_update: raw.auto_update.unwrap_or(true),
             notify_debug: raw.notify_debug.unwrap_or(false),
         },
@@ -708,6 +709,33 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert!(!cfg.sidebar_drag);
+    }
+
+    #[test]
+    fn open_tabs_section_defaults_to_off() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.open_tabs_section);
+    }
+
+    #[test]
+    fn open_tabs_section_can_be_enabled() {
+        let (cfg, _) = resolve_str(
+            r##"
+open_tabs_section = true
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.open_tabs_section);
     }
 
     #[test]
