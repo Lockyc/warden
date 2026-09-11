@@ -171,6 +171,12 @@ pub struct WindowState {
     pub registry: Registry,
     pub title: String,
     pub colour: String,
+    /// Whether THIS window's sidebar pins the "Open" section — the cascade already
+    /// collapsed by resolve. Stamped from the spec at build, updated in place by a
+    /// hot-reload `Update` op, and read by `init_dto`/the refresh DTO. It lives here
+    /// rather than being read off `last_good` per emit because it is per-window now:
+    /// a global edit reaches a window as an ordinary reconcile diff.
+    pub open_tabs_section: bool,
     /// Surface-spawn failure(s) from `build_window`, shown once via the init DTO.
     pub spawn_error: Option<String>,
 }
@@ -300,7 +306,6 @@ impl WindowManager {
             probe_interval: 5,
             density: warden_config::Density::default(),
             sidebar_drag: true,
-            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };
@@ -519,6 +524,7 @@ impl WindowManager {
             registry,
             title: spec.title.clone(),
             colour: spec.colour.clone(),
+            open_tabs_section: spec.open_tabs_section,
             spawn_error,
         }
     }
@@ -570,7 +576,7 @@ impl WindowManager {
                 colour: ws.colour.clone(),
                 density: self.last_good.density.as_str().to_string(),
                 sidebar_drag: self.last_good.sidebar_drag,
-                open_tabs_section: self.last_good.open_tabs_section,
+                open_tabs_section: ws.open_tabs_section,
                 auto_update: self.last_good.auto_update,
                 tabs,
                 error: ws.spawn_error.clone(),
@@ -1057,7 +1063,6 @@ impl WindowManager {
         let ops = reconcile_ops(recon, new_config, &self.names, &self.taken_labels());
         let density = new_config.density.as_str();
         let sidebar_drag = new_config.sidebar_drag;
-        let open_tabs_section = new_config.open_tabs_section;
         let auto_update = new_config.auto_update;
         for op in ops {
             match op {
@@ -1087,6 +1092,7 @@ impl WindowManager {
                     order,
                     set_meta,
                     respawn_tabs,
+                    open_tabs_section,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
                         // Captured before any mutation below, so a respawn that hits the
@@ -1100,6 +1106,7 @@ impl WindowManager {
                         let current_order: Vec<String> =
                             ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
                         if colour.is_none()
+                            && open_tabs_section.is_none()
                             && add_tabs.is_empty()
                             && remove_tabs.is_empty()
                             && order == current_order
@@ -1110,6 +1117,9 @@ impl WindowManager {
                         }
                         if let Some(c) = colour {
                             ws.colour = c;
+                        }
+                        if let Some(o) = open_tabs_section {
+                            ws.open_tabs_section = o;
                         }
                         // Add/remove/respawn tabs, skipping any that are currently
                         // popped out (Detached) — see `apply_tab_reconcile`.
@@ -1166,7 +1176,7 @@ impl WindowManager {
                             colour: ws.colour.clone(),
                             density: density.to_string(),
                             sidebar_drag,
-                            open_tabs_section,
+                            open_tabs_section: ws.open_tabs_section,
                             auto_update,
                             tabs,
                             // Refresh carries no spawn error; a hot-reload add

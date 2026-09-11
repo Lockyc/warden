@@ -1476,15 +1476,15 @@ fn main() {
                                     m.load_error = None;
                                     // The app menu is global, not part of window reconcile;
                                     // rebuilt below from current state.
-                                    // Density, sidebar_drag and open_tabs_section are global too —
-                                    // a change to any of them alone yields an empty reconcile (no
-                                    // per-window op), so nudge every chrome below.
+                                    // Density + sidebar_drag are global too — a change to either
+                                    // alone yields an empty reconcile (no per-window op), so nudge
+                                    // every chrome below. `open_tabs_section` needs no entry here:
+                                    // it cascades to the window, so resolve collapses even a
+                                    // global-only edit into a per-window diff reconcile emits.
                                     let old_density = m.last_good.density;
                                     let new_density = loaded.config.density;
                                     let old_drag = m.last_good.sidebar_drag;
                                     let new_drag = loaded.config.sidebar_drag;
-                                    let old_open_section = m.last_good.open_tabs_section;
-                                    let new_open_section = loaded.config.open_tabs_section;
                                     // Recover (materialize, fresh-launch semantics that respect
                                     // open_on_start) ONLY when there is no baseline to reconcile
                                     // against — an empty `last_good` means we never had a valid
@@ -1524,13 +1524,10 @@ fn main() {
                                         // Advance the reconcile baseline ONLY on a valid load.
                                         m.last_good = new_eff;
                                         m.raw_config = loaded.config.clone();
-                                        // A global-only flip produces no per-window op, so apply()
-                                        // emitted nothing; re-push every window's snapshot (now
-                                        // carrying the new globals) so each restyles.
-                                        if old_density != new_density
-                                            || old_drag != new_drag
-                                            || old_open_section != new_open_section
-                                        {
+                                        // A density/sidebar_drag flip alone produces no per-window
+                                        // op, so apply() emitted nothing; re-push every window's
+                                        // snapshot (now carrying the new globals) so each restyles.
+                                        if old_density != new_density || old_drag != new_drag {
                                             m.refresh_all_chrome(&wh);
                                         }
                                     }

@@ -33,7 +33,8 @@ auto_update    = true          # check for a new release on launch (default on; 
 
 # Pin a mirror list of the tabs that are currently open — a live terminal, or one popped out into
 # its own window — in an "Open" section above the main list. The mirrored tab keeps its row in its
-# own group/tree too, so the list below never shuffles as terminals come and go. Default off.
+# own group/tree too, so the list below never shuffles as terminals come and go. Default off, and
+# it cascades global -> window: set it inside a [[window]] to override this for that window alone.
 open_tabs_section = false
 
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan

@@ -35,9 +35,6 @@ pub struct Config {
     /// Whether the sidebar chrome is a window-move drag handle. Default true.
     /// Whole-app concern — no per-window cascade.
     pub sidebar_drag: bool,
-    /// Whether the sidebar pins a section listing the currently-open tabs above the
-    /// main list. Default false. Whole-app concern — no per-window cascade.
-    pub open_tabs_section: bool,
     /// Whether warden checks for a new release on launch. Default true; `false`
     /// suppresses the automatic check (the Check-for-Updates menu item still works).
     /// Whole-app concern — no per-window cascade.
@@ -63,6 +60,11 @@ pub struct Window {
     /// (Window menu / launcher / reopen open it). Launch-only gate: consulted in
     /// the app's `materialize`, and NOT diffed by `reconcile` (see reconcile.rs).
     pub open_on_start: bool,
+    /// Whether THIS window's sidebar pins a section listing its currently-open tabs
+    /// above the main list. Resolved from the window's own value else the global,
+    /// defaulting to false — the cascade is already collapsed here, so the app never
+    /// sees the levels.
+    pub open_tabs_section: bool,
     pub tabs: Vec<Tab>,
     /// Project-tree roots for this window (`[[window.root]]`), in file order after any
     /// groups. Declarations only — the app scans each and synthesizes project tabs.

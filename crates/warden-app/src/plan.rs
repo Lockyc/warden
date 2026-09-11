@@ -55,12 +55,13 @@ pub fn tab_to_plan(root_dirs: &HashMap<&str, &Path>, t: &Tab) -> TabPlan {
 /// Everything needed to build one window window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
-    pub label: String,       // sanitized, unique — the Tauri window label
-    pub title: String,       // window title, verbatim — banner + window title
-    pub colour: String,      // "#rrggbb" from Colour::hex()
-    pub width: f64,          // inner width in logical pixels
-    pub height: f64,         // inner height in logical pixels
-    pub open_on_start: bool, // false = start closed-but-configured (home surface/menu opens it)
+    pub label: String,           // sanitized, unique — the Tauri window label
+    pub title: String,           // window title, verbatim — banner + window title
+    pub colour: String,          // "#rrggbb" from Colour::hex()
+    pub width: f64,              // inner width in logical pixels
+    pub height: f64,             // inner height in logical pixels
+    pub open_on_start: bool,     // false = start closed-but-configured (home surface/menu opens it)
+    pub open_tabs_section: bool, // this window's sidebar pins an "Open" section (cascade collapsed)
     pub tabs: Vec<TabPlan>,
 }
 
@@ -133,6 +134,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         width: p.width as f64,
         height: p.height as f64,
         open_on_start: p.open_on_start,
+        open_tabs_section: p.open_tabs_section,
         tabs,
     }
 }
@@ -238,6 +240,8 @@ pub enum WindowOp {
     Update {
         label: String,
         colour: Option<String>, // new "#rrggbb" if changed
+        // The window's "Open" section flag flipped — chrome-only, no surface touched.
+        open_tabs_section: Option<bool>,
         add_tabs: Vec<TabPlan>,
         remove_tabs: Vec<String>, // tab ids (= Tab::key)
         order: Vec<String>,       // full new tab id order
@@ -339,6 +343,7 @@ pub fn reconcile_ops(
         ops.push(WindowOp::Update {
             label: label.clone(),
             colour: u.colour.map(|c| c.hex()),
+            open_tabs_section: u.open_tabs_section,
             add_tabs,
             remove_tabs: u.remove_tabs.clone(),
             order: u.tab_order.clone(),
@@ -367,6 +372,7 @@ mod tests {
             width: 800.0,
             height: 600.0,
             open_on_start: true,
+            open_tabs_section: false,
             tabs: Vec::new(),
         }
     }
@@ -558,6 +564,7 @@ colour = "#0f8a8a"
             width: 1500,
             height: 1000,
             open_on_start: true,
+            open_tabs_section: false,
             tabs: vec![Tab {
                 id: None,
                 key: "/r/Dev/gh/lockyc/warden".into(),
@@ -857,6 +864,7 @@ colour = "#111111"
             update: vec![WindowUpdate {
                 title: "dev".into(),
                 colour: None,
+                open_tabs_section: None,
                 add_tabs: vec![added],
                 remove_tabs: Vec::new(),
                 tab_order: vec!["/r/Dev/gh/lockyc/warden".into()],
@@ -871,6 +879,7 @@ colour = "#111111"
                 width: 1500,
                 height: 1000,
                 open_on_start: true,
+                open_tabs_section: false,
                 tabs: Vec::new(),
                 roots: vec![Root {
                     name: "Dev".into(),
@@ -888,7 +897,6 @@ colour = "#111111"
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
-            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };
@@ -939,6 +947,7 @@ colour = "#111111"
             width: 1500,
             height: 1000,
             open_on_start: true,
+            open_tabs_section: false,
             tabs,
             roots: vec![root.clone()],
         };
@@ -949,7 +958,6 @@ colour = "#111111"
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
-            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };

@@ -51,7 +51,8 @@ pub struct RawConfig {
     // Optional; a missing field resolves to true (drag on by default).
     pub sidebar_drag: Option<bool>,
     // Whether the sidebar pins a section of the currently-open tabs above the main
-    // list (global only). Optional; a missing field resolves to false (off).
+    // list. Cascades global -> window (no tab level: it's a whole-sidebar section,
+    // and a sidebar belongs to a window). Optional; unset at both levels -> false.
     pub open_tabs_section: Option<bool>,
     // Whether warden checks for a new release on launch (global only). Optional;
     // a missing field resolves to true (auto-check on by default).
@@ -73,6 +74,8 @@ pub struct RawWindow {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub open_on_start: Option<bool>,
+    // Overrides the global `open_tabs_section` for THIS window's sidebar.
+    pub open_tabs_section: Option<bool>,
     pub shell: Option<String>,
     pub cmd: Option<String>,
     pub probe: Option<String>,

@@ -241,6 +241,7 @@ pub fn resolve_with(
             global_probe,
             global_kill,
             global_split.as_ref(),
+            raw.open_tabs_section,
             &mut warnings,
         )?);
     }
@@ -252,7 +253,6 @@ pub fn resolve_with(
             probe_interval: raw.probe_interval.unwrap_or(5),
             density,
             sidebar_drag: raw.sidebar_drag.unwrap_or(true),
-            open_tabs_section: raw.open_tabs_section.unwrap_or(false),
             auto_update: raw.auto_update.unwrap_or(true),
             notify_debug: raw.notify_debug.unwrap_or(false),
         },
@@ -269,6 +269,7 @@ fn resolve_window(
     global_probe: Option<&str>,
     global_kill: Option<&str>,
     global_split: Option<&Option<Split>>,
+    global_open_tabs_section: Option<bool>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
     let window_split = resolve_split_level(rp.split.as_ref())?;
@@ -289,6 +290,12 @@ fn resolve_window(
         });
     }
     let open_on_start = rp.open_on_start.unwrap_or(true);
+    // Cascade global -> window, nearest set level winning. A bool has no "" opt-out
+    // (the string cascades' escape hatch): `false` at either level IS the opt-out.
+    let open_tabs_section = rp
+        .open_tabs_section
+        .or(global_open_tabs_section)
+        .unwrap_or(false);
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
@@ -383,6 +390,7 @@ fn resolve_window(
         width,
         height,
         open_on_start,
+        open_tabs_section,
         tabs,
         roots,
     })
@@ -721,21 +729,46 @@ colour = "#0f8a8a"
 "##,
         )
         .unwrap();
-        assert!(!cfg.open_tabs_section);
+        assert!(!cfg.windows[0].open_tabs_section);
     }
 
     #[test]
-    fn open_tabs_section_can_be_enabled() {
+    fn open_tabs_section_cascades_global_to_window() {
         let (cfg, _) = resolve_str(
             r##"
 open_tabs_section = true
 [[window]]
-title = "w"
+title = "inherits"
 colour = "#0f8a8a"
+[[window]]
+title = "opts out"
+colour = "#0f8a8a"
+open_tabs_section = false
 "##,
         )
         .unwrap();
-        assert!(cfg.open_tabs_section);
+        assert!(cfg.windows[0].open_tabs_section, "inherits the global");
+        assert!(!cfg.windows[1].open_tabs_section, "window false wins");
+    }
+
+    #[test]
+    fn open_tabs_section_window_can_opt_in_with_no_global() {
+        // The cascade runs both ways: a window turns it on against a default-off global,
+        // which is the shape a one-window-of-many opt-in takes.
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "plain"
+colour = "#0f8a8a"
+[[window]]
+title = "opts in"
+colour = "#0f8a8a"
+open_tabs_section = true
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.windows[0].open_tabs_section);
+        assert!(cfg.windows[1].open_tabs_section);
     }
 
     #[test]
