@@ -199,6 +199,12 @@ pub fn init(app: AppHandle, debug: bool) {
         SurfaceSignal::Focused => {
             crate::manager::WindowManager::handle_surface_focused(&app, event.surface_id)
         }
+        // Likewise the pointer crossing onto a surface is chrome bookkeeping (the sidebar's hover
+        // state), not attention — and it fires on every boundary crossing, so it must never reach
+        // the badge/banner path below.
+        SurfaceSignal::PointerEntered => {
+            crate::manager::WindowManager::handle_pointer_entered(&app, event.surface_id)
+        }
         _ => handle(&app, event),
     });
     setup_banners();
@@ -256,6 +262,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
             // Routed to the manager before reaching here (see the sink in `init`).
             SurfaceSignal::ChildExited { exit_code } => format!("ChildExited({exit_code:?})"),
             SurfaceSignal::Focused => "Focused (routed to the manager)".to_string(),
+            SurfaceSignal::PointerEntered => "PointerEntered (routed to the manager)".to_string(),
         };
         dbglog(&format!(
             "handle: signal={kind} surface={}",

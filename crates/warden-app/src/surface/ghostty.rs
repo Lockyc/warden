@@ -732,6 +732,25 @@ declare_class!(
             unsafe { forward_mouse_pos(self, event) };
         }
 
+        // Entering the view means the pointer has just left the window's CHROME — and that is the
+        // only place it can be observed. This view composites above the webview and takes the
+        // pointer at the boundary, so on a fast flick out of the sidebar the page gets no further
+        // event and its CSS `:hover` freezes where it was (symptom: the de-emphasised main list
+        // stays lit). Report it so the app layer can tell the sidebar. Emitted directly, not via
+        // the `dispatch_async_f` trampoline the focus/child-exit paths use: AppKit delivers this
+        // from the event loop, never re-entrantly from inside our own `ManagerState` lock.
+        #[method(mouseEntered:)]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            let surface = self.ivars().surface.get();
+            if surface.is_null() {
+                return;
+            }
+            super::emit_surface_event(SurfaceEvent {
+                surface_id: surface as usize,
+                signal: SurfaceSignal::PointerEntered,
+            });
+        }
+
         // Leaving the view must clear libghostty's hover, or the last hovered link keeps its
         // underline while the mouse sits in the sidebar.
         #[method(mouseExited:)]

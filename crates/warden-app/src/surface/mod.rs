@@ -30,6 +30,12 @@ pub enum SurfaceSignal {
     /// on live terminal content moved keyboard focus natively while that record — and the
     /// chrome's focused-pane marker — stayed on whichever pane the chrome last saw a click on.
     Focused,
+    /// The pointer moved onto the surface — i.e. it has just LEFT the window's chrome. The surface
+    /// is a native `NSView` composited above the webview, so it takes the pointer the instant it
+    /// crosses out of the sidebar and the page receives no further event: the chrome's CSS `:hover`
+    /// state freezes at whatever it last saw. This is the only signal that the pointer left, and
+    /// the app layer forwards it to the sidebar (`chrome-core`'s `pointerAway()`).
+    PointerEntered,
 }
 
 /// A signal from a specific surface. `surface_id` is the opaque surface handle as a `usize`
