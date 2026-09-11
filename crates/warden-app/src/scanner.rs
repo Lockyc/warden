@@ -84,6 +84,7 @@ mod tests {
                 width: 1500,
                 height: 1000,
                 open_on_start: true,
+                open_tabs_section: false,
                 tabs: Vec::new(),
                 roots: vec![mk_root("A"), mk_root("B")],
             }],
@@ -92,7 +93,6 @@ mod tests {
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
-            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };
@@ -145,6 +145,7 @@ mod tests {
                 width: 1500,
                 height: 1000,
                 open_on_start: true,
+                open_tabs_section: false,
                 tabs: vec![curated],
                 roots: vec![root],
             }],
@@ -153,7 +154,6 @@ mod tests {
             probe_interval: 5,
             density: Density::default(),
             sidebar_drag: true,
-            open_tabs_section: false,
             auto_update: true,
             notify_debug: false,
         };

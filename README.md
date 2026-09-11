@@ -108,7 +108,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
 | `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
 | `sidebar_drag` | `true` | The non-interactive sidebar chrome doubles as a window-move drag handle. |
-| `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. |
+| `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. Cascades global → window. |
 | `auto_update` | `true` | Check for a new release on launch and every 6h. `false` suppresses the auto-check; **Check for Updates…** still works. Takes effect at next launch. |
 | `notify_debug` | `false` | Trace the notification path to `$TMPDIR/warden-notify-dbg.log` — a debug aid, read at launch (see [`docs/notifications.md`](docs/notifications.md)). |
 
@@ -120,6 +120,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `colour` | neutral | Banner accent, `#rgb` or `#rrggbb`. |
 | `width` / `height` | `1500` / `1000` | Initial size in px; the window's saved size/position wins after the first launch. |
 | `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu. |
+| `open_tabs_section` | inherited from global | Whether THIS window's sidebar pins the **Open** section. Set it per window to show the section in a busy window and not a quiet one. |
 | `shell` / `cmd` / `probe` / `kill` / `split` | inherited from global | Per-window overrides for every tab in it. |
 
 **`[[window.tab]]`** (and `[[window.group.tab]]`) — one project terminal each:

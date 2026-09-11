@@ -62,6 +62,11 @@ pub struct Reconciliation {
 pub struct WindowUpdate {
     pub title: String,
     pub colour: Option<Colour>,
+    /// The window's `open_tabs_section` flipped — `Some(new)`, else `None`. Chrome-only
+    /// (the sidebar grows or drops its pinned "Open" section), so the consumer just
+    /// restyles: no surface is touched. A GLOBAL edit reaches a window through here too,
+    /// since the cascade is already collapsed into `Window::open_tabs_section`.
+    pub open_tabs_section: Option<bool>,
     pub add_tabs: Vec<Tab>,
     pub remove_tabs: Vec<String>,
     pub tab_order: Vec<String>,
@@ -87,7 +92,7 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 ///
 /// **What IS detected:**
 /// - Windows opened/closed, matched by `title`.
-/// - For a kept window: colour change, tab add/remove (by `Tab::key` —
+/// - For a kept window: colour change, `open_tabs_section` change (chrome-only), tab add/remove (by `Tab::key` —
 ///   `id`-else-normalized-`dir` for a curated tab, absolute project path for a discovered one), tab
 ///   reorder (via `tab_order`), in-place metadata changes (the display `title`,
 ///   `group`, `probe`, `kill`, and split `side`/`size`) via `set_meta`, and a kept tab's
@@ -129,6 +134,8 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
             None => open.push(np.clone()),
             Some(op) => {
                 let colour = (op.colour != np.colour).then_some(np.colour);
+                let open_tabs_section =
+                    (op.open_tabs_section != np.open_tabs_section).then_some(np.open_tabs_section);
                 let old_keys: Vec<&str> = op.tabs.iter().map(|t| t.key.as_str()).collect();
                 let new_keys: Vec<&str> = np.tabs.iter().map(|t| t.key.as_str()).collect();
                 let add_tabs: Vec<Tab> = np
@@ -195,6 +202,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     }
                 }
                 if colour.is_some()
+                    || open_tabs_section.is_some()
                     || !add_tabs.is_empty()
                     || !remove_tabs.is_empty()
                     || order_changed
@@ -204,6 +212,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     update.push(WindowUpdate {
                         title: np.title.clone(),
                         colour,
+                        open_tabs_section,
                         add_tabs,
                         remove_tabs,
                         tab_order,
@@ -278,6 +287,32 @@ colour = "#0f8a8a"
             })
         );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn open_tabs_section_change_emits_update_and_touches_no_tab() {
+        let new = cfg(&BASE.replace(
+            "colour = \"#0f8a8a\"",
+            "colour = \"#0f8a8a\"\nopen_tabs_section = true",
+        ));
+        let r = reconcile(&cfg(BASE), &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].open_tabs_section, Some(true));
+        // Chrome-only: nothing about the window's terminals changed.
+        assert!(r.update[0].colour.is_none());
+        assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+        assert!(r.update[0].set_meta.is_empty() && r.update[0].respawn_tabs.is_empty());
+    }
+
+    #[test]
+    fn global_open_tabs_section_flip_reaches_an_inheriting_window() {
+        // The cascade is collapsed by resolve, so a GLOBAL-only edit is an ordinary
+        // per-window diff here — no separate global-compare path is needed.
+        let old = cfg(BASE);
+        let new = cfg(&format!("open_tabs_section = true\n{BASE}"));
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].open_tabs_section, Some(true));
     }
 
     #[test]
