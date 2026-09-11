@@ -50,6 +50,9 @@ pub struct RawConfig {
     // Whether the sidebar chrome acts as a window-move drag handle (global only).
     // Optional; a missing field resolves to true (drag on by default).
     pub sidebar_drag: Option<bool>,
+    // Whether the sidebar pins a section of the currently-open tabs above the main
+    // list (global only). Optional; a missing field resolves to false (off).
+    pub open_tabs_section: Option<bool>,
     // Whether warden checks for a new release on launch (global only). Optional;
     // a missing field resolves to true (auto-check on by default).
     pub auto_update: Option<bool>,

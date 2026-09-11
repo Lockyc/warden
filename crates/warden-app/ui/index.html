@@ -633,6 +633,9 @@
           // sidebar_drag (global config, default on): make the non-interactive chrome a
           // window-move drag handle. Absent field defaults on, matching warden's default.
           windowDrag: dto.sidebar_drag !== false,
+          // open_tabs_section (global config, default off): pin a mirror list of the open tabs
+          // above the main list. Absent field defaults off, matching warden's default.
+          openSection: dto.open_tabs_section === true,
           tabs: dto.tabs.map((t) => ({
             id: t.id,
             title: t.title,
