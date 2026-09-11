@@ -764,6 +764,25 @@ impl WindowManager {
         );
     }
 
+    /// The pointer moved onto a surface, so it has just left that window's sidebar. Tell the
+    /// chrome, which cannot see it for itself: the surface composites above the webview and takes
+    /// the pointer at the boundary, so a fast flick out of the sidebar delivers no further event to
+    /// the page and its CSS `:hover` freezes (chrome-core's de-emphasised main list stayed lit).
+    /// Detached windows carry no sidebar, so a surface that isn't in a docked window is ignored.
+    pub fn handle_pointer_entered(app: &AppHandle, surface_id: usize) {
+        let state = app.state::<ManagerState>();
+        let lock = state.lock();
+        let Some((label, _, _)) = lock.locate_surface(surface_id) else {
+            return;
+        };
+        drop(lock);
+        let _ = app.emit_to(
+            label.as_str(),
+            "warden:pointer-away",
+            serde_json::json!({ "label": label }),
+        );
+    }
+
     /// Retire a popped-out tab's second pane: close its surface and forget it. Returns the
     /// `(origin_label, tab_id)` the caller announces with [`announce_detached_secondary_closed`]
     /// once the lock is released (it emits). `None` if `dlabel` isn't a detached window or has

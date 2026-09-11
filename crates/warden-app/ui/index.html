@@ -1134,6 +1134,16 @@
         if (p.id === activeId) updateFocusMarker();
       });
 
+      // The pointer crossed onto a live terminal, so it has left the sidebar — an event this page
+      // can never see for itself, since that native view is composited above the webview and takes
+      // the pointer at the boundary. Without this the sidebar's CSS `:hover` freezes at whatever it
+      // last saw on a fast flick out of the list (chrome-core's de-emphasised main list stayed
+      // lit); the component clears the flag again on its own next pointermove.
+      listen("warden:pointer-away", (e) => {
+        if (!forMe(e)) return;
+        sb.pointerAway();
+      });
+
       // Tab ▸ Split (⌘D). emit_to leaks → forMe filter, same as every other menu-routed event.
       listen("warden:split-pane", (e) => {
         if (!forMe(e)) return;
