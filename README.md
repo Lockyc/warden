@@ -108,7 +108,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
 | `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
 | `sidebar_drag` | `true` | The non-interactive sidebar chrome doubles as a window-move drag handle. |
-| `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. Cascades global → window. |
+| `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. While the section is showing, the main list below it is dimmed until you hover it. Cascades global → window. |
 | `auto_update` | `true` | Check for a new release on launch and every 6h. `false` suppresses the auto-check; **Check for Updates…** still works. Takes effect at next launch. |
 | `notify_debug` | `false` | Trace the notification path to `$TMPDIR/warden-notify-dbg.log` — a debug aid, read at launch (see [`docs/notifications.md`](docs/notifications.md)). |
 
