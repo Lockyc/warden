@@ -3,13 +3,14 @@ use crate::Colour;
 
 /// The in-place, non-respawn metadata of a kept tab — fields a consumer can apply to a *live*
 /// tab without killing its PTY: its display `title`, `group` (sidebar sectioning), and the
-/// externally-run `probe`/`kill` commands. Never the terminal itself. Carried by
+/// externally-run `probe`/`kill`/`suspend` commands. Never the terminal itself. Carried by
 /// `WindowUpdate.set_meta` when any of these changed for a kept tab (keyed by `Tab::key`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabMeta {
     pub group: Option<String>,
     pub probe: Option<String>,
     pub kill: Option<String>,
+    pub suspend: Option<String>,
     /// New display title for the kept tab. Applied as a live relabel — the chrome
     /// re-renders the row without respawning its terminal. Always carried (it's the
     /// tab's current title), so a metadata update always relabels to the current title.
@@ -40,7 +41,7 @@ pub struct Reconciliation {
 ///   `tab_order` always carries the full new ordered key list so the consumer
 ///   can reorder the live tab strip without killing sessions.
 /// - `set_meta`: a kept tab's in-place metadata (the display `title`, `group`,
-///   `probe`, `kill`, or split `side`/`size`) changed. Each entry is `(key, TabMeta)`
+///   `probe`, `kill`, `suspend`, or split `side`/`size`) changed. Each entry is `(key, TabMeta)`
 ///   carrying the new values; the consumer applies them WITHOUT respawning (presentation +
 ///   externally-run commands + live re-layout). A split `side`/`size`-only change is a
 ///   live re-layout; split presence or `startup` change rides `respawn_tabs` instead.
@@ -71,7 +72,7 @@ pub struct WindowUpdate {
     pub remove_tabs: Vec<String>,
     pub tab_order: Vec<String>,
     /// In-place metadata changes for kept tabs (keyed by `Tab::key`): `title`,
-    /// `group`, `probe`, or `kill` differ. The consumer applies them WITHOUT
+    /// `group`, `probe`, `kill`, or `suspend` differ. The consumer applies them WITHOUT
     /// respawning — presentation + externally-run commands, never the PTY. Empty
     /// when no kept tab's metadata changed.
     pub set_meta: Vec<(String, TabMeta)>,
@@ -95,7 +96,7 @@ fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
 /// - For a kept window: colour change, `open_tabs_section` change (chrome-only), tab add/remove (by `Tab::key` —
 ///   `id`-else-normalized-`dir` for a curated tab, absolute project path for a discovered one), tab
 ///   reorder (via `tab_order`), in-place metadata changes (the display `title`,
-///   `group`, `probe`, `kill`, and split `side`/`size`) via `set_meta`, and a kept tab's
+///   `group`, `probe`, `kill`, `suspend`, and split `side`/`size`) via `set_meta`, and a kept tab's
 ///   terminal-spec change (`dir`/`shell`/`startup`/`load_on_open` or split presence/`startup`)
 ///   via `respawn_tabs` (respawn in place). Split `side`/`size`-only change is a live re-layout
 ///   and rides `set_meta`; split presence or `startup` change is a terminal-spec change and
@@ -164,7 +165,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 let order_changed = kept_old != kept_new;
                 let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
                 // Kept-tab in-place diffs. Two independent signals per kept tab:
-                //  - metadata (title/group/probe/kill/split side+size) → live apply, no respawn.
+                //  - metadata (title/group/probe/kill/suspend/split side+size) → live apply, no respawn.
                 //  - terminal spec (dir/shell/startup/load_on_open/split presence+startup) → respawn in place.
                 let mut set_meta: Vec<(String, TabMeta)> = Vec::new();
                 let mut respawn_tabs: Vec<Tab> = Vec::new();
@@ -176,6 +177,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                             || ot.group != nt.group
                             || ot.probe != nt.probe
                             || ot.kill != nt.kill
+                            || ot.suspend != nt.suspend
                             || (ot.split.is_some()
                                 && nt.split.is_some()
                                 && layout(ot) != layout(nt))
@@ -186,6 +188,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                                     group: nt.group.clone(),
                                     probe: nt.probe.clone(),
                                     kill: nt.kill.clone(),
+                                    suspend: nt.suspend.clone(),
                                     title: nt.title.clone(),
                                     split: nt.split.clone(),
                                 },
@@ -464,6 +467,7 @@ colour = "#0f8a8a"
                     group: Some("new-name".to_string()),
                     probe: None,
                     kill: None,
+                    suspend: None,
                     title: "api".to_string(),
                     split: None,
                 }
@@ -503,6 +507,7 @@ colour = "#0f8a8a"
                     group: Some("backend".to_string()),
                     probe: None,
                     kill: None,
+                    suspend: None,
                     title: "api".to_string(),
                     split: None,
                 }
@@ -544,12 +549,37 @@ colour = "#0f8a8a"
                     group: None,
                     probe: Some("probe-new".to_string()),
                     kill: None,
+                    suspend: None,
                     title: "api".to_string(),
                     split: None,
                 }
             )]
         );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn suspend_change_on_kept_tab_emits_set_meta_not_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp/api"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp/api"
+  suspend = "suspend-new"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(
+            r.update[0].set_meta[0].1.suspend.as_deref(),
+            Some("suspend-new")
+        );
+        assert!(r.update[0].respawn_tabs.is_empty());
     }
 
     #[test]
@@ -586,6 +616,7 @@ colour = "#0f8a8a"
                     group: None,
                     probe: None,
                     kill: Some("kill-new".to_string()),
+                    suspend: None,
                     title: "api".to_string(),
                     split: None,
                 }
