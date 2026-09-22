@@ -13,6 +13,15 @@ pub struct SplitLayoutDto {
     pub size: f64,
 }
 
+/// How the confirm row ends a tab's session: ⏻ `suspend` (restorable) or ☠ `destroy` (the tab's
+/// `kill`). Deserialized from the chrome's `end_session` call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EndSession {
+    Suspend,
+    Destroy,
+}
+
 /// Display descriptor sent to the web chrome.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TabDto {
@@ -22,7 +31,8 @@ pub struct TabDto {
     pub spawned: bool,         // surface is live (load_on_open or already focused) vs cold/declared
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
     pub has_probe: bool,       // a session-probe command is configured for this tab
-    pub has_kill: bool,        // a session-kill command is configured for this tab
+    pub has_kill: bool,        // a session-kill (destroy) command is configured for this tab
+    pub has_suspend: bool,     // a session-suspend command is configured for this tab
     pub has_cmd: bool,         // a startup command is configured (→ presence dot can offer restart)
     pub tree: bool,            // row belongs to a project-tree (root) section
     #[serde(rename = "treePath")]
@@ -493,6 +503,7 @@ impl Registry {
                 group: t.primary.spec.group.clone(),
                 has_probe: t.primary.spec.probe.is_some(),
                 has_kill: t.primary.spec.kill.is_some(),
+                has_suspend: t.primary.spec.suspend.is_some(),
                 has_cmd: t.primary.spec.startup.is_some(),
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
@@ -536,17 +547,22 @@ impl Registry {
             .collect()
     }
 
-    /// `(dir, title, kill_cmd)` for tab `id` if it has a configured kill command,
-    /// else `None` (unknown tab, or no kill set). The caller substitutes
-    /// `{dir}`/`{title}` into `kill_cmd` and runs it with cwd = dir. Independent of
-    /// the surface being live — a session can exist while warden's surface is cold.
-    pub fn kill_target(&self, id: &str) -> Option<(std::path::PathBuf, String, String)> {
+    /// `(dir, title, cmd)` for ending tab `id`'s session the `how` way — its `suspend` or `kill`
+    /// command — else `None` (unknown tab, or that command isn't set). The caller substitutes
+    /// `{dir}`/`{title}` into `cmd` and runs it with cwd = dir. Independent of the surface being
+    /// live — a session can exist while warden's surface is cold.
+    pub fn end_target(
+        &self,
+        id: &str,
+        how: EndSession,
+    ) -> Option<(std::path::PathBuf, String, String)> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
-        t.primary
-            .spec
-            .kill
-            .as_ref()
-            .map(|k| (t.primary.spec.dir.clone(), t.title.clone(), k.clone()))
+        let spec = &t.primary.spec;
+        let cmd = match how {
+            EndSession::Suspend => spec.suspend.as_ref(),
+            EndSession::Destroy => spec.kill.as_ref(),
+        };
+        cmd.map(|c| (spec.dir.clone(), t.title.clone(), c.clone()))
     }
 
     /// Restart tab `id`'s session by typing its startup command into the **live** shell and
@@ -590,6 +606,7 @@ impl Registry {
             t.primary.spec.group = meta.group.clone();
             t.primary.spec.probe = meta.probe.clone();
             t.primary.spec.kill = meta.kill.clone();
+            t.primary.spec.suspend = meta.suspend.clone();
             t.primary.spec.split = meta.split.clone();
             // Tree-ness can flip on a kept tab when its group moves between a root
             // section and a plain group (curated↔discovered shadowing) — recomputed
@@ -1092,6 +1109,7 @@ mod tests {
             group: None,
             probe: None,
             kill: None,
+            suspend: None,
             tree: false,
             tree_path: Vec::new(),
             split: None,
@@ -1107,6 +1125,7 @@ mod tests {
             group: None,
             probe: probe.map(String::from),
             kill: None,
+            suspend: None,
             tree: false,
             tree_path: Vec::new(),
             split: None,
@@ -1205,6 +1224,7 @@ mod tests {
                 group: Some("backend".into()),
                 probe: Some("probe-x".into()),
                 kill: Some("kill-y".into()),
+                suspend: None,
                 split: None,
             },
             true,
@@ -1227,6 +1247,7 @@ mod tests {
                 group: None,
                 probe: None,
                 kill: None,
+                suspend: None,
                 split: None,
             },
             false,
@@ -1547,34 +1568,45 @@ mod tests {
     }
 
     #[test]
-    fn has_kill_flag_reflects_spec() {
+    fn end_flags_reflect_spec_independently() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let mut s_with = spec("t0", "/tmp");
-        s_with.kill = Some("kill-cmd {dir}".into());
-        let _ = r.add(&s_with, false);
-        let _ = r.add(&spec("t1", "/tmp"), false); // kill: None
-        let dtos = r.tab_dtos();
-        assert!(dtos[0].has_kill);
-        assert!(!dtos[1].has_kill);
+        let mut s_kill = spec("t0", "/tmp");
+        s_kill.kill = Some("kill-cmd {dir}".into());
+        let mut s_suspend = spec("t1", "/tmp");
+        s_suspend.suspend = Some("suspend-cmd".into());
+        let _ = r.add(&s_kill, false);
+        let _ = r.add(&s_suspend, false);
+        let _ = r.add(&spec("t2", "/tmp"), false); // neither
+        let d = r.tab_dtos();
+        assert!(d[0].has_kill && !d[0].has_suspend);
+        assert!(!d[1].has_kill && d[1].has_suspend);
+        assert!(!d[2].has_kill && !d[2].has_suspend);
     }
 
     #[test]
-    fn kill_target_returns_dir_title_cmd_only_when_set() {
+    fn end_target_picks_the_command_for_how() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let mut s = spec("t0", "/tmp/a");
         s.kill = Some("kill {title}".into());
+        s.suspend = Some("suspend {title}".into());
         let _ = r.add(&s, false);
-        let _ = r.add(&spec("t1", "/tmp/b"), false); // no kill
-        assert_eq!(
-            r.kill_target("t0"),
+        let mut only_kill = spec("t1", "/tmp/b");
+        only_kill.kill = Some("kill".into());
+        let _ = r.add(&only_kill, false);
+        let at = |cmd: &str| {
             Some((
                 std::path::PathBuf::from("/tmp/a"),
                 "t0".to_string(),
-                "kill {title}".to_string()
+                cmd.to_string(),
             ))
+        };
+        assert_eq!(r.end_target("t0", EndSession::Destroy), at("kill {title}"));
+        assert_eq!(
+            r.end_target("t0", EndSession::Suspend),
+            at("suspend {title}")
         );
-        assert_eq!(r.kill_target("t1"), None); // no kill command
-        assert_eq!(r.kill_target("nope"), None); // unknown id
+        assert_eq!(r.end_target("t1", EndSession::Suspend), None); // no suspend command
+        assert_eq!(r.end_target("nope", EndSession::Destroy), None); // unknown id
     }
 
     #[test]
@@ -1721,6 +1753,7 @@ mod tests {
                 group: None,
                 probe: None,
                 kill: None,
+                suspend: None,
                 title: "a".into(),
                 split: Some(warden_config::Split {
                     side: warden_config::SplitSide::Right,

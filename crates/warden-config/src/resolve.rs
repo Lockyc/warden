@@ -456,7 +456,12 @@ fn resolve_tab(
     let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), globals.cmd).map(String::from);
     let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), globals.probe).map(String::from);
     let kill = cascade(rt.kill.as_deref(), rp.kill.as_deref(), globals.kill).map(String::from);
-    let suspend = cascade(rt.suspend.as_deref(), rp.suspend.as_deref(), globals.suspend).map(String::from);
+    let suspend = cascade(
+        rt.suspend.as_deref(),
+        rp.suspend.as_deref(),
+        globals.suspend,
+    )
+    .map(String::from);
     let tab_split = resolve_split_level(rt.split.as_ref())?;
     let split = cascade_split(tab_split.as_ref(), window_split, globals.split);
     Ok(Tab {
@@ -520,7 +525,12 @@ fn resolve_root(
     let startup = cascade(rr.cmd.as_deref(), rp.cmd.as_deref(), globals.cmd).map(String::from);
     let probe = cascade(rr.probe.as_deref(), rp.probe.as_deref(), globals.probe).map(String::from);
     let kill = cascade(rr.kill.as_deref(), rp.kill.as_deref(), globals.kill).map(String::from);
-    let suspend = cascade(rr.suspend.as_deref(), rp.suspend.as_deref(), globals.suspend).map(String::from);
+    let suspend = cascade(
+        rr.suspend.as_deref(),
+        rp.suspend.as_deref(),
+        globals.suspend,
+    )
+    .map(String::from);
     let root_split = resolve_split_level(rr.split.as_ref())?;
     let split = cascade_split(root_split.as_ref(), window_split, globals.split);
     Ok(Root {
