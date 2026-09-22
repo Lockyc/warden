@@ -25,16 +25,17 @@
   #     dir   = "~/work/api"
 
   # A [[window.root]] auto-discovers git projects under a `dir` instead of listing tabs by hand —
-  # each one becomes a tab in a collapsible tree section. Roots cascade shell/cmd/probe/kill just
+  # each one becomes a tab in a collapsible tree section. Roots cascade shell/cmd/probe/kill/suspend just
   # like tabs (root -> window -> global, no tab level).
   # [[window.root]]
   #   dir = "~/Developer"
 
   # A per-tab "session exists" dot: warden runs `probe` (cwd = the tab's dir) on a timer and
-  # lights a cyan dot when it exits 0. `kill` (optional) tears the session down when you confirm
-  # killing the tab. Both cascade like `shell`/`cmd`.
+  # lights a cyan dot when it exits 0. Clicking the dot offers `kill` (☠, end it for good) and
+  # `suspend` (⏻, end it restorably) — both optional, both unload the tab. All cascade like `shell`/`cmd`.
   # [[window.tab]]
   #   title = "agent"
   #   dir   = "~/work/agent"
   #   probe = "some-check --probe"
   #   kill  = "some-check --kill"
+  #   suspend = "some-check --suspend"
