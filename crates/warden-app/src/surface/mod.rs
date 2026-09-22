@@ -80,9 +80,11 @@ pub struct TabSpec {
     /// runner (`probe.rs`) runs it per tab; `None` = no session dot. Opaque here.
     pub probe: Option<String>,
     /// Optional session-kill command (cascaded in resolve). The app runs it via
-    /// `sh -c` when the user confirms killing this tab's session. `None` = no kill
-    /// affordance. Opaque here — same shape as `probe`.
+    /// `sh -c` when the user confirms destroying this tab's session. `None` = no
+    /// destroy action. Opaque here — same shape as `probe`.
     pub kill: Option<String>,
+    /// Session-suspend command (`kill`'s restorable twin); `None` = no suspend action.
+    pub suspend: Option<String>,
     /// True when this tab belongs to a project-tree (`[[window.root]]`) section —
     /// i.e. its `group` names a root, not a plain `[[window.group]]`. Drives the
     /// chrome's tree-vs-group sectioning.

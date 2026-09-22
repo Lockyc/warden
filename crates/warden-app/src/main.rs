@@ -796,24 +796,29 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
     probe::bump(&origin_label);
 }
 
-/// Kill the *session* tab `id` represents (the thing its `probe` checks for) by running
-/// its configured `kill` command via `sh -c`, cwd = the tab's dir, fire-and-forget on a
-/// detached thread (exit code ignored — warden has no response to a failed kill, and must
-/// not block the UI thread). Does NOT unload warden's terminal surface: a live tab stays
-/// live. No-op if the tab has no `kill` set. After the kill completes, bump this window so
-/// the scheduler fast-bursts and the cyan presence dot drops promptly once the session is
-/// actually gone. Same minimal-env PATH footgun as probes — see scrub note + CLAUDE.md.
+/// End the *session* tab `id` represents (the thing its `probe` checks for) by running its
+/// configured `suspend` or `kill` command (per `how`) via `sh -c`, cwd = the tab's dir,
+/// fire-and-forget on a detached thread (exit code ignored — warden has no response to a failed
+/// end, and must not block the UI thread). Touches no surface: the chrome unloads the tab itself.
+/// No-op if the tab has no command for `how`. After the command completes, bump this window so
+/// the scheduler fast-bursts and the presence dot settles promptly once the session is actually
+/// gone. Same minimal-env PATH footgun as probes — see scrub note + CLAUDE.md.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn kill_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
+fn end_session(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+    how: registry::EndSession,
+) {
     let target = {
         let m = state.lock();
         m.windows
             .get(window.label())
-            .and_then(|ws| ws.registry.kill_target(&id))
+            .and_then(|ws| ws.registry.end_target(&id, how))
     };
     let Some((dir, title, cmd)) = target else {
-        return; // unknown tab or no kill command configured
+        return; // unknown tab or no command configured for `how`
     };
     let cmd = probe::substitute(&cmd, &dir, &title);
     let label = window.label().to_string();
@@ -1357,7 +1362,7 @@ fn main() {
             pop_out_tab,
             raise_popped_window,
             pop_in_tab,
-            kill_session,
+            end_session,
             start_session,
             rescan_root,
             shell_home_create_config,

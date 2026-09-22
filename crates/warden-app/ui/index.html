@@ -655,6 +655,7 @@
             // backend PresenceCache; a live `session` entry from a probe emit wins over it.
             presence: t.has_probe ? (session.get(t.id) ?? t.presence ?? "off") : null,
             killable: !!t.has_kill,
+            suspendable: !!t.has_suspend,
             startable: !!t.has_cmd, // presence dot can restart a dead session by re-running `cmd`
             warn: !!t.warn,
           })),
@@ -726,6 +727,16 @@
           return;
         }
         applyUnloaded(id, newActive);
+      }
+
+      // The confirm row's ⏻ suspend / ☠ destroy: end the session the `how` way, then take the tab
+      // cold. Race-free in either order: `end_target` reads the tab's *spec*, not its slot, so a
+      // cold tab still ends; and the command runs on a detached warden-app thread, never as a child
+      // of this tab's shell, so tearing down the PTY can't cancel it. No optimistic dot drop — the
+      // dot tracks `warden:session-state` alone (end_session bumps the scheduler's fast burst).
+      function endSession(id, how) {
+        invokeSafe("end_session", { id, how });
+        unloadTab(id); // shared path with ⌘W / the ✕ dot — same cold state, same highlight follow
       }
 
       // ⌘D / Tab ▸ Split: give the active tab a second pane. Optimistic — `Registry::split` always
@@ -883,20 +894,11 @@
               // the detached window fires its Destroyed handler → redock → the tab returns here.
               invokeSafe("pop_in_tab", { id });
             },
-            onKill(id) {
-              // No optimistic drop: the presence dot tracks `warden:session-state` only. kill_session
-              // runs the kill then bumps the scheduler's fast burst, which converges the dot
-              // monotonically (lit ~0.4–1s during teardown, then drops once — no off→on→off flicker).
-              // A failed kill leaves the session present, so the dot correctly stays lit.
-              invokeSafe("kill_session", { id });
+            onSuspend(id) {
+              endSession(id, "suspend");
             },
-            onKillClose(id) {
-              // ☠ = kill the session AND take the tab cold, in one action. Race-free in either
-              // order and needs no backend command: `kill_target` reads the tab's *spec*, not its
-              // slot, so a cold tab still kills; and the kill runs on a detached warden-app thread,
-              // never as a child of this tab's shell, so tearing down the PTY can't cancel it.
-              invokeSafe("kill_session", { id });
-              unloadTab(id); // shared path with ⌘W / the ✕ dot — same cold state, same highlight follow
+            onDestroy(id) {
+              endSession(id, "destroy");
             },
             onStart(id) {
               // Restart a dead session: warden re-types the tab's `cmd` into the live shell, then
