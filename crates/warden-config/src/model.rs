@@ -73,7 +73,7 @@ pub struct Window {
 
 /// A project-tree root (`[[window.root]]`): a directory scanned for git projects,
 /// each discovered project synthesized into a `Tab` by the app's scanner. A new
-/// cascade level (root→window→global) for its projects' `shell`/`cmd`/`probe`/`kill`
+/// cascade level (root→window→global) for its projects' `shell`/`cmd`/`probe`/`kill`/`suspend`
 /// — discovered projects have no per-tab config, so the root is where those attach.
 /// Presentational section header is `name`. The crate does **no** scanning: this is a
 /// declaration the app expands at runtime.
@@ -88,8 +88,10 @@ pub struct Root {
     pub startup: Option<String>,
     /// Resolved session-presence probe for discovered projects (`None` = no dot).
     pub probe: Option<String>,
-    /// Resolved session-kill command for discovered projects (`None` = no kill affordance).
+    /// Resolved session-kill command for discovered projects (`None` = no destroy action).
     pub kill: Option<String>,
+    /// Resolved session-suspend command for discovered projects (`None` = no suspend action).
+    pub suspend: Option<String>,
     /// Resolved second-pane split for discovered projects (`None` = no split).
     pub split: Option<Split>,
 }
@@ -121,9 +123,13 @@ pub struct Tab {
     /// Opaque to the crate — the app runs it and reads its exit code.
     pub probe: Option<String>,
     /// Optional session-kill command for this tab (cascaded tab→window→global,
-    /// `""` opts out). `None` = no kill affordance. Opaque to the crate — the app
-    /// runs it via `sh -c` when the user confirms killing the tab's session.
+    /// `""` opts out). `None` = no destroy action. Opaque to the crate — the app
+    /// runs it via `sh -c` when the user confirms destroying the tab's session.
     pub kill: Option<String>,
+    /// Optional session-suspend command — `kill`'s restorable twin, cascaded and opaque
+    /// identically. `None` = no suspend action. The app runs it when the user confirms
+    /// suspending the tab's session.
+    pub suspend: Option<String>,
     /// Resolved second pane for this tab (cascaded tab→window→global, whole-table). `None`
     /// = no split (a single pane).
     pub split: Option<Split>,

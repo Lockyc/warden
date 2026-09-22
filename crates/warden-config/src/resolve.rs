@@ -212,11 +212,15 @@ pub fn resolve_with(
     raw: RawConfig,
     default_shell: &str,
 ) -> Result<(Config, Vec<Warning>), ResolveError> {
-    let global_shell = raw.shell.as_deref();
-    let global_cmd = raw.cmd.as_deref();
-    let global_probe = raw.probe.as_deref();
-    let global_kill = raw.kill.as_deref();
     let global_split = resolve_split_level(raw.split.as_ref())?;
+    let globals = Globals {
+        shell: raw.shell.as_deref(),
+        cmd: raw.cmd.as_deref(),
+        probe: raw.probe.as_deref(),
+        kill: raw.kill.as_deref(),
+        suspend: raw.suspend.as_deref(),
+        split: global_split.as_ref(),
+    };
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
     let mut seen_windows = HashSet::new();
@@ -236,11 +240,7 @@ pub fn resolve_with(
         windows.push(resolve_window(
             rp,
             default_shell,
-            global_shell,
-            global_cmd,
-            global_probe,
-            global_kill,
-            global_split.as_ref(),
+            &globals,
             raw.open_tabs_section,
             &mut warnings,
         )?);
@@ -260,15 +260,21 @@ pub fn resolve_with(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The global level of every tab-reaching cascade, resolved once and handed down to each
+/// window, tab, and root.
+struct Globals<'a> {
+    shell: Option<&'a str>,
+    cmd: Option<&'a str>,
+    probe: Option<&'a str>,
+    kill: Option<&'a str>,
+    suspend: Option<&'a str>,
+    split: Option<&'a Option<Split>>,
+}
+
 fn resolve_window(
     rp: &RawWindow,
     default_shell: &str,
-    global_shell: Option<&str>,
-    global_cmd: Option<&str>,
-    global_probe: Option<&str>,
-    global_kill: Option<&str>,
-    global_split: Option<&Option<Split>>,
+    globals: &Globals,
     global_open_tabs_section: Option<bool>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
@@ -312,12 +318,8 @@ fn resolve_window(
             None,
             rp,
             default_shell,
-            global_shell,
-            global_cmd,
-            global_probe,
-            global_kill,
+            globals,
             window_split.as_ref(),
-            global_split,
             &mut seen_keys,
             warnings,
         )?);
@@ -349,12 +351,8 @@ fn resolve_window(
                 Some(group_name.to_string()),
                 rp,
                 default_shell,
-                global_shell,
-                global_cmd,
-                global_probe,
-                global_kill,
+                globals,
                 window_split.as_ref(),
-                global_split,
                 &mut seen_keys,
                 warnings,
             )?);
@@ -367,12 +365,8 @@ fn resolve_window(
             rr,
             rp,
             default_shell,
-            global_shell,
-            global_cmd,
-            global_probe,
-            global_kill,
+            globals,
             window_split.as_ref(),
-            global_split,
             warnings,
         )?;
         if !seen_sections.insert(root.name.clone()) {
@@ -406,12 +400,8 @@ fn resolve_tab(
     group: Option<String>,
     rp: &RawWindow,
     default_shell: &str,
-    global_shell: Option<&str>,
-    global_cmd: Option<&str>,
-    global_probe: Option<&str>,
-    global_kill: Option<&str>,
+    globals: &Globals,
     window_split: Option<&Option<Split>>,
-    global_split: Option<&Option<Split>>,
     seen_keys: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
@@ -460,14 +450,15 @@ fn resolve_tab(
     // falls back to `default_shell` (the caller's detected login shell) when unset everywhere,
     // `cmd` is a startup command run *inside* the shell (None = bare shell; `cmd = ""` at any
     // level opts out of inheritance).
-    let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), global_shell)
+    let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), globals.shell)
         .unwrap_or(default_shell)
         .to_string();
-    let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
-    let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
-    let kill = cascade(rt.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
+    let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), globals.cmd).map(String::from);
+    let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), globals.probe).map(String::from);
+    let kill = cascade(rt.kill.as_deref(), rp.kill.as_deref(), globals.kill).map(String::from);
+    let suspend = cascade(rt.suspend.as_deref(), rp.suspend.as_deref(), globals.suspend).map(String::from);
     let tab_split = resolve_split_level(rt.split.as_ref())?;
-    let split = cascade_split(tab_split.as_ref(), window_split, global_split);
+    let split = cascade_split(tab_split.as_ref(), window_split, globals.split);
     Ok(Tab {
         id,
         key,
@@ -479,6 +470,7 @@ fn resolve_tab(
         group,
         probe,
         kill,
+        suspend,
         split,
     })
 }
@@ -502,17 +494,12 @@ fn map_root_error(e: config_core::RootError, window: &str) -> ResolveError {
 
 /// Resolve one raw root into a `Root`. Mirrors `resolve_tab`'s cascade but with no
 /// tab level (root → window → global) since a root has no per-tab config of its own.
-#[allow(clippy::too_many_arguments)]
 fn resolve_root(
     rr: &crate::raw::RawRoot,
     rp: &RawWindow,
     default_shell: &str,
-    global_shell: Option<&str>,
-    global_cmd: Option<&str>,
-    global_probe: Option<&str>,
-    global_kill: Option<&str>,
+    globals: &Globals,
     window_split: Option<&Option<Split>>,
-    global_split: Option<&Option<Split>>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Root, ResolveError> {
     // name/dir/depth validation + tilde expansion + basename default are shared with lector via
@@ -527,14 +514,15 @@ fn resolve_root(
         });
     }
     // Cascade root→window→global (no tab level); shell falls back to the login shell.
-    let shell = cascade(rr.shell.as_deref(), rp.shell.as_deref(), global_shell)
+    let shell = cascade(rr.shell.as_deref(), rp.shell.as_deref(), globals.shell)
         .unwrap_or(default_shell)
         .to_string();
-    let startup = cascade(rr.cmd.as_deref(), rp.cmd.as_deref(), global_cmd).map(String::from);
-    let probe = cascade(rr.probe.as_deref(), rp.probe.as_deref(), global_probe).map(String::from);
-    let kill = cascade(rr.kill.as_deref(), rp.kill.as_deref(), global_kill).map(String::from);
+    let startup = cascade(rr.cmd.as_deref(), rp.cmd.as_deref(), globals.cmd).map(String::from);
+    let probe = cascade(rr.probe.as_deref(), rp.probe.as_deref(), globals.probe).map(String::from);
+    let kill = cascade(rr.kill.as_deref(), rp.kill.as_deref(), globals.kill).map(String::from);
+    let suspend = cascade(rr.suspend.as_deref(), rp.suspend.as_deref(), globals.suspend).map(String::from);
     let root_split = resolve_split_level(rr.split.as_ref())?;
-    let split = cascade_split(root_split.as_ref(), window_split, global_split);
+    let split = cascade_split(root_split.as_ref(), window_split, globals.split);
     Ok(Root {
         name: root_dir.name,
         dir: root_dir.dir,
@@ -543,6 +531,7 @@ fn resolve_root(
         startup,
         probe,
         kill,
+        suspend,
         split,
     })
 }
@@ -1472,11 +1461,54 @@ colour = "#0f8a8a"
         // explicit "" opts the tab out of the inherited window/global value
         assert_eq!(tabs[2].kill, None);
         // global reaches a tab when no window/tab level is set — exercises the
-        // `global_kill` threading directly (w1 masks it with a window-level kill).
+        // `Globals::kill` threading directly (w1 masks it with a window-level kill).
         // The cascaded value is stored raw; `{dir}` is substituted at run time, not here.
         assert_eq!(
             cfg.windows[1].tabs[0].kill.as_deref(),
             Some("global-kill {dir}")
+        );
+    }
+
+    #[test]
+    fn suspend_cascades_independently_of_kill() {
+        let (cfg, _) = resolve_str(
+            r##"
+suspend = "global-suspend"
+kill = "global-kill"
+
+[[window]]
+title = "w"
+suspend = "win-suspend"
+
+  [[window.tab]]
+  dir = "/tmp/a"
+
+  [[window.tab]]
+  dir = "/tmp/b"
+  suspend = ""
+
+  [[window.root]]
+  dir = "/tmp"
+  suspend = "root-suspend"
+
+[[window]]
+title = "w2"
+
+  [[window.tab]]
+  dir = "/tmp"
+"##,
+        )
+        .unwrap();
+        let w = &cfg.windows[0];
+        assert_eq!(w.tabs[0].suspend.as_deref(), Some("win-suspend"));
+        assert_eq!(w.tabs[0].kill.as_deref(), Some("global-kill"));
+        // opting out of suspend leaves kill untouched
+        assert_eq!(w.tabs[1].suspend, None);
+        assert_eq!(w.tabs[1].kill.as_deref(), Some("global-kill"));
+        assert_eq!(w.roots[0].suspend.as_deref(), Some("root-suspend"));
+        assert_eq!(
+            cfg.windows[1].tabs[0].suspend.as_deref(),
+            Some("global-suspend")
         );
     }
 
