@@ -49,14 +49,15 @@ open_tabs_section = false
 # Point `probe` at any check that exits 0 when your session exists.
 probe          = '"$HOME/.agentmux/bin/amux" --probe'
 probe_interval = 5
-# `kill` (optional, cascades like `probe`) runs when you confirm killing a tab's session: click the
-# cyan presence dot once to arm, again to confirm. `amux --suspend` tears down the WHOLE project — the
-# agent session plus its frame + scratch terminal — matching everything the probe can detect, but
-# keeps the agent tabs restorable: the dot turns to a ghost, and clicking it relaunches `cmd`, which
-# offers them back in amux's restore picker. (`amux --kill` instead ends them for good.) It shells
-# bare `tmux`, resolved via warden's login-PATH import; absolute paths stay the robust fallback.
-# Only reachable on a tab that also sets `probe` (no probe ⇒ no dot to click).
-kill = '"$HOME/.agentmux/bin/amux" --suspend'
+# `kill` and `suspend` (optional, cascade like `probe`) end a tab's session: click the cyan presence
+# dot to arm, then ☠ runs `kill` or ⏻ runs `suspend`, and the tab unloads either way. Both amux
+# commands tear down the WHOLE project — the agent session plus its frame + scratch terminal —
+# matching everything the probe can detect. `--kill` ends the agent tabs for good; `--suspend` keeps
+# them restorable: the dot ghosts, and reopening the tab offers them in amux's restore picker. They
+# shell bare `tmux`, resolved via warden's login-PATH import; absolute paths stay the robust
+# fallback. Only reachable on a tab that also sets `probe` (no probe ⇒ no dot to click).
+kill    = '"$HOME/.agentmux/bin/amux" --kill'
+suspend = '"$HOME/.agentmux/bin/amux" --suspend'
 
 [split] # every tab opens split: a scratch shell on the left, 30% wide
   side = "left"
