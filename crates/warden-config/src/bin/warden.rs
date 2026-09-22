@@ -68,7 +68,7 @@ fn main() {
                         // deceptively empty.
                         for r in &p.roots {
                             println!(
-                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} {}",
+                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} {}",
                                 r.name,
                                 r.dir.display(),
                                 r.depth,
@@ -76,6 +76,7 @@ fn main() {
                                 r.startup,
                                 r.probe,
                                 r.kill,
+                                r.suspend,
                                 fmt_split(&r.split)
                             );
                         }
