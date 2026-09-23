@@ -929,7 +929,13 @@
           }
         );
 
+        // Open on the tab the backend activated (a `remember_tabs` restore), not chrome-core's
+        // first-tab fallback — that fallback fires onSelect, which would spawn the first tab too.
+        // Only on init: after this the component owns selection. `select` runs the normal
+        // onSelect path (the tab is already live, so activate_tab is a warm switch).
+        if (dto.active) sb.setActive(dto.active);
         applyDto(dto);
+        if (dto.active) sb.select(dto.active);
         if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
 
         // (The launch + 6h update checks are armed by chrome-core from the `autoUpdate` mount config.)

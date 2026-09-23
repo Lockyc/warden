@@ -158,6 +158,10 @@ pub struct InitDto {
     /// chrome gates its launch-time update check on it (the menu check ignores it).
     pub auto_update: bool,
     pub tabs: Vec<TabDto>,
+    /// The registry's active tab. The chrome owns selection, so it reads this on init only —
+    /// to open on the tab `build_window` activated (a `remember_tabs` restore) rather than
+    /// falling back to the first tab, which would activate, and so spawn, that one too.
+    pub active: Option<String>,
     /// A surface-spawn failure that happened while building this window, surfaced
     /// in the chrome's error banner on init. `None` = all tabs built cleanly. This
     /// is the launch channel for spawn errors: `build_window` runs before the
@@ -604,6 +608,7 @@ impl WindowManager {
                 sidebar_drag: self.last_good.sidebar_drag,
                 open_tabs_section: ws.open_tabs_section,
                 auto_update: self.last_good.auto_update,
+                active: ws.registry.active_tab().map(str::to_string),
                 tabs,
                 error: ws.spawn_error.clone(),
             }
@@ -1258,6 +1263,7 @@ impl WindowManager {
                             sidebar_drag,
                             open_tabs_section: ws.open_tabs_section,
                             auto_update,
+                            active: ws.registry.active_tab().map(str::to_string),
                             tabs,
                             // Refresh carries no spawn error; a hot-reload add
                             // failure is logged + retried-on-focus, not banner-pushed.
