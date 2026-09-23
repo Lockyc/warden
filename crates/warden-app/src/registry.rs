@@ -630,6 +630,16 @@ impl Registry {
             .map(|s| s.side)
     }
 
+    /// Ids of the tabs with a terminal standing — primary `Spawned` here, or `Detached` into a
+    /// popped-out window — in sidebar order. What `remember_tabs` records as "loaded".
+    pub fn loaded_ids(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|t| matches!(t.primary.slot, TabSlot::Spawned(_) | TabSlot::Detached))
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
     /// The display title of tab `id` (for a detached window's banner), or `None` if unknown.
     pub fn tab_title(&self, id: &str) -> Option<String> {
         self.tabs

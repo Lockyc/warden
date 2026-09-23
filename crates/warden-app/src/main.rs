@@ -22,6 +22,9 @@ mod probe;
 mod registry;
 
 #[cfg(target_os = "macos")]
+mod session;
+
+#[cfg(target_os = "macos")]
 use manager::{InitDto, WindowManager};
 
 use geometry::WebRect;
@@ -279,7 +282,7 @@ fn activate_tab(
     // under the one lock.
     let (spawned_fresh, has_probe, err, split, focused) = {
         let mut m = state.lock();
-        match m.windows.get_mut(window.label()) {
+        let out = match m.windows.get_mut(window.label()) {
             Some(ws) => {
                 let has_probe = ws.registry.tab_has_probe(&id);
                 let (fresh, err) = match ws.registry.activate(&id) {
@@ -298,7 +301,9 @@ fn activate_tab(
                 (fresh, has_probe, err, split, focused)
             }
             None => (false, false, None, false, 0),
-        }
+        };
+        m.record_session(window.label());
+        out
     };
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
     // empty-state placeholder over the uncovered hole) instead of panicking. The chrome is
@@ -372,9 +377,12 @@ fn unload_tab(
     id: String,
 ) -> Option<String> {
     let mut m = state.lock();
-    m.windows
+    let new_active = m
+        .windows
         .get_mut(window.label())
-        .and_then(|ws| ws.registry.unload(&id))
+        .and_then(|ws| ws.registry.unload(&id));
+    m.record_session(window.label());
+    new_active
 }
 
 /// Split tab `id`: give it a second pane (the tab's own shell, running the config split's `cmd`
@@ -708,6 +716,7 @@ fn pop_out_tab(
                     Err((p, s)) => manager::close_both(p, s),
                 }
             }
+            m.record_session(&origin_label);
             return Err(format!("couldn't pop out tab: {e}"));
         }
     };
@@ -742,6 +751,7 @@ fn pop_out_tab(
     // unchanged (detached windows aren't in it) but rebuilt for consistency.
     {
         let mut m = state.lock();
+        m.record_session(&origin_label);
         m.sync_empty_surface(&app);
     }
     let _ = rebuild_menu(&app);
@@ -901,6 +911,7 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
         let recon = warden_config::reconcile(&m.last_good, &fresh);
         m.apply(&app, &recon, &fresh);
         m.last_good = fresh;
+        m.record_all_sessions();
     } // release the ManagerState lock before the lock-free bump
       // New discovered tabs may carry probes — fast-burst every window so their dots populate now.
     probe::bump_all(&app);
@@ -1390,6 +1401,13 @@ fn main() {
 
                 let handle = app.handle().clone();
                 let mut mgr = WindowManager::new();
+                if let Ok(dir) = handle.path().app_config_dir() {
+                    mgr.session =
+                        session::SessionStore::load(dir.join(shell_core::config_scoped_filename(
+                            session::STEM,
+                            &warden_config::config_path(),
+                        )));
+                }
                 // Load config; a config that parses (even with zero `[[window]]` entries) always
                 // materializes — `materialize` builds nothing for an empty window list and
                 // `sync_empty_surface` shows the home surface's window list (empty or not). A
@@ -1542,6 +1560,7 @@ fn main() {
                                         // Advance the reconcile baseline ONLY on a valid load.
                                         m.last_good = new_eff;
                                         m.raw_config = loaded.config.clone();
+                                        m.record_all_sessions();
                                         // A density/sidebar_drag flip alone produces no per-window
                                         // op, so apply() emitted nothing; re-push every window's
                                         // snapshot (now carrying the new globals) so each restyles.

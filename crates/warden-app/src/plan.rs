@@ -63,6 +63,7 @@ pub struct WindowSpec {
     pub height: f64,             // inner height in logical pixels
     pub open_on_start: bool,     // false = start closed-but-configured (home surface/menu opens it)
     pub open_tabs_section: bool, // this window's sidebar pins an "Open" section (cascade collapsed)
+    pub remember_tabs: bool,     // restore this window's remembered loaded + active tabs at build
     pub tabs: Vec<TabPlan>,
 }
 
@@ -136,6 +137,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         height: p.height as f64,
         open_on_start: p.open_on_start,
         open_tabs_section: p.open_tabs_section,
+        remember_tabs: p.remember_tabs,
         tabs,
     }
 }
@@ -374,6 +376,7 @@ mod tests {
             height: 600.0,
             open_on_start: true,
             open_tabs_section: false,
+            remember_tabs: false,
             tabs: Vec::new(),
         }
     }
