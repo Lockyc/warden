@@ -41,6 +41,14 @@ const MENU_WINDOW_REOPEN_LAST: &str = "window_reopen_last";
 /// carries only the window label, matching Close Tab / Pop Out Tab below.
 const MENU_TAB_SPLIT: &str = "warden:split-pane";
 
+/// Tab ▸ Suspend Session (⌘⇧S) / Terminate Session (⌘⇧K) — the keyboard route to the sidebar
+/// confirm row's ⏻ and ☠, warden-only for the same reason as `MENU_TAB_SPLIT` (a terminal session
+/// is what they end). The id doubles as the event name, label-only payload; the chrome resolves
+/// the active tab and hands it to chrome-core's `requestEnd`, which suspends at once and arms the
+/// confirm row before a terminate.
+const MENU_TAB_SUSPEND: &str = "warden:suspend-tab";
+const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
+
 #[derive(serde::Deserialize)]
 struct RectArg {
     x: f64,
@@ -136,6 +144,12 @@ fn build_app_menu(
     let split_pane_item = MenuItemBuilder::with_id(MENU_TAB_SPLIT, "Split")
         .accelerator("CmdOrCtrl+D")
         .build(app)?;
+    let suspend_item = MenuItemBuilder::with_id(MENU_TAB_SUSPEND, "Suspend Session")
+        .accelerator("Shift+Cmd+KeyS")
+        .build(app)?;
+    let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, "Terminate Session…")
+        .accelerator("Shift+Cmd+KeyK")
+        .build(app)?;
     // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
     // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
     tab_menu = tab_menu
@@ -143,6 +157,9 @@ fn build_app_menu(
         .item(&split_pane_item)
         .item(&spine.close_tab)
         .item(&spine.pop_out_tab)
+        .separator()
+        .item(&suspend_item)
+        .item(&terminate_item)
         .separator();
     for it in &nav.jumps {
         tab_menu = tab_menu.item(it);
@@ -1309,15 +1326,11 @@ fn main() {
                 }
                 return;
             }
-            if id == MENU_TAB_SPLIT {
-                // ⌘D splits the active tab. The chrome owns "which tab is active", so it drives
-                // the split_pane command on this event. Label-stamped + forMe()-filtered like
-                // every other per-window emit (emit_to leaks to sibling webviews).
-                let _ = app.emit_to(
-                    label.as_str(),
-                    MENU_TAB_SPLIT,
-                    serde_json::json!({ "label": label }),
-                );
+            if id == MENU_TAB_SPLIT || id == MENU_TAB_SUSPEND || id == MENU_TAB_TERMINATE {
+                // ⌘D / ⌘⇧S / ⌘⇧K act on the active tab. The chrome owns "which tab is active", so
+                // it drives the command on this event. Label-stamped + forMe()-filtered like every
+                // other per-window emit (emit_to leaks to sibling webviews).
+                let _ = app.emit_to(label.as_str(), id, serde_json::json!({ "label": label }));
             } else if id == shell_core::menu::ids::CLOSE_TAB {
                 // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
                 // it does NOT close the window. The chrome owns "which tab is active" + the

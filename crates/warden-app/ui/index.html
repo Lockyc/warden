@@ -1152,6 +1152,15 @@
         splitActiveTab();
       });
 
+      // Tab ▸ Suspend Session (⌘⇧S) / Terminate Session (⌘⇧K): chrome-core's requestEnd suspends at
+      // once and arms the confirm row before a terminate, landing on onSuspend/onDestroy above.
+      listen("warden:suspend-tab", (e) => {
+        if (forMe(e) && activeId) sb.requestEnd(activeId, "suspend");
+      });
+      listen("warden:terminate-tab", (e) => {
+        if (forMe(e) && activeId) sb.requestEnd(activeId, "destroy");
+      });
+
       // A split's secondary process exited — the one way a split ends — collapse the layout
       // without touching the tab's own dot/highlight (unlike `warden:tab-exited`).
       listen("warden:pane-closed", (e) => {
