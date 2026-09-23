@@ -292,6 +292,9 @@ pub struct WindowManager {
     /// is the only surface on screen). Populated by `pop_out_tab`, drained by `redock` when
     /// the detached window closes.
     pub detached: HashMap<String, DetachedSurface>,
+    /// Each window's remembered loaded + active tabs (`remember_tabs`): read by `build_window`,
+    /// written by `record_session`. In-memory only until `main.rs`'s setup points it at disk.
+    pub session: crate::session::SessionStore,
 }
 
 impl WindowManager {
@@ -319,6 +322,7 @@ impl WindowManager {
             presence_cache: PresenceCache::default(),
             last_closed: Vec::new(),
             detached: HashMap::new(),
+            session: Default::default(),
         }
     }
 
@@ -448,12 +452,34 @@ impl WindowManager {
         // tab stays cold and its reason is collected for the init banner; every
         // other tab and window still comes up.
         let mut spawn_errors: Vec<String> = Vec::new();
+        let restore = spec
+            .remember_tabs
+            .then(|| self.session.get(&spec.label))
+            .flatten()
+            .map(|r| r.restore(spec.tabs.iter().map(|t| t.spec.id.as_str())))
+            .unwrap_or_default();
+        // A tab still popped out of this window (reopened while it's out) already has its
+        // terminal — spawning or activating it here would stand up a second one.
+        let out: HashSet<&str> = self
+            .detached
+            .values()
+            .filter(|d| d.origin_label == spec.label)
+            .map(|d| d.tab_id.as_str())
+            .collect();
         for t in &spec.tabs {
-            if let Err(e) = registry.add(&t.spec, t.load_on_open) {
+            let id = t.spec.id.as_str();
+            let eager = (t.load_on_open || restore.loaded.contains(id)) && !out.contains(id);
+            if let Err(e) = registry.add(&t.spec, eager) {
                 spawn_errors.push(format!("{}: {e}", t.spec.title));
             }
         }
-        if let Some(first) = spec.tabs.first() {
+        let active = restore
+            .active
+            .as_deref()
+            .filter(|id| !out.contains(id))
+            .and_then(|id| spec.tabs.iter().find(|t| t.spec.id == id))
+            .or(spec.tabs.first());
+        if let Some(first) = active {
             if let Err(e) = registry.activate(&first.spec.id) {
                 let msg = format!("{}: {e}", first.spec.title);
                 // The first tab may have already failed its eager add above; don't
@@ -661,6 +687,7 @@ impl WindowManager {
                 }
                 crate::registry::PaneIdx::Primary => ws.registry.unload(&tab_id),
             };
+            lock.record_session(&label);
             drop(lock);
             // Per-window event: `emit_to` leaks to sibling webviews, so stamp the label and let the
             // chrome filter (see CLAUDE.md).
@@ -699,6 +726,7 @@ impl WindowManager {
                     .windows
                     .get_mut(&origin_label)
                     .and_then(|ws| ws.registry.clear_detached(&tab_id));
+                lock.record_session(&origin_label);
                 // The entry is gone from `detached`, so `is_empty` may now be true (origin closed
                 // while the tab was out): the home surface must appear, exactly as it would after
                 // `redock`. The window's own `Destroyed` → `redock` finds no entry and is a no-op.
@@ -989,8 +1017,41 @@ impl WindowManager {
             }
         }
 
+        self.record_session(&origin_label);
         self.sync_empty_surface(app);
         Some(origin_label)
+    }
+
+    /// Save `label`'s loaded + active tabs for `remember_tabs` — or forget them when the window
+    /// has it off. Call after anything that changes a window's registry. Skipped while quitting:
+    /// ⌘Q's teardown (and any child exits it provokes) must not overwrite the set being
+    /// remembered. A closed window records nothing either, so its last set survives for a reopen.
+    pub fn record_session(&mut self, label: &str) {
+        if is_quitting() {
+            return;
+        }
+        let Some(ws) = self.windows.get(label) else {
+            return;
+        };
+        let remember = self
+            .last_good
+            .windows
+            .iter()
+            .any(|w| w.title == ws.title && w.remember_tabs);
+        let record = remember.then(|| crate::session::WindowRecord {
+            loaded: ws.registry.loaded_ids(),
+            active: ws.registry.active_tab().map(str::to_string),
+        });
+        self.session.set(label, record);
+    }
+
+    /// `record_session` for every open window — after a hot-reload or rescan, once `last_good`
+    /// holds the new config (so a `remember_tabs` flip takes effect here too).
+    pub fn record_all_sessions(&mut self) {
+        let labels: Vec<String> = self.windows.keys().cloned().collect();
+        for label in labels {
+            self.record_session(&label);
+        }
     }
 
     /// Drop a window's state and reap its surfaces, without re-closing the Tauri
