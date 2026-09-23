@@ -55,6 +55,10 @@ pub struct RawConfig {
     // list. Cascades global -> window (no tab level: it's a whole-sidebar section,
     // and a sidebar belongs to a window). Optional; unset at both levels -> false.
     pub open_tabs_section: Option<bool>,
+    // Whether each window respawns the tabs it had loaded, and reselects its active
+    // tab, when it is next built (launch or reopen). Cascades global -> window.
+    // Optional; unset at both levels -> false.
+    pub remember_tabs: Option<bool>,
     // Whether warden checks for a new release on launch (global only). Optional;
     // a missing field resolves to true (auto-check on by default).
     pub auto_update: Option<bool>,
@@ -77,6 +81,8 @@ pub struct RawWindow {
     pub open_on_start: Option<bool>,
     // Overrides the global `open_tabs_section` for THIS window's sidebar.
     pub open_tabs_section: Option<bool>,
+    // Overrides the global `remember_tabs` for THIS window.
+    pub remember_tabs: Option<bool>,
     pub shell: Option<String>,
     pub cmd: Option<String>,
     pub probe: Option<String>,
