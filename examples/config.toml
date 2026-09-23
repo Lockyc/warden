@@ -37,6 +37,11 @@ auto_update    = true          # check for a new release on launch (default on; 
 # it cascades global -> window: set it inside a [[window]] to override this for that window alone.
 open_tabs_section = false
 
+# Bring each window back the way it was left: the tabs that had a terminal open respawn when the
+# window opens (at launch, or on a reopen), and the tab you were on is reselected. Default off, and
+# it cascades global -> window.
+remember_tabs = false
+
 # Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
 # dot when it exits 0. `amux --probe` exits 0 when the tab's amux session exists — the agent OR a
 # lingering frame (so the dot stays lit if the agent exits but the frame wrapper is still up). amux
