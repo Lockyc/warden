@@ -566,6 +566,7 @@ colour = "#0f8a8a"
             height: 1000,
             open_on_start: true,
             open_tabs_section: false,
+            remember_tabs: false,
             tabs: vec![Tab {
                 id: None,
                 key: "/r/Dev/gh/lockyc/warden".into(),
@@ -884,6 +885,7 @@ colour = "#111111"
                 height: 1000,
                 open_on_start: true,
                 open_tabs_section: false,
+                remember_tabs: false,
                 tabs: Vec::new(),
                 roots: vec![Root {
                     name: "Dev".into(),
@@ -954,6 +956,7 @@ colour = "#111111"
             height: 1000,
             open_on_start: true,
             open_tabs_section: false,
+            remember_tabs: false,
             tabs,
             roots: vec![root.clone()],
         };

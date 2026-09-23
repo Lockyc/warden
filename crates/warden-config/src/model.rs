@@ -65,6 +65,11 @@ pub struct Window {
     /// defaulting to false — the cascade is already collapsed here, so the app never
     /// sees the levels.
     pub open_tabs_section: bool,
+    /// Whether this window respawns the tabs it last had loaded, and reselects its last
+    /// active tab, whenever it is built. Resolved window-else-global, default false. Not
+    /// diffed by `reconcile`: the app reads it from its current config at build and
+    /// record time, so a flip needs no window op.
+    pub remember_tabs: bool,
     pub tabs: Vec<Tab>,
     /// Project-tree roots for this window (`[[window.root]]`), in file order after any
     /// groups. Declarations only — the app scans each and synthesizes project tabs.

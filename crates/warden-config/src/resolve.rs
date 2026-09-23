@@ -242,6 +242,7 @@ pub fn resolve_with(
             default_shell,
             &globals,
             raw.open_tabs_section,
+            raw.remember_tabs,
             &mut warnings,
         )?);
     }
@@ -276,6 +277,7 @@ fn resolve_window(
     default_shell: &str,
     globals: &Globals,
     global_open_tabs_section: Option<bool>,
+    global_remember_tabs: Option<bool>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
     let window_split = resolve_split_level(rp.split.as_ref())?;
@@ -302,6 +304,7 @@ fn resolve_window(
         .open_tabs_section
         .or(global_open_tabs_section)
         .unwrap_or(false);
+    let remember_tabs = rp.remember_tabs.or(global_remember_tabs).unwrap_or(false);
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
@@ -385,6 +388,7 @@ fn resolve_window(
         height,
         open_on_start,
         open_tabs_section,
+        remember_tabs,
         tabs,
         roots,
     })
@@ -748,6 +752,40 @@ open_tabs_section = false
         .unwrap();
         assert!(cfg.windows[0].open_tabs_section, "inherits the global");
         assert!(!cfg.windows[1].open_tabs_section, "window false wins");
+    }
+
+    #[test]
+    fn remember_tabs_cascades_global_to_window_and_defaults_off() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "plain"
+colour = "#0f8a8a"
+[[window]]
+title = "opts in"
+colour = "#0f8a8a"
+remember_tabs = true
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.windows[0].remember_tabs, "default off");
+        assert!(cfg.windows[1].remember_tabs, "window opts in");
+
+        let (cfg, _) = resolve_str(
+            r##"
+remember_tabs = true
+[[window]]
+title = "inherits"
+colour = "#0f8a8a"
+[[window]]
+title = "opts out"
+colour = "#0f8a8a"
+remember_tabs = false
+"##,
+        )
+        .unwrap();
+        assert!(cfg.windows[0].remember_tabs, "inherits the global");
+        assert!(!cfg.windows[1].remember_tabs, "window false wins");
     }
 
     #[test]
