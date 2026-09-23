@@ -29,7 +29,7 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 
 - **A window per `[[window]]`** — native macOS windows, each with a colour + title banner, a curator-style draggable sidebar, and the terminal under an overlay titlebar. The **Window** menu lists every configured window — raise an open one or reopen one you've closed (**⌘⇧T** reopens the last closed).
 - **Persistent, not last-window-quit** — warden opens the windows you mark `open_on_start` (default all) and shows a **home surface** when none are open, listing every configured window so you can raise or reopen one with a click. It's a persistent app: closing the last window never quits it — **⌘Q** does.
-- **Project tabs** — each tab is a real terminal in a working directory. `load_on_open` tabs spawn at launch and keep running; the rest spawn lazily on first focus. Tabs can be **grouped** into labelled sidebar sections.
+- **Project tabs** — each tab is a real terminal in a working directory. `load_on_open` tabs spawn at launch and keep running; the rest spawn lazily on first focus — or, with `remember_tabs`, come back loaded if they were open when you quit. Tabs can be **grouped** into labelled sidebar sections.
 - **Project trees** — point a `[[window.root]]` at a directory (e.g. `~/Developer`) and warden auto-discovers every git project under it, rendering them as a collapsible tree of tabs — no per-project config needed. Pair it with amux `probe`/`kill`/`suspend` for a per-project session dot on every discovered project.
 - **Live hot-reload** — edit the config and windows and tabs are added, removed, recoloured, and re-sectioned live on save. A missing config offers to create a starter one and an invalid one shows the error, both on the **home surface**; a parse error mid-edit instead keeps the last-good windows up behind an error banner. The **Config** menu opens the config file in your default editor or reveals it in Finder, so you needn't remember its path.
 - **Tab-row affordances** — a letter/colour tile and a **live/cold dot** (filled when the terminal is spawned, hollow when cold). Hover a live dot for a ✕ that **unloads** the tab — kills the terminal and PTY; it respawns a fresh shell on next focus.
@@ -110,6 +110,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
 | `sidebar_drag` | `true` | The non-interactive sidebar chrome doubles as a window-move drag handle. |
 | `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. The two lists scroll independently — the section grows to 2/5 of the window then scrolls within itself, so paging through a long project list never pushes the open tabs off the top. While the section is showing, the main list below it is dimmed until you hover it. Cascades global → window. |
+| `remember_tabs` | `false` | Each window comes back the way you left it: the tabs that had a terminal open respawn when it opens (their `cmd` re-runs, so `amux` reattaches), and the tab you were on is selected. Applies at launch and when you reopen a closed window. Cascades global → window. |
 | `auto_update` | `true` | Check for a new release on launch and every 6h. `false` suppresses the auto-check; **Check for Updates…** still works. Takes effect at next launch. |
 | `notify_debug` | `false` | Trace the notification path to `$TMPDIR/warden-notify-dbg.log` — a debug aid, read at launch (see [`docs/notifications.md`](docs/notifications.md)). |
 
@@ -122,6 +123,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `width` / `height` | `1500` / `1000` | Initial size in px; the window's saved size/position wins after the first launch. |
 | `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu. |
 | `open_tabs_section` | inherited from global | Whether THIS window's sidebar pins the **Open** section. Set it per window to show the section in a busy window and not a quiet one. |
+| `remember_tabs` | inherited from global | Whether THIS window restores its loaded tabs and selection. |
 | `shell` / `cmd` / `probe` / `kill` / `suspend` / `split` | inherited from global | Per-window overrides for every tab in it. |
 
 **`[[window.tab]]`** (and `[[window.group.tab]]`) — one project terminal each:
