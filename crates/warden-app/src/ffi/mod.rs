@@ -368,7 +368,7 @@ const _: () = assert!(std::mem::size_of::<ghostty_target_s>() == 16);
 const _: () = assert!(std::mem::size_of::<ghostty_action_s>() == 32);
 // Action union variants warden reads. Each must fit the 24-byte, 8-aligned union blob — a variant
 // that outgrew it would read past the action struct. (Discriminants can't be guarded this way; see
-// the tag consts above and CLAUDE.md's "eyeball the action tags on a version jump".)
+// build.rs::generate_action_tags, which derives every tag from the vendored header.)
 const _: () = assert!(std::mem::size_of::<ghostty_action_desktop_notification_s>() <= 24);
 const _: () = assert!(std::mem::size_of::<ghostty_action_open_url_s>() == 24);
 const _: () = assert!(std::mem::size_of::<ghostty_action_child_exited_s>() <= 24);

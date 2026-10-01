@@ -72,9 +72,60 @@ Mechanism: `warden-config`'s `Tab.split: Option<Split>` (`resolve.rs::resolve_sp
 (`crates/warden-app/src/registry.rs` — `add` declares a config split's second pane, one
 `secondary_spec` derives its startup), `TabDto.split_layout` → the chrome's
 `splitLayoutById`/`ratioOverride`, the `split_pane`/`focus_pane` commands
-(`main.rs`), and the chrome's pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`). The
-traps this shipped are catalogued in `CLAUDE.md`'s *Conventions & footguns* — read those
-before touching split visibility, routing, or the backstop.
+(`main.rs`), and the chrome's pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`).
+Read *Traps* below before touching split visibility, routing, or the backstop.
+
+## Pop-out: session-preserving, whole-tab
+
+A ⤢ on the tab row (chrome-core's `onPopOut`) or **⌘⇧O** pops the active tab into shell-core's
+banner-only detach window. **Session-preserving is the defining property**:
+`GhosttySurface::reparent` moves the live `NSView` onto the new window (re-registers its three
+window-scoped observers, swaps the `window` field, re-seeds display id + focus, reapplies
+geometry) and calls none of `teardown`/`ghostty_surface_free`/`close` — PTY, scrollback and
+process survive both trips. `Registry::detach` takes the `Spawned` surface of every pane and
+leaves `TabSlot::Detached` in each slot; closing the detached window returns the tab via
+`manager.rs::redock` → `Registry::attach` (`Cold`/`Detached` → `Spawned`, both panes or neither),
+reopening the origin window first if it was closed. The origin row shows muted via the forwarded
+`detached` DTO field and clicking it calls `raise_popped_window`. The detached window's geometry
+persists under its `shell-detach:` label, derived by `plan::detach_window_token` from
+`origin_label:tab_key`.
+
+## Traps
+
+- **Pop-out backend invariants** (`main.rs::pop_out_tab`, `manager.rs::redock`,
+  `registry.rs::detach`/`attach`): extract the surfaces under the `ManagerState` lock → build the
+  window + `reparent` with the lock **released** → re-lock to store and wire the return. The
+  `Detached` placeholder keeps `reconcile` from duplicating the tab; `detached` counts in
+  `is_empty()`; `is_quitting` stops `redock` resurrecting mid-teardown; a live surface is dropped
+  only when `redock` finds the origin gone from config. **Every failure path restores both panes**
+  — a partial restore strands a live PTY with no window and no route back.
+- **Size the reparented surface's birth rect from the built window** (`win.inner_size()` in
+  `pop_out_tab`'s birth closure), never `DETACHED_DEFAULT_*` — the geometry plugin restores the
+  remembered size during `build()`.
+- **A detached window's `pane` index is a hole (left-to-right), never a `PaneIdx`.** Resolve with
+  `PaneIdx::from_hole(i, ds.mirrored())`, emit with `which.hole(ds.mirrored())`. The docked chrome
+  draws a `side = "left"` split with a flex `order`, so the detached layout mirrors on warden's
+  side; `mirrored` keys on the secondary's *presence*. `registry.rs::PaneIdx::hole`,
+  `manager.rs::DetachedSurface::mirrored`.
+- **Surface→tab routing searches both panes and `detached` too**
+  (`Registry::locate_surface`, `manager.rs::locate_detached_surface`, `handle_child_exited`'s
+  detached arms). Missing either, a split tab silently stops badging or a dead shell sits under
+  "Process exited".
+- **Split visibility is the `.split` class on `#terminal-hole`, never `hidden` alone** — `hidden`'s
+  UA `display: none` loses to any author `display` rule, so `#pane-divider`/`#pane-secondary`'s
+  rule is scoped to `#terminal-hole.split`. **`setSplitVisible` is the sole authority** for `.split`
+  and `hidden`.
+- **A config split's ratio never reaches `localStorage`** — `saveSplit`/`loadSplit` route it to
+  the in-memory `ratioOverride`, cleared wherever the tab goes cold.
+- **Report the pane's content box, and paint the border box's own background** — both, together:
+  the border box lets the surface occlude the focus border; the content box without an opaque
+  outer ground leaks wallpaper round every pane. `ui/index.html` (`contentRect` + the `.pane` CSS).
+- **The per-pane backstop ground is always on; only the illustration toggles**
+  (`#empty-state`/`#empty-state-2`). Behind a live surface it is invisible, so an uncovered hole is
+  unrepresentable on every transient.
+- **Every split `localStorage` access is wrapped whole, `.length` and `.key()` included**
+  (`evictSplits`) — unavailable storage throws on every member, and an unguarded read inside
+  `toComponentDto` stops the tab bar refreshing for good.
 
 ## Verifying splits by eye
 
@@ -107,7 +158,7 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - Closing the detached window returns both panes to the origin, still live.
 - Arrow keys pressed in the second pane stay in it: the cursor, the focus ring and the
   keystroke all remain on the pane you typed in (arrows travel a different AppKit route
-  from letters — `WardenHostView::owns_window_keys` in `CLAUDE.md`'s footguns).
+  from letters — `WardenHostView::owns_window_keys` in `docs/surface.md`).
 - **The focused-pane marker** — the accent border — follows every click, into live terminal
   content and onto a cold pane's backstop alike, and after switching tabs away and back it
   is on the pane you last typed in. A popped-out tab shows no marker in its origin window
@@ -130,7 +181,7 @@ only by eye. Each step below is written to actually fail if the feature regresse
 Expect no look change to a live terminal: each surface's own render layer is already opaque
 (`#0e1516`, `surface/ghostty.rs::new`), so it is never the pane ground a terminal composites
 against. The always-on `--pane-ground` backstops only what no surface covers — the `--ring-w` focus
-border ring, and a hole with no live surface in it (see the backstop footgun in `CLAUDE.md`).
+border ring, and a hole with no live surface in it (see the backstop trap above).
 
 ## Inline images: the surface is warden's, and it already renders them
 

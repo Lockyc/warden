@@ -220,7 +220,7 @@ just deploy       # build, install to /Applications, and relaunch
 `core.hooksPath` is per-clone local git config that the repo can't carry, so **run `just hooks` once
 after cloning** — without it neither git hook is active.
 
-A source build is ad-hoc signed; `just deploy` strips the quarantine xattr and, if a *Developer ID Application* cert is in your keychain, re-signs the installed app with it — on **macOS 26** that Team ID keeps every command run inside warden off a slow syspolicyd path. Release signing and notarization: [`CLAUDE.md`](CLAUDE.md).
+A source build is ad-hoc signed; `just deploy` strips the quarantine xattr and, if a *Developer ID Application* cert is in your keychain, re-signs the installed app with it — on **macOS 26** that Team ID keeps every command run inside warden off a slow syspolicyd path. Release signing and notarization: [`docs/releasing.md`](docs/releasing.md).
 
 Or with cargo directly:
 
