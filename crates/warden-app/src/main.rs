@@ -1036,26 +1036,43 @@ fn shell_home_edit_config() {
     shell_core::menu::handle_spine_event(shell_core::menu::ids::EDIT_CONFIG, &path);
 }
 
-/// The home surface's per-window button (shown for the `Windows` list state): open, or focus if
-/// already open, then update the empty-surface (it recedes once a real window exists) and
-/// rebuild the Window menu. Mirrors the Window-menu `on_menu_event` open/focus path — same
-/// invariant as `MENU_WINDOW_REOPEN_LAST`'s handler: every window-open path must sync, not just
-/// the home surface's own click.
+/// The home surface's per-window button (shown for the `Windows` list state).
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn shell_home_open_window(id: String, app: tauri::AppHandle) {
+    open_or_focus_window(&app, &id);
+}
+
+/// Open the configured window `label`, or focus it if already open, then sync the empty surface
+/// (it recedes once a real window exists) and rebuild the Window menu. The one open-by-label path:
+/// the Window menu, the home surface, and `warden://open` all route here, because every
+/// window-open path must sync — `MENU_WINDOW_REOPEN_LAST`'s handler upholds the same invariant.
+#[cfg(target_os = "macos")]
+fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
     use tauri::Manager;
     let st = app.state::<ManagerState>();
     {
         let mut m = st.lock();
-        if m.windows.contains_key(&id) {
-            m.focus_window(&id);
+        if m.windows.contains_key(label) {
+            m.focus_window(label);
         } else {
-            m.reopen_window(&app, &id);
+            m.reopen_window(app, label);
         }
-        m.sync_empty_surface(&app);
+        m.sync_empty_surface(app);
     } // release the lock before rebuild_menu (non-reentrant mutex)
-    let _ = rebuild_menu(&app);
+    let _ = rebuild_menu(app);
+}
+
+/// The window title a `warden://open?window=<title>` URL names (percent-decoded), or `None` for
+/// any other URL. The scripting entry point for a window `open_on_start = false` keeps closed:
+/// `open 'warden://open?window=work'` launches warden if needed and opens/focuses that window.
+fn open_url_window_title(url: &tauri::Url) -> Option<String> {
+    if url.scheme() != "warden" || url.host_str() != Some("open") {
+        return None;
+    }
+    url.query_pairs()
+        .find(|(k, _)| k == "window")
+        .map(|(_, v)| v.into_owned())
 }
 
 /// Remove tmux's `$TMUX`/`$TMUX_PANE` from warden-app's own environment so the shells it
@@ -1282,21 +1299,7 @@ fn main() {
                 return;
             }
             if let Some(win_label) = shell_core::menu::selected_window(id) {
-                let st = app.state::<ManagerState>();
-                {
-                    let mut m = st.lock();
-                    if m.windows.contains_key(win_label) {
-                        m.focus_window(win_label);
-                    } else {
-                        m.reopen_window(app, win_label);
-                    }
-                    // Opening a closed window from the Window menu while the home surface is
-                    // showing (zero real windows) must close it — the same invariant
-                    // `shell_home_open_window` upholds. Harmless no-op on the focus (already-open)
-                    // path, since the home surface can't be showing then.
-                    m.sync_empty_surface(app);
-                }
-                let _ = rebuild_menu(app);
+                open_or_focus_window(app, win_label);
                 return;
             }
 
@@ -1635,16 +1638,43 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building warden")
-        .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                crate::manager::mark_quitting();
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { .. } => crate::manager::mark_quitting(),
+            // A `warden://` URL (CFBundleURLTypes in Info.plist) — cold launch or warm, macOS
+            // delivers it here after `setup` has materialized the config's windows.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                use tauri::Manager;
+                for title in urls.iter().filter_map(open_url_window_title) {
+                    let label = app.state::<ManagerState>().lock().label_for_title(&title);
+                    match label {
+                        Some(label) => open_or_focus_window(app, &label),
+                        None => {
+                            eprintln!("warden: warden://open names no configured window {title:?}")
+                        }
+                    }
+                }
             }
+            _ => {}
         });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_url_window_title_reads_only_warden_open_urls() {
+        let t = |s: &str| open_url_window_title(&tauri::Url::parse(s).unwrap());
+        assert_eq!(t("warden://open?window=work").as_deref(), Some("work"));
+        assert_eq!(
+            t("warden://open?window=my%20work").as_deref(),
+            Some("my work")
+        );
+        assert_eq!(t("warden://open?x=1"), None);
+        assert_eq!(t("warden://close?window=work"), None);
+        assert_eq!(t("curator://open?window=work"), None);
+    }
 
     #[test]
     fn hole_ratios_put_the_secondary_first_only_when_mirrored() {

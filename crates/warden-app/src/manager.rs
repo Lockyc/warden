@@ -1080,6 +1080,11 @@ impl WindowManager {
         crate::plan::window_menu_entries(&specs, &open)
     }
 
+    /// The current label of the configured window titled `title` — open or closed — or `None`.
+    pub fn label_for_title(&self, title: &str) -> Option<String> {
+        crate::plan::label_for_title(&self.configured_specs(), title)
+    }
+
     /// Raise `label`'s window (unminimize + focus) if it is open. No-op otherwise.
     pub fn focus_window(&self, label: &str) {
         if let Some(ws) = self.windows.get(label) {
