@@ -220,6 +220,15 @@ pub fn window_menu_entries(specs: &[WindowSpec], open: &HashSet<String>) -> Vec<
         .collect()
 }
 
+/// The label of the configured window titled `title` (exact match, config order — the first
+/// wins if two windows share a title). `None` if no configured window has that title.
+pub fn label_for_title(specs: &[WindowSpec], title: &str) -> Option<String> {
+    specs
+        .iter()
+        .find(|s| s.title == title)
+        .map(|s| s.label.clone())
+}
+
 /// The label `⌘⇧T` should reopen: the most-recently-closed window (top of the
 /// stack) that is still configured and not already open. Skips entries that were
 /// closed-then-deleted-from-config or have since been reopened. `None` if none qualify.
@@ -740,6 +749,18 @@ colour = "#222222"
         // the "-2" suffix via unique_label.
         assert_eq!(specs[0].label, "a-b");
         assert_eq!(specs[1].label, "a-b-2");
+    }
+
+    #[test]
+    fn label_for_title_matches_the_title_not_the_label() {
+        let specs = vec![spec("a-b", "a b"), spec("a-b-2", "a-b"), spec("x", "a b")];
+        assert_eq!(label_for_title(&specs, "a-b").as_deref(), Some("a-b-2"));
+        assert_eq!(
+            label_for_title(&specs, "a b").as_deref(),
+            Some("a-b"),
+            "first wins"
+        );
+        assert_eq!(label_for_title(&specs, "nope"), None);
     }
 
     fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
