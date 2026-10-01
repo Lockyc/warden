@@ -2,8 +2,8 @@
 type: reference
 links:
   - rel: part-of
-    to: CLAUDE.md
-    note: CLAUDE.md documents the revendor procedure that updates this file
+    to: docs/surface.md
+    note: docs/surface.md documents the revendor procedure that updates this file
 ---
 
 # Vendored libghostty
