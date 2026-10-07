@@ -916,6 +916,10 @@
               // config, so it's ignored here (forward-compat).
               invokeSafe("rescan_root");
             },
+            onSearchExit() {
+              // Esc in the sidebar search: typing goes back to the terminal it came from.
+              if (activeId && !detached.has(activeId)) focusPane(focusedPaneById.get(activeId) ?? 0);
+            },
           },
           {
             appName: "warden",
@@ -1010,6 +1014,10 @@
       listen("warden:pop-out-tab", (e) => {
         if (!forMe(e)) return;
         if (activeId && !detached.has(activeId)) invokeSafe("pop_out_tab", { id: activeId, ratio: popOutRatio(activeId) });
+      });
+      // ⌘⇧F: the backend already made this webview the key view; put the cursor in the search.
+      listen("warden:find-in-sidebar", (e) => {
+        if (forMe(e)) sb.focusSearch();
       });
 
       // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).

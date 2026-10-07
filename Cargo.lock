@@ -368,7 +368,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "chrome-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/chrome-core?rev=7da440ee1975eb86600eaccf4b842957733d90a4#7da440ee1975eb86600eaccf4b842957733d90a4"
+source = "git+https://github.com/Lockyc/chrome-core?rev=9f1b79ea28635ff6a22999a9dae1b944e59601fa#9f1b79ea28635ff6a22999a9dae1b944e59601fa"
 
 [[package]]
 name = "chrono"
@@ -3366,7 +3366,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.2.1"
-source = "git+https://github.com/Lockyc/shell-core?rev=93ef9d430efada59837be36d74a4697c2cc602f3#93ef9d430efada59837be36d74a4697c2cc602f3"
+source = "git+https://github.com/Lockyc/shell-core?rev=b5464db51671b7d4cf7e85345daa6ef664f0e4b7#b5464db51671b7d4cf7e85345daa6ef664f0e4b7"
 dependencies = [
  "block2 0.6.2",
  "notify",
