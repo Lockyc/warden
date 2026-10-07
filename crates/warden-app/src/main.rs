@@ -160,6 +160,7 @@ fn build_app_menu(
         .item(&split_pane_item)
         .item(&spine.close_tab)
         .item(&spine.pop_out_tab)
+        .item(&spine.find_in_sidebar)
         .separator()
         .item(&suspend_item)
         .item(&terminate_item)
@@ -1361,6 +1362,15 @@ fn main() {
                 let _ = app.emit_to(
                     label.as_str(),
                     "warden:pop-out-tab",
+                    serde_json::json!({ "label": label }),
+                );
+            } else if id == shell_core::menu::ids::FIND_IN_SIDEBAR {
+                // ⌘⇧F: a terminal NSView holds first responder, and the page can't take it from
+                // AppKit — make the webview the key view first, then the chrome focuses its field.
+                let _ = AsRef::<tauri::Webview<_>>::as_ref(&win).set_focus();
+                let _ = app.emit_to(
+                    label.as_str(),
+                    "warden:find-in-sidebar",
                     serde_json::json!({ "label": label }),
                 );
             } else if id == shell_core::menu::ids::CHECK_UPDATES {
