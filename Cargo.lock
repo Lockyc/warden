@@ -4530,7 +4530,7 @@ dependencies = [
 
 [[package]]
 name = "warden-app"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "block2 0.5.1",
  "chrome-core",
