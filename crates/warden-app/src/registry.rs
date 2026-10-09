@@ -366,9 +366,11 @@ impl Registry {
     }
 
     /// Drop tab `id`'s second pane, freeing its surface. Returns whether there was one.
-    /// Focus falls back to the primary — leaving `focused` on a pane that no longer
-    /// exists would send keystrokes nowhere.
+    /// Focus falls back to the primary — the record, and, on the visible tab, the live
+    /// surface's first responder too: the closed view held it, and with nothing taking it
+    /// over the keystrokes go to the bare NSWindow, which beeps.
     pub fn close_secondary(&mut self, id: &str) -> bool {
+        let is_active = self.active.as_deref() == Some(id);
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
         };
@@ -388,6 +390,11 @@ impl Registry {
         };
         if had {
             t.focused = PaneIdx::Primary;
+            if is_active {
+                if let TabSlot::Spawned(s) = &t.primary.slot {
+                    s.focus();
+                }
+            }
         }
         had
     }
