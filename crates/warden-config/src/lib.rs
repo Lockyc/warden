@@ -24,7 +24,7 @@ pub use config_core::{
     ColourError, Density, DiscoveredProject, RootDir, SeedError, TabDigitKeys, Warning,
     DEFAULT_ROOT_DEPTH,
 };
-pub use load::{config_path, load, load_with, LoadError, Loaded};
+pub use load::{config_path, load, load_with, login_shell, LoadError, Loaded};
 pub use model::{Config, Root, Split, SplitSide, Tab, Window};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, WindowUpdate};
 pub use resolve::{normalize_dir_key, ResolveError};

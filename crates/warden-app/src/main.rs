@@ -1036,7 +1036,7 @@ fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
             "{} already exists — left untouched",
             path.display()
         )),
-        Ok(true) => match warden_config::load_with(&path, &login_shell()) {
+        Ok(true) => match warden_config::load_with(&path, &warden_config::login_shell()) {
             Ok(loaded) => {
                 // Expand `[[window.root]]`s into the EFFECTIVE config BEFORE taking the lock —
                 // the walk is slow and must never run under the ManagerState mutex, or it stalls
@@ -1159,25 +1159,6 @@ fn configure_ghostty_resources() {
     }
 }
 
-/// The shell warden spawns when a tab's config sets none — the user's **login shell**, run
-/// as a login shell, exactly as a terminal does. Read from `$SHELL` (launchd populates it from
-/// the user's directory record even for a Dock/Finder launch), falling back to the macOS
-/// default. Returned as an absolute path with `-l`, which is the whole point: libghostty finds
-/// it without any PATH lookup — a GUI launch's minimal launchd PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
-/// would otherwise miss a Homebrew/nix shell and the tab would die `exec: <shell>: not found` —
-/// and the login shell then sources the user's config and builds PATH for the interactive
-/// session. A config `shell` (at any cascade level) overrides this; warden is generic, so an
-/// override is an arbitrary command. A bare-name override (`fish -l`) resolves against the
-/// login-shell PATH adopted by `restore_login_path` at startup; an absolute path remains the
-/// robust fallback for a binary that lives only on an interactive-only PATH.
-fn login_shell() -> String {
-    let path = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string());
-    format!("{path} -l")
-}
-
 // Sentinels bracketing the login PATH in the helper-shell output, so anything an rc file
 // prints around it (banners, `nvm`/`conda` chatter) can't corrupt the readout.
 const PATH_SENTINEL_START: &str = "__WARDEN_PATH_START__";
@@ -1188,9 +1169,9 @@ const PATH_SENTINEL_END: &str = "__WARDEN_PATH_END__";
 /// a `.app` inherits only the minimal launchd PATH (`/usr/bin:/bin:/usr/sbin:/sbin`); a shell,
 /// probe, or kill command named without an absolute path (`fish -l` as a config override, bare
 /// `tmux` in a probe) is then not found and silently fails — a `shell` override dies on spawn
-/// (`exec: fish: not found`), a probe reports "no session." The built-in *default* shell sidesteps
-/// this by construction (absolute `$SHELL -l`, see `login_shell`), but config-supplied commands are
-/// arbitrary and routinely bare, so they need the PATH. Rather than guess install prefixes —
+/// (`exec: fish: not found`), a probe reports "no session." The built-in *default* shell
+/// sidesteps this by construction (absolute `$SHELL -l`, see `warden_config::login_shell`), but
+/// config-supplied commands are arbitrary and routinely bare, so they need the PATH. Rather than guess install prefixes —
 /// Homebrew, nix, MacPorts and custom setups all differ — we ask the user's own login shell what
 /// PATH it builds and adopt that, the approach VS Code and `exec-path-from-shell` use for the same
 /// GUI-launch gap. Since surfaces/probes/kill all inherit warden-app's process env (same lever as
@@ -1459,7 +1440,10 @@ fn main() {
                 // Read the `notify_debug` toggle from the loaded config (default false) before the
                 // config is consumed by materialize — it gates notify.rs's diagnostic trace.
                 let mut notify_debug = false;
-                match warden_config::load_with(&warden_config::config_path(), &login_shell()) {
+                match warden_config::load_with(
+                    &warden_config::config_path(),
+                    &warden_config::login_shell(),
+                ) {
                     Ok(loaded) => {
                         notify_debug = loaded.config.notify_debug;
                         mgr.materialize(&handle, loaded.config);
@@ -1522,8 +1506,10 @@ fn main() {
                 // The formatter's copy of the path (cfg_path is moved into the watcher).
                 let fmt_path = cfg_path.clone();
                 // Inject the login shell so hot-reload uses the same default as the initial load.
-                let watcher =
-                    warden_config::Watcher::with_default(cfg_path, login_shell(), move |res| {
+                let watcher = warden_config::Watcher::with_default(
+                    cfg_path,
+                    warden_config::login_shell(),
+                    move |res| {
                         let wh = wh.clone();
                         let fmt_path = fmt_path.clone();
                         let _ = wh.clone().run_on_main_thread(move || {
@@ -1660,7 +1646,8 @@ fn main() {
                                 }
                             }
                         });
-                    });
+                    },
+                );
                 // Keep the watcher alive for the app's lifetime. Log a failure so a
                 // dead watcher (no hot-reload) is distinguishable from a working one.
                 match watcher {
@@ -1770,15 +1757,6 @@ mod tests {
             std::env::var_os("TMUX_PANE").is_none(),
             "TMUX_PANE must be scrubbed"
         );
-    }
-
-    #[test]
-    fn login_shell_uses_shell_env_with_login_flag() {
-        std::env::set_var("SHELL", "/opt/homebrew/bin/fish");
-        assert_eq!(login_shell(), "/opt/homebrew/bin/fish -l");
-        // Empty/unset $SHELL falls back to the macOS default, still as a login shell.
-        std::env::set_var("SHELL", "");
-        assert_eq!(login_shell(), "/bin/zsh -l");
     }
 
     #[test]
