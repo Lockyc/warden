@@ -449,6 +449,35 @@ impl Registry {
             .any(|t| t.id == id && t.primary.spec.probe.is_some())
     }
 
+    /// Stand tab `id` up as popped out without extracting anything: its live surfaces are
+    /// already in a detached window. `WindowManager::build_window` calls this for every tab
+    /// still out when its origin window is rebuilt (closed, then reopened — by the user or by
+    /// `redock` itself), so the rebuilt row is the same `Detached` placeholder `detach` leaves:
+    /// `activate`/`ensure_spawned_by_id` spawn nothing for it, the row renders popped out, and
+    /// the hot-reload guards (`is_detached`) see it. Call it on a cold slot only — a `Spawned`
+    /// one would be overwritten without `close()`.
+    ///
+    /// `has_secondary` marks the second pane too, declaring it (`secondary_spec`) when the
+    /// rebuilt tab has none — a runtime (⌘D) split is in no config, so the rebuild is unsplit,
+    /// and the returning pair still needs a slot to land in. With `false` a config split's
+    /// declared second pane stays `Cold`, as `detach` leaves a secondary that wasn't live.
+    /// Unknown tab = no-op (it left the config while out; `redock` drops it).
+    pub fn mark_detached(&mut self, id: &str, has_secondary: bool) {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        t.primary.slot = TabSlot::Detached;
+        if has_secondary {
+            let spec = secondary_spec(&t.primary.spec, id);
+            t.secondary
+                .get_or_insert(Pane {
+                    spec,
+                    slot: TabSlot::Cold,
+                })
+                .slot = TabSlot::Detached;
+        }
+    }
+
     /// Test-only: force tab `id`'s slot straight to `Detached`, bypassing
     /// `detach` (which needs a real `Spawned` surface to extract — unavailable
     /// in a unit test with no AppKit). `TabSlot::Detached` carries no data, so
@@ -896,14 +925,10 @@ impl Registry {
     /// origin registry. Succeeds from a `Detached` **or** a `Cold` slot →
     /// `Ok(())`, and the slot becomes `Spawned(surface)`.
     ///
-    /// Both source slots are real return paths, which is why this accepts
-    /// either: if the origin window stayed open while the tab was popped out,
-    /// its slot is still the `Detached` placeholder `detach` left. If the user
-    /// *closed* the origin window first, redock reopens it from config — which
-    /// rebuilds that tab as a fresh `Cold` (or a freshly-spawned surface the
-    /// caller then `unload`s back to `Cold`) — so the slot the returning
-    /// surface lands in is `Cold`. Either way the reparented surface takes the
-    /// slot.
+    /// The slot is normally `Detached`: the placeholder `detach` left when the
+    /// origin stayed open, or the one `mark_detached` stood up when the origin
+    /// was rebuilt while the tab was out. A `Cold` slot is accepted too — it
+    /// holds no surface, so landing the returning one there leaks nothing.
     ///
     /// On failure — unknown `id`, or a slot that is already `Spawned` (a
     /// live surface already occupies it; overwriting would leak that surface's
@@ -921,11 +946,8 @@ impl Registry {
     /// state for a caller to discover, and no shape in the `Err` that could express one.
     ///
     /// A returning `secondary` whose tab has **no** secondary pane recreates the pane
-    /// (`secondary_spec`, the same derivation `split` uses) rather than refusing. That
-    /// is a real path, not a defensive one: a runtime (⌘D) split lives in the chrome and the
-    /// registry, not the config, so an origin window the user closed while the tab was popped
-    /// out is rebuilt *unsplit* — and refusing there would drop a live PTY on the floor
-    /// purely because the slot it left from had since been rebuilt without it.
+    /// (`secondary_spec`, the same derivation `split` and `mark_detached` use) rather than
+    /// refusing: refusing would end a live PTY purely because its slot is missing.
     pub fn attach(
         &mut self,
         id: &str,
@@ -1482,6 +1504,48 @@ mod tests {
             r.ensure_spawned_by_id("does-not-exist").is_ok(),
             "unknown id is a clean no-op"
         );
+    }
+
+    #[test]
+    fn mark_detached_makes_a_rebuilt_tab_read_as_popped_out() {
+        // An origin window rebuilt while one of its tabs is still popped out: the tab's live
+        // terminal is in the detached window, so the rebuilt row must be the same `Detached`
+        // placeholder `detach` leaves — never a cold slot `activate` would spawn a second
+        // terminal into.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("t0", "/tmp"), false).unwrap();
+        r.mark_detached("t0", false);
+        assert!(r.is_detached("t0"));
+        assert!(r.activate("t0").is_ok());
+        assert!(r.ensure_spawned_by_id("t0").is_ok());
+        assert!(!r.is_spawned("t0"), "a popped-out tab never spawns locally");
+        assert!(
+            r.tab_dtos()[0].detached,
+            "the row renders popped out, not cold"
+        );
+        assert!(!r.is_split("t0"));
+    }
+
+    #[test]
+    fn mark_detached_with_a_secondary_declares_a_detached_second_pane() {
+        // A runtime (⌘D) split lives in no config, so the rebuilt origin has no second pane; the
+        // returning pair still needs one to land in, and the row reads as split meanwhile.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("t0", "/tmp"), false).unwrap();
+        r.mark_detached("t0", true);
+        assert!(r.is_pane_detached("t0", PaneIdx::Primary));
+        assert!(r.is_pane_detached("t0", PaneIdx::Secondary));
+        assert_eq!(
+            r.secondary_spec_for_test("t0").map(|s| s.id),
+            Some("t0::2".to_string())
+        );
+    }
+
+    #[test]
+    fn mark_detached_of_unknown_tab_is_a_noop() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.mark_detached("nope", true);
+        assert!(r.tab_dtos().is_empty());
     }
 
     #[test]
