@@ -669,6 +669,16 @@ impl Registry {
             .collect()
     }
 
+    /// Tab `id`'s (primary pane's) spec, or `None` if unknown. Pop-out records it as the spec
+    /// the travelling surface runs (`DetachedSurface::spec`), so `redock` can tell whether the
+    /// config it returns to still matches.
+    pub fn spec_of(&self, id: &str) -> Option<&TabSpec> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| &t.primary.spec)
+    }
+
     /// The display title of tab `id` (for a detached window's banner), or `None` if unknown.
     pub fn tab_title(&self, id: &str) -> Option<String> {
         self.tabs
