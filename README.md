@@ -7,7 +7,6 @@
 **A curator for your terminals** — windows, projects, and (mostly) muxers all the way down.
 
 [![Release](https://img.shields.io/github/v/release/Lockyc/warden?sort=semver&label=release)](https://github.com/Lockyc/warden/releases/latest)
-[![CI](https://img.shields.io/github/actions/workflow/status/Lockyc/warden/ci.yml?branch=dev&label=CI)](https://github.com/Lockyc/warden/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
 ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-CE412B?logo=rust&logoColor=white)
 ![Tauri](https://img.shields.io/badge/Tauri-24C8DB?logo=tauri&logoColor=white)
@@ -213,7 +212,7 @@ just validate     # validate the demo config (pass a path to validate another)
 just test         # workspace tests
 just fmt          # format Rust sources (cargo fmt)
 just clippy       # lint (warnings as errors)
-just gate         # the full pre-merge gate CI runs (no active [patch], fmt-check, clippy, tests, example-config fmt)
+just gate         # the full pre-merge gate (no active [patch], fmt-check, clippy, tests, example-config fmt)
 just build        # build the release warden.app (needs: cargo install tauri-cli --version ^2)
 just deploy       # build, install to /Applications, and relaunch
 ```

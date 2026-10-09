@@ -83,8 +83,8 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 ## Build / test / run
 
 - `cargo build` / `cargo test`; `warden-app` compiles only on macOS, by design.
-- **`just`** lists recipes: `just run` (against `examples/config.toml` — never your real config), `validate`, `test`, `fmt`, `clippy`, `gate` (the CI gate + config fmt-check + active-`[patch]` guard), `build`, `deploy`.
-- **`just hooks` once per clone** — `core.hooksPath` is local config, so a fresh clone has neither the docgraph pre-push gate nor the active-`[patch]` pre-commit guard until it runs. CI (`.github/workflows/ci.yml`, macOS runner) is the backstop.
+- **`just`** lists recipes: `just run` (against `examples/config.toml` — never your real config), `validate`, `test`, `fmt`, `clippy`, `gate` (fmt-check + clippy + tests + config fmt-check + active-`[patch]` guard), `build`, `deploy`.
+- **`just hooks` once per clone** — `core.hooksPath` is local config, so a fresh clone has neither the docgraph pre-push gate nor the active-`[patch]` pre-commit guard until it runs. No CI: warden ships on macOS only, so the local `just gate` is the check — green per change and before tagging a release.
 - **Toolchain is pinned** in `rust-toolchain.toml`; config-core carries the canonical pin — bump there first, then here and in curator and lector. The cores build with warden's toolchain, not their own.
 - Vendored libghostty and revendoring: [`docs/surface.md`](docs/surface.md). Packaging, signing, releases, the updater: [`docs/releasing.md`](docs/releasing.md).
 
