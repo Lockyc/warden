@@ -29,7 +29,7 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 .unwrap_or_else(|| proj.path.to_string_lossy().into_owned());
             Tab {
                 id: None,
-                key: proj.path.to_string_lossy().into_owned(),
+                key: warden_config::normalize_dir_key(&proj.path),
                 title,
                 dir: proj.path,
                 shell: root.shell.clone(),
