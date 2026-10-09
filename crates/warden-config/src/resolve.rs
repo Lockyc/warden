@@ -1796,7 +1796,7 @@ colour = "not-a-colour"
     // deduped and stored trimmed — otherwise a trailing-space typo ("work" vs "work ")
     // slips past uniqueness as a distinct key, and later fixing the space reads as a
     // Window title change → destructive (close+reopen). Tab titles are trimmed the same
-    // way for display, but no longer feed identity — see the dir-collision test below.
+    // way for display, but don't feed identity — see the dir-collision test below.
 
     #[test]
     fn window_titles_differing_only_by_whitespace_collide() {
@@ -1932,7 +1932,7 @@ open_on_start = true
 
     #[test]
     fn identity_is_dir_when_no_id_and_titles_may_repeat() {
-        // Two tabs, same title, different dirs → both resolve (titles no longer unique),
+        // Two tabs, same title, different dirs → both resolve (titles need not be unique),
         // keys are the normalized dirs.
         let (cfg, _w) = resolve(
             parse(

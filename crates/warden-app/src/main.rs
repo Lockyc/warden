@@ -236,12 +236,11 @@ fn probe_now(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
 }
 
 /// What `activate_tab` reports back to the chrome. `live` is load-bearing (see below); `split` and
-/// `focused` are Task 7's addition — the tab-switch path's own answer to "does this tab have a
-/// second pane, and which one has keyboard focus", the one place `Registry::activate`'s
-/// focus-preserving branch is ever checked (it's untestable in isolation — see the branch's own
-/// doc comment). Wires `Registry::is_split`/`focused_pane` (dead since Task 3) — `split` also
-/// short-circuits the `focused_pane` lookup below, since an unsplit tab's answer is trivially
-/// always the primary.
+/// `focused` are the tab-switch path's answer to "does this tab have a second pane, and which one
+/// has keyboard focus" — the one place `Registry::activate`'s focus-preserving branch is ever
+/// checked (it's untestable in isolation — see the branch's own doc comment). `split` also
+/// short-circuits the `focused_pane` lookup below, since an unsplit tab's answer is always the
+/// primary.
 #[cfg(target_os = "macos")]
 #[derive(serde::Serialize)]
 struct ActivateResult {
@@ -329,25 +328,15 @@ fn activate_tab(
     } else {
         probe::bump_tab(window.label(), &id);
     }
-    // Carried finding (Task 7): `Registry::activate` also brings a split tab's cold SECONDARY
-    // live, silently — nothing before this told the chrome, so its `secondarySpawnedById` mirror
-    // could go stale the moment a split tab's secondary finally spawns here (e.g. re-activating a
-    // tab that was split while backgrounded). Push a fresh snapshot so the mirror catches up;
-    // reuses the same init_dto→emit path every other cross-cutting refresh in this file already
-    // uses, rather than inventing a narrower "just this tab's secondary" payload.
+    // `Registry::activate` also brings a split tab's cold SECONDARY live, silently, so the
+    // chrome's `secondarySpawnedById` mirror goes stale the moment that secondary spawns here
+    // (e.g. re-activating a tab split while backgrounded). Push a fresh snapshot so the mirror
+    // catches up, through the same init_dto→emit path every other refresh uses.
     //
-    // Fix round 1 (IMPORTANT 2): gated on `split` — this used to run on EVERY activation, so
-    // every ordinary (unsplit) tab click built a full DTO snapshot, emitted it, and drove the
-    // chrome through a second `applyDto` → `sb.update()` → `setActiveId` → `reportRect` pass on
-    // top of the one `onSelect` already does with THIS call's own `ActivateResult` — real IPC and
-    // repaint cost on the hottest command in the app, for tabs that were never split at all. The
-    // only thing this push exists to correct is `secondarySpawnedById` staleness for a tab that
-    // HAS a secondary; an unsplit tab's `secondarySpawnedById` entry can't go stale (there's
-    // nothing there to spawn), so gating out the common case changes nothing it needs to report.
-    // Fix round 2 (finding 3): reuses `split` directly rather than a second `Registry::panes`
-    // read — `Registry::panes` is deleted; it answered the identical `secondary.is_some()`
-    // question `is_split` already had in hand, and keeping it alive purely to give a lint a
-    // production call site was the wrong fix (see the fix report).
+    // Gated on `split`: only a tab with a secondary has a mirror entry that can go stale, and an
+    // ungated push would cost every ordinary tab click a full snapshot plus a second
+    // `applyDto` → `sb.update()` → `setActiveId` → `reportRect` pass on the hottest command in
+    // the app.
     if split {
         if let Some(dto) = state.lock().init_dto(window.label()) {
             let _ = window.emit("warden:refresh", dto);
@@ -381,7 +370,7 @@ fn unload_tab(
 
 /// Split tab `id`: give it a second pane (the tab's own shell, running the config split's `cmd`
 /// when the tab has one, else no startup command — `secondary_spec` decides) and bring it
-/// live. `split` (Task 3) only *declares* the pane Cold; `activate` is what actually spawns and
+/// live. `Registry::split` only *declares* the pane Cold; `activate` is what actually spawns and
 /// shows it, so the pair is what makes the second terminal appear on screen. Splitting is
 /// idempotent, so a double-fire from the chrome (e.g. a stray second ⌘D) can't produce a third
 /// pane — it just re-activates an already-live one.
@@ -740,9 +729,9 @@ fn pop_out_tab(
     {
         let app2 = app.clone();
         let label2 = label.clone();
-        // wire_return resolves the detached window by label itself (get_window) — warden's stays
-        // single-webview (it hosts a re-parented native surface), but the shared lookup is correct
-        // either way, so callers no longer pick get_webview_window (wrong for curator/lector).
+        // wire_return resolves the detached window by label itself (`get_window`, which finds
+        // curator's and lector's multi-webview windows as well as warden's single-webview one),
+        // so the caller passes only the label.
         shell_core::detach::wire_return(&app, &label, move || redock(&app2, &label2));
     }
     // The popped-out window gaining focus is the user looking at the tab: clear the badge its

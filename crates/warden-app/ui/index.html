@@ -104,11 +104,9 @@
          (the common case), #pane-secondary and #pane-divider are `hidden` — the SOLE authority
          for that is the `.split` class on #terminal-hole (toggled by setSplitVisible, below):
          #pane-divider and #pane-secondary are NEVER given an unconditional `display` here, only
-         one scoped to `#terminal-hole.split`, so an author rule can never out-specificity the
-         `hidden` attribute's UA `display: none` the way the unscoped divider rule once did (fix
-         round 1, CRITICAL 1 — that bug rendered the divider, 6px narrower than before, on EVERY
-         unsplit tab, because author-origin CSS always beats the UA stylesheet regardless of the
-         `hidden` attribute being present). `hidden` is kept in lockstep with `.split` purely for
+         one scoped to `#terminal-hole.split`: author-origin CSS always beats the UA stylesheet,
+         so an unscoped `display` would override the `hidden` attribute's UA `display: none` and
+         render the divider on EVERY unsplit tab. `hidden` is kept in lockstep with `.split` purely for
          semantics/JS convenience (`secEl.hidden` reads) — setSplitVisible is the only place that
          ever sets either, so they cannot diverge. */
       /* The hole paints the pane ground itself: a pane's window corners are rounded
@@ -121,25 +119,23 @@
       /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the pane's
          OUTER box identical whether or not `.focused` is applied — only the border's COLOR
          changes, never the box's size, so toggling focus can never jitter layout for a frame.
-         Fix round 1, IMPORTANT 1: this alone does NOT make the marker visible — `reportRect`
+         This alone does NOT make the marker visible — `reportRect`
          (ui/index.html script) must report the CONTENT box (inset by this border), not the border
          box `getBoundingClientRect()` returns, or the native surface — composited ABOVE this
          webview — is sized right over the border and occludes it the instant a pane is live,
          which is exactly when the marker matters.
-         Fix round 2, CRITICAL: that content-box inset opened a NEW gap — `#empty-state`'s own
-         `inset: 0` already resolves against the padding box (inside the border; see that rule's
-         comment), so once the native surface only covers the content box too, nothing paints the
-         BORDER ring itself — a hairline of desktop wallpaper on every pane, unsplit tabs
-         included (the common case, and one that never had a marker to fix). An opaque
-         `background` here covers it — CSS backgrounds paint under the border by default — the
+         The content-box inset leaves the BORDER ring itself unpainted by either the surface or
+         `#empty-state` (whose `inset: 0` resolves against the padding box, inside the border;
+         see that rule's comment) — a hairline of desktop wallpaper on every pane, unsplit tabs
+         included. An opaque `background` here covers it — CSS backgrounds paint under the border by default — the
          same "ground always on, never toggled" ruling `#empty-state` already applies, just one
          box further out; makes an uncovered ring unrepresentable rather than something the
          geometry has to get exactly right. `--pane-ground` is the SAME token `#empty-state` uses
          (declared once, at `:root`) — the two rules cover different boxes (this one the OUTER
-         border box including the ring, `#empty-state` the inner content box) for different
-         historical reasons, but they must never carry two different literals for one colour.
-         Only visible while split (a single unsplit pane needs no "which one types" marker) —
-         Step 3's discoverability requirement ("the focused pane must be visibly marked").
+         border box including the ring, `#empty-state` the inner content box), but they must
+         never carry two different literals for one colour.
+         Only visible while split (a single unsplit pane needs no "which one types" marker): the
+         focused pane must be visibly marked.
 
          The ring colour is the WINDOW's colour (`--accent`, set on the root by `applyDto` from the
          window DTO — the same value chrome-core paints the banner) pushed to an "electric"
@@ -212,8 +208,8 @@
       #terminal-hole.secondary-left #pane-divider { order: -1; }
       /* Empty-state — the opaque backstop for a hole with no live surface. The window is
          transparent and the terminal NSView composites ABOVE the webview, so an uncovered hole
-         leaks the desktop. Fix round 1, IMPORTANT 4 (a ruling, not a bug fix): the GROUND
-         (this rule, the opaque background) is now ALWAYS ON — never toggled — so "an uncovered
+         leaks the desktop. The GROUND (this rule, the opaque background) is ALWAYS ON — never
+         toggled — so "an uncovered
          hole" is unrepresentable rather than a state paintEmptyState has to get right on every
          transient (mid-drag, a spawn race, a tab switch). It is invisible whenever a live pane
          actually covers the hole (occluded by the NSView above it) and covering whenever it
@@ -222,7 +218,7 @@
          resize, which the ground alone (a flat colour, unnoticeable) does not. #empty-state
          backstops #pane-primary; #empty-state-2 backstops #pane-secondary. `background` reads
          `--pane-ground` (declared once, at `:root`) — the SAME token `.pane`'s own background
-         reads (fix round 2, CRITICAL) — never restate the literal in a second place. Clipped to
+         reads — never restate the literal in a second place. Clipped to
          the INNER continuous outline (`--sq` at the pane's radii less `--ring-w`) so its square corners
          and its svg never paint over the focus ring's curve — this is the cold-pane half of the
          ring's inner edge (the live surface's own corner curve is the other). */
@@ -314,7 +310,7 @@
       const secondarySpawnedById = new Map();
       // tab id → which pane last received a focus_pane() call: 0 (primary, the default — matches
       // the Registry's own default and what a fresh `split_pane` resets to) or 1
-      // (secondary). Read by updateFocusMarker so the visible marker (Step 3) survives a tab
+      // (secondary). Read by updateFocusMarker so the visible focus marker survives a tab
       // switch, mirroring how `secondarySpawnedById` mirrors backend liveness. This mirror is
       // written ONLY by the things that actually change `Registry`'s own `t.focused` — a pane
       // mousedown (focus_pane), a split (defaults to primary), a close (resets to primary), and
@@ -322,11 +318,9 @@
       // backend truth through any path that doesn't also report here.
       const focusedPaneById = new Map();
       // tab id → whether it STRUCTURALLY has a secondary pane (Registry::is_split) — distinct
-      // from `secondarySpawnedById` (LIVENESS: is that secondary actually spawned). Fix round 1,
-      // IMPORTANT 2: `setActiveId` used to derive split-visibility from the liveness proxy alone,
-      // with no way to tell whether the AUTHORITATIVE answer (`activate_tab`'s own `res.split`)
-      // had already landed for this id — so whichever of onSelect's own call or a later
-      // `warden:refresh`'s `applyDto` happened to run LAST would win, and they could disagree.
+      // from `secondarySpawnedById` (LIVENESS: is that secondary actually spawned). Liveness alone
+      // can't say whether the AUTHORITATIVE answer (`activate_tab`'s own `res.split`) has landed for
+      // this id, so onSelect's call and a later `warden:refresh` would race to set visibility.
       // Written only by writers that KNOW the true answer — every snapshot (`toComponentDto`
       // rebuilds it from `TabDto.split`, the registry's own structural fact), onSelect's
       // `res.split`, `splitActiveTab` (`Registry::split` is infallible, so structurally true the
@@ -395,12 +389,11 @@
       // disappears leaves its key behind forever, and a later tab reusing the id inherits a
       // split nobody asked for.
       //
-      // Fix round 1, IMPORTANT 3: the WHOLE body is wrapped, not just removeItem — where
-      // localStorage throws, it throws on EVERY member, including `.length` and `.key()`. This
-      // runs inside the snapshot builder (toComponentDto), which neither init() nor the
-      // warden:refresh listener wraps, so an unguarded read here didn't just skip eviction — it
-      // threw out of the builder before it returned, silently stopping the tab bar from ever
-      // refreshing again in any environment where storage is unavailable.
+      // The WHOLE body is wrapped, not just removeItem — where localStorage throws, it throws on
+      // EVERY member, including `.length` and `.key()`. This runs inside the snapshot builder
+      // (toComponentDto), which neither init() nor the warden:refresh listener wraps, so an
+      // unguarded read here would throw out of the builder and stop the tab bar refreshing for
+      // good wherever storage is unavailable.
       function evictSplits(currentTabIds) {
         try {
           const prefix = `split:${myLabel}:`;
@@ -424,11 +417,11 @@
 
       const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
 
-      // Fix round 1, IMPORTANT 1: the rect handed to `set_hole_rect` must be the pane's CONTENT
-      // box, not its border box. `getBoundingClientRect()` returns the border box, and the native
-      // surface is sized to exactly what's reported here — so reporting the border box put the
-      // surface right over the `.focused` marker's border (see the CSS comment on `.pane`),
-      // occluding it the instant a pane went live, which is exactly when it matters. Read the
+      // The rect handed to `set_hole_rect` must be the pane's CONTENT box, not its border box.
+      // `getBoundingClientRect()` returns the border box, and the native surface is sized to
+      // exactly what's reported here — so reporting the border box would put the surface right
+      // over the `.focused` marker's border (see the CSS comment on `.pane`),
+      // occluding it the instant a pane goes live, which is exactly when it matters. Read the
       // ACTUAL computed border width rather than hardcoding "1px" so this can never silently
       // drift from the CSS rule that draws it. `#empty-state`/`#empty-state-2`'s `inset: 0` are
       // unaffected — `inset` on an absolutely-positioned child is already relative to its
@@ -450,7 +443,7 @@
       }
 
       // Report each VISIBLE pane's CONTENT rect to the native layer so its libghostty surface
-      // tracks it, by pane index (0 = primary, 1 = secondary — Task 4's `set_hole_rect` contract).
+      // tracks it, by pane index (0 = primary, 1 = secondary — `set_hole_rect`'s contract).
       // The secondary is only reported while its pane is un-hidden — Rust never sees a rect for a
       // pane the chrome isn't showing.
       function reportRect() {
@@ -490,8 +483,7 @@
       // see its Rust doc comment) — the caller that HAS it (onSelect, right after activate_tab
       // resolves) records it into `splitById` here. Every call — hinted or not — then reads
       // `splitById` first and only falls back to `secondaryLive` (liveness) when that id has no
-      // recorded answer yet. Fix round 1, IMPORTANT 2: this is what makes the two writers agree
-      // regardless of arrival order — a hot-reload refresh landing before OR after onSelect's own
+      // recorded answer yet. This is what makes the two writers agree regardless of arrival order — a hot-reload refresh landing before OR after onSelect's own
       // resolution reads the SAME `splitById` entry once either has written it, instead of one
       // writer's proxy silently overwriting the other's authoritative answer.
       function setActiveId(id, live, splitHint) {
@@ -501,14 +493,14 @@
         if (id !== null && splitHint !== undefined) splitById.set(id, !!splitHint);
         const split = id !== null && splitById.has(id) ? splitById.get(id) : secondaryLive;
         // THIS tab's own split state, not whatever `#terminal-hole` was left showing for the tab
-        // switched away from — `setSplitVisible` is the sole authority (carried finding #1), so
+        // switched away from — `setSplitVisible` is the sole authority, so
         // every path that lands here (tab switch, refresh, unload's neighbour-follow) re-asserts
         // it rather than leaving a split tab's layout bleeding into the next tab's single hole.
         // Subsumes paintEmptyState()/updateFocusMarker()/reportRect(), which it already calls.
         setSplitVisible(split);
       }
 
-      // The Step 3 discoverability marker: which pane will receive typing. Reads
+      // The discoverability marker: which pane will receive typing. Reads
       // `focusedPaneById` for the ACTIVE tab (absent → 0/primary, the shared default with the
       // backend) and paints it on both pane elements; the CSS only renders it while split (see
       // the `.pane.focused` rule), so this runs unconditionally rather than every caller having
@@ -547,8 +539,8 @@
       // (`.secondary-left`) and ratio are applied when showing one: toggles `.split` on
       // #terminal-hole (which the CSS keys #pane-divider's and #pane-secondary's `display` off
       // — see that comment) and keeps the `hidden` attribute in lockstep on both elements purely
-      // for semantics/JS convenience, so the two mechanisms can never contradict each other (fix
-      // round 1, CRITICAL 1). Closing always resets the drag ratio. Its real callers: `setActiveId`
+      // for semantics/JS convenience, so the two mechanisms can never contradict each other.
+      // Closing always resets the drag ratio. Its real callers: `setActiveId`
       // (every tab switch/refresh re-asserts THIS tab's own split state), `splitActiveTab`/
       // `collapseSplit` (⌘D / a secondary exiting on its own). Never poke
       // `hidden`/`.split` directly.
@@ -623,7 +615,7 @@
           if (!t.spawned && !t.secondary_spawned && !t.detached) ratioOverride.delete(t.id);
           splitById.set(t.id, !!t.split);
         });
-        evictSplits(ids); // Task 8: same sweep — drop persisted ratios for tabs that no longer exist
+        evictSplits(ids); // same sweep — drop persisted ratios for tabs this window doesn't have
         return {
           title: dto.title,
           colour: dto.colour ?? null,
@@ -677,10 +669,8 @@
           setActiveId(activeId, !!(t && t.spawned));
         } else {
           // Tabs exist but nothing is selected yet — chrome-core's own onSelect will follow and
-          // call setActiveId (which reports both holes itself). Fix round 1, cheap item 4:
-          // `setActiveId` already calls `reportRect()` via `setSplitVisible`, so a trailing call
-          // here would just repeat it on both branches above — kept only for this one case, where
-          // neither branch ran.
+          // call setActiveId (which reports both holes itself, via `setSplitVisible`); report here
+          // only for this one case, where neither branch above ran.
           reportRect();
         }
       }
@@ -693,7 +683,7 @@
         // `unload` closes BOTH panes of `id` (Registry::unload acts on every pane), so its
         // secondary is cold too. The stale direction that matters is stale-TRUE: leaving the old
         // entry would make re-selecting this tab later derive secondaryLive = true over a pane
-        // that's actually dead (fix round 1, IMPORTANT 3) — the reverse, stale-false, is
+        // that's actually dead — the reverse, stale-false, is
         // harmless (a backstop painted under a live surface is simply invisible).
         secondarySpawnedById.set(id, false);
         ratioOverride.delete(id);
@@ -739,11 +729,11 @@
       }
 
       // ⌘D / Tab ▸ Split: give the active tab a second pane. Optimistic — `Registry::split` always
-      // succeeds in creating the secondary entry (Task 3), so the layout shows immediately (its
+      // succeeds in creating the secondary entry, so the layout shows immediately (its
       // own empty-state backstop covers it until `activate` finishes spawning) and `splitById` is
       // recorded as the authoritative answer right away, not left to a later refresh.
       //
-      // Fix round 1, cheap item 2: on a genuine `split_pane` failure — reachable only when the
+      // On a genuine `split_pane` failure — reachable only when the
       // WINDOW itself wasn't found (see the Rust doc comment on `split_pane`'s early `?` — the
       // "could not open the second pane" arm still means `Registry::split` ran, so the secondary
       // genuinely exists there) — NOTHING was actually created server-side, so the optimistic
@@ -753,15 +743,13 @@
       async function splitActiveTab() {
         if (!activeId) return;
         const id = activeId;
-        // Task 8 fix round 1, IMPORTANT 1: read the PREVIOUS split state before overwriting it.
-        // The Rust side tolerates a stray second ⌘D on an already-split tab as a normal no-op —
-        // this persistence must extend that tolerance, not break it. Without this guard, a
-        // redundant ⌘D on a tab the user had already dragged to a custom ratio silently
-        // overwrote the persisted ratio with 0.5, with no visible symptom until the NEXT
-        // restart, when the split reopened flattened.
+        // Read the PREVIOUS split state before overwriting it. The Rust side tolerates a stray
+        // second ⌘D on an already-split tab as a normal no-op — this persistence must extend that
+        // tolerance: unguarded, a redundant ⌘D on a tab dragged to a custom ratio would overwrite
+        // the persisted ratio with 0.5, invisibly until the next restart reopened it flattened.
         const alreadySplit = splitById.get(id) === true;
         splitById.set(id, true);
-        // Task 8: key presence IS the split flag (see saveSplit) — persist immediately rather
+        // Key presence IS the split flag (see saveSplit) — persist immediately rather
         // than only once the divider is dragged, so an un-dragged 50/50 split still survives a
         // restart. Undone by collapseSplit's clearSplit below if split_pane actually fails.
         // Only seed the default for a genuinely NEW split — see the guard above. A config-split
@@ -777,7 +765,7 @@
         }
       }
 
-      // A pane mousedown (Step 3): point the tab's keyboard focus at it. Optimistic paint — the
+      // A pane mousedown: point the tab's keyboard focus at it. Optimistic paint — the
       // click already tells us where the user wants to type — corrected back to primary only if
       // the backend refuses (e.g. the pane closed between the click and this call landing).
       async function focusPane(pane) {
@@ -790,7 +778,7 @@
           return false;
         });
         if (!ok) {
-          // Fix round 1, cheap item 3: reset the MIRROR unconditionally — if the user switched to
+          // Reset the MIRROR unconditionally — if the user switched to
           // a different tab before this refusal landed, `id`'s own entry must still correct itself
           // (it's still wrong for a later re-select of `id`), even though there's no visible
           // marker to repaint for it right now. Only the REPAINT is gated on `id` still being the
@@ -827,8 +815,8 @@
               badges.delete(id);
               sb.setAttention(id, null);
               setActiveId(id, false); // not known live until the spawn returns; already reports
-                                       // both holes via setSplitVisible (fix round 1, cheap item 4)
-              // activate_tab reports whether a surface now covers the hole, PLUS (Task 7) this
+                                       // both holes via setSplitVisible
+              // activate_tab reports whether a surface now covers the hole, PLUS this
               // tab's own split/focused layout — the authoritative answer `setActiveId`'s third
               // arg exists for (see its own doc comment): this is the ONE place a tab switch's
               // preserved focus (Registry::activate's untestable branch) is ever confirmed.
@@ -843,10 +831,9 @@
                 // record for a tab with no config split, recreate the split structurally. (A
                 // config split needs no restore: `Registry::add` declares it from `TabSpec.split`.)
                 //
-                // Fix round 1, IMPORTANT 2: bookkeeping (`splitById`, `res.split`) lands for
-                // `id` UNCONDITIONALLY — even if the user has switched to a different tab while
-                // split_pane was in flight — because `res.split` staying false forever otherwise
-                // means the tab's split itself is lost, not just its ratio: the backend really
+                // Bookkeeping (`splitById`, `res.split`) lands for `id` UNCONDITIONALLY — even if
+                // the user has switched to a different tab while split_pane was in flight —
+                // because `res.split` staying false otherwise means the tab's split itself is lost, not just its ratio: the backend really
                 // does have it, but the `!res.split` gate below would never fire for this tab
                 // again this session, so this is the only chance to record it. Only the DOM
                 // write (further down, gated on `activeId === id` again) is unsafe to do for a
@@ -1070,8 +1057,7 @@
       // unsticks itself the instant `e.buttons` reads 0 rather than trusting `mouseup` to fire.
       //
       // DELTA-based, like `_initResize`'s own `startW + (e.clientX - startX)` — not an absolute
-      // `(clientX - hole.x) / usable` mapping. Fix round 1's cheap fix #1: an absolute mapping
-      // snaps the boundary to wherever in the 6px strip the pointer happened to land the instant
+      // `(clientX - hole.x) / usable` mapping: an absolute mapping snaps the boundary to wherever in the 6px strip the pointer happened to land the instant
       // you grab it, a visible jump on every drag start. Tracking the fraction *at grab* and
       // applying only the pointer's MOVEMENT since then means the boundary starts exactly where
       // it already was, regardless of where within the divider you clicked.
@@ -1081,8 +1067,8 @@
         let dragging = false;
         let startX = 0;
         let startFrac = 0.5;
-        let currentFrac = 0.5; // last-applied ratio; saved to localStorage when the drag ends (Task 8)
-        // Task 8 fix round 1, CHEAP: the tab being dragged, captured at mousedown — mouse and
+        let currentFrac = 0.5; // last-applied ratio; saved to localStorage when the drag ends
+        // The tab being dragged, captured at mousedown — mouse and
         // keyboard are independent, so reading `activeId` live at mouseup would save the dragged
         // ratio under whichever tab a keyboard jump made active while the button was still held,
         // fabricating a persisted split key for a tab the user never split.
@@ -1112,7 +1098,7 @@
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", end);
           window.removeEventListener("blur", end);
-          // Task 8: persist whatever ratio the drag settled on. A click-without-move still saves
+          // Persist whatever ratio the drag settled on. A click-without-move still saves
           // the split's actual (unchanged) ratio, since currentFrac was seeded from startFrac.
           // Saved under `dragTabId` (captured at mousedown), not the live `activeId` — see that
           // declaration.

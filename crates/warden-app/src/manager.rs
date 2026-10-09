@@ -1,5 +1,5 @@
-//! Owns the live window windows. Materializes them from config and (Task 7)
-//! applies reconciliations. Impure (Tauri + AppKit) — verified at checkpoints.
+//! Owns the live windows. Materializes them from config and applies
+//! reconciliations. Impure (Tauri + AppKit) — verified at checkpoints.
 
 use crate::plan::{reconcile_ops, window_specs, TabPlan, WindowOp, WindowSpec};
 use crate::probe::Presence;
@@ -402,24 +402,18 @@ impl WindowManager {
             None => shell_core::home::close_home(app),
             Some(s) => {
                 // shell_core::home::show_home is idempotent — it refreshes an already-open home
-                // window rather than rebuilding one — so only attach the quit handler below the
-                // FIRST time this window is actually built, mirroring the old show_launcher's
-                // `if let Ok(w) = built` guard (it never re-attached on refresh either).
+                // window rather than rebuilding one — so the quit handler below is attached only
+                // the FIRST time this window is actually built, never again on a refresh.
                 let was_open = app
                     .get_webview_window(shell_core::home::HOME_LABEL)
                     .is_some();
                 let _ = shell_core::home::show_home(app, &s, "warden");
-                // KEPT WARDEN-LOCAL, not dropped: shell-core's `show_home` installs no
-                // window-event handler of its own (curator/lector need none — plain
-                // last-window-quit already covers them), but warden's former launcher always quit
-                // the app when IT was closed while no real window existed ("closing the home
-                // surface when it's the last surface == ⌘Q") — a deliberate, shipped behaviour,
-                // not an incidental one. Re-installing it here keeps that intact rather than
-                // silently changing what closing the last surface does in a notarized,
-                // already-shipped app. Attached for every state (`NoConfig`/`Broken`/`Windows`)
-                // now that they share one window, not just the old launcher's window-list case —
-                // closing the home surface while it's the only surface should quit regardless of
-                // which state it happens to be showing.
+                // WARDEN-LOCAL: shell-core's `show_home` installs no window-event handler of its
+                // own (curator/lector need none — plain last-window-quit covers them), but in
+                // warden closing the home surface while no real window exists quits the app
+                // ("closing the last surface == ⌘Q"), a deliberate shipped behaviour. Attached for
+                // every state (`NoConfig`/`Broken`/`Windows`) — they share one window, and closing
+                // it while it's the only surface quits whichever state it shows.
                 if !was_open {
                     if let Some(w) = app.get_webview_window(shell_core::home::HOME_LABEL) {
                         let app_for_event = app.clone();
@@ -551,7 +545,7 @@ impl WindowManager {
 
         // On manual close (or any destroy), drop the window's state and reap its
         // surfaces; `sync_empty_surface` shows the home surface once the last real
-        // window goes away — this handler no longer quits. Idempotent
+        // window goes away — this handler never quits. Idempotent
         // with `apply`'s `WindowOp::Close` (which removes the state before closing
         // the window): `HashMap::remove` returns `None` the second time and
         // `close_all` drains, so there is no double-free.
@@ -569,7 +563,7 @@ impl WindowManager {
                             m.last_closed.retain(|l| l != &label_for_event);
                             m.last_closed.push(label_for_event.clone());
                             m.remove_window(&label_for_event);
-                            // Persistent home: last-window-close no longer quits —
+                            // Persistent home: last-window-close doesn't quit —
                             // it shows the home surface, in whichever state (window
                             // list, broken config, or no config) currently applies.
                             // ⌘Q is the only quit. This also fires for every window
@@ -686,8 +680,8 @@ impl WindowManager {
     /// tail it runs for the dot-✕ / ⌘W path). One dead-tab semantic, two triggers.
     ///
     /// Child-exit is per-pane: a SECONDARY's child exiting closes just that pane — the scratch
-    /// shell is done, the tab and its agent are not. Unloading the whole tab here (the pre-split
-    /// behaviour) would kill a live agent because a shell beside it exited. A PRIMARY exit still
+    /// shell is done, the tab and its agent are not. Unloading the whole tab here would kill a
+    /// live agent because a shell beside it exited. A PRIMARY exit still
     /// emits `warden:tab-exited`; that event means "the whole tab went cold" to the chrome
     /// (`applyUnloaded`), which is wrong for a pane that merely closed — a SECONDARY exit instead
     /// emits the narrower `warden:pane-closed`, so the chrome collapses the split without
@@ -700,9 +694,8 @@ impl WindowManager {
     /// the docked path would (so its persisted ratio goes too); a primary exit ends the tab — both
     /// surfaces closed, the origin's `Detached` placeholders retired to `Cold`
     /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told
-    /// `warden:tab-exited` exactly as if the exit had happened docked. Before this the popped-out
-    /// case was unrouted, and the "Process exited" overlay sat in the detached window until the
-    /// user closed it by hand.
+    /// `warden:tab-exited` exactly as if the exit had happened docked — never a "Process exited"
+    /// overlay left sitting in the detached window.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
@@ -1763,7 +1756,7 @@ mod tests {
 
     #[test]
     fn presence_cache_snapshot_sees_a_tab_mid_sweep_not_only_at_pass_end() {
-        // The stuck-dark-dot regression: probe_now's replay can land while a wide window's sweep is
+        // Against a stuck-dark dot: probe_now's replay can land while a wide window's sweep is
         // still running, so a tab already probed must be visible in the snapshot immediately — not
         // only once the whole pass finishes.
         let mut cache = PresenceCache::default();

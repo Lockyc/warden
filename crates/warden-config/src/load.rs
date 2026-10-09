@@ -25,9 +25,8 @@ const CONFIG_ENV: &str = "WARDEN_CONFIG";
 const CONFIG_DIR: &str = "warden";
 
 /// Config path to load at launch: `$WARDEN_CONFIG` if set and non-empty, else
-/// `~/.config/warden/config.toml`. Shared with curator and lector via config-core — the
-/// set-but-empty fall-through this app already had is now the shared behaviour, and fixed the
-/// other two.
+/// `~/.config/warden/config.toml` — a set-but-empty variable falls through. Shared with curator
+/// and lector via config-core.
 pub fn config_path() -> PathBuf {
     config_core::resolve_config_path(CONFIG_ENV, CONFIG_DIR)
 }
