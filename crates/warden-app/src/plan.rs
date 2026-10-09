@@ -142,13 +142,18 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
     }
 }
 
+/// The labels no config window may take: the shared home surface's, so a window whose title
+/// sanitizes to it (e.g. "shell home") gets `-2` rather than a collision that silently breaks
+/// geometry persistence and config recovery.
+fn reserved_labels(live: &HashSet<String>) -> HashSet<String> {
+    let mut taken = live.clone();
+    taken.insert(shell_core::home::HOME_LABEL.to_string());
+    taken
+}
+
 /// Map a whole config to window specs, assigning unique labels in window order.
 pub fn window_specs(config: &Config) -> Vec<WindowSpec> {
-    // Reserve the shared home surface's label so a config window whose title
-    // sanitizes to it (e.g. "shell home") gets `-2`, not a collision that
-    // silently breaks geometry persistence / crashes config recovery.
-    let mut taken = HashSet::new();
-    taken.insert(shell_core::home::HOME_LABEL.to_string());
+    let mut taken = reserved_labels(&HashSet::new());
     config
         .windows
         .iter()
@@ -178,8 +183,7 @@ pub fn configured_specs(
     live_names: &HashMap<String, String>,
     live_labels: &HashSet<String>,
 ) -> Vec<WindowSpec> {
-    let mut taken: HashSet<String> = live_labels.clone();
-    taken.insert(shell_core::home::HOME_LABEL.to_string());
+    let mut taken = reserved_labels(live_labels);
     config
         .windows
         .iter()
@@ -291,10 +295,7 @@ pub fn reconcile_ops(
     taken: &HashSet<String>,
 ) -> Vec<WindowOp> {
     let mut ops = Vec::new();
-    let mut assigned: HashSet<String> = taken.clone();
-    // Same reservation as window_specs: a newly-opened window must never grab
-    // the home surface's label.
-    assigned.insert(shell_core::home::HOME_LABEL.to_string());
+    let mut assigned = reserved_labels(taken);
 
     for window in &recon.open {
         let label = unique_label(&window.title, &assigned);
