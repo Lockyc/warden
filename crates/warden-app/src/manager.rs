@@ -454,9 +454,17 @@ impl WindowManager {
             .collect()
     }
 
+    /// Build `spec`'s window and register it: the live window set and the title→label map
+    /// always change together, so every open goes through here.
+    fn open_window(&mut self, app: &AppHandle, spec: &WindowSpec) {
+        let state = self.build_window(app, spec);
+        self.names.insert(spec.title.clone(), spec.label.clone());
+        self.windows.insert(spec.label.clone(), state);
+    }
+
     /// Build one Tauri window for `spec`, mount its tabs, activate the first.
-    /// Returns the new `WindowState` (caller inserts it + wires events).
-    pub fn build_window(&self, app: &AppHandle, spec: &WindowSpec) -> WindowState {
+    /// Returns the new `WindowState` for `open_window` to register.
+    fn build_window(&self, app: &AppHandle, spec: &WindowSpec) -> WindowState {
         let window =
             WebviewWindowBuilder::new(app, &spec.label, WebviewUrl::App("index.html".into()))
                 .title(&spec.title)
@@ -622,9 +630,7 @@ impl WindowManager {
             .into_iter()
             .filter(|s| s.open_on_start)
         {
-            let state = self.build_window(app, &spec);
-            self.names.insert(spec.title.clone(), spec.label.clone());
-            self.windows.insert(spec.label.clone(), state);
+            self.open_window(app, &spec);
         }
         self.raw_config = config;
         self.last_good = effective;
@@ -1171,9 +1177,7 @@ impl WindowManager {
         else {
             return false;
         };
-        let state = self.build_window(app, &spec);
-        self.names.insert(spec.title.clone(), spec.label.clone());
-        self.windows.insert(spec.label.clone(), state);
+        self.open_window(app, &spec);
         self.last_closed.retain(|l| l != label);
         true
     }
@@ -1218,9 +1222,7 @@ impl WindowManager {
         for op in ops {
             match op {
                 WindowOp::Open(spec) => {
-                    let state = self.build_window(app, &spec);
-                    self.names.insert(spec.title.clone(), spec.label.clone());
-                    self.windows.insert(spec.label.clone(), state);
+                    self.open_window(app, &spec);
                 }
                 WindowOp::Close(label) => {
                     if let Some(mut ws) = self.windows.remove(&label) {
