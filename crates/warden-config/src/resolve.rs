@@ -450,24 +450,27 @@ fn resolve_tab(
             message: format!("dir does not exist: {}", dir.display()),
         });
     }
-    // `shell` and `cmd` cascade tab → window → global (nearest set level wins); `shell`
-    // falls back to `default_shell` (the caller's detected login shell) when unset everywhere,
-    // `cmd` is a startup command run *inside* the shell (None = bare shell; `cmd = ""` at any
-    // level opts out of inheritance).
-    let shell = cascade(rt.shell.as_deref(), rp.shell.as_deref(), globals.shell)
-        .unwrap_or(default_shell)
-        .to_string();
-    let startup = cascade(rt.cmd.as_deref(), rp.cmd.as_deref(), globals.cmd).map(String::from);
-    let probe = cascade(rt.probe.as_deref(), rp.probe.as_deref(), globals.probe).map(String::from);
-    let kill = cascade(rt.kill.as_deref(), rp.kill.as_deref(), globals.kill).map(String::from);
-    let suspend = cascade(
-        rt.suspend.as_deref(),
-        rp.suspend.as_deref(),
-        globals.suspend,
-    )
-    .map(String::from);
-    let tab_split = resolve_split_level(rt.split.as_ref())?;
-    let split = cascade_split(tab_split.as_ref(), window_split, globals.split);
+    let Cascaded {
+        shell,
+        startup,
+        probe,
+        kill,
+        suspend,
+        split,
+    } = resolve_cascade(
+        NearestLevel {
+            shell: rt.shell.as_deref(),
+            cmd: rt.cmd.as_deref(),
+            probe: rt.probe.as_deref(),
+            kill: rt.kill.as_deref(),
+            suspend: rt.suspend.as_deref(),
+            split: rt.split.as_ref(),
+        },
+        rp,
+        default_shell,
+        globals,
+        window_split,
+    )?;
     Ok(Tab {
         id,
         key,
@@ -501,8 +504,54 @@ fn map_root_error(e: config_core::RootError, window: &str) -> ResolveError {
     }
 }
 
-/// Resolve one raw root into a `Root`. Mirrors `resolve_tab`'s cascade but with no
-/// tab level (root → window → global) since a root has no per-tab config of its own.
+/// The cascaded keys as set on the nearest level — a tab, or a root (a root has no tab
+/// level of its own, so it is the nearest level for the projects it discovers).
+struct NearestLevel<'a> {
+    shell: Option<&'a str>,
+    cmd: Option<&'a str>,
+    probe: Option<&'a str>,
+    kill: Option<&'a str>,
+    suspend: Option<&'a str>,
+    split: Option<&'a RawSplit>,
+}
+
+/// The cascade's resolved output, shared by `Tab` and `Root`.
+struct Cascaded {
+    shell: String,
+    startup: Option<String>,
+    probe: Option<String>,
+    kill: Option<String>,
+    suspend: Option<String>,
+    split: Option<Split>,
+}
+
+/// Collapse nearest level → window → global (nearest set level wins; `""` / `split = false`
+/// opts a level out). `shell` falls back to `default_shell` (the caller's detected login
+/// shell) when unset everywhere; `cmd` is a startup command run *inside* the shell (None =
+/// bare shell).
+fn resolve_cascade(
+    near: NearestLevel,
+    rp: &RawWindow,
+    default_shell: &str,
+    globals: &Globals,
+    window_split: Option<&Option<Split>>,
+) -> Result<Cascaded, ResolveError> {
+    let level =
+        |n: Option<&str>, w: Option<&str>, g: Option<&str>| cascade(n, w, g).map(String::from);
+    let near_split = resolve_split_level(near.split)?;
+    Ok(Cascaded {
+        shell: cascade(near.shell, rp.shell.as_deref(), globals.shell)
+            .unwrap_or(default_shell)
+            .to_string(),
+        startup: level(near.cmd, rp.cmd.as_deref(), globals.cmd),
+        probe: level(near.probe, rp.probe.as_deref(), globals.probe),
+        kill: level(near.kill, rp.kill.as_deref(), globals.kill),
+        suspend: level(near.suspend, rp.suspend.as_deref(), globals.suspend),
+        split: cascade_split(near_split.as_ref(), window_split, globals.split),
+    })
+}
+
+/// Resolve one raw root into a `Root`: root → window → global.
 fn resolve_root(
     rr: &crate::raw::RawRoot,
     rp: &RawWindow,
@@ -522,21 +571,27 @@ fn resolve_root(
             message: format!("root dir does not exist: {}", root_dir.dir.display()),
         });
     }
-    // Cascade root→window→global (no tab level); shell falls back to the login shell.
-    let shell = cascade(rr.shell.as_deref(), rp.shell.as_deref(), globals.shell)
-        .unwrap_or(default_shell)
-        .to_string();
-    let startup = cascade(rr.cmd.as_deref(), rp.cmd.as_deref(), globals.cmd).map(String::from);
-    let probe = cascade(rr.probe.as_deref(), rp.probe.as_deref(), globals.probe).map(String::from);
-    let kill = cascade(rr.kill.as_deref(), rp.kill.as_deref(), globals.kill).map(String::from);
-    let suspend = cascade(
-        rr.suspend.as_deref(),
-        rp.suspend.as_deref(),
-        globals.suspend,
-    )
-    .map(String::from);
-    let root_split = resolve_split_level(rr.split.as_ref())?;
-    let split = cascade_split(root_split.as_ref(), window_split, globals.split);
+    let Cascaded {
+        shell,
+        startup,
+        probe,
+        kill,
+        suspend,
+        split,
+    } = resolve_cascade(
+        NearestLevel {
+            shell: rr.shell.as_deref(),
+            cmd: rr.cmd.as_deref(),
+            probe: rr.probe.as_deref(),
+            kill: rr.kill.as_deref(),
+            suspend: rr.suspend.as_deref(),
+            split: rr.split.as_ref(),
+        },
+        rp,
+        default_shell,
+        globals,
+        window_split,
+    )?;
     Ok(Root {
         name: root_dir.name,
         dir: root_dir.dir,

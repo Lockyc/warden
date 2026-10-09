@@ -35,7 +35,7 @@ pub struct Config {
     /// Whether the sidebar chrome is a window-move drag handle. Default true.
     /// Whole-app concern — no per-window cascade.
     pub sidebar_drag: bool,
-    /// Whether warden checks for a new release on launch. Default true; `false`
+    /// Whether warden checks for a new release on launch and every 6h. Default true; `false`
     /// suppresses the automatic check (the Check-for-Updates menu item still works).
     /// Whole-app concern — no per-window cascade.
     pub auto_update: bool,

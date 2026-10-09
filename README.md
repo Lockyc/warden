@@ -102,8 +102,8 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `cmd` | none | Command typed into that shell on spawn. Cascades. |
 | `probe` | none | Session-presence check, run per tab (cwd = the tab's dir): exit 0 ⇒ cyan dot, exit 3 ⇒ ghost (restorable), anything else ⇒ hollow. Cascades. |
 | `probe_interval` | `5` | Slow-poll floor in seconds once a burst settles. `0` = event-driven only (still bursts on triggers, no steady poll). |
-| `kill` | none | Session-destroy command (☠), run on the presence dot's confirm row; the tab then unloads. Cascades. Only reachable on a tab that also sets `probe`. |
-| `suspend` | none | Session-suspend command (⏻, restorable), run on the presence dot's confirm row; the tab then unloads. Cascades. Only reachable on a tab that also sets `probe`. |
+| `kill` | none | Session-destroy command (☠), run on the presence dot's confirm row; the tab then unloads; ⌘⇧K / ⌘⇧S reach it on a tab without `probe`. Cascades. |
+| `suspend` | none | Session-suspend command (⏻, restorable), run on the presence dot's confirm row; the tab then unloads; ⌘⇧K / ⌘⇧S reach it on a tab without `probe`. Cascades. |
 | `split` | none | Give every tab a second pane. A table: `side` (`"left"`/`"right"`, default right), `size` (the second pane's share, `0.1`–`0.9`, default `0.5`), `cmd` (typed into it; absent = bare shell). Cascades as a whole table; `false` opts a level out, `true` = the default split. |
 | `format_on_save` | `false` | Rewrite this file in house style on each clean save (same formatting as `warden fmt`). |
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
