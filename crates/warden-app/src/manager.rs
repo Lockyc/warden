@@ -115,18 +115,27 @@ impl PresenceCache {
 pub fn effective_config(config: &Config) -> Config {
     let mut eff = config.clone();
     for window in &mut eff.windows {
+        // A discovered project's key is its normalized dir. Seeding `seen` with every curated
+        // tab's normalized dir as well as its key makes a curated tab shadow the project at its
+        // dir whether or not it carries an `id`; the first-occurrence dedup then also lands a
+        // project two overlapping roots both discover once. Curated tabs come first, so no
+        // curated tab is ever the one dropped — no "same repo twice", and no key collision for
+        // reconcile's find-first matching.
+        let mut seen: HashSet<String> = window
+            .tabs
+            .iter()
+            .map(|t| warden_config::normalize_dir_key(&t.dir))
+            .collect();
+        let mut curated_keys = HashSet::new();
+        window.tabs.retain(|t| curated_keys.insert(t.key.clone()));
+        seen.extend(curated_keys);
         for root in &window.roots {
-            window.tabs.extend(crate::scanner::synthesize_tabs(root));
+            for t in crate::scanner::synthesize_tabs(root) {
+                if seen.insert(t.key.clone()) {
+                    window.tabs.push(t);
+                }
+            }
         }
-        // Dedup by key (curated tabs first, then roots in file order), keeping the FIRST
-        // occurrence. Two cases collapse here:
-        //  - Overlapping roots synthesizing the same project (same path key) → land once.
-        //  - A curated tab and a `[[window.root]]`-discovered project at the SAME dir now
-        //    share a key (curated key = normalized dir; discovered key = path), so the
-        //    curated tab shadows the discovered one. Intended: no "same repo twice" and no
-        //    curated-vs-discovered key collision (reconcile matches find-first).
-        let mut seen = HashSet::new();
-        window.tabs.retain(|t| seen.insert(t.key.clone()));
     }
     eff
 }
@@ -1542,6 +1551,66 @@ mod tests {
             spec,
             load_on_open: false,
         }
+    }
+
+    #[test]
+    fn a_curated_tab_with_an_id_shadows_a_same_dir_discovered_project() {
+        // An `id` makes the curated key differ from the dir key the scanner gives the same
+        // project; the shadow still holds, matched by dir.
+        use warden_config::{Colour, Density, Root, Tab, TabDigitKeys, Window};
+        let base = std::env::temp_dir().join(format!("warden-shadow-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let proj = base.join("proj");
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        let curated = Tab {
+            id: Some("mine".into()),
+            key: "mine".into(),
+            title: "curated".into(),
+            dir: proj.clone(),
+            shell: "sh".into(),
+            startup: None,
+            load_on_open: false,
+            group: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            split: None,
+        };
+        let root = Root {
+            name: "R".into(),
+            dir: base.clone(),
+            depth: 6,
+            shell: "sh".into(),
+            startup: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            split: None,
+        };
+        let cfg = Config {
+            windows: vec![Window {
+                title: "w".into(),
+                colour: Colour { r: 0, g: 0, b: 0 },
+                width: 1500,
+                height: 1000,
+                open_on_start: true,
+                open_tabs_section: false,
+                remember_tabs: false,
+                tabs: vec![curated],
+                roots: vec![root],
+            }],
+            format_on_save: false,
+            tab_digit_keys: TabDigitKeys::default(),
+            probe_interval: 5,
+            density: Density::default(),
+            sidebar_drag: true,
+            auto_update: true,
+            notify_debug: false,
+        };
+        let eff = effective_config(&cfg);
+        let keys: Vec<_> = eff.windows[0].tabs.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, vec!["mine"]);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
