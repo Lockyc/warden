@@ -1029,6 +1029,13 @@
           sb.setAttention(id, true);
         }
       });
+      // A popped-out tab's terminal took focus in its own window — the user is looking at it, so its
+      // row here drops the badge (selecting a popped-out row only raises that window, never clears).
+      listen("warden:tab-seen", (e) => {
+        if (!forMe(e) || !sb) return;
+        const id = e.payload && e.payload.id;
+        if (id && badges.delete(id)) sb.setAttention(id, null);
+      });
       // A desktop-notification banner was clicked — the native layer raised this window; select the
       // tab that fired it (which activates it + clears its badge via onSelect).
       listen("warden:focus-tab", (e) => {
