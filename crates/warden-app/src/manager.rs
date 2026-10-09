@@ -233,6 +233,15 @@ pub(crate) fn close_both(primary: GhosttySurface, secondary: Option<GhosttySurfa
     }
 }
 
+/// What `WindowManager::redock` hands its caller to announce with the lock released.
+pub struct Redocked {
+    pub origin_label: String,
+    /// `(tab_id, new_active)` when the returning tab left the config while it was out and was
+    /// dropped on arrival: the chrome gets the same `warden:tab-exited` an unload sends, so its
+    /// selection follows the neighbour the registry leaned to.
+    pub dropped: Option<(String, Option<String>)>,
+}
+
 pub struct DetachedSurface {
     pub surface: GhosttySurface,
     /// The tab's second pane, when it had a live one at pop-out time. `None` for an
@@ -939,8 +948,10 @@ impl WindowManager {
 
     /// Return a popped-out tab's surface to its origin window when the detached window closes
     /// (`shell_core::detach::wire_return`'s `on_close`). Runs on the main thread under the
-    /// `ManagerState` lock. Returns the origin label so the caller can rebuild the menu and
-    /// push a refresh to it; `None` if the detached window was already gone (double-close).
+    /// `ManagerState` lock. Returns what the caller announces once the lock is released: the
+    /// origin label (menu rebuild + refresh) and, when the returning tab was dropped, the tab
+    /// that leaned into view (`Redocked::dropped`); `None` if the detached window was already
+    /// gone (double-close).
     ///
     /// Edge cases, in order:
     /// 1. **Origin still open** — its slot is the `Detached` placeholder; `reparent` moves the
@@ -958,7 +969,7 @@ impl WindowManager {
     /// Once home, the tab is reconciled against `last_good` (`reconcile_returned_tab`): every
     /// config edit or rescan that touched it while it was out was skipped for it, so this is
     /// where a deleted tab goes, a changed `dir`/`cmd` respawns, and a relabel lands.
-    pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<String> {
+    pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<Redocked> {
         // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's
         // `Destroyed`): don't reopen an origin window or reparent a surface mid-teardown —
         // everything is being torn down and `GhosttySurface`'s `Drop` frees it. Without this,
@@ -994,6 +1005,7 @@ impl WindowManager {
             .collect();
         let plan = home.and_then(|s| s.tabs.into_iter().find(|t| t.spec.id == tab_id));
 
+        let mut dropped = None;
         match self.windows.get_mut(&origin_label) {
             // Case 3: origin gone from config — the tab genuinely ends. Closing the surfaces
             // ends their PTYs (the only intentional live-surface teardown in the whole flow).
@@ -1018,10 +1030,17 @@ impl WindowManager {
                     // `reparent` unhid the returning surface; re-activating the real selection
                     // re-hides it (activate hides all others). If nothing is active (the selection
                     // was closed while this tab was out, or was this tab and it respawned), the
-                    // returned tab becomes active — there is nothing else to show. A tab the
-                    // reconcile dropped is unknown to `activate`, a no-op.
+                    // returned tab becomes active — there is nothing else to show. A dropped tab
+                    // already leaned the selection (`reconcile_returned_tab`); if nothing live
+                    // was left, `activate` on its now-unknown id is a no-op.
                     Ok(()) => {
-                        reconcile_returned_tab(&mut ws.registry, &tab_id, &spawned, plan.as_ref());
+                        dropped = reconcile_returned_tab(
+                            &mut ws.registry,
+                            &tab_id,
+                            &spawned,
+                            plan.as_ref(),
+                        )
+                        .map(|new_active| (tab_id.clone(), new_active));
                         ws.registry.reorder(&order);
                         let show = ws
                             .registry
@@ -1041,7 +1060,10 @@ impl WindowManager {
 
         self.record_session(&origin_label);
         self.sync_empty_surface(app);
-        Some(origin_label)
+        Some(Redocked {
+            origin_label,
+            dropped,
+        })
     }
 
     /// Save `label`'s loaded + active tabs for `remember_tabs` — or forget them when the window
@@ -1305,21 +1327,26 @@ impl WindowManager {
 /// rescanned root); `spawned` is the spec its surface runs (`DetachedSurface::spec`), compared
 /// rather than the registry's, which a rebuilt origin already holds at the new config.
 ///
-/// - Gone → removed, its surfaces closed.
+/// - Gone → unloaded, then removed: the unload is what leans the selection to a live neighbour
+///   when this was the visible tab, exactly as unloading it by hand does. Returns
+///   `Some(new_active)` (`Registry::unload`'s answer) so the caller can tell the chrome.
 /// - Terminal spec changed (`dir`/`shell`/startup/split presence or its startup — the fields
 ///   `warden_config::reconcile` routes to `respawn_tabs`) → respawned through
 ///   `apply_tab_reconcile`, exactly as a docked tab would have been. The entry moves to the
 ///   end; the caller reorders.
 /// - Otherwise → `set_meta` from the plan (title/group/probe/kill/suspend/split layout/tree).
+///
+/// `None` whenever the tab stays.
 fn reconcile_returned_tab(
     registry: &mut Registry,
     id: &str,
     spawned: &TabSpec,
     plan: Option<&TabPlan>,
-) {
+) -> Option<Option<String>> {
     let Some(tp) = plan else {
+        let new_active = registry.unload(id);
         registry.remove(id);
-        return;
+        return Some(new_active);
     };
     let second_cmd = |s: &TabSpec| s.split.as_ref().map(|sp| sp.startup.clone());
     let n = &tp.spec;
@@ -1329,7 +1356,7 @@ fn reconcile_returned_tab(
         || second_cmd(spawned) != second_cmd(n)
     {
         apply_tab_reconcile(registry, &[], &[], std::slice::from_ref(tp));
-        return;
+        return None;
     }
     let meta = warden_config::TabMeta {
         group: n.group.clone(),
@@ -1340,6 +1367,7 @@ fn reconcile_returned_tab(
         split: n.split.clone(),
     };
     registry.set_meta(id, &meta, n.tree, n.tree_path.clone());
+    None
 }
 
 /// Apply a hot-reload's tab-set reconcile ops (from the config diff) to one
@@ -1524,7 +1552,11 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
         let _ = r.add(&tab_spec("t0", "/tmp/a"), false);
         let _ = r.add(&tab_spec("t1", "/tmp/b"), false);
-        reconcile_returned_tab(&mut r, "t0", &tab_spec("t0", "/tmp/a"), None);
+        assert_eq!(
+            reconcile_returned_tab(&mut r, "t0", &tab_spec("t0", "/tmp/a"), None),
+            Some(None),
+            "dropped; nothing live to lean to"
+        );
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["t1".to_string()]);
     }
