@@ -327,16 +327,6 @@ unsafe extern "C" fn read_clipboard_cb(
     if surface.is_null() {
         return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
     }
-    let pb = NSPasteboard::generalPasteboard();
-    let payload = pb
-        .stringForType(NSPasteboardTypeString)
-        .map(|s| s.to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| clipboard_image_to_temp_path(&pb));
-    let Some(payload) = payload else {
-        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
-    };
-
     let wanted: &[*const c_char] = if mimes.is_null() {
         &[]
     } else {
@@ -348,6 +338,24 @@ unsafe extern "C" fn read_clipboard_cb(
     if !wants_text && !list {
         return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
     }
+
+    // The image spill runs only when the text is delivered. A listing-only request still advertises
+    // `text/plain` for an image-only clipboard (the follow-up read spills it) but writes no file.
+    let pb = NSPasteboard::generalPasteboard();
+    let text = pb
+        .stringForType(NSPasteboardTypeString)
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+    let payload = match text {
+        Some(t) => Some(t),
+        None if wants_text => clipboard_image_to_temp_path(&pb),
+        None => (pb.dataForType(NSPasteboardTypePNG).is_some()
+            || pb.dataForType(NSPasteboardTypeTIFF).is_some())
+        .then(String::new),
+    };
+    let Some(payload) = payload else {
+        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
+    };
 
     let text_plain = c"text/plain";
     let content = ffi::ghostty_clipboard_content_s {
