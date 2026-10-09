@@ -110,15 +110,8 @@ fn build_app_menu(
 ) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
-    let window_entries: Vec<shell_core::menu::WindowEntry> = entries
-        .into_iter()
-        .map(|e| shell_core::menu::WindowEntry {
-            id: e.label,
-            title: e.title,
-            open: e.open,
-            colour: Some(e.colour),
-        })
-        .collect();
+    let window_entries: Vec<shell_core::menu::WindowEntry> =
+        entries.into_iter().map(Into::into).collect();
     let config_path = warden_config::config_path();
     // About box carries the build stamp (shell_core::build_stamp → BUILD_GIT_SHA/BUILD_DATE) so a
     // glance confirms the installed app matches a given commit.

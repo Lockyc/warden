@@ -250,6 +250,19 @@ pub(crate) fn close_both(primary: GhosttySurface, secondary: Option<GhosttySurfa
     }
 }
 
+/// A Window-menu row as shell-core's menu spine and home surface take it — the one mapping both
+/// the app menu (`main.rs::build_app_menu`) and the home surface's window list use.
+impl From<crate::plan::WindowMenuEntry> for shell_core::menu::WindowEntry {
+    fn from(e: crate::plan::WindowMenuEntry) -> Self {
+        shell_core::menu::WindowEntry {
+            id: e.label,
+            title: e.title,
+            open: e.open,
+            colour: Some(e.colour),
+        }
+    }
+}
+
 /// What `WindowManager::redock` hands its caller to announce with the lock released.
 pub struct Redocked {
     pub origin_label: String,
@@ -375,12 +388,7 @@ impl WindowManager {
         let entries: Vec<shell_core::menu::WindowEntry> = self
             .window_menu_entries()
             .into_iter()
-            .map(|e| shell_core::menu::WindowEntry {
-                id: e.label,
-                title: e.title,
-                open: e.open,
-                colour: Some(e.colour),
-            })
+            .map(Into::into)
             .collect();
         let path = warden_config::config_path();
         let path_str = path.display().to_string();
