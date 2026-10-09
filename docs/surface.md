@@ -92,9 +92,10 @@ surface-destroying or lock-taking action takes the same path.
 - **Seed a spawned surface's focus from the window's real key state** (`surface/ghostty.rs::new`,
   after `set_surface`). The key observers don't cover a never-key window — it emits neither.
 - **`hide()` clears focus** — hiding a view doesn't stop its display link (`GhosttySurface::hide`).
-- **libghostty focus tracks AppKit's first responder**: a `becomeFirstResponder` override (which
-  surface within the window) plus per-window `windowDidBecomeKey:`/`windowDidResignKey:` observers
-  (which window). Both are needed, or a clicked terminal types with a hollow cursor.
+- **libghostty focus tracks AppKit's first responder**: `becomeFirstResponder`/`resignFirstResponder`
+  overrides (which surface within the window) plus per-window `windowDidBecomeKey:`/`windowDidResignKey:`
+  observers (which window). Drop the first pair and a clicked terminal types with a hollow cursor, or
+  a split's previous pane stays focused; drop the observers and focus goes stale across window switches.
 - **Window-scoped key traffic is claimed by ONE host view per window** — the first responder when
   it is a terminal view (`WardenHostView::owns_window_keys`, gating `performKeyEquivalent:` and
   `windowDidBecomeKey:`). AppKit routes function keys (arrows, F-keys, Home/End) through the

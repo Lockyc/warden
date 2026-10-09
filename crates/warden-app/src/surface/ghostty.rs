@@ -286,8 +286,8 @@ unsafe extern "C" fn action_cb(
 /// one (`performKeyEquivalent:`). This is the one piece of process-global surface state (keys and
 /// clipboard requests route via the per-view ivar instead). Written by `focus()` (tab activate)
 /// and refreshed in `performKeyEquivalent:` / `becomeFirstResponder:` (so focus that arrives by
-/// clicking another window — never through activate — still lands). Cleared on `close()` so a
-/// freed surface is never handed focus (UAF).
+/// clicking another window — never through activate — still lands). Cleared by
+/// `resignFirstResponder:` and on `close()`, so a freed surface is never handed focus (UAF).
 static FOCUSED_SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// Monotonic counter for temp image-paste filenames (see `clipboard_image_to_temp_path`).
@@ -709,6 +709,29 @@ declare_class!(
                         emit_event_trampoline,
                     )
                 };
+            }
+            true
+        }
+
+        // The counterpart of becomeFirstResponder:, and the one place a surface loses libghostty
+        // focus within its window. AppKit calls it on the view giving up first responder: a click
+        // into a sibling split pane, focus()'s makeFirstResponder onto another tab or pane, the
+        // sidebar webview taking keys. Without it the previous surface stays focused — two solid
+        // cursors in a split, two 60fps display links, no focus-out report for vim/tmux. Clearing
+        // FOCUSED_SURFACE (when it names this surface) keeps performKeyEquivalent:'s handoff from
+        // re-clearing a surface that already let go. Window key changes leave the first responder
+        // alone; the key observers below cover those.
+        #[method(resignFirstResponder)]
+        fn resign_first_responder(&self) -> bool {
+            let surface = self.ivars().surface.get();
+            if !surface.is_null() {
+                let _ = FOCUSED_SURFACE.compare_exchange(
+                    surface,
+                    ptr::null_mut(),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                );
+                unsafe { ffi::ghostty_surface_set_focus(surface, false) };
             }
             true
         }
@@ -1616,9 +1639,9 @@ impl TerminalSurface for GhosttySurface {
         // alone does not (a hidden surface keeps rendering, just off-screen). This is the
         // symmetric counterpart to `focus()` and the only path that covers a tab going
         // off-screen: `windowDidResignKey:` and the `performKeyEquivalent:` handoff both gate on
-        // `!isHidden()`, and there is no `resignFirstResponder` override — so without this line a
-        // tab stays focused=1 forever once activated (switch away → `activate` hides it but never
-        // unfocuses it) and every tab ever visited burns 60fps for the life of the process. Safe
+        // `!isHidden()`, and `resignFirstResponder:` fires only for the view that held first
+        // responder — so without this line a tab not holding it when switched away from stays
+        // focused=1 and burns 60fps for the life of the process. Safe
         // against the active tab: `activate`'s show()+focus() and hide() branches are mutually
         // exclusive, so hide() only ever lands on a non-active surface.
         unsafe { ffi::ghostty_surface_set_focus(self.surface, false) };
@@ -1697,9 +1720,10 @@ impl GhosttySurface {
             Ordering::AcqRel,
             Ordering::Relaxed,
         );
+        // Null the view's surface ivar before the free: AppKit can still message the view
+        // (resignFirstResponder: as it leaves the window), and every reader bails on null.
+        self.host_view.set_surface(ptr::null_mut());
         unsafe {
-            // The host view is dropped with this struct, so its surface ivar
-            // (a dangling pointer after the free) is never read again.
             ffi::ghostty_surface_free(self.surface);
             self.host_view.removeFromSuperview();
         }
