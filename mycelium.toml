@@ -11,3 +11,7 @@ topics_extra = ["ghostty", "hot-reload", "terminal", "terminal-emulator", "termi
 [[provides]]
 name    = "terminals"
 summary = "A macOS console of grouped project tabs of embedded libghostty terminal surfaces"
+
+[fleet]
+exempt      = ["ci"]
+exempt_note = "macOS-only: the local `just gate` covers the one platform it ships on"

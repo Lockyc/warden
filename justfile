@@ -56,8 +56,7 @@ hooks:
     git config core.hooksPath .githooks
     @echo "✓ hooks enabled (.githooks): docgraph pre-push gate + active-[patch] pre-commit guard"
 
-# CI runs fmt/clippy/tests on push + PR; this is the same gate locally, plus the config fmt-check
-# and the active-[patch] guard (which also runs via .githooks/pre-commit — see `just hooks`).
+# The active-[patch] guard also runs via .githooks/pre-commit — see `just hooks`.
 # Full pre-merge gate: fmt-check, clippy, tests, config fmt-check, active-[patch] guard
 [group("check")]
 gate:
