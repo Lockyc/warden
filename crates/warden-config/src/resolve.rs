@@ -23,12 +23,6 @@ pub const DEFAULT_COLOUR: Colour = Colour {
     b: 0x80,
 };
 
-/// Default window width when `width` is omitted. Matches curator's default.
-pub const DEFAULT_WIDTH: u32 = 1500;
-
-/// Default window height when `height` is omitted. Matches curator's default.
-pub const DEFAULT_HEIGHT: u32 = 1000;
-
 /// A declared split's default share for the second pane, and the band `size` must fall in.
 /// The Rust readers of this band (`split_ratio` in warden-app's `main.rs`) read these
 /// constants directly, so a config can never declare a width the divider would refuse to be
@@ -287,8 +281,8 @@ fn resolve_window(
             source,
         })?,
     };
-    let width = rp.width.unwrap_or(DEFAULT_WIDTH);
-    let height = rp.height.unwrap_or(DEFAULT_HEIGHT);
+    let width = rp.width.unwrap_or_else(config_core::default_window_width);
+    let height = rp.height.unwrap_or_else(config_core::default_window_height);
     if width == 0 || height == 0 {
         return Err(ResolveError::InvalidWindowSize {
             window: rp.title.clone(),
