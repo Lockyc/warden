@@ -752,6 +752,22 @@ fn pop_out_tab(
         // either way, so callers no longer pick get_webview_window (wrong for curator/lector).
         shell_core::detach::wire_return(&app, &label, move || redock(&app2, &label2));
     }
+    // The popped-out window gaining focus is the user looking at the tab: clear the badge its
+    // bells left on the origin's row (a badge is only ever set while that window is unfocused).
+    if let Some(win) = app.get_window(&label) {
+        let app2 = app.clone();
+        let origin = origin_label.clone();
+        let tab = id.clone();
+        win.on_window_event(move |event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                let _ = app2.emit_to(
+                    origin.as_str(),
+                    "warden:tab-seen",
+                    serde_json::json!({ "label": origin, "id": tab }),
+                );
+            }
+        });
+    }
 
     // The origin's row now renders detached; refresh it. sync_empty_surface is a no-op here
     // (origin still open) but keeps the home-surface authority single-sourced; the menu is
