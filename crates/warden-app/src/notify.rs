@@ -163,7 +163,9 @@ unsafe fn dict_str(user_info: &NSDictionary, key: &str) -> Option<String> {
 
 /// Raise the window owning a notification and ask its chrome to select the tab. Best-effort: an
 /// unknown label (window since closed) raises nothing; a stale/missing tab id leaves the active tab
-/// alone, so the click still lands you in the right window. `set_focus` brings the window forward
+/// alone, so the click still lands you in the right window. A tab popped out of `label` is shown
+/// by its detached window, so that window is the one raised, and the origin's selection is left
+/// alone (selecting a popped-out row only raises that same window). `set_focus` brings the window forward
 /// and activates warden, so this surfaces the terminal even from the background. `emit_to` leaks to
 /// sibling webviews (see CLAUDE.md), so the payload carries the target `label` and the chrome drops
 /// events meant for another window — same guard as every other per-window event.
@@ -171,6 +173,18 @@ fn focus_window_tab(label: String, id: Option<String>) {
     let Some(app) = APP_HANDLE.get() else {
         return;
     };
+    let popped = id.as_deref().and_then(|id| {
+        app.state::<ManagerState>()
+            .lock()
+            .detached_label_for(&label, id)
+    });
+    if let Some(dlabel) = popped {
+        if let Some(win) = app.get_window(&dlabel) {
+            let _ = win.unminimize();
+            let _ = win.set_focus();
+        }
+        return;
+    }
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.unminimize();
         let _ = win.set_focus();
@@ -269,10 +283,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
             event.surface_id
         ));
     }
-    let located = app
-        .state::<ManagerState>()
-        .lock()
-        .locate_surface(event.surface_id);
+    let located = locate(app, event.surface_id);
     let Some((label, tab, visible)) = located else {
         dbglog("handle: surface not located (unloaded?) -> dropped");
         return; // surface not found (e.g. just unloaded) — drop the signal
@@ -307,6 +318,25 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         ));
         show_banner(&title, &body, &label, &tab);
     }
+}
+
+/// The `(window label, tab id, visible)` a signal from `surface_id` belongs to. A docked surface is
+/// `WindowManager::locate_surface`'s answer; a popped-out one belongs to its tab's row in the ORIGIN
+/// window (the row a badge lands on and a banner names), and is visible while its detached window
+/// is focused — a popped-out tab is the only thing that window shows.
+fn locate(app: &AppHandle, surface_id: usize) -> Option<(String, String, bool)> {
+    let state = app.state::<ManagerState>();
+    let m = state.lock();
+    if let Some(found) = m.locate_surface(surface_id) {
+        return Some(found);
+    }
+    let (dlabel, _) = m.locate_detached_surface(surface_id)?;
+    let ds = m.detached.get(&dlabel)?;
+    let visible = app
+        .get_window(&dlabel)
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    Some((ds.origin_label.clone(), ds.tab_id.clone(), visible))
 }
 
 /// Post a native banner via `UNUserNotificationCenter`. No-op until `setup_banners` has run
