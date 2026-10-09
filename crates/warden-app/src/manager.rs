@@ -1197,20 +1197,16 @@ impl WindowManager {
     }
 
     /// Bring the live window set in line with a reloaded config by executing the
-    /// `WindowOp`s the reconciliation produces. Open builds a window; Close tears
-    /// down its surfaces and closes the Tauri window; Update mutates the registry
-    /// in place and pushes a fresh snapshot so the chrome rebuilds its sidebar.
-    /// `new_config` is the *new* effective config (roots already expanded) — its
-    /// windows/roots are looked up by `reconcile_ops` to derive tree metadata for
-    /// tabs added by this reconcile, and its global settings (density, sidebar_drag,
-    /// open_tabs_section) are stamped into the refresh DTOs so a hot-reload that flips
-    /// any of them updates the chrome (at apply time `self.last_good` is still the old
-    /// config — the caller swaps it after apply).
-    pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, new_config: &Config) {
-        let ops = reconcile_ops(recon, new_config, &self.names, &self.taken_labels());
-        let density = new_config.density.as_str();
-        let sidebar_drag = new_config.sidebar_drag;
-        let auto_update = new_config.auto_update;
+    /// `WindowOp`s the reconciliation produces, and make `new_config` (the *new* effective
+    /// config, roots already expanded) the baseline `last_good`. Open builds a window; Close
+    /// tears down its surfaces and closes the Tauri window; Update mutates the registry in
+    /// place and pushes a fresh snapshot (`init_dto`, read after the baseline advances, so a
+    /// flipped global reaches the chrome) so the chrome rebuilds its sidebar. `new_config`'s
+    /// windows/roots are also what `reconcile_ops` derives tree metadata from for added tabs.
+    pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, new_config: Config) {
+        let ops = reconcile_ops(recon, &new_config, &self.names, &self.taken_labels());
+        self.last_good = new_config;
+        let mut refreshed: Vec<String> = Vec::new();
         for op in ops {
             match op {
                 WindowOp::Open(spec) => {
@@ -1303,38 +1299,17 @@ impl WindowManager {
                                 }
                             }
                         }
-                        // Patch presence from the persistent cache (disjoint field from
-                        // `self.windows` borrowed via `ws`, so this borrows cleanly) so a
-                        // hot-reload refresh keeps the dots lit instead of blanking them
-                        // until the next probe pass re-emits.
-                        let mut tabs = ws.registry.tab_dtos();
-                        self.presence_cache.patch(&label, &mut tabs);
-                        // Push the new snapshot so the chrome rebuilds the sidebar.
-                        // Target THIS window by label: `Emitter::emit` (on a window
-                        // OR the app handle) is a global broadcast in Tauri 2.11.3 —
-                        // it delegates to the shared app manager regardless of the
-                        // receiver — so emitting on `ws.window` would fire every
-                        // sibling window's listener and corrupt their sidebars with
-                        // this window's DTO. `emit_to(label, …)` scopes it to the
-                        // one window. `label` is the Tauri window label.
-                        let dto = InitDto {
-                            label: label.clone(),
-                            title: ws.title.clone(),
-                            colour: ws.colour.clone(),
-                            density: density.to_string(),
-                            sidebar_drag,
-                            open_tabs_section: ws.open_tabs_section,
-                            auto_update,
-                            split_band: SPLIT_BAND,
-                            active: ws.registry.active_tab().map(str::to_string),
-                            tabs,
-                            // Refresh carries no spawn error; a hot-reload add
-                            // failure is logged + retried-on-focus, not banner-pushed.
-                            error: None,
-                        };
-                        let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
+                        refreshed.push(label);
                     }
                 }
+            }
+        }
+        // Push each updated window's new snapshot so the chrome rebuilds its sidebar.
+        // `emit_to(label, …)`, never `Emitter::emit` (a global broadcast in Tauri 2.11.3,
+        // whatever the receiver): emitting on the window would fire every sibling's listener.
+        for label in refreshed {
+            if let Some(dto) = self.init_dto(&label) {
+                let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
             }
         }
     }

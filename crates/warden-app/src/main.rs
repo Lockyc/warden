@@ -946,8 +946,7 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
     {
         let mut m = state.lock();
         let recon = warden_config::reconcile(&m.last_good, &fresh);
-        m.apply(&app, &recon, &fresh);
-        m.last_good = fresh;
+        m.apply(&app, &recon, fresh);
         m.record_all_sessions();
     } // release the ManagerState lock before the lock-free bump
       // New discovered tabs may carry probes — fast-burst every window so their dots populate now.
@@ -1605,9 +1604,9 @@ fn main() {
                                         // surfaces as a tab add/remove. Re-scans on every reload.
                                         let recon =
                                             warden_config::reconcile(&m.last_good, &new_eff);
-                                        m.apply(&wh, &recon, &new_eff);
-                                        // Advance the reconcile baseline ONLY on a valid load.
-                                        m.last_good = new_eff;
+                                        // Advances the reconcile baseline — this branch is
+                                        // only reached on a valid load.
+                                        m.apply(&wh, &recon, new_eff);
                                         m.raw_config = loaded.config.clone();
                                         m.record_all_sessions();
                                         // A density/sidebar_drag flip alone produces no per-window
