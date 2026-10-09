@@ -566,6 +566,10 @@ fn pop_out_tab(
             width: DETACHED_DEFAULT_WIDTH,
             height: DETACHED_DEFAULT_HEIGHT,
             panes,
+            pane_band: Some([
+                warden_config::resolve::SPLIT_SIZE_MIN,
+                warden_config::resolve::SPLIT_SIZE_MAX,
+            ]),
         };
         let token = crate::plan::detach_window_token(&origin_label, &id);
         (surface, secondary, secondary_left, tab_spec, spec, token)
