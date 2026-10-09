@@ -465,14 +465,21 @@ unsafe extern "C" fn confirm_read_clipboard_cb(
 /// Copy: libghostty hands us the selected text (e.g. on ⌘C or copy-on-select); write it to the
 /// macOS general pasteboard. macOS has no primary-selection clipboard, so we ignore SELECTION
 /// writes. Runs on the main thread (called from a `ghostty_app_tick`).
+///
+/// `confirm` is set for a program's OSC 52 write under the user's Ghostty `clipboard-write = ask`
+/// (user copies pass `false`). warden has no prompt to show, so a write needing approval is dropped
+/// — the same answer `confirm_read_clipboard_cb` gives a program's read.
 unsafe extern "C" fn write_clipboard_cb(
     _userdata: *mut c_void,
     loc: ffi::ghostty_clipboard_e,
     content: *const ffi::ghostty_clipboard_content_s,
     len: usize,
-    _confirm: bool,
+    confirm: bool,
 ) {
-    if loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD || content.is_null() || len == 0
+    if confirm
+        || loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD
+        || content.is_null()
+        || len == 0
     {
         return;
     }
