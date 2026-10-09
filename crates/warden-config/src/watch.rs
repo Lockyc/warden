@@ -1,7 +1,8 @@
 use crate::load::{load_with, LoadError, Loaded};
 use crate::resolve::DEFAULT_SHELL;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 pub struct Watcher {
     _inner: RecommendedWatcher,
@@ -22,7 +23,7 @@ impl Watcher {
     /// with **no debounce or coalescing**. Editors that write in place (rather than atomic
     /// temp-file + rename) can therefore produce a transient `load()` parse error (a partial
     /// read mid-write) and/or multiple callbacks per save. Debouncing and coalescing are
-    /// intentionally left to the consumer (deferred to Plan 2), which owns the reload UX.
+    /// left to the consumer, which owns the reload UX (deferred — `docs/FOLLOWUPS.md`).
     /// Atomic-save editors (e.g., vim, VSCode) are unaffected.
     pub fn new(
         path: PathBuf,
@@ -40,38 +41,57 @@ impl Watcher {
         on_change: impl Fn(Result<Loaded, LoadError>) + Send + 'static,
     ) -> notify::Result<Watcher> {
         let default_shell = default_shell.into();
-        // `parent()` returns Some("") for a bare relative filename (e.g. "config.toml"),
-        // and watching "" errors. Treat an empty parent the same as None → watch the cwd.
-        let watch_dir = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+        // A symlinked config (`config.toml -> ~/dotfiles/warden.toml`) is edited at its target,
+        // so the events land in the target's directory under the target's name: watch both the
+        // link's and the target's (dir, name). The link's pair still catches the link itself
+        // being replaced.
+        let mut watched = vec![dir_and_name(&path)];
+        if path.is_symlink() {
+            if let Ok(target) = std::fs::canonicalize(&path) {
+                let pair = dir_and_name(&target);
+                if !watched.contains(&pair) {
+                    watched.push(pair);
+                }
+            }
+        }
+        let names: Vec<_> = watched.iter().filter_map(|(_, n)| n.clone()).collect();
         let target = path.clone();
-        // Capture the file name separately so the closure can match by name rather than full path.
-        // macOS FSEvents reports canonical /private/var/... paths while tempfile (and callers) may
-        // hold /var/... symlink paths, so exact-path equality fails. Since we watch a single
-        // NonRecursive directory, matching by file name is sufficient and canonicalization-robust.
-        let want_name = path.file_name().map(|n| n.to_owned());
         let mut inner = notify::recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(event) = res {
-                // Match by file name rather than full path for canonicalization-robustness:
-                // macOS FSEvents reports canonical /private/var/... paths while callers may
-                // hold /var/... symlink paths, so exact-path equality fails. Fire on any
-                // event for the target file — atomic-save editors (e.g. vim, VSCode) may
-                // rename a temp file over the target, which surfaces as Create, not Modify.
+                // Match by file name, not full path: macOS FSEvents reports canonical
+                // /private/var/... paths while callers may hold /var/... symlink paths, so
+                // exact-path equality fails, and each watch is a single NonRecursive directory.
+                // Fire on any event kind — atomic-save editors (vim, VSCode) rename a temp file
+                // over the target, which surfaces as Create, not Modify.
                 if event
                     .paths
                     .iter()
-                    .any(|p| p.file_name() == want_name.as_deref())
+                    .any(|p| p.file_name().is_some_and(|n| names.iter().any(|w| w == n)))
                 {
                     on_change(load_with(&target, &default_shell));
                 }
             }
         })?;
-        inner.watch(&watch_dir, RecursiveMode::NonRecursive)?;
+        for dir in watched
+            .iter()
+            .map(|(d, _)| d)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            inner.watch(dir, RecursiveMode::NonRecursive)?;
+        }
         Ok(Watcher { _inner: inner })
     }
+}
+
+/// The directory to watch for `path` and the file name to match in it. `parent()` is
+/// `Some("")` for a bare relative filename, and watching "" errors, so that maps to the cwd.
+fn dir_and_name(path: &Path) -> (PathBuf, Option<OsString>) {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    (dir, path.file_name().map(|n| n.to_owned()))
 }
 
 #[cfg(test)]
@@ -118,5 +138,34 @@ mod tests {
             }
         };
         assert_eq!(got.unwrap(), "b");
+    }
+
+    #[test]
+    fn fires_callback_when_a_symlinked_config_is_edited_at_its_target() {
+        let link_dir = tempdir().unwrap();
+        let target_dir = tempdir().unwrap();
+        let target = target_dir.path().join("warden.toml");
+        write(&target, "[[window]]\ntitle=\"a\"\ncolour=\"#000000\"\n");
+        let link = link_dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let _w = Watcher::new(link, move |res| {
+            let _ = tx.send(res.map(|l| l.config.windows[0].title.clone()));
+        })
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(200));
+        write(&target, "[[window]]\ntitle=\"b\"\ncolour=\"#000000\"\n");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok(v) if v.as_deref().ok() == Some("b") => break,
+                Ok(_) => {}
+                Err(_) => panic!("timed out waiting for a reload of the symlink target"),
+            }
+        }
     }
 }
