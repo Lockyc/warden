@@ -188,10 +188,9 @@ fn basename(p: &Path) -> String {
 
 /// Render a resolved dir to its identity string: the lossy path with any single trailing
 /// separator stripped (so `~/a` and `~/a/` are one identity) — except a bare root `/`.
-/// Must match the scanner's discovered-tab key (`path.to_string_lossy()`, never trailing-
-/// slashed) so a curated tab and a same-dir discovered project share one key and the curated
-/// one shadows the discovered one in `effective_config`.
-fn normalize_dir_key(dir: &Path) -> String {
+/// The one dir-identity scheme: curated tabs and warden-app's discovered projects both key
+/// through it, so a curated tab and a same-dir discovered project share one key.
+pub fn normalize_dir_key(dir: &Path) -> String {
     let s = dir.to_string_lossy();
     let trimmed = s.strip_suffix('/').filter(|t| !t.is_empty()).unwrap_or(&s);
     trimmed.to_string()

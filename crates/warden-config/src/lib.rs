@@ -27,7 +27,7 @@ pub use config_core::{
 pub use load::{config_path, load, load_with, LoadError, Loaded};
 pub use model::{Config, Root, Split, SplitSide, Tab, Window};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, WindowUpdate};
-pub use resolve::ResolveError;
+pub use resolve::{normalize_dir_key, ResolveError};
 pub use watch::Watcher;
 
 #[cfg(test)]
