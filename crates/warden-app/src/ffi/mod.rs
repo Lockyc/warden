@@ -145,28 +145,66 @@ pub struct ghostty_input_key_s {
 }
 
 // --- Clipboard enums/structs (referenced by runtime callbacks) ---
-// typedef enum { GHOSTTY_CLIPBOARD_STANDARD, GHOSTTY_CLIPBOARD_SELECTION } ghostty_clipboard_e;
+// typedef enum { GHOSTTY_CLIPBOARD_STANDARD, GHOSTTY_CLIPBOARD_SELECTION, GHOSTTY_CLIPBOARD_PRIMARY } ghostty_clipboard_e;
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ghostty_clipboard_e {
     GHOSTTY_CLIPBOARD_STANDARD = 0,
     GHOSTTY_CLIPBOARD_SELECTION = 1,
+    GHOSTTY_CLIPBOARD_PRIMARY = 2,
 }
 
-// typedef enum { PASTE, OSC_52_READ, OSC_52_WRITE } ghostty_clipboard_request_e;
+// typedef enum { PASTE, OSC_52_READ, OSC_52_WRITE, KITTY_READ, KITTY_WRITE, LIST } ghostty_clipboard_request_e;
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ghostty_clipboard_request_e {
     GHOSTTY_CLIPBOARD_REQUEST_PASTE = 0,
     GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ = 1,
     GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE = 2,
+    GHOSTTY_CLIPBOARD_REQUEST_KITTY_READ = 3,
+    GHOSTTY_CLIPBOARD_REQUEST_KITTY_WRITE = 4,
+    GHOSTTY_CLIPBOARD_REQUEST_LIST = 5,
 }
 
-// typedef struct { const char* mime; const char* data; } ghostty_clipboard_content_s;
+// typedef enum { STARTED, UNAVAILABLE, UNSUPPORTED } ghostty_clipboard_read_result_e;
+#[repr(C)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ghostty_clipboard_read_result_e {
+    GHOSTTY_CLIPBOARD_READ_STARTED = 0,
+    GHOSTTY_CLIPBOARD_READ_UNAVAILABLE = 1,
+    GHOSTTY_CLIPBOARD_READ_UNSUPPORTED = 2,
+}
+
+// typedef struct { const char* mime; const char* data; size_t len; } ghostty_clipboard_content_s;
+/// One representation of clipboard contents. `data` is `(ptr, len)`, **not** NUL-terminated.
 #[repr(C)]
 pub struct ghostty_clipboard_content_s {
     pub mime: *const c_char,
     pub data: *const c_char,
+    pub len: usize,
+}
+
+/// `ghostty_clipboard_complete_s`: the payload of `ghostty_surface_complete_clipboard_request`.
+/// Everything is borrowed for the duration of that call.
+#[repr(C)]
+pub struct ghostty_clipboard_complete_s {
+    pub contents: *const ghostty_clipboard_content_s,
+    pub contents_len: usize,
+    pub available: *const *const c_char,
+    pub available_len: usize,
+    pub confirmed: bool,
+    pub remember: bool,
+}
+
+/// `ghostty_clipboard_confirm_s`: the payload of `confirm_read_clipboard_cb`, borrowed for that call.
+#[repr(C)]
+pub struct ghostty_clipboard_confirm_s {
+    pub contents: *const ghostty_clipboard_content_s,
+    pub contents_len: usize,
+    pub available: *const *const c_char,
+    pub available_len: usize,
+    pub name: *const c_char,
+    pub can_remember: bool,
 }
 
 // --- ghostty_target_s (passed BY VALUE to action_cb; 16 bytes, verified via clang) ---
@@ -229,7 +267,7 @@ pub struct ghostty_action_desktop_notification_s {
 /// `ghostty_action_open_url_s` (ghostty.h:818-822): the union variant for `OPEN_URL` — libghostty
 /// asking the host to open a link the user clicked. `url` is **not NUL-terminated**: it is a
 /// borrowed `(ptr, len)` slice owned by libghostty and valid only for this call, so copy it out.
-/// `kind` is `ghostty_action_open_url_kind_e` (unknown/text/html); warden opens all kinds the same.
+/// `kind` is `ghostty_action_open_url_kind_e` (unknown/text/html/osc8); warden opens all kinds the same.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ghostty_action_open_url_s {
@@ -327,12 +365,25 @@ pub type ghostty_runtime_wakeup_cb = Option<unsafe extern "C" fn(*mut c_void)>;
 // typedef bool (*ghostty_runtime_action_cb)(ghostty_app_t, ghostty_target_s, ghostty_action_s);
 pub type ghostty_runtime_action_cb =
     Option<unsafe extern "C" fn(ghostty_app_t, ghostty_target_s, ghostty_action_s) -> bool>;
-// typedef bool (*ghostty_runtime_read_clipboard_cb)(void*, ghostty_clipboard_e, void*);
-pub type ghostty_runtime_read_clipboard_cb =
-    Option<unsafe extern "C" fn(*mut c_void, ghostty_clipboard_e, *mut c_void) -> bool>;
-// typedef void (*ghostty_runtime_confirm_read_clipboard_cb)(void*, const char*, void*, ghostty_clipboard_request_e);
+// typedef ghostty_clipboard_read_result_e (*ghostty_runtime_read_clipboard_cb)(void*, ghostty_clipboard_e, void*, const char* const*, size_t, bool);
+pub type ghostty_runtime_read_clipboard_cb = Option<
+    unsafe extern "C" fn(
+        *mut c_void,
+        ghostty_clipboard_e,
+        *mut c_void,
+        *const *const c_char,
+        usize,
+        bool,
+    ) -> ghostty_clipboard_read_result_e,
+>;
+// typedef void (*ghostty_runtime_confirm_read_clipboard_cb)(void*, const ghostty_clipboard_confirm_s*, void*, ghostty_clipboard_request_e);
 pub type ghostty_runtime_confirm_read_clipboard_cb = Option<
-    unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_void, ghostty_clipboard_request_e),
+    unsafe extern "C" fn(
+        *mut c_void,
+        *const ghostty_clipboard_confirm_s,
+        *mut c_void,
+        ghostty_clipboard_request_e,
+    ),
 >;
 // typedef void (*ghostty_runtime_write_clipboard_cb)(void*, ghostty_clipboard_e, const ghostty_clipboard_content_s*, size_t, bool);
 pub type ghostty_runtime_write_clipboard_cb = Option<
@@ -364,6 +415,9 @@ pub struct ghostty_runtime_config_s {
 // These are compile-time and break the build immediately if a future header bump shifts layout.
 const _: () = assert!(std::mem::size_of::<ghostty_surface_config_s>() == 88);
 const _: () = assert!(std::mem::size_of::<ghostty_runtime_config_s>() == 64);
+const _: () = assert!(std::mem::size_of::<ghostty_clipboard_content_s>() == 24);
+const _: () = assert!(std::mem::size_of::<ghostty_clipboard_complete_s>() == 40);
+const _: () = assert!(std::mem::size_of::<ghostty_clipboard_confirm_s>() == 48);
 const _: () = assert!(std::mem::size_of::<ghostty_target_s>() == 16);
 const _: () = assert!(std::mem::size_of::<ghostty_action_s>() == 32);
 // Action union variants warden reads. Each must fit the 24-byte, 8-aligned union blob — a variant
@@ -464,15 +518,17 @@ extern "C" {
         mods: ghostty_input_scroll_mods_t,
     );
 
-    // void ghostty_surface_complete_clipboard_request(ghostty_surface_t, const char*, void*, bool);
-    // Hands clipboard data back to libghostty in response to a read_clipboard_cb; `state` is the
-    // opaque request token from that callback, `confirmed` skips the unsafe-paste confirmation.
+    // void ghostty_surface_complete_clipboard_request(ghostty_surface_t, const ghostty_clipboard_complete_s*, void*);
+    // Answers a request a read_clipboard_cb returned STARTED for; `state` is that callback's opaque
+    // token, invalidated by this call. Exactly one of this or `deny` per started request.
     pub fn ghostty_surface_complete_clipboard_request(
         surface: ghostty_surface_t,
-        data: *const c_char,
+        complete: *const ghostty_clipboard_complete_s,
         state: *mut c_void,
-        confirmed: bool,
     );
+
+    // void ghostty_surface_deny_clipboard_request(ghostty_surface_t, void*);
+    pub fn ghostty_surface_deny_clipboard_request(surface: ghostty_surface_t, state: *mut c_void);
 }
 
 #[cfg(test)]
