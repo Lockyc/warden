@@ -722,6 +722,7 @@ fn pop_out_tab(
             label.clone(),
             manager::DetachedSurface {
                 surface,
+                secondary_went_out: secondary.is_some(),
                 secondary,
                 secondary_left,
                 spec: tab_spec,

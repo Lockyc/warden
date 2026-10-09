@@ -278,6 +278,11 @@ pub struct DetachedSurface {
     /// unsplit tab (and for a split tab whose secondary was still cold — nothing live to
     /// carry, so the window opens with one hole rather than one it can't fill).
     pub secondary: Option<GhosttySurface>,
+    /// A second pane went out with the tab at pop-out — fixed then, unlike `secondary`, which
+    /// drops to `None` when that pane's shell exits in the detached window. An origin rebuilt
+    /// while the tab is out marks the pane from this, so the pane reads `Detached` there just as
+    /// in an origin that stayed open, and `attach` retires it alike if it doesn't come back.
+    pub secondary_went_out: bool,
     /// The tab's config split declares `side = "left"` — its second pane sits BEFORE the
     /// primary, docked and popped out alike. `false` for a right-side split, a runtime (⌘D)
     /// split (no `side`, always right) and an unsplit tab. Read only through [`Self::mirrored`].
@@ -501,7 +506,7 @@ impl WindowManager {
             .detached
             .values()
             .filter(|d| d.origin_label == spec.label)
-            .map(|d| (d.tab_id.as_str(), d.secondary.is_some()))
+            .map(|d| (d.tab_id.as_str(), d.secondary_went_out))
             .collect();
         for t in &spec.tabs {
             let id = t.spec.id.as_str();
@@ -756,6 +761,7 @@ impl WindowManager {
             crate::registry::PaneIdx::Primary => {
                 let DetachedSurface {
                     secondary_left: _,
+                    secondary_went_out: _,
                     spec: _,
                     surface,
                     secondary,
@@ -1006,6 +1012,7 @@ impl WindowManager {
 
         let DetachedSurface {
             secondary_left: _,
+            secondary_went_out: _,
             mut surface,
             mut secondary,
             spec: spawned,
