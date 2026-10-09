@@ -829,10 +829,24 @@ fn pop_in_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, i
 fn redock(app: &tauri::AppHandle, detached_label: &str) {
     use tauri::{Emitter, Manager};
     let st = app.state::<ManagerState>();
-    let origin = st.lock().redock(app, detached_label);
-    let Some(origin_label) = origin else {
+    let redocked = st.lock().redock(app, detached_label);
+    let Some(manager::Redocked {
+        origin_label,
+        dropped,
+    }) = redocked
+    else {
         return; // already redocked (double-close) — nothing to do
     };
+    // A tab dropped on arrival (it left the config while out) goes through the chrome's unload
+    // tail BEFORE the refresh removes its row, so the selection lands on the neighbour the
+    // registry leaned to rather than chrome-core's first-tab fallback.
+    if let Some((id, new_active)) = dropped {
+        let _ = app.emit_to(
+            origin_label.as_str(),
+            "warden:tab-exited",
+            serde_json::json!({ "label": origin_label, "id": id, "newActive": new_active }),
+        );
+    }
     // The origin may have been reopened by redock; rebuild the menu so its checkmark/(closed)
     // tag is right (lock already released — rebuild_menu re-locks).
     let _ = rebuild_menu(app);
