@@ -32,6 +32,22 @@ pub fn config_path() -> PathBuf {
     config_core::resolve_config_path(CONFIG_ENV, CONFIG_DIR)
 }
 
+/// The shell a tab runs when its config sets none — the user's **login shell**, run as a login
+/// shell, exactly as a terminal does: `$SHELL -l`, or [`DEFAULT_SHELL`] when `$SHELL` is unset or
+/// empty. `$SHELL` is set by launchd from the user's directory record even for a Dock/Finder
+/// launch. The result is absolute, which is the point: libghostty finds it with no PATH lookup —
+/// a GUI launch's minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) would otherwise miss a
+/// Homebrew/nix shell and the tab would die `exec: <shell>: not found` — and the login shell then
+/// builds PATH for the session. A config `shell` at any cascade level overrides it. The app and
+/// the `warden` CLI both pass this to [`load_with`], so `warden validate` resolves exactly what
+/// the app would.
+pub fn login_shell() -> String {
+    match std::env::var("SHELL") {
+        Ok(s) if !s.trim().is_empty() => format!("{s} -l"),
+        _ => DEFAULT_SHELL.to_string(),
+    }
+}
+
 /// Load with the built-in [`DEFAULT_SHELL`] fallback. Convenience for tests; the app/CLI
 /// call [`load_with`] to inject the user's detected login shell.
 pub fn load(path: &Path) -> Result<Loaded, LoadError> {
@@ -53,6 +69,15 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::tempdir;
+
+    #[test]
+    fn login_shell_uses_shell_env_with_login_flag() {
+        std::env::set_var("SHELL", "/opt/homebrew/bin/fish");
+        assert_eq!(login_shell(), "/opt/homebrew/bin/fish -l");
+        // Empty/unset $SHELL falls back to the macOS default, still as a login shell.
+        std::env::set_var("SHELL", "");
+        assert_eq!(login_shell(), DEFAULT_SHELL);
+    }
 
     fn write_cfg(body: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempdir().unwrap();

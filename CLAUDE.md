@@ -112,7 +112,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 ### Call-site pointers (the named code comment carries the why)
 
 - **Deploy launches via shell-core's `scripts/launch-app.sh`, never a bare `open`**, which forwards the deploying terminal's env (`TERM_PROGRAM`, `GHOSTTY_*`, `SHELL`, …) into every tab. Symptom: "misbehaves from `just deploy`, fine from Spotlight."
-- **Default shell = `$SHELL -l`, absolute** (`main.rs::login_shell`); config shells may be bare, covered by **`restore_login_path`**, which imports the login-shell PATH at startup (best-effort, 3s deadline). Don't drop either expecting the other to cover it.
+- **Default shell = `$SHELL -l`, absolute** (`warden_config::login_shell`, shared with the `warden` CLI); config shells may be bare, covered by **`restore_login_path`**, which imports the login-shell PATH at startup (best-effort, 3s deadline). Don't drop either expecting the other to cover it.
 - **Probes inherit warden-app's env** — PATH is restored, shell exports aren't, so the canonical probe names `amux` absolutely (`"$HOME/.agentmux/bin/amux" --probe`). `probe.rs`.
 - **The probe child's `$PWD` is the configured `dir`**, set explicitly in `probe.rs::run_probe` (also used by `end_session`) — a `$PWD`-keyed probe otherwise misses its session under a symlinked path.
 - **The probe scheduler is the single driver** — don't serialize the sweep, drop the QoS demotion, batch the cache write, or add a one-shot reprobe. [`docs/probing.md`](docs/probing.md).

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use warden_config::{config_path, fmt_cli, load_with, Split, SplitSide};
+use warden_config::{config_path, fmt_cli, load_with, login_shell, Split, SplitSide};
 
 /// A compact `split=…` rendering for `validate`'s tree, in place of raw `{:?}` Debug
 /// (`Some(Split { side: Left, size: 0.3, startup: None })`): `split=none` when unset, else
@@ -18,17 +18,6 @@ fn fmt_split(split: &Option<Split>) -> String {
             }
         }
     }
-}
-
-/// The shell warden defaults an unset tab to — the user's login shell, run as a login shell,
-/// like a terminal. `$SHELL` (falling back to the macOS default), with `-l`. Detected here in
-/// the binary so the pure crate stays env-free, matching what warden-app injects at runtime.
-fn login_shell() -> String {
-    let path = std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string());
-    format!("{path} -l")
 }
 
 fn main() {
