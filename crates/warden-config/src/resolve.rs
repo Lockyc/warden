@@ -23,12 +23,10 @@ pub const DEFAULT_COLOUR: Colour = Colour {
     b: 0x80,
 };
 
-/// A declared split's default share for the second pane, and the band `size` must fall in.
-/// The Rust readers of this band (`split_ratio` in warden-app's `main.rs`) read these
-/// constants directly, so a config can never declare a width the divider would refuse to be
-/// dragged to. The chrome's own drag clamp (`applySplitFlex` in `ui/index.html`) can't reach a
-/// Rust constant across the IPC boundary and carries the same band as a literal instead — that
-/// is the one site that must be kept in agreement by hand if this band ever moves.
+/// A declared split's default share for the second pane, and the band `size` must fall in —
+/// the one band every divider clamps to (warden-app's pop-out `split_ratio`, and the chrome's
+/// drag and saved-ratio checks via `InitDto.split_band`), so a config can never declare a
+/// width the divider would refuse to be dragged to.
 pub const DEFAULT_SPLIT_SIZE: f64 = 0.5;
 pub const SPLIT_SIZE_MIN: f64 = 0.1;
 pub const SPLIT_SIZE_MAX: f64 = 0.9;

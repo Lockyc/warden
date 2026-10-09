@@ -303,6 +303,9 @@
       let activeLive = false; // …and whether a live surface actually covers the PRIMARY hole for it
       let secondaryLive = false; // …and the SECONDARY hole, when the active tab is split
       const badges = new Set(); // tab ids with an unread notification/bell badge
+      // [min, max] share either pane of a split may take — the backend's `InitDto.split_band`,
+      // set from every snapshot before anything can lay a split out.
+      let splitBand;
       const detached = new Set(); // tab ids popped out into their own window (onSelect → raise it)
       // tab id → whether its secondary pane is live, mirrored from TabDto.secondary_spawned on
       // every snapshot (init_tabs / warden:refresh) — the same tab-liveness payload `spawned`
@@ -372,7 +375,7 @@
           if (!raw) return null;
           const v = JSON.parse(raw);
           const r = Number(v && v.ratio);
-          return Number.isFinite(r) && r > 0.05 && r < 0.95 ? { ratio: r } : { ratio: 0.5 };
+          return Number.isFinite(r) && r >= splitBand[0] && r <= splitBand[1] ? { ratio: r } : { ratio: 0.5 };
         } catch (e) { return null; }
       }
       // The divider ratio a pop-out of `tabId` should carry, or null for an unsplit tab.
@@ -534,13 +537,8 @@
       // applies a ratio. Callers decide when to reveal the result and re-report rects; calling
       // this before the pane is un-hidden is what lets a restored split appear at its saved
       // ratio on the FIRST reportRect rather than flashing 50/50 first.
-      //
-      // The 0.1/0.9 band mirrors warden-config's SPLIT_SIZE_MIN/SPLIT_SIZE_MAX
-      // (crates/warden-config/src/resolve.rs) — this JS can't reach that Rust constant across
-      // the IPC boundary, so it carries the same band as a literal that must be kept in
-      // agreement by hand if that band ever moves.
       function applySplitFlex(frac) {
-        const f = Math.max(0.1, Math.min(0.9, frac));
+        const f = Math.max(splitBand[0], Math.min(splitBand[1], frac));
         document.getElementById("pane-primary").style.flex = f + " 1 0";
         document.getElementById("pane-secondary").style.flex = (1 - f) + " 1 0";
         return f;
@@ -663,6 +661,7 @@
       }
 
       function applyDto(dto) {
+        splitBand = dto.split_band;
         sb.update(toComponentDto(dto));
         // The window colour on the ROOT, for the pane focus ring (`.pane.focused` reads it —
         // the panes sit outside chrome-core's sidebar root, so its own tokens never reach them).
@@ -812,6 +811,7 @@
         }
         if (!dto) return; // no managed window for this label yet (race: init_tabs ran before this window's WindowState was inserted)
         myLabel = dto.label;
+        splitBand = dto.split_band;
 
         sb = window.ChromeSidebar.mount(
           document.getElementById("sidebar"),

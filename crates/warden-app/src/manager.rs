@@ -140,6 +140,11 @@ pub fn effective_config(config: &Config) -> Config {
     eff
 }
 
+const SPLIT_BAND: [f64; 2] = [
+    warden_config::resolve::SPLIT_SIZE_MIN,
+    warden_config::resolve::SPLIT_SIZE_MAX,
+];
+
 #[derive(serde::Serialize, Clone)]
 pub struct InitDto {
     /// The Tauri window label this snapshot describes. The chrome records it on
@@ -166,6 +171,9 @@ pub struct InitDto {
     /// `auto_update` config (default true). Carried per-window (it's global); the
     /// chrome gates its launch-time update check on it (the menu check ignores it).
     pub auto_update: bool,
+    /// `[SPLIT_SIZE_MIN, SPLIT_SIZE_MAX]`: the share either pane of a split may take. The
+    /// chrome clamps its divider drag to it and rejects a saved ratio outside it.
+    pub split_band: [f64; 2],
     pub tabs: Vec<TabDto>,
     /// The registry's active tab. The chrome owns selection, so it reads this on init only —
     /// to open on the tab `build_window` activated (a `remember_tabs` restore) rather than
@@ -629,6 +637,7 @@ impl WindowManager {
                 sidebar_drag: self.last_good.sidebar_drag,
                 open_tabs_section: ws.open_tabs_section,
                 auto_update: self.last_good.auto_update,
+                split_band: SPLIT_BAND,
                 active: ws.registry.active_tab().map(str::to_string),
                 tabs,
                 error: ws.spawn_error.clone(),
@@ -1316,6 +1325,7 @@ impl WindowManager {
                             sidebar_drag,
                             open_tabs_section: ws.open_tabs_section,
                             auto_update,
+                            split_band: SPLIT_BAND,
                             active: ws.registry.active_tab().map(str::to_string),
                             tabs,
                             // Refresh carries no spawn error; a hot-reload add
