@@ -462,27 +462,34 @@ impl WindowManager {
             .flatten()
             .map(|r| r.restore(spec.tabs.iter().map(|t| t.spec.id.as_str())))
             .unwrap_or_default();
-        // A tab still popped out of this window (reopened while it's out) already has its
-        // terminal — spawning or activating it here would stand up a second one.
-        let out: HashSet<&str> = self
+        // A tab still popped out of this window (rebuilt while it's out) already has its
+        // terminal in the detached window: it is added cold and then marked `Detached`, the
+        // same placeholder `detach` leaves, so nothing here or later spawns a second one.
+        let out: HashMap<&str, bool> = self
             .detached
             .values()
             .filter(|d| d.origin_label == spec.label)
-            .map(|d| d.tab_id.as_str())
+            .map(|d| (d.tab_id.as_str(), d.secondary.is_some()))
             .collect();
         for t in &spec.tabs {
             let id = t.spec.id.as_str();
-            let eager = (t.load_on_open || restore.loaded.contains(id)) && !out.contains(id);
+            let eager = (t.load_on_open || restore.loaded.contains(id)) && !out.contains_key(id);
             if let Err(e) = registry.add(&t.spec, eager) {
                 spawn_errors.push(format!("{}: {e}", t.spec.title));
             }
         }
+        for (id, has_secondary) in &out {
+            registry.mark_detached(id, *has_secondary);
+        }
+        // The first tab shown is one with a terminal to show here — never a popped-out one,
+        // whose hole in this window would sit empty.
         let active = restore
             .active
             .as_deref()
-            .filter(|id| !out.contains(id))
             .and_then(|id| spec.tabs.iter().find(|t| t.spec.id == id))
-            .or(spec.tabs.first());
+            .into_iter()
+            .chain(&spec.tabs)
+            .find(|t| !registry.is_detached(&t.spec.id));
         if let Some(first) = active {
             if let Err(e) = registry.activate(&first.spec.id) {
                 let msg = format!("{}: {e}", first.spec.title);
@@ -942,16 +949,14 @@ impl WindowManager {
     /// 1. **Origin still open** — its slot is the `Detached` placeholder; `unload` is a no-op
     ///    on it, `reparent` moves the view back, `attach` (Detached → Spawned) restores it.
     /// 2. **Origin closed by the user while detached** — `reopen_window` rebuilds it from
-    ///    config (which may spawn a fresh surface for this tab); `unload` kills that fresh
-    ///    surface back to `Cold` so `attach` (Cold → Spawned) lands the RETURNING surface,
-    ///    never overwriting a live one.
+    ///    config, and `build_window` stands the still-out tab up as a `Detached` placeholder
+    ///    (`Registry::mark_detached`), so the return is case 1.
     /// 3. **Origin removed from config entirely** — the tab has no home, so the surface is
     ///    dropped (kills its PTY): the one place a live surface is intentionally dropped.
     ///
     /// Every step treats the pair as one unit: both surfaces reparent into the origin, both
-    /// go back through one `attach`, and case 3 drops both. A split that returns to a window
-    /// case 2 rebuilt *unsplit* keeps its second pane — `attach` recreates the slot rather
-    /// than refusing (see its doc), so the second PTY survives the round trip too.
+    /// go back through one `attach`, and case 3 drops both. A runtime split returning to a window
+    /// case 2 rebuilt from config keeps its second pane — `mark_detached` declared it.
     pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<String> {
         // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's
         // `Destroyed`): don't reopen an origin window or reparent a surface mid-teardown —
@@ -981,10 +986,6 @@ impl WindowManager {
             // ends their PTYs (the only intentional live-surface teardown in the whole flow).
             None => close_both(surface, secondary),
             Some(ws) => {
-                // Kill any fresh surface a reopen spawned for this tab (→ Cold) so `attach`
-                // never overwrites a `Spawned` slot; on the origin-stayed-open path the slot
-                // is `Detached` and this is a no-op. Acts on BOTH panes (see `unload`).
-                ws.registry.unload(&tab_id);
                 if let Ok(nsw) = ws.window.ns_window() {
                     // reparent only errors before it moves the view, so a failure here leaves
                     // the surface intact for `attach` below to re-home in the registry. Both
@@ -1013,10 +1014,10 @@ impl WindowManager {
                             .unwrap_or_else(|| tab_id.clone());
                         let _ = ws.registry.activate(&show);
                     }
-                    // Defensive: a slot wasn't Cold/Detached (shouldn't happen — `unload`
-                    // above just cleared both) — take the hand-back and close it rather than
-                    // leak, keeping the decision explicit. `attach` is all-or-nothing, so
-                    // this is both surfaces or neither, never a half-restored tab.
+                    // No slot to land in: the tab left the config while out and the origin
+                    // was rebuilt without it (a live slot is unreachable — the placeholder holds
+                    // none). The tab ends with it. `attach` is all-or-nothing, so this is both
+                    // surfaces or neither, never a half-restored tab.
                     Err((p, s)) => close_both(p, s),
                 }
             }
