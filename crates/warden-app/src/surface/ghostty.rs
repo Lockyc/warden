@@ -308,8 +308,9 @@ static PASTE_IMAGE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// bracketed paste exactly the way drag-and-drop delivers a file path. The image bytes never transit
 /// the PTY; the consuming program reads the file itself. This is what makes ⌘V-a-screenshot work.
 ///
-/// `confirmed: true` skips libghostty's unsafe-paste confirmation, because warden has no prompt to
-/// show; a request that still lands in `confirm_read_clipboard_cb` is denied there.
+/// Completes with `confirmed: false`, so libghostty applies its own policy (the user's Ghostty
+/// `clipboard-read`, `clipboard-paste-protection`) and routes anything needing approval through
+/// `confirm_read_clipboard_cb`, which allows only a user paste.
 unsafe extern "C" fn read_clipboard_cb(
     userdata: *mut c_void,
     loc: ffi::ghostty_clipboard_e,
@@ -364,7 +365,7 @@ unsafe extern "C" fn read_clipboard_cb(
             ptr::null()
         },
         available_len: if list { available.len() } else { 0 },
-        confirmed: true,
+        confirmed: false,
         remember: false,
     };
     ffi::ghostty_surface_complete_clipboard_request(surface, &complete, state);
@@ -415,17 +416,41 @@ unsafe fn clipboard_image_to_temp_path(pb: &NSPasteboard) -> Option<String> {
     }
     None
 }
-/// libghostty wants the user to approve a clipboard transfer (an unsafe paste, or a program reading
-/// or writing the clipboard). warden has no prompt UI, so it denies — the protocol's own refusal
-/// reply reaches the program. Answering is mandatory: an unanswered request leaks its state.
+/// libghostty wants the user to approve a clipboard transfer. warden has no prompt UI, so the answer
+/// is fixed by request kind:
+///
+/// - **A user paste (⌘V) is approved** — completed with the payload's own contents, `confirmed:
+///   true`. It reaches here only when paste protection flags the text unsafe (a newline outside
+///   bracketed paste); the user asked for this paste, so it goes through as it always has.
+/// - **Everything else is denied** — an OSC 52 / Kitty read (a program, possibly over ssh, reading
+///   the clipboard), or a Kitty write under `clipboard-write = ask`. The deny sends the protocol's
+///   own refusal reply to the program.
+///
+/// Answering is mandatory: an unanswered request leaks its state.
 unsafe extern "C" fn confirm_read_clipboard_cb(
     userdata: *mut c_void,
-    _confirm: *const ffi::ghostty_clipboard_confirm_s,
+    confirm: *const ffi::ghostty_clipboard_confirm_s,
     state: *mut c_void,
-    _request: ffi::ghostty_clipboard_request_e,
+    request: ffi::ghostty_clipboard_request_e,
 ) {
     let surface = surface_of(userdata);
-    if !surface.is_null() {
+    if surface.is_null() {
+        return;
+    }
+    if request == ffi::ghostty_clipboard_request_e::GHOSTTY_CLIPBOARD_REQUEST_PASTE
+        && !confirm.is_null()
+    {
+        let c = &*confirm;
+        let complete = ffi::ghostty_clipboard_complete_s {
+            contents: c.contents,
+            contents_len: c.contents_len,
+            available: c.available,
+            available_len: c.available_len,
+            confirmed: true,
+            remember: false,
+        };
+        ffi::ghostty_surface_complete_clipboard_request(surface, &complete, state);
+    } else {
         ffi::ghostty_surface_deny_clipboard_request(surface, state);
     }
 }
