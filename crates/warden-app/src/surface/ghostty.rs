@@ -282,46 +282,93 @@ unsafe extern "C" fn action_cb(
     }
 }
 
-/// The surface that should receive clipboard reads (paste). libghostty's `read_clipboard_cb` is
-/// app-level — it carries no surface — so we track the currently-focused surface here and answer
-/// the request against it. This is the one piece of process-global surface state (keys route via
-/// the per-view ivar instead); it exists only because the clipboard callback has no surface to
-/// hang context on. Written by `focus()` (tab activate) and refreshed in `performKeyEquivalent:`
-/// (so focus that arrives by clicking another window — never through activate — still retargets
-/// paste). Cleared on `close()` so a freed surface is never completed against (UAF).
+/// The surface libghostty currently believes focused, so a focus change can clear the previous
+/// one (`performKeyEquivalent:`). This is the one piece of process-global surface state (keys and
+/// clipboard requests route via the per-view ivar instead). Written by `focus()` (tab activate)
+/// and refreshed in `performKeyEquivalent:` / `becomeFirstResponder:` (so focus that arrives by
+/// clicking another window — never through activate — still lands). Cleared on `close()` so a
+/// freed surface is never handed focus (UAF).
 static FOCUSED_SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// Monotonic counter for temp image-paste filenames (see `clipboard_image_to_temp_path`).
 static PASTE_IMAGE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Paste: libghostty asks for clipboard data (e.g. on ⌘V); read the macOS general pasteboard and
-/// hand it back via `complete_clipboard_request`. Runs on the main thread (from a `ghostty_app_tick`).
+/// A surface asks for clipboard data (⌘V, or a program's OSC 52 / Kitty read); read the macOS
+/// general pasteboard and hand it back to *that* surface via `complete_clipboard_request`,
+/// synchronously. `userdata` is the requesting surface's host view — a background tab's OSC 52
+/// read is answered into its own PTY, never the focused tab's. Runs on the main thread (from a
+/// `ghostty_app_tick`).
+///
+/// warden serves only `text/plain` — the type every paste and OSC 52 read asks for. A Kitty
+/// clipboard read wanting another type gets no representation for it, and a listing (mode 5522)
+/// advertises `text/plain` alone, so no program is told about a type it can't then read.
 ///
 /// Text wins. If the clipboard is image-only (a screenshot, a copied image — no text), spill it to
 /// a temp PNG and paste that *path* instead — Claude Code (and friends) pick up a pasted image off
 /// bracketed paste exactly the way drag-and-drop delivers a file path. The image bytes never transit
 /// the PTY; the consuming program reads the file itself. This is what makes ⌘V-a-screenshot work.
+///
+/// `confirmed: true` skips libghostty's unsafe-paste confirmation, because warden has no prompt to
+/// show; a request that still lands in `confirm_read_clipboard_cb` is denied there.
 unsafe extern "C" fn read_clipboard_cb(
-    _userdata: *mut c_void,
-    _loc: ffi::ghostty_clipboard_e,
+    userdata: *mut c_void,
+    loc: ffi::ghostty_clipboard_e,
     state: *mut c_void,
-) -> bool {
-    let surface = FOCUSED_SURFACE.load(Ordering::Acquire);
+    mimes: *const *const c_char,
+    mimes_len: usize,
+    list: bool,
+) -> ffi::ghostty_clipboard_read_result_e {
+    use ffi::ghostty_clipboard_read_result_e::*;
+    if loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD {
+        return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED;
+    }
+    let surface = surface_of(userdata);
     if surface.is_null() {
-        return false;
+        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
     }
     let pb = NSPasteboard::generalPasteboard();
     let payload = pb
         .stringForType(NSPasteboardTypeString)
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
-        .or_else(|| clipboard_image_to_temp_path(&pb))
-        .unwrap_or_default();
-    let Ok(c_text) = CString::new(payload) else {
-        return false; // clipboard contained an interior NUL — refuse rather than truncate
+        .or_else(|| clipboard_image_to_temp_path(&pb));
+    let Some(payload) = payload else {
+        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
     };
-    ffi::ghostty_surface_complete_clipboard_request(surface, c_text.as_ptr(), state, true);
-    true
+
+    let wanted: &[*const c_char] = if mimes.is_null() {
+        &[]
+    } else {
+        std::slice::from_raw_parts(mimes, mimes_len)
+    };
+    let wants_text = wanted
+        .iter()
+        .any(|&m| !m.is_null() && std::ffi::CStr::from_ptr(m).to_bytes() == b"text/plain");
+    if !wants_text && !list {
+        return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE;
+    }
+
+    let text_plain = c"text/plain";
+    let content = ffi::ghostty_clipboard_content_s {
+        mime: text_plain.as_ptr(),
+        data: payload.as_ptr().cast(),
+        len: payload.len(),
+    };
+    let available = [text_plain.as_ptr()];
+    let complete = ffi::ghostty_clipboard_complete_s {
+        contents: if wants_text { &content } else { ptr::null() },
+        contents_len: wants_text as usize,
+        available: if list {
+            available.as_ptr()
+        } else {
+            ptr::null()
+        },
+        available_len: if list { available.len() } else { 0 },
+        confirmed: true,
+        remember: false,
+    };
+    ffi::ghostty_surface_complete_clipboard_request(surface, &complete, state);
+    GHOSTTY_CLIPBOARD_READ_STARTED
 }
 
 /// If the general pasteboard carries raster image data (and no text), write it to a temp PNG and
@@ -368,12 +415,19 @@ unsafe fn clipboard_image_to_temp_path(pb: &NSPasteboard) -> Option<String> {
     }
     None
 }
+/// libghostty wants the user to approve a clipboard transfer (an unsafe paste, or a program reading
+/// or writing the clipboard). warden has no prompt UI, so it denies — the protocol's own refusal
+/// reply reaches the program. Answering is mandatory: an unanswered request leaks its state.
 unsafe extern "C" fn confirm_read_clipboard_cb(
-    _userdata: *mut c_void,
-    _str: *const c_char,
-    _state: *mut c_void,
+    userdata: *mut c_void,
+    _confirm: *const ffi::ghostty_clipboard_confirm_s,
+    state: *mut c_void,
     _request: ffi::ghostty_clipboard_request_e,
 ) {
+    let surface = surface_of(userdata);
+    if !surface.is_null() {
+        ffi::ghostty_surface_deny_clipboard_request(surface, state);
+    }
 }
 /// Copy: libghostty hands us the selected text (e.g. on ⌘C or copy-on-select); write it to the
 /// macOS general pasteboard. macOS has no primary-selection clipboard, so we ignore SELECTION
@@ -389,11 +443,14 @@ unsafe extern "C" fn write_clipboard_cb(
     {
         return;
     }
-    // Take the first entry that carries valid UTF-8 text (usually the text/plain mime).
+    // Take the first entry that carries valid UTF-8 text (usually the text/plain mime). `data` is
+    // `(ptr, len)`, not NUL-terminated.
     let entries = std::slice::from_raw_parts(content, len);
     let Some(text) = entries.iter().find_map(|e| {
         (!e.data.is_null())
-            .then(|| std::ffi::CStr::from_ptr(e.data).to_str().ok())
+            .then(|| {
+                std::str::from_utf8(std::slice::from_raw_parts(e.data.cast::<u8>(), e.len)).ok()
+            })
             .flatten()
     }) else {
         return;
@@ -417,11 +474,10 @@ unsafe extern "C" fn write_clipboard_cb(
 /// Deferred to the next main-queue turn exactly like the action path: this is called from inside
 /// libghostty, which is still standing on the surface.
 unsafe extern "C" fn close_surface_cb(userdata: *mut c_void, process_alive: bool) {
-    if userdata.is_null() || process_alive {
+    if process_alive {
         return;
     }
-    let view: &WardenHostView = &*(userdata as *const WardenHostView);
-    let surface = view.ivars().surface.get();
+    let surface = surface_of(userdata);
     if surface.is_null() {
         return;
     }
@@ -434,6 +490,16 @@ unsafe extern "C" fn close_surface_cb(userdata: *mut c_void, process_alive: bool
         Box::into_raw(event) as *mut c_void,
         emit_event_trampoline,
     );
+}
+
+/// The surface behind a per-surface callback's `userdata` — its host view (set in `new`), whose
+/// `surface` ivar is the handle. Null for a null view or a surface already torn down.
+unsafe fn surface_of(userdata: *mut c_void) -> ffi::ghostty_surface_t {
+    if userdata.is_null() {
+        return ptr::null_mut();
+    }
+    let view: &WardenHostView = &*(userdata as *const WardenHostView);
+    view.ivars().surface.get()
 }
 
 // --- Shared app -------------------------------------------------------------
@@ -578,8 +644,8 @@ declare_class!(
         // drew a HOLLOW cursor that nonetheless accepted typing (the "cursor isn't filled but still
         // types" bug). Sync the focus flag here: becomeFirstResponder: is the one AppKit hook every
         // focus change funnels through (click, makeFirstResponder, key-window restore), so the
-        // cursor state now tracks the real first responder. Also retarget paste (FOCUSED_SURFACE) so
-        // a click makes this the clipboard-read surface, consistent with performKeyEquivalent:.
+        // cursor state now tracks the real first responder. Also record it in FOCUSED_SURFACE, consistent
+        // with performKeyEquivalent:.
         #[method(becomeFirstResponder)]
         fn become_first_responder(&self) -> bool {
             let surface = self.ivars().surface.get();
@@ -699,10 +765,9 @@ declare_class!(
             if surface.is_null() || !unsafe { self.owns_window_keys() } {
                 return objc2::runtime::Bool::NO;
             }
-            // This chord proves THIS surface is the focused one. Make it the global paste/focus
-            // target so the ⌘V being processed now lands here (libghostty's read_clipboard_cb is
-            // app-level and reads FOCUSED_SURFACE), and hand libghostty focus over from whatever
-            // surface held it — only on a real change, to avoid resetting cursor blink each press.
+            // This chord proves THIS surface is the focused one. Hand libghostty focus over from
+            // whatever surface held it — only on a real change, to avoid resetting cursor blink
+            // each press.
             let prev = FOCUSED_SURFACE.swap(surface, Ordering::AcqRel);
             if prev != surface {
                 unsafe {
@@ -1379,8 +1444,8 @@ impl GhosttySurface {
     ///
     /// The `SURFACE_VIEWS` map and `FOCUSED_SURFACE` atomic are deliberately left alone: the map
     /// keys `surface → host_view`, and neither pointer changes across a reparent (same surface,
-    /// same view), so the entry stays valid; `FOCUSED_SURFACE` is the paste target, owned by
-    /// `focus()`, which the caller drives after the move — `new` doesn't touch it at spawn either.
+    /// same view), so the entry stays valid; `FOCUSED_SURFACE` is owned by `focus()`, which the caller
+    /// drives after the move — `new` doesn't touch it at spawn either.
     ///
     /// `new_ns_window` is the raw `NSWindow *` (Tauri's `WebviewWindow::ns_window()`), as in
     /// `new`. `rect` is the view's frame in the destination content-view's coordinates, applied
@@ -1523,7 +1588,6 @@ impl TerminalSurface for GhosttySurface {
         // &WardenHostView coerces to &NSResponder via the NSView deref chain.
         let responder: &NSResponder = &self.host_view;
         self.window.makeFirstResponder(Some(responder));
-        // This surface is now the clipboard-read (paste) target.
         FOCUSED_SURFACE.store(self.surface, Ordering::Release);
         unsafe {
             ffi::ghostty_surface_set_focus(self.surface, true);
@@ -1585,8 +1649,8 @@ impl GhosttySurface {
         // Drop the key-state observers registered in new() before the view is freed, so the
         // notification center stops messaging a dangling view.
         unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.host_view) };
-        // Stop targeting this surface for paste before freeing it (avoid completing a request
-        // against a dangling pointer); only clear if it's the one currently focused.
+        // Forget this surface before freeing it, so a later focus change never touches a dangling
+        // pointer; only clear if it's the one currently focused.
         let _ = FOCUSED_SURFACE.compare_exchange(
             self.surface,
             ptr::null_mut(),
