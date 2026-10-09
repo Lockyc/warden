@@ -864,12 +864,9 @@ colour = "#111111"
         assert_eq!(specs[0].label, "shell-home-2");
     }
 
-    /// Regression: a tab added by a hot-reload reconcile (`WindowUpdate.add_tabs`) must
-    /// get the same tree/tree_path derivation as the initial `materialize` path
-    /// (`window_to_spec`). Before the fix, `reconcile_ops` had no roots in scope for
-    /// this construction site and hardcoded `tree: false, tree_path: vec![]`, so a
-    /// project discovered by a rescan/hot-reload rendered as a loose tab instead of
-    /// nested under its tree root.
+    /// A tab added by a hot-reload reconcile (`WindowUpdate.add_tabs`) gets the same
+    /// tree/tree_path derivation as the initial `materialize` path (`window_to_spec`), so a
+    /// project discovered by a rescan/hot-reload nests under its tree root, not loose.
     #[test]
     fn reconcile_add_tab_gets_tree_meta_from_new_config_roots() {
         use warden_config::{Colour, Density, Root, Tab, TabDigitKeys, WindowUpdate};
@@ -952,7 +949,7 @@ colour = "#111111"
         }
     }
 
-    /// Regression: a `[[window.root]]`-discovered project (tree row, `group` = root name)
+    /// A `[[window.root]]`-discovered project (tree row, `group` = root name)
     /// that a curated tab then shadows at the same `dir` (moving it into a plain group) is a
     /// KEPT tab — same `Tab::key` — so reconcile emits a `set_meta` group change, not add/
     /// remove. Its `tree`/`tree_path` must be recomputed from the new group and cleared;
