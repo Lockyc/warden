@@ -439,18 +439,10 @@ impl WindowManager {
                 .build()
                 .expect("build window window");
 
-        // Saved bounds are restored by shell-core's geometry plugin, on its `on_window_ready`
-        // hook — which fires for runtime-built windows too, so nothing needs to trigger it here.
-        //
-        // FOOTGUN: do NOT restore geometry by hand in this function. It looks like it should be
-        // needed — this window is built at runtime, not from `tauri.conf.json` — but the plugin's
-        // hook already covers that case. `build_window` runs from two call sites: the setup hook
-        // (main thread, before the event loop starts spinning) and hot-reload (the watcher
-        // thread). Reading/setting geometry marshals to the main loop, and tauri-runtime-wry's
-        // `send_user_message` dispatches by thread id, not by whether the loop has started
-        // spinning — so the setup-hook call would resolve inline, no hang there. The
-        // watcher-thread call is genuinely off the main thread, so that marshal blocks and can
-        // deadlock against the plugin's own hook running on reload.
+        // FOOTGUN: do NOT restore geometry by hand here. This window is built at runtime, not
+        // from `tauri.conf.json`, so a manual restore looks needed — but shell-core's geometry
+        // plugin restores saved bounds on its `on_window_ready` hook, which fires for
+        // runtime-built windows too. A second restore here double-applies them.
 
         let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 
