@@ -43,8 +43,7 @@ type ProbeWork = (String, PathBuf, String, String);
 /// Upper bound on how many tab probes run at once in a single window's sweep. It caps the burst of
 /// concurrent `sh -c` children so a wide `[[window.root]]` (dozens of discovered tabs) can't fork a
 /// hundred processes at once. With this cap a ~40-tab window sweeps in ~3 waves of one probe
-/// (~0.1s each) instead of ~40 sequential probes (~4s) — the fix for the "dot takes ages to clear
-/// after kill" lag. The just-bumped tab is probed first (see `order_work`) so it lands in the first
+/// (~0.1s each) instead of ~40 sequential probes (~4s). The just-bumped tab is probed first (see `order_work`) so it lands in the first
 /// wave regardless of its list position.
 ///
 /// **A probe is CPU-bound, not I/O-bound — the cap above the core count is deliberate anyway.**
@@ -56,21 +55,11 @@ type ProbeWork = (String, PathBuf, String, String);
 /// roughly linearly.
 ///
 /// **Per-probe cost.** Measured back-to-back on this machine (2026-08-24), canonical
-/// `amux --probe`, before and after agentmux 0.37.2 made its helper loading lazy:
+/// `amux --probe` (agentmux ≥ 0.37.2): ~47ms for a dir with a live session, ~70ms for a
+/// session-less dir, 21 forks per probe.
 ///
-/// | path | before | after |
-/// |---|---|---|
-/// | dir with a live session | ~87ms | **~47ms** |
-/// | session-less dir | ~92ms | **~70ms** |
-/// | forks per probe | 60 | **21** |
-///
-/// What used to dominate was amux's *startup preamble* — it eagerly sourced ~2,300 lines
-/// (`agent_window_style.sh`, `remote_attach.sh`, `agentmux-config.sh`) and re-resolved its own
-/// script dirs with `$(cd "$(dirname …)" && pwd)`, none of which the presence check touches.
-/// agentmux now loads those on first use (`_amux_need`) and canonicalises its install root once.
-///
-/// **What remains, in order:** `session_log.sh dropped --pending` on the session-less path only
-/// (~20-35ms, now the largest single item there), then irreducible per-process cost — `bash`
+/// **Where the time goes, in order:** `session_log.sh dropped --pending` on the session-less path only
+/// (~20-35ms, the largest single item there), then irreducible per-process cost — `bash`
 /// interpreter startup plus a Gatekeeper assessment per exec, since this is a Homebrew bash. The
 /// `tmux` call that actually answers the question is ~7ms. Parsing amux is NOT a factor (a few ms).
 /// Treat the absolute figures as load-dependent — they move with what else the machine is doing —
@@ -152,10 +141,9 @@ fn await_pending(now: Presence, want_present: bool) -> bool {
 ///
 /// **`awaiting_pending` overrides settling until the expected transition lands.** A tab-specific
 /// trigger (kill/start/cold-activate) expects a *change*, so its "still the old state" passes are the
-/// burst *waiting*, not the burst *settled* — counting them as agreement used to settle the window
+/// burst *waiting*, not the burst *settled* — counting them as agreement would settle the window
 /// onto the pre-transition state and drop it to the slow floor before the async transition (session
-/// teardown / startup) completed, so the dot only caught up on the next slow poll (the "~5s dot lag
-/// after kill/start" bug). While `awaiting_pending`, the burst stays [`Cadence::Fast`] with agreement
+/// teardown / startup) completed, so the dot would only catch up on the next slow poll. While `awaiting_pending`, the burst stays [`Cadence::Fast`] with agreement
 /// reset, so it can't settle early — still bounded by [`CAP`], which wins over a stuck await.
 pub(crate) fn advance(
     changed: bool,
@@ -478,8 +466,7 @@ fn order_work(work: &mut [ProbeWork], priority: Option<&str>) {
 
 /// Run every work-item's probe **concurrently** (bounded by `concurrency`), calling `emit(id, on)`
 /// the moment each probe returns and collecting the full `id → Presence` map. Workers pull from a
-/// shared cursor, so the sweep's wall-clock is ~`ceil(n/concurrency)` probe times, not the sum —
-/// the fix for the O(tabs) sequential pass that made a wide window's dots take seconds to update.
+/// shared cursor, so the sweep's wall-clock is ~`ceil(n/concurrency)` probe times, not the sum.
 /// `order_work` runs first, so the just-bumped tab is at the head of the cursor and is claimed in
 /// the first wave. Pure w.r.t. Tauri (takes `probe_fn`/`emit` closures) so it's unit-testable.
 fn sweep<P, Emit>(
@@ -536,8 +523,8 @@ where
 ///
 /// `priority` is the just-bumped tab (kill/start/activate), probed first so its dot lands in the
 /// first wave. Concurrency + per-tab emit together make a killed/started tab's dot update within
-/// ~one probe (~0.1s) even in a `[[window.root]]` over a large tree — the pass no longer costs
-/// O(tabs) in wall-clock, which was the "the dot takes ages to clear after I kill the session" lag.
+/// ~one probe (~0.1s) even in a `[[window.root]]` over a large tree — the pass costs
+/// ~`ceil(tabs / concurrency)` probe times, not O(tabs).
 /// The `changed`-only guard keeps a settled window's pass silent instead of re-emitting all N states.
 pub(crate) fn probe_window(
     app: &AppHandle,
@@ -584,9 +571,8 @@ pub(crate) fn probe_window(
 /// whole pass at the END of the sweep leaves a window in which the early tabs' emits are dropped
 /// AND the cache the replay reads is still empty. Those dots then stay dark for the life of the
 /// process: `prev` already holds the value, so the changed-only guard means no later pass ever
-/// re-emits it. That was the "a tab whose amux session is live shows a dark presence dot" bug — a
-/// wide `[[window.root]]` makes the first sweep long enough to straddle the handshake, and only
-/// tabs that probed *present* look wrong (a dropped `false` leaves a hollow dot, which is what an
+/// re-emits it. A wide `[[window.root]]` makes the first sweep long enough to straddle the
+/// handshake, and only tabs that probed *present* look wrong (a dropped `false` leaves a hollow dot, which is what an
 /// absent session should look like anyway).
 fn observe(
     prev: &BTreeMap<String, Presence>,
@@ -637,8 +623,8 @@ pub fn bump_tab(label: &str, tab: &str) {
 /// Like `bump_tab`, but also arms a **directional await** so the burst holds Fast until the tab's
 /// expected transition lands (bounded by [`CAP`]), instead of settling on the pre-transition state.
 /// `want_present`: the session should come **up** (`true` — start / cold-activate) or go **down**
-/// (`false` — kill). This is the fix for the "~5s dot lag after kill/start" — an async transition
-/// slower than the ~[`AGREE_TARGET`]×[`FAST`] settle window used to drop the window to the slow poll.
+/// (`false` — kill). Without it, an async transition
+/// slower than the ~[`AGREE_TARGET`]×[`FAST`] settle window drops the window to the slow poll first.
 pub fn bump_tab_await(label: &str, tab: &str, want_present: bool) {
     send_bump(label, Some(tab.to_string()), Some(want_present));
 }
@@ -1068,7 +1054,7 @@ mod tests {
 
     #[test]
     fn observe_records_before_it_emits() {
-        // The order is the fix for the stuck-dark dot: a probe result must be in the cache before
+        // A probe result must be in the cache before
         // the emit that a not-yet-registered listener may drop, because probe_now's replay reads
         // that cache at exactly the moment the listener comes up.
         let log = Mutex::new(Vec::new());

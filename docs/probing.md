@@ -27,9 +27,9 @@ The window's tabs are then probed **concurrently** on a bounded pool (`sweep` in
 capped at `MAX_PROBE_CONCURRENCY`), not one at a time: workers pull from a shared cursor, so
 a window's pass costs ~`ceil(tabs / concurrency)` probe times in wall-clock, **not the sum**.
 This is load-bearing: a `[[window.root]]` over a big tree (e.g. `~/Developer` → dozens of
-discovered project tabs) used to make a single *sequential* pass *seconds* long, so a killed
-tab's dot only cleared once its probe ran in list order — the "dot takes ages to clear after
-kill" lag. Concurrency collapses that to a couple of waves (~0.1–0.2s). Keep the pool
+discovered project tabs) would make a single *sequential* pass *seconds* long, so a killed
+tab's dot would clear only once its probe ran in list order. Concurrency collapses that to a
+couple of waves (~0.1–0.2s). Keep the pool
 **bounded** — an unbounded sweep would fork a hundred `sh -c` children at once on a wide root.
 
 Two things ride on top of the concurrent sweep, both load-bearing:
