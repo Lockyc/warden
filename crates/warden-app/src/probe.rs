@@ -36,17 +36,6 @@ pub enum Presence {
     Absent,
 }
 
-impl Presence {
-    /// chrome-core's wire value for this state (its presence API speaks these strings).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Presence::Present => "on",
-            Presence::Recoverable => "ghost",
-            Presence::Absent => "off",
-        }
-    }
-}
-
 /// One tab's probe work-item: `(id, dir, title, probe_cmd)` — the snapshot shape `probe_targets`
 /// yields and the unit a sweep worker runs.
 type ProbeWork = (String, PathBuf, String, String);
@@ -455,10 +444,7 @@ fn emit_states(app: &AppHandle, label: &str, states: serde_json::Map<String, ser
 /// Emit one tab's presence as a single-entry `warden:session-state` (see `emit_states`).
 fn emit_one(app: &AppHandle, label: &str, id: &str, on: Presence) {
     let mut states = serde_json::Map::new();
-    states.insert(
-        id.to_string(),
-        serde_json::Value::String(on.as_str().to_string()),
-    );
+    states.insert(id.to_string(), serde_json::json!(on));
     emit_states(app, label, states);
 }
 
@@ -470,12 +456,7 @@ fn emit_one(app: &AppHandle, label: &str, id: &str, on: Presence) {
 pub fn emit_presence_snapshot(app: &AppHandle, label: &str, states: &BTreeMap<String, Presence>) {
     let map = states
         .iter()
-        .map(|(id, on)| {
-            (
-                id.clone(),
-                serde_json::Value::String(on.as_str().to_string()),
-            )
-        })
+        .map(|(id, on)| (id.clone(), serde_json::json!(on)))
         .collect();
     emit_states(app, label, map);
 }
@@ -936,20 +917,9 @@ mod tests {
 
     #[test]
     fn presence_wire_values_match_chrome_core() {
-        assert_eq!(Presence::Present.as_str(), "on");
-        assert_eq!(Presence::Recoverable.as_str(), "ghost");
-        assert_eq!(Presence::Absent.as_str(), "off");
-    }
-
-    #[test]
-    fn presence_serialization_matches_as_str() {
-        for p in [Presence::Present, Presence::Recoverable, Presence::Absent] {
-            assert_eq!(
-                serde_json::to_value(p).unwrap(),
-                serde_json::Value::String(p.as_str().to_string()),
-                "serde and as_str must agree — both are the chrome-core wire value"
-            );
-        }
+        assert_eq!(serde_json::json!(Presence::Present), "on");
+        assert_eq!(serde_json::json!(Presence::Recoverable), "ghost");
+        assert_eq!(serde_json::json!(Presence::Absent), "off");
     }
 
     #[test]
