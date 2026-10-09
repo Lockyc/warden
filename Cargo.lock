@@ -395,7 +395,7 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=e99ea215835d254db0e1ef88892eaeb33349b7c3#e99ea215835d254db0e1ef88892eaeb33349b7c3"
+source = "git+https://github.com/Lockyc/config-core?rev=206c69cc4589ec086320eb27e9f877cd8a8fdfa6#206c69cc4589ec086320eb27e9f877cd8a8fdfa6"
 dependencies = [
  "dirs 6.0.0",
  "serde",

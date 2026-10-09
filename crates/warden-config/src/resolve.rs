@@ -3,7 +3,7 @@ use crate::raw::{RawConfig, RawSplit, RawWindow};
 use crate::{Colour, ColourError};
 use config_core::{Density, TabDigitKeys, Warning};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 
 /// Last-resort shell when no `shell` is set at any level *and* the caller injected none.
@@ -158,26 +158,6 @@ fn resolve_density(raw: Option<&str>) -> Result<Density, ResolveError> {
         Some("compact") => Ok(Density::Compact),
         Some(other) => Err(ResolveError::BadDensity(other.to_string())),
     }
-}
-
-fn expand_tilde(s: &str) -> PathBuf {
-    if s == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    }
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(s)
-}
-
-fn basename(p: &Path) -> String {
-    p.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
 
 /// Render a resolved dir to its identity string: the lossy path with any single trailing
@@ -408,7 +388,7 @@ fn resolve_tab(
             window: rp.title.clone(),
         });
     }
-    let dir = expand_tilde(dir_str);
+    let dir = config_core::expand_tilde(dir_str);
     if let Some(ref t) = rt.title {
         if t.trim().is_empty() {
             return Err(ResolveError::EmptyTabTitle {
@@ -416,13 +396,13 @@ fn resolve_tab(
             });
         }
     }
-    // Title is a pure display label now — trimmed, defaulting to the dir basename, and NOT
+    // Title is a pure display label — trimmed, defaulting to the dir basename, and NOT
     // deduplicated (titles may repeat window-wide).
     let title = rt
         .title
         .as_deref()
         .map(|t| t.trim().to_string())
-        .unwrap_or_else(|| basename(&dir));
+        .unwrap_or_else(|| config_core::basename(&dir));
     // Identity: explicit non-empty `id`, else the normalized dir. Empty `id = ""` = unset.
     let id = rt
         .id
