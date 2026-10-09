@@ -472,9 +472,9 @@ const DETACHED_DIVIDER_W: f64 = 6.0;
 const DETACHED_DEFAULT_RATIO: f64 = 0.5;
 
 /// The divider ratio a split pop-out lays out at, from the chrome's advisory `ratio`
-/// argument: absent or non-finite → the even fallback, otherwise clamped to the same
-/// `0.1..=0.9` band the chrome's own drag and `detach.html`'s drag both clamp to, so a
-/// popped-out split can never open at a width neither of them would let you drag it to.
+/// argument: absent or non-finite → the even fallback, otherwise clamped to the
+/// `SPLIT_SIZE_MIN..=SPLIT_SIZE_MAX` band the chrome's own drag and `detach.html`'s drag both
+/// clamp to, so a popped-out split can never open at a width neither would let you drag it to.
 ///
 /// One home for that decision, called twice on the pop-out path (the payload's `panes`, and
 /// the birth rects) — they must agree, and the second frame would silently paper over it if
