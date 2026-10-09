@@ -95,9 +95,10 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
 - **Pop-out backend invariants** (`main.rs::pop_out_tab`, `manager.rs::redock`,
   `registry.rs::detach`/`attach`): extract the surfaces under the `ManagerState` lock → build the
   window + `reparent` with the lock **released** → re-lock to store and wire the return. The
-  `Detached` placeholder keeps `reconcile` from duplicating the tab; `detached` counts in
-  `is_empty()`; `is_quitting` stops `redock` resurrecting mid-teardown; a live surface is dropped
-  only when `redock` finds the origin gone from config. **Every failure path restores both panes**
+  `Detached` placeholder — `detach`'s, or `mark_detached`'s in an origin rebuilt while the tab is
+  out — keeps `reconcile` from touching the tab; `redock` reconciles it against the config once home
+  (`reconcile_returned_tab`); `detached` counts in `is_empty()`; `is_quitting` stops `redock`
+  resurrecting mid-teardown. **Every failure path restores both panes**
   — a partial restore strands a live PTY with no window and no route back.
 - **Size the reparented surface's birth rect from the built window** (`win.inner_size()` in
   `pop_out_tab`'s birth closure), never `DETACHED_DEFAULT_*` — the geometry plugin restores the

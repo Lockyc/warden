@@ -535,7 +535,7 @@ fn pop_out_tab(
 
     // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
     // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, secondary, secondary_left, spec, token) = {
+    let (surface, secondary, secondary_left, tab_spec, spec, token) = {
         let mut m = state.lock();
         let ws = m
             .windows
@@ -554,6 +554,11 @@ fn pop_out_tab(
             .detach(&id)
             .ok_or_else(|| "tab is not available to pop out".to_string())?;
         let title = ws.registry.tab_title(&id).unwrap_or_else(|| id.clone());
+        let tab_spec = ws
+            .registry
+            .spec_of(&id)
+            .cloned()
+            .expect("detach found the tab");
         let colour = ws.colour.clone();
         // The side is the registry's (config) fact, not the chrome's: the docked chrome
         // derives `.secondary-left` from the same `split_layout`, so the two agree by
@@ -581,7 +586,7 @@ fn pop_out_tab(
             panes,
         };
         let token = crate::plan::detach_window_token(&origin_label, &id);
-        (surface, secondary, secondary_left, spec, token)
+        (surface, secondary, secondary_left, tab_spec, spec, token)
     };
 
     // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
@@ -733,6 +738,7 @@ fn pop_out_tab(
                 surface,
                 secondary,
                 secondary_left,
+                spec: tab_spec,
                 origin_label: origin_label.clone(),
                 tab_id: id.clone(),
             },

@@ -5,7 +5,7 @@ use crate::plan::{reconcile_ops, window_specs, TabPlan, WindowOp, WindowSpec};
 use crate::probe::Presence;
 use crate::registry::{ProbeTarget, Registry, TabDto};
 use crate::surface::ghostty::GhosttySurface;
-use crate::surface::{PixelRect, TerminalSurface};
+use crate::surface::{PixelRect, TabSpec, TerminalSurface};
 use crate::ManagerState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::raw::c_void;
@@ -243,6 +243,10 @@ pub struct DetachedSurface {
     /// primary, docked and popped out alike. `false` for a right-side split, a runtime (⌘D)
     /// split (no `side`, always right) and an unsplit tab. Read only through [`Self::mirrored`].
     pub secondary_left: bool,
+    /// The spec the travelling surfaces were spawned from — what they still run. `redock`
+    /// compares the config against this, not the origin registry's spec, which a hot-reload's
+    /// `set_meta` or a rebuilt origin has moved on (`reconcile_returned_tab`).
+    pub spec: TabSpec,
     pub origin_label: String,
     pub tab_id: String,
 }
@@ -726,6 +730,7 @@ impl WindowManager {
             crate::registry::PaneIdx::Primary => {
                 let DetachedSurface {
                     secondary_left: _,
+                    spec: _,
                     surface,
                     secondary,
                     origin_label,
@@ -946,8 +951,8 @@ impl WindowManager {
     /// push a refresh to it; `None` if the detached window was already gone (double-close).
     ///
     /// Edge cases, in order:
-    /// 1. **Origin still open** — its slot is the `Detached` placeholder; `unload` is a no-op
-    ///    on it, `reparent` moves the view back, `attach` (Detached → Spawned) restores it.
+    /// 1. **Origin still open** — its slot is the `Detached` placeholder; `reparent` moves the
+    ///    view back, `attach` (Detached → Spawned) restores it.
     /// 2. **Origin closed by the user while detached** — `reopen_window` rebuilds it from
     ///    config, and `build_window` stands the still-out tab up as a `Detached` placeholder
     ///    (`Registry::mark_detached`), so the return is case 1.
@@ -957,6 +962,10 @@ impl WindowManager {
     /// Every step treats the pair as one unit: both surfaces reparent into the origin, both
     /// go back through one `attach`, and case 3 drops both. A runtime split returning to a window
     /// case 2 rebuilt from config keeps its second pane — `mark_detached` declared it.
+    ///
+    /// Once home, the tab is reconciled against `last_good` (`reconcile_returned_tab`): every
+    /// config edit or rescan that touched it while it was out was skipped for it, so this is
+    /// where a deleted tab goes, a changed `dir`/`cmd` respawns, and a relabel lands.
     pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<String> {
         // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's
         // `Destroyed`): don't reopen an origin window or reparent a surface mid-teardown —
@@ -971,6 +980,7 @@ impl WindowManager {
             secondary_left: _,
             mut surface,
             mut secondary,
+            spec: spawned,
             origin_label,
             tab_id,
         } = self.detached.remove(detached_label)?;
@@ -980,6 +990,17 @@ impl WindowManager {
         if !self.windows.contains_key(&origin_label) {
             self.reopen_window(app, &origin_label);
         }
+
+        // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
+        let home = self
+            .configured_specs()
+            .into_iter()
+            .find(|s| s.label == origin_label);
+        let order: Vec<String> = home
+            .iter()
+            .flat_map(|s| s.tabs.iter().map(|t| t.spec.id.clone()))
+            .collect();
+        let plan = home.and_then(|s| s.tabs.into_iter().find(|t| t.spec.id == tab_id));
 
         match self.windows.get_mut(&origin_label) {
             // Case 3: origin gone from config — the tab genuinely ends. Closing the surfaces
@@ -1004,9 +1025,12 @@ impl WindowManager {
                     // now-shown-but-unselected tab leaves an uncovered (transparent) hole.
                     // `reparent` unhid the returning surface; re-activating the real selection
                     // re-hides it (activate hides all others). If nothing is active (the selection
-                    // was closed while this tab was out), the returned tab becomes active — there
-                    // is nothing else to show.
+                    // was closed while this tab was out, or was this tab and it respawned), the
+                    // returned tab becomes active — there is nothing else to show. A tab the
+                    // reconcile dropped is unknown to `activate`, a no-op.
                     Ok(()) => {
+                        reconcile_returned_tab(&mut ws.registry, &tab_id, &spawned, plan.as_ref());
+                        ws.registry.reorder(&order);
                         let show = ws
                             .registry
                             .active_tab()
@@ -1283,17 +1307,61 @@ impl WindowManager {
     }
 }
 
+/// Bring a tab just returned from a pop-out (`redock`, after `attach`) in line with the config
+/// it comes home to — the reconcile `apply_tab_reconcile` skipped while it was out. `plan` is
+/// the tab in `last_good`'s origin window (`None`: it left the config, or vanished from a
+/// rescanned root); `spawned` is the spec its surface runs (`DetachedSurface::spec`), compared
+/// rather than the registry's, which a rebuilt origin already holds at the new config.
+///
+/// - Gone → removed, its surfaces closed.
+/// - Terminal spec changed (`dir`/`shell`/startup/split presence or its startup — the fields
+///   `warden_config::reconcile` routes to `respawn_tabs`) → respawned through
+///   `apply_tab_reconcile`, exactly as a docked tab would have been. The entry moves to the
+///   end; the caller reorders.
+/// - Otherwise → `set_meta` from the plan (title/group/probe/kill/suspend/split layout/tree).
+fn reconcile_returned_tab(
+    registry: &mut Registry,
+    id: &str,
+    spawned: &TabSpec,
+    plan: Option<&TabPlan>,
+) {
+    let Some(tp) = plan else {
+        registry.remove(id);
+        return;
+    };
+    let second_cmd = |s: &TabSpec| s.split.as_ref().map(|sp| sp.startup.clone());
+    let n = &tp.spec;
+    if spawned.dir != n.dir
+        || spawned.shell != n.shell
+        || spawned.startup != n.startup
+        || second_cmd(spawned) != second_cmd(n)
+    {
+        apply_tab_reconcile(registry, &[], &[], std::slice::from_ref(tp));
+        return;
+    }
+    let meta = warden_config::TabMeta {
+        group: n.group.clone(),
+        probe: n.probe.clone(),
+        kill: n.kill.clone(),
+        suspend: n.suspend.clone(),
+        title: n.title.clone(),
+        split: n.split.clone(),
+    };
+    registry.set_meta(id, &meta, n.tree, n.tree_path.clone());
+}
+
 /// Apply a hot-reload's tab-set reconcile ops (from the config diff) to one
 /// window's registry — **skipping any tab currently popped out (`Detached`)**.
 ///
 /// `reconcile_ops` is derived purely from the config diff and knows nothing about
 /// runtime pop-out state, so a config edit to a currently-detached tab would
 /// otherwise clobber its placeholder: `remove`/`respawn`'s `remove` drops the
-/// slot the live surface must return to (→ `redock` finds no slot and `drop`s the
-/// PTY — silent data loss), and `add`/`respawn`'s `add` eagerly spawns a duplicate
-/// surface for a tab already live elsewhere. Guarding each op on `is_detached`
-/// leaves `redock` the sole owner of a detached tab's lifecycle; the new spec is
-/// re-applied by the reconcile that runs once the tab is docked home again.
+/// slot the live surface must return to (→ `redock` finds no slot and closes the
+/// PTY), and `add`/`respawn`'s `add` eagerly spawns a duplicate surface for a tab
+/// already live elsewhere. Guarding each op on `is_detached` leaves `redock` the
+/// sole owner of a detached tab's lifecycle: once the tab is home it reconciles it
+/// against `last_good` (`reconcile_returned_tab`), which by then carries every edit
+/// made while it was out.
 ///
 /// The skip keys on `Tab::key` (`id`-else-normalized-`dir`) exactly as the
 /// registry keys every entry — `remove_tabs` carries those keys directly, and a
@@ -1335,8 +1403,7 @@ fn apply_tab_reconcile(
     for tp in respawn_tabs {
         // A detached tab is out on loan: its surface lives in the popped-out
         // window's registry, so tearing down the placeholder here would clobber the
-        // live PTY. Skip — the new spec is picked up by the reconcile that runs once
-        // it's docked home.
+        // live PTY. Skip — `redock` reconciles it against the config once it's home.
         if registry.is_detached(&tp.spec.id) {
             continue;
         }
@@ -1445,6 +1512,77 @@ mod tests {
             1,
             "add for a detached key must not create a duplicate entry"
         );
+    }
+
+    // `redock` runs this after `attach`, so the slot is `Spawned`; a `Cold` slot stands in for
+    // it here (no AppKit) — what matters is that it is not `Detached`, which the reconcile
+    // guards skip.
+    fn plan(spec: TabSpec) -> TabPlan {
+        TabPlan {
+            spec,
+            load_on_open: false,
+        }
+    }
+
+    #[test]
+    fn a_returned_tab_gone_from_config_is_dropped() {
+        // Deleted from the config (or vanished from a rescanned root) while popped out: the
+        // reconcile skipped its placeholder, so the return is where it ends — no orphan row,
+        // and a later re-add of the key can't duplicate it.
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = r.add(&tab_spec("t0", "/tmp/a"), false);
+        let _ = r.add(&tab_spec("t1", "/tmp/b"), false);
+        reconcile_returned_tab(&mut r, "t0", &tab_spec("t0", "/tmp/a"), None);
+        let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["t1".to_string()]);
+    }
+
+    #[test]
+    fn a_returned_tab_whose_terminal_spec_changed_is_respawned_with_the_new_spec() {
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = r.add(&tab_spec("t0", "/tmp/old"), false);
+        let mut new = tab_spec("t0", "/tmp/new");
+        new.startup = Some("amux".into());
+        reconcile_returned_tab(&mut r, "t0", &tab_spec("t0", "/tmp/old"), Some(&plan(new)));
+        let s = r.spec_of("t0").expect("still present");
+        assert_eq!(s.dir, std::path::PathBuf::from("/tmp/new"));
+        assert_eq!(s.startup.as_deref(), Some("amux"));
+        assert_eq!(r.tab_dtos().len(), 1, "respawned in place, not duplicated");
+    }
+
+    #[test]
+    fn a_returned_tab_compares_against_the_spec_its_surface_runs() {
+        // An origin rebuilt while the tab was out already carries the NEW spec, so comparing
+        // the registry against the config finds nothing; the spec the surface was spawned with
+        // is what decides.
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = r.add(&tab_spec("t0", "/tmp/new"), false);
+        let _ = r.add(&tab_spec("t1", "/tmp/b"), false);
+        reconcile_returned_tab(
+            &mut r,
+            "t0",
+            &tab_spec("t0", "/tmp/old"),
+            Some(&plan(tab_spec("t0", "/tmp/new"))),
+        );
+        // Respawn is remove + add, which appends the entry (the caller's `reorder` restores
+        // config order) — so the move is the observable proof the respawn ran.
+        let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["t1".to_string(), "t0".to_string()]);
+    }
+
+    #[test]
+    fn a_returned_tab_with_only_metadata_changes_is_relabelled_in_place() {
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = r.add(&tab_spec("t0", "/tmp/a"), false);
+        let _ = r.add(&tab_spec("t1", "/tmp/b"), false);
+        let mut new = tab_spec("t0", "/tmp/a");
+        new.title = "renamed".into();
+        new.probe = Some("p".into());
+        reconcile_returned_tab(&mut r, "t0", &tab_spec("t0", "/tmp/a"), Some(&plan(new)));
+        assert_eq!(r.tab_title("t0").as_deref(), Some("renamed"));
+        assert!(r.tab_has_probe("t0"));
+        let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["t0".to_string(), "t1".to_string()], "no respawn");
     }
 
     fn dto(id: &str) -> TabDto {
