@@ -48,16 +48,13 @@ pub struct TabDto {
     /// with `#empty-state-2`, or it leaks the desktop through the transparent window.
     pub secondary_spawned: bool,
     /// Whether this tab STRUCTURALLY has a second pane — distinct from `secondary_spawned`
-    /// above, which is that pane's LIVENESS. Both are needed, and forwarding only the second
-    /// is what let the chrome and the registry disagree: a hot-reload `respawn_tabs` rebuilds
-    /// a split tab via `remove` + `add`, i.e. **unsplit** for a runtime (⌘D) split — only a
-    /// config-declared split survives a rebuild, because `add` re-declares it from
-    /// `TabSpec.split` — and the `warden:refresh` that follows carried no
-    /// structural answer at all — so the chrome kept its `splitById` `true` and went on
-    /// rendering a divider and a permanently empty second pane over a tab that no longer had
-    /// one, self-healing only on the next `onSelect` for that tab, which never comes if that
-    /// tab stays selected. Carrying it on every snapshot makes `activate_tab`'s `res.split` a
-    /// fast path rather than the sole reconciler.
+    /// above, which is that pane's LIVENESS. Both are needed: a hot-reload `respawn_tabs`
+    /// rebuilds a split tab via `remove` + `add`, i.e. **unsplit** for a runtime (⌘D) split
+    /// (only a config split survives, since `add` re-declares it from `TabSpec.split`), and
+    /// liveness alone can't tell the chrome its `splitById` is now `false` — it would render a
+    /// divider and an empty second pane until the next `onSelect`, which never comes if the tab
+    /// stays selected. Carried on every snapshot, so `activate_tab`'s `res.split` is a fast path
+    /// rather than the sole reconciler.
     pub split: bool,
     /// The declared (config) split's layout, or `None` for a tab with no config split — a
     /// runtime ⌘D split reports `None` here and `split: true` above. The chrome keys its
@@ -346,7 +343,7 @@ impl Registry {
     /// as a lazily-added tab (`add(load_on_open = false)`) already works. Spawning here would
     /// make this method the only one in the file that must succeed against a live NSWindow,
     /// and would make it untestable — the registry tests run against a null window.
-    /// The `split_pane` command (Task 7) calls `activate` right after, so the pane still comes
+    /// The `split_pane` command calls `activate` right after, so the pane still comes
     /// up immediately for the user.
     ///
     /// The secondary's `TabSpec.id` is `"<tab>::2"`, distinct from the tab id — see
@@ -544,9 +541,8 @@ impl Registry {
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
                 detached: matches!(t.primary.slot, TabSlot::Detached),
-                // Read straight off the `TabEntry` already in hand rather than a per-tab lookup
-                // by id (fix round 1, cheap fix #2): re-finding `t` in `self.tabs` for every row
-                // would turn this map into an O(n²) pass over the whole tab list.
+                // Read straight off the `TabEntry` already in hand: re-finding `t` in `self.tabs`
+                // by id for every row would turn this map into an O(n²) pass.
                 secondary_spawned: t
                     .secondary
                     .as_ref()
@@ -1060,9 +1056,8 @@ impl Registry {
                         s.set_frame(self.rect_for(which));
                         s.show();
                         // Show every pane of the active tab, but focus only the one
-                        // `focused` names — carried finding from Task 2's review: this
-                        // used to call `.focus()` on every spawned pane, so whichever
-                        // pane was iterated last silently won by construction order.
+                        // `focused` names — focusing each in turn would hand focus to
+                        // whichever pane iterates last, by construction order.
                         if which == t.focused {
                             s.focus();
                         }
@@ -1323,7 +1318,7 @@ mod tests {
         assert_eq!(r.tab_dtos().len(), 1);
     }
 
-    // --- detach / attach (Task 10: pop a tab out) ---------------------------
+    // --- detach / attach (pop a tab out) -------------------------------------
     //
     // A real `Spawned` slot needs a live `GhosttySurface`, which needs AppKit —
     // unconstructable in this unit-test process (ns_window is null; every test
@@ -1334,9 +1329,8 @@ mod tests {
     // `remove`/`close_all`/a second `detach` all treat that slot correctly
     // without ever touching a `GhosttySurface`. The one thing genuinely
     // untestable here is `detach` extracting a *live* surface and `attach`
-    // accepting one back — that needs a real surface, so it's covered by a
-    // GUI-driven check instead (see Task 12 / the manual verification note in
-    // the task report).
+    // accepting one back — that needs a real surface, so it's covered by the
+    // by-eye checks in docs/native-splits-direction.md instead.
 
     #[test]
     fn detach_of_cold_tab_returns_none_and_stays_cold() {
@@ -1768,7 +1762,7 @@ mod tests {
         assert!(!r.start_session("nope"), "unknown id");
     }
 
-    // --- split / close_secondary / focus_pane (Task 3) -----------------------
+    // --- split / close_secondary / focus_pane ---------------------------------
 
     #[test]
     fn split_adds_a_secondary_and_close_removes_it() {
@@ -1929,17 +1923,15 @@ mod tests {
 
     // --- activate's show/focus loop must honour `focused`, not "last spawned wins" ---
     //
-    // Carried finding from Task 2's review: `activate` used to call `.focus()` on every
-    // spawned pane of the active tab, ignoring `focused` entirely — inert only because no
-    // secondary existed yet. It's fixed by iterating `TabEntry::panes_indexed()` and
-    // comparing each pane's `PaneIdx` against `t.focused`.
+    // `activate` focuses only the pane `t.focused` names, by iterating
+    // `TabEntry::panes_indexed()` and comparing each pane's `PaneIdx` against it.
     //
-    // That fix cannot be exercised through `Registry::activate` itself in this file's unit
+    // That cannot be exercised through `Registry::activate` itself in this file's unit
     // tests: every test here runs against `ns_window = null` so panes never leave `Cold`
-    // (see the detach/attach block earlier in this file), and calling `activate` was verified to SIGSEGV
-    // even on a cold, unsplit tab — `GhosttySurface::new`'s null-window path is not the
-    // "safely returns Err" case it looks like; the crash was reproduced and is why no test
-    // in this file calls `activate` directly. So this test pins the one ingredient that
+    // (see the detach/attach block earlier in this file), and `activate` on a COLD tab
+    // SIGSEGVs — `GhosttySurface::new`'s null-window path is not the "safely returns Err"
+    // case it looks like — so tests here call `activate` only on `Detached` tabs, which
+    // spawn nothing. So this test pins the one ingredient that
     // *is* safely testable: that `panes_indexed()` — what the loop's `which == t.focused`
     // comparison is applied to — pairs each pane with its own correct `PaneIdx`, primary
     // first. A wrong pairing here (e.g. the two panes swapped) is exactly the kind of bug
@@ -1970,7 +1962,7 @@ mod tests {
         }
     }
 
-    // --- per-pane geometry (Task 4) -------------------------------------------
+    // --- per-pane geometry ------------------------------------------------------
 
     #[test]
     fn a_pane_rect_is_remembered_for_later_spawns() {
@@ -1988,8 +1980,7 @@ mod tests {
 
     #[test]
     fn pane_rects_are_remembered_independently() {
-        // Task 4 introduced `last_rect`/`last_rect_secondary` as two separate fields, but its
-        // own test only ever set the primary's — nothing pinned that the two don't alias.
+        // `last_rect`/`last_rect_secondary` are two fields; this pins that they don't alias.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         let wide = PixelRect {
@@ -2010,7 +2001,7 @@ mod tests {
         assert_eq!(r.last_rect_for_test(PaneIdx::Secondary), narrow);
     }
 
-    // --- surface→tab routing (Task 5) ------------------------------------------
+    // --- surface→tab routing ------------------------------------------------------
 
     #[test]
     fn pane_index_round_trips_and_floors_to_primary() {

@@ -32,7 +32,7 @@ pub use watch::Watcher;
 
 #[cfg(test)]
 mod root_reexport_tests {
-    /// Compile-time proof the crate-root re-exports resolve (the Plan 2 consumer
+    /// Compile-time proof the crate-root re-exports resolve (warden-app
     /// imports these directly rather than reaching into submodules).
     #[test]
     fn root_reexports_resolve() {
