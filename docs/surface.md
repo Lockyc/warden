@@ -26,15 +26,18 @@ cursor around an unfocused window.
 ## Vendoring and the FFI
 
 `vendor/GhosttyKit.xcframework` is Ghostty built from a pinned, unmodified upstream commit by
-[`lockyc/libghostty-build`](https://github.com/lockyc/libghostty-build) (CI on `macos-15` with
-Zig 0.15.2 — that runner OS is what avoids the Zig-0.15.2-vs-macOS-26-SDK link failure), pulled
+[`lockyc/libghostty-build`](https://github.com/lockyc/libghostty-build) (CI-only; toolchain in that
+repo and in [`PROVENANCE.md`](../crates/warden-app/vendor/PROVENANCE.md)), pulled
 in by **`just revendor-ghostty`** (downloads the latest release, verifies its sha256, swaps
 `vendor/`). The universal `libghostty.a` is committed, debug-stripped. The same release carries
 `vendor/resources/`, which warden ships (terminfo, below). To move versions: bump `GHOSTTY_REF`
 in libghostty-build → its CI republishes → `just revendor-ghostty` → update
 [`vendor/PROVENANCE.md`](../crates/warden-app/vendor/PROVENANCE.md).
 
-The embedding C API is officially unstable. On a version jump:
+The embedding C API (`ghostty.h`) is upstream's **"libghostty-internal"**: tailored to the Ghostty
+macOS app, mostly undocumented, "not designed for external use". Upstream points external embedders
+at libghostty-vt, which has no renderer. warden stays on `ghostty.h` because the surface API is what
+renders. On a version jump:
 - **Struct layout** is guarded by the `const _` `size_of!` asserts in `ffi/mod.rs` — drift fails
   the build.
 - **Action-tag discriminants are generated, never hand-copied.** `ghostty_action_tag_e` is a
@@ -45,6 +48,9 @@ The embedding C API is officially unstable. On a version jump:
   **Footgun:** never reintroduce a loose `vendor/ghostty.h` — `just revendor-ghostty` replaces the
   framework, not a header beside it, so a loose copy goes stale and regenerates the same drift.
   Add a tag by name to `ACTION_TAGS`.
+- **Callback signatures aren't guarded.** The runtime callbacks are hand-transcribed
+  function-pointer types, so a changed signature builds and links, then corrupts the call. Diff
+  `ghostty_runtime_*_cb` and every `extern` fn warden declares against the new header.
 - Eyeball any other enum transcribed positionally (`cursor_for_shape`).
 
 ## Links
