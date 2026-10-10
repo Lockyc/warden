@@ -374,6 +374,11 @@ fn unload_tab(
 /// shows it, so the pair is what makes the second terminal appear on screen. Splitting is
 /// idempotent, so a double-fire from the chrome (e.g. a stray second ⌘D) can't produce a third
 /// pane — it just re-activates an already-live one.
+///
+/// Once `split` has run the registry holds the split, so this returns `Ok` whatever `activate`
+/// reports; the chrome collapses its split only on `Err` (`window not found`). `activate`'s `Err`
+/// is the *primary's* spawn failure (the secondary's is discarded), so it goes to this window's
+/// banner as a label-stamped `warden:error`, exactly as `activate_tab` reports it.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn split_pane(
@@ -382,29 +387,34 @@ fn split_pane(
     id: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    let result = {
+    let primary = {
         let mut m = state.lock();
         let ws = m
             .windows
             .get_mut(window.label())
             .ok_or("window not found")?;
         ws.registry.split(&id);
-        ws.registry
-            .activate(&id)
-            .map(|_| ())
-            .map_err(|e| format!("could not open the second pane: {e}"))
+        ws.registry.activate(&id)
     };
+    if let Err(e) = primary {
+        eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
+        let _ = window.emit(
+            "warden:error",
+            serde_json::json!({
+                "label": window.label(),
+                "message": format!("couldn't open terminal: {e}"),
+            }),
+        );
+    }
     // `activate` attempts BOTH panes regardless of the primary's own Result (see its doc
     // comment) — the secondary's spawn outcome is exactly what the chrome's `secondarySpawnedById`
     // mirror needs and can't know on its own (it's best-effort/discarded here, same as anywhere
-    // else that outcome is invisible). Push it on a "could not open the second pane" `Err` too,
-    // same as `activate_tab`'s carried-finding refresh — the OTHER `Err` (`window not found`, the
-    // `?` above) already returned out of the whole function before reaching here, but that's a
-    // no-op regardless: `init_dto` fails the identical lookup, so there's nothing to refresh.
+    // else that outcome is invisible). The `window not found` `Err` returned above, before here;
+    // `init_dto` would fail the identical lookup, so there is nothing to refresh for it.
     if let Some(dto) = state.lock().init_dto(window.label()) {
         let _ = window.emit("warden:refresh", dto);
     }
-    result
+    Ok(())
 }
 
 /// Point tab `id`'s keyboard focus at pane `pane` (0 = primary, 1 = secondary). Returns false
