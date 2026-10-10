@@ -18,11 +18,12 @@ pub enum SurfaceSignal {
     /// A desktop-notification escape (OSC 9 / OSC 777). `title`/`body` are whatever the program
     /// emitted (either may be empty).
     Notification { title: String, body: String },
-    /// The surface's child process exited — the terminal is dead. The surface stays alive rendering
-    /// libghostty's "Process exited" overlay until the app tears it down, so the app layer unloads
-    /// the tab back to **cold** (its dot goes dark; focusing it respawns). Raised from two
-    /// libghostty entry points: the runtime's `close_surface_cb` for a normal exit (no exit code
-    /// travels with it → `None`) and the `SHOW_CHILD_EXITED` action for an abnormal one.
+    /// The surface's child process exited — the terminal is dead, so the app layer unloads the
+    /// tab back to **cold** (its dot goes dark; focusing it respawns). Raised from the
+    /// `SHOW_CHILD_EXITED` action, which libghostty offers for every exit, normal or abnormal
+    /// (`Some(code)`). The runtime's `close_surface_cb` raises it too (`None`: no code travels
+    /// with it), but only as a fallback when that action went unmatched — a symptom of tag
+    /// drift, not a normal path (see `docs/surface.md` § Child exit).
     ChildExited { exit_code: Option<u32> },
     /// The surface became its window's first responder — the user clicked into it, or the app
     /// focused it. The app layer records which pane the tab is now typing in (`Registry::
