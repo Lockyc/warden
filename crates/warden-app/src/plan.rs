@@ -94,13 +94,20 @@ pub fn sanitize_label(name: &str) -> String {
 
 /// The opaque token identifying a popped-out tab's detached window, built from its origin
 /// window label + the tab's id (= `Tab::key`). Combined and sanitized to the Tauri label
-/// charset so `shell_core::detach::detached_label(token)` is always a valid, distinct label:
-/// two different tabs (different id) never collide, and the same tab can't be popped out twice
+/// charset, then suffixed with a hash of the raw pair, so `shell_core::detach::detached_label(token)`
+/// is always a valid, distinct label: two different tabs (different id) never collide — not even
+/// ids that sanitize alike (`/x/my proj` and `/x/my-proj`) — and the same tab can't be popped out twice
 /// (its registry slot goes `Detached` on the first pop-out, so a second `detach` is a no-op).
 /// The value is never parsed back — the manager tracks `origin_label` + `tab_id` on the
 /// `DetachedSurface` itself — so the colon separator is purely for human legibility of the label.
 pub fn detach_window_token(origin_label: &str, tab_id: &str) -> String {
-    sanitize_label(&format!("{origin_label}:{tab_id}"))
+    let raw = format!("{origin_label}:{tab_id}");
+    // FNV-1a: stable across builds and Rust versions, since the label also keys the pop-out's
+    // persisted geometry.
+    let hash = raw.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    });
+    format!("{}-{:08x}", sanitize_label(&raw), hash as u32)
 }
 
 /// Sanitize `name`, then suffix `-2`, `-3`, … until the label is not in `taken`.
@@ -528,6 +535,18 @@ title = "b"
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | ':' | '_')),
             "token must be restricted to the Tauri label charset, got {t3:?}"
         );
+
+        // Ids that differ only in a disallowed character sanitize alike; the hash keeps them apart.
+        assert_ne!(
+            detach_window_token("work", "/x/my proj"),
+            detach_window_token("work", "/x/my-proj")
+        );
+        assert_ne!(
+            detach_window_token("work", "/x/é"),
+            detach_window_token("work", "/x/ü")
+        );
+        // Deterministic: the same tab always gets the same label (and so its saved geometry).
+        assert_eq!(t1, detach_window_token("work", "/tmp/alpha"));
     }
 
     #[test]
