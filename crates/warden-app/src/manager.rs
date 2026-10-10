@@ -1010,6 +1010,15 @@ impl WindowManager {
             return None;
         }
 
+        // Rebuild the origin window if the user closed it while the tab was popped out, so the
+        // tab has somewhere to return to (case 2) — while the tab is still in `self.detached`,
+        // which is how `build_window` knows to stand it up as a `Detached` placeholder. Rebuilt
+        // after the removal, an eager tab (`load_on_open`, remembered, or the first shown) would
+        // spawn a second live terminal, and `attach` would then end the returning one.
+        let origin = self.detached.get(detached_label)?.origin_label.clone();
+        if !self.windows.contains_key(&origin) {
+            self.reopen_window(app, &origin);
+        }
         let DetachedSurface {
             secondary_left: _,
             secondary_went_out: _,
@@ -1019,12 +1028,6 @@ impl WindowManager {
             origin_label,
             tab_id,
         } = self.detached.remove(detached_label)?;
-
-        // Rebuild the origin window if the user closed it while the tab was popped out, so the
-        // tab has somewhere to return to (case 2).
-        if !self.windows.contains_key(&origin_label) {
-            self.reopen_window(app, &origin_label);
-        }
 
         // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
         let home = self
