@@ -881,7 +881,7 @@ fn end_session(
     // monotonically (no off→on→off flicker). A genuinely-failed kill leaves the session present, so
     // the await simply rides to CAP and the dot correctly stays lit.
     std::thread::spawn(move || {
-        let _ = probe::run_probe(&cmd, &dir, &title);
+        probe::run_end(&cmd, &dir, &title);
         // Probe THIS tab first in the burst so its dot clears within one probe, not after every
         // other tab in a wide window's sweep.
         probe::bump_tab_await(&label, &id, false);

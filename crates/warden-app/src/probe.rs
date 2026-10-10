@@ -80,7 +80,7 @@ type ProbeWork = (String, PathBuf, String, String);
 /// E-cores: that is the intended shape, not misscheduling.
 ///
 /// The ledger's cwd filter is exact string equality against the *interactive shell's* logical
-/// `$PWD`, which is why [`run_probe`] hands the child the configured `dir` as its `PWD` rather than
+/// `$PWD`, which is why [`tab_command`] hands the child the configured `dir` as its `PWD` rather than
 /// letting `sh` recompute the physical one — see the comment there.
 const MAX_PROBE_CONCURRENCY: usize = 16;
 
@@ -90,6 +90,10 @@ const MAX_PROBE_CONCURRENCY: usize = 16;
 /// `amux --probe` (sub-second), short enough that a stuck probe frees its slot within a few seconds.
 /// On timeout the child is killed and the tab treated as absent.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Deadline for a `kill`/`suspend` command (see [`run_end`]): generous, since a graceful teardown
+/// may take a while, but finite, so a wedged one doesn't leak its process group for good.
+const END_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Fast-burst probe interval — the cadence a window polls at while it is "hot" (a key moment
 /// just fired) and its session state hasn't settled yet.
@@ -422,59 +426,77 @@ fn tab_command(cmd: &str, dir: &Path, title: &str) -> Command {
     command
 }
 
+/// How a [`run_bounded`] command ended.
+enum Outcome {
+    /// It exited; the code, or `None` if a signal ended it.
+    Exited(Option<i32>),
+    /// `sh` itself couldn't be spawned (already logged).
+    SpawnFailed,
+    /// It outlived its deadline, and its process group was killed.
+    TimedOut,
+}
+
+/// Run `cmd` for tab `dir`/`title` (see [`tab_command`]) and wait at most `timeout` for it. On
+/// timeout the whole process group is killed (`tab_command` makes `sh` its leader): a wedged command
+/// is usually wedged in a grandchild (the tmux client under `amux --probe`), which killing `sh` alone
+/// would orphan, one more per probe pass until the wedge clears.
+///
+/// A spawn failure is logged (via `eprintln!`) — it is distinct from a clean non-zero exit: the
+/// command itself couldn't run (bad path, missing binary, interior NUL), a misconfiguration that
+/// must be diagnosable rather than a permanently-hollow dot with no signal.
+fn run_bounded(cmd: &str, dir: &Path, title: &str, timeout: Duration) -> Outcome {
+    let mut child = match tab_command(cmd, dir, title).spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("warden: {cmd:?} failed to spawn in {dir:?}: {e}");
+            return Outcome::SpawnFailed;
+        }
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Outcome::Exited(status.code()),
+            Ok(None) if Instant::now() >= deadline => {
+                // SAFETY: plain syscall on a pgid this child leads; it is not yet reaped.
+                unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+                let _ = child.wait();
+                return Outcome::TimedOut;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => return Outcome::Exited(None),
+        }
+    }
+}
+
 /// Run `cmd` for tab `dir`/`title` (see [`tab_command`]), mapping its exit code to a [`Presence`]:
 /// `0` ⇒ [`Presence::Present`] (a live session), `3` ⇒ [`Presence::Recoverable`] (no live session,
 /// but a restorable one — warden ghosts the dot), everything else ⇒ [`Presence::Absent`].
 ///
 /// **The collapse direction is load-bearing.** Only a clean exit 3 means recoverable; a spawn/exec
 /// failure (broken probe command) and a timeout (wedged probe, killed) both collapse to `Absent`,
-/// never `Recoverable` — a misconfigured probe must not ghost every tab in the sidebar. The *spawn
-/// failure* is still logged (via `eprintln!`) so a bad path/missing binary is diagnosable rather
-/// than a permanently-hollow dot with no signal.
+/// never `Recoverable` — a misconfigured probe must not ghost every tab in the sidebar.
 ///
-/// stdout/stderr are otherwise discarded — this runs every `probe_interval` seconds in the
-/// background, so a chatty probe (or one whose stderr isn't redirected) must not spam warden.
-/// Bounded by [`PROBE_TIMEOUT`] so one stuck probe can't freeze the whole poll.
+/// stdout/stderr are discarded — this runs every `probe_interval` seconds in the background, so a
+/// chatty probe (or one whose stderr isn't redirected) must not spam warden. Bounded by
+/// [`PROBE_TIMEOUT`] so a wedged probe frees its pool slot instead of starving the sweep.
 pub fn run_probe(cmd: &str, dir: &Path, title: &str) -> Presence {
-    let mut child = match tab_command(cmd, dir, title).spawn() {
-        Ok(child) => child,
-        Err(e) => {
-            // Distinct from a clean non-zero exit: the command itself couldn't run (bad path,
-            // missing binary, interior NUL). Both render "no dot", but only this one is a
-            // misconfiguration — surface it so it's diagnosable in logs.
-            eprintln!("warden: probe failed to spawn ({cmd:?} in {dir:?}): {e}");
-            return Presence::Absent;
-        }
-    };
+    match run_bounded(cmd, dir, title, PROBE_TIMEOUT) {
+        Outcome::Exited(Some(0)) => Presence::Present,
+        // Only a CLEAN exit 3 ghosts. A signal-killed probe has no code and lands in the
+        // catch-all below, as it must.
+        Outcome::Exited(Some(3)) => Presence::Recoverable,
+        Outcome::Exited(_) | Outcome::SpawnFailed | Outcome::TimedOut => Presence::Absent,
+    }
+}
 
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return match status.code() {
-                    Some(0) => Presence::Present,
-                    // Only a CLEAN exit 3 ghosts. A signal-killed probe has no code() and lands
-                    // in the catch-all below, as it must.
-                    Some(3) => Presence::Recoverable,
-                    _ => Presence::Absent,
-                };
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    // Wedged probe — kill it and treat the session as absent so it frees its pool
-                    // slot instead of tying it up (and starving the sweep) indefinitely. Kill the
-                    // whole process group (`tab_command` makes `sh` its leader): a wedged probe is
-                    // usually wedged in a grandchild (the tmux client under `amux --probe`), which
-                    // killing `sh` alone would orphan, one more per pass until the wedge clears.
-                    // SAFETY: plain syscall on a pgid this child leads; it is not yet reaped.
-                    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-                    let _ = child.wait();
-                    return Presence::Absent;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(_) => return Presence::Absent,
-        }
+/// Run a tab's `kill`/`suspend` command `cmd` (see [`tab_command`]) to completion, bounded by
+/// [`END_TIMEOUT`] rather than [`PROBE_TIMEOUT`]: it runs once, on its own thread, holding no pool
+/// slot, and a graceful teardown (an agent saving state) may legitimately take longer than a probe.
+/// The exit code is ignored — warden has no response to a failed end; a timeout is logged, since
+/// it leaves the session half torn down.
+pub fn run_end(cmd: &str, dir: &Path, title: &str) {
+    if let Outcome::TimedOut = run_bounded(cmd, dir, title, END_TIMEOUT) {
+        eprintln!("warden: {cmd:?} in {dir:?} still running after {END_TIMEOUT:?}; killed");
     }
 }
 
@@ -850,6 +872,23 @@ mod tests {
         assert_eq!(
             run_probe("true", &PathBuf::from("/no/such/dir/xyzzy"), "t"),
             Presence::Absent
+        );
+    }
+
+    #[test]
+    fn run_end_outlives_the_probe_deadline() {
+        // A kill/suspend slower than PROBE_TIMEOUT (a graceful agent shutdown) runs to completion.
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("done");
+        let secs = PROBE_TIMEOUT.as_secs() + 1;
+        run_end(
+            &format!("sleep {secs}; touch '{}'", marker.display()),
+            tmp.path(),
+            "t",
+        );
+        assert!(
+            marker.exists(),
+            "the end command was cut off at PROBE_TIMEOUT"
         );
     }
 
