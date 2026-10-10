@@ -5,6 +5,7 @@
 
 use crate::ManagerState;
 use std::collections::{BTreeMap, HashMap};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -415,7 +416,9 @@ fn tab_command(cmd: &str, dir: &Path, title: &str) -> Command {
         .env(DIR_VAR, dir)
         .env(TITLE_VAR, title)
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        // Its own process group, so a timeout can kill everything the command started.
+        .process_group(0);
     command
 }
 
@@ -459,8 +462,12 @@ pub fn run_probe(cmd: &str, dir: &Path, title: &str) -> Presence {
             Ok(None) => {
                 if Instant::now() >= deadline {
                     // Wedged probe — kill it and treat the session as absent so it frees its pool
-                    // slot instead of tying it up (and starving the sweep) indefinitely.
-                    let _ = child.kill();
+                    // slot instead of tying it up (and starving the sweep) indefinitely. Kill the
+                    // whole process group (`tab_command` makes `sh` its leader): a wedged probe is
+                    // usually wedged in a grandchild (the tmux client under `amux --probe`), which
+                    // killing `sh` alone would orphan, one more per pass until the wedge clears.
+                    // SAFETY: plain syscall on a pgid this child leads; it is not yet reaped.
+                    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
                     let _ = child.wait();
                     return Presence::Absent;
                 }
@@ -847,18 +854,34 @@ mod tests {
     }
 
     #[test]
-    fn run_probe_times_out_wedged_command() {
+    fn run_probe_times_out_wedged_command_and_its_children() {
         // A probe that would block far past the deadline is killed and reported absent, bounded by
-        // PROBE_TIMEOUT rather than the sleep duration.
+        // PROBE_TIMEOUT rather than the sleep duration — and the grandchild it is wedged in dies
+        // with it rather than being orphaned.
+        let tmp = tempfile::tempdir().unwrap();
+        let pidfile = tmp.path().join("pid");
+        let cmd = format!("sleep 60 & echo $! > '{}'; wait", pidfile.display());
         let start = Instant::now();
-        assert_eq!(
-            run_probe("sleep 60", &PathBuf::from("/tmp"), "t"),
-            Presence::Absent
-        );
+        assert_eq!(run_probe(&cmd, tmp.path(), "t"), Presence::Absent);
         assert!(
             start.elapsed() < PROBE_TIMEOUT + Duration::from_secs(2),
             "probe should return around the timeout, not wait out the sleep"
         );
+        let pid: libc::pid_t = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The orphan is reaped by launchd asynchronously; give it a moment to disappear.
+        let gone = (0..40).any(|_| {
+            // SAFETY: signal 0 only checks for existence.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if alive {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            !alive
+        });
+        assert!(gone, "the probe's grandchild {pid} outlived its timeout");
     }
 
     #[test]
