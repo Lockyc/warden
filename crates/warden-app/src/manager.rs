@@ -202,22 +202,6 @@ pub struct WindowState {
     pub spawn_error: Option<String>,
 }
 
-/// A tab that has been popped out into its own detached window. Holds the live surface(s)
-/// (moved out of its origin `WindowState`'s `Registry`, which keeps a `Detached`
-/// placeholder in each slot) plus the bookkeeping needed to return them when the detached
-/// window closes: which origin window/tab they belong to.
-///
-/// Pop-out is **whole-tab**, so a split tab brings its second pane along: `secondary` is
-/// `Some` exactly when `Registry::detach` handed back a live second surface. The detached
-/// window then lays out two holes and `set_detached_frame` routes each hole's rect to its
-/// own surface — through [`DetachedSurface::mirrored`], since a `side = "left"` split puts
-/// the secondary in the FIRST hole (the docked layout, carried out; see `PaneIdx::hole`).
-///
-/// These live in `WindowManager::detached`, **separate from `windows`**, so hot-reload
-/// `reconcile` (which only walks `windows`) never sees them and can't close or duplicate
-/// them — the detached-label prefix exclusion is thus never even reached for these,
-/// because they aren't in the reconciled set at all. `is_empty` counts them so the home
-/// surface doesn't pop up while a detached window is the only thing on screen.
 /// The chrome half of retiring a popped-out tab's second pane, run with the lock RELEASED after
 /// [`WindowManager::close_detached_secondary`]: the detached page collapses to one hole (the
 /// surface is already gone, so its immediate re-report for pane 0 lands on the primary, and a
@@ -272,6 +256,22 @@ pub struct Redocked {
     pub dropped: Option<(String, Option<String>)>,
 }
 
+/// A tab that has been popped out into its own detached window. Holds the live surface(s)
+/// (moved out of its origin `WindowState`'s `Registry`, which keeps a `Detached`
+/// placeholder in each slot) plus the bookkeeping needed to return them when the detached
+/// window closes: which origin window/tab they belong to.
+///
+/// Pop-out is **whole-tab**, so a split tab brings its second pane along: `secondary` is
+/// `Some` exactly when `Registry::detach` handed back a live second surface. The detached
+/// window then lays out two holes and `set_detached_frame` routes each hole's rect to its
+/// own surface — through [`DetachedSurface::mirrored`], since a `side = "left"` split puts
+/// the secondary in the FIRST hole (the docked layout, carried out; see `PaneIdx::hole`).
+///
+/// These live in `WindowManager::detached`, **separate from `windows`**, so hot-reload
+/// `reconcile` (which only walks `windows`) never sees them and can't close or duplicate
+/// them — the detached-label prefix exclusion is thus never even reached for these,
+/// because they aren't in the reconciled set at all. `is_empty` counts them so the home
+/// surface doesn't pop up while a detached window is the only thing on screen.
 pub struct DetachedSurface {
     pub surface: GhosttySurface,
     /// The tab's second pane, when it had a live one at pop-out time. `None` for an
