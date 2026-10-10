@@ -1004,7 +1004,8 @@
       });
       // ⌘⇧F: the backend already made this webview the key view; put the cursor in the search.
       listen("warden:find-in-sidebar", (e) => {
-        if (forMe(e)) sb.focusSearch();
+        if (!forMe(e) || !sb) return;
+        sb.focusSearch();
       });
 
       // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).
@@ -1149,7 +1150,7 @@
       // last saw on a fast flick out of the list (chrome-core's de-emphasised main list stayed
       // lit); the component clears the flag again on its own next pointermove.
       listen("warden:pointer-away", (e) => {
-        if (!forMe(e)) return;
+        if (!forMe(e) || !sb) return;
         sb.pointerAway();
       });
 
