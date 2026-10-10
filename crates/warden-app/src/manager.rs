@@ -351,26 +351,17 @@ pub struct WindowManager {
 
 impl WindowManager {
     pub fn new() -> Self {
-        // `last_good` (effective) and `raw_config` (raw) start identical and empty;
-        // clone rather than duplicate the literal so a new Config field can't drift
-        // between them.
-        let empty = Config {
-            windows: Vec::new(),
-            format_on_save: false,
-            tab_digit_keys: warden_config::TabDigitKeys::default(),
-            probe_interval: 5,
-            density: warden_config::Density::default(),
-            sidebar_drag: true,
-            auto_update: true,
-            notify_debug: false,
-        };
+        // `last_good` (effective) and `raw_config` (raw) start identical and empty, at
+        // warden-config's own defaults.
+        let empty = Config::empty();
+        let probe_interval = Arc::new(AtomicU64::new(empty.probe_interval));
         WindowManager {
             windows: HashMap::new(),
             names: HashMap::new(),
             raw_config: empty.clone(),
             last_good: empty,
             load_error: None,
-            probe_interval: Arc::new(AtomicU64::new(5)),
+            probe_interval,
             presence_cache: PresenceCache::default(),
             last_closed: Vec::new(),
             detached: HashMap::new(),
