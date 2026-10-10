@@ -1011,16 +1011,14 @@ impl Registry {
         Ok(())
     }
 
-    /// Show + focus the tab `id` (spawning it first if declared); hide all others.
-    ///
-    /// If the lazy spawn fails the tab is marked active anyway but stays cold, so
-    /// the hole shows the blank placeholder (no live surface for `idx`); the error
-    /// is returned for the caller to surface, and re-activating retries. Returns
-    /// `Ok` for an unknown id (no-op) and for an already-spawned tab.
-    /// Show tab `id` (spawning it if cold) and hide the rest. Returns `Ok(true)` iff this call
+    /// Show + focus tab `id` (spawning it if cold) and hide the rest. Returns `Ok(true)` iff this call
     /// spawned a **fresh** surface (the tab was cold) — so the caller can arm a session-start await
     /// only when `initial_input` actually ran; `Ok(false)` for a warm tab-switch. An unknown id is a
     /// no-op `Ok(false)`.
+    ///
+    /// If the lazy spawn fails the tab is marked active anyway but stays cold, so the hole shows
+    /// the blank placeholder; the error is returned for the caller to surface, and re-activating
+    /// retries.
     pub fn activate(&mut self, id: &str) -> Result<bool, SurfaceError> {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return Ok(false);
