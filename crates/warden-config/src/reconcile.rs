@@ -2,10 +2,9 @@ use crate::model::{Config, Split, Tab, Window};
 use crate::Colour;
 use std::path::Path;
 
-/// The in-place, non-respawn metadata of a kept tab — fields a consumer can apply to a *live*
-/// tab without killing its PTY: its display `title`, `group` (sidebar sectioning), and the
-/// externally-run `probe`/`kill`/`suspend` commands. Never the terminal itself. Carried by
-/// `WindowUpdate.set_meta` when any of these changed for a kept tab (keyed by `Tab::key`).
+/// The in-place, non-respawn metadata of a kept tab — what a consumer can apply to a *live*
+/// tab without killing its PTY; never the terminal itself. Carried by `WindowUpdate.set_meta`
+/// (keyed by `Tab::key`); which changes put a tab there is listed once, on [`reconcile`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabMeta {
     pub group: Option<String>,
@@ -31,35 +30,7 @@ pub struct Reconciliation {
 }
 
 /// Describes in-place mutations needed for a window that stays open across a
-/// config reload.
-///
-/// **What IS detected** (any of these triggers an emit):
-/// - `colour`: the window accent colour changed.
-/// - `add_tabs` / `remove_tabs`: tabs were added or removed, matched by
-///   `Tab::key` (the `id`-else-normalized-`dir` for a curated tab; the absolute
-///   project path for a tab discovered by a `[[window.root]]` scan).
-/// - `tab_order`: the order of kept tabs changed; on an emitted update
-///   `tab_order` always carries the full new ordered key list so the consumer
-///   can reorder the live tab strip without killing sessions.
-/// - `set_meta`: a kept tab's in-place metadata (the display `title`, `group`,
-///   `probe`, `kill`, `suspend`, or split `side`/`size`) changed. Each entry is `(key, TabMeta)`
-///   carrying the new values; the consumer applies them WITHOUT respawning (presentation +
-///   externally-run commands + live re-layout). A split `side`/`size`-only change is a
-///   live re-layout; split presence or `startup` change rides `respawn_tabs` instead.
-/// - `respawn_tabs`: a kept tab's terminal spec (`dir`, `shell`, `startup`, `load_on_open`,
-///   or split presence/`startup`) changed. The consumer tears down and respawns that tab in
-///   place, carrying its new full `Tab`. Split presence or `startup` change is a terminal-spec
-///   change because the second pane has to be (re)spawned to run it.
-///
-/// **What is NOT detected:**
-/// - A kept window's `width` or `height` change. Window size is owned by
-///   shell-core's geometry plugin after first launch and is a first-run default only;
-///   subsequent changes to those fields in the config have no effect on a live
-///   window.
-///
-/// **Window renames are destructive.** A rename appears as `close(old) +
-/// open(new)`, killing and recreating that window's PTYs (including
-/// `load_on_open` tabs). There is no concept of a live retitle.
+/// config reload. What each field carries, and what is not detected: [`reconcile`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowUpdate {
     pub title: String,
@@ -72,16 +43,9 @@ pub struct WindowUpdate {
     pub add_tabs: Vec<Tab>,
     pub remove_tabs: Vec<String>,
     pub tab_order: Vec<String>,
-    /// In-place metadata changes for kept tabs (keyed by `Tab::key`): `title`,
-    /// `group`, `probe`, `kill`, or `suspend` differ. The consumer applies them WITHOUT
-    /// respawning — presentation + externally-run commands, never the PTY. Empty
-    /// when no kept tab's metadata changed.
+    /// Kept tabs to update WITHOUT respawning (keyed by `Tab::key`).
     pub set_meta: Vec<(String, TabMeta)>,
-    /// Kept tabs (same `key`) whose terminal spec changed — `dir`, `shell`, `startup`
-    /// (`cmd`), or `load_on_open` differ. The consumer tears down and respawns each in
-    /// place (a terminal cannot migrate its cwd/session). Carries the new full `Tab`.
-    /// Empty when no kept tab's terminal spec changed. (A kept tab whose *dir* changed
-    /// with NO explicit `id` changes key instead and rides `add_tabs`/`remove_tabs`.)
+    /// Kept tabs to tear down and respawn in place, each carrying its new full `Tab`.
     pub respawn_tabs: Vec<Tab>,
 }
 
@@ -105,14 +69,18 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 ///
 /// **What IS detected:**
 /// - Windows opened/closed, matched by `title`.
-/// - For a kept window: colour change, `open_tabs_section` change (chrome-only), tab add/remove (by `Tab::key` —
-///   `id`-else-normalized-`dir` for a curated tab, absolute project path for a discovered one), tab
-///   reorder (via `tab_order`), in-place metadata changes (the display `title`,
-///   `group`, `probe`, `kill`, `suspend`, and split `side`/`size`) via `set_meta`, and a kept tab's
-///   terminal-spec change (`dir`/`shell`/`startup`/`load_on_open` or split presence/`startup`)
-///   via `respawn_tabs` (respawn in place). Split `side`/`size`-only change is a live re-layout
-///   and rides `set_meta`; split presence or `startup` change is a terminal-spec change and
-///   rides `respawn_tabs`.
+/// - For a kept window (a `WindowUpdate`, emitted when any of these is non-empty):
+///   - `colour` and `open_tabs_section` (chrome-only) changes.
+///   - `add_tabs`/`remove_tabs`, matched by `Tab::key` — `id`-else-normalized-`dir` for a
+///     curated tab, the absolute project path for a discovered one. A kept tab whose `dir`
+///     changed with no explicit `id` changes key, so it is a remove + add.
+///   - `tab_order`: when kept tabs reorder; an emitted update always carries the full new key list.
+///   - `set_meta` — a live update, no respawn: a kept tab's display `title`, `group`, `probe`,
+///     `kill`, `suspend`, split `side`/`size` (a live re-layout), or the dir of the
+///     `[[window.root]]` it was discovered under (its sidebar nesting derives from it).
+///   - `respawn_tabs` — torn down and respawned in place, since a terminal can't migrate its
+///     cwd/session: a kept tab's `dir`, `shell`, `startup` (`cmd`), `load_on_open`, or split
+///     presence/`startup` (the second pane has to be (re)spawned to run it).
 ///
 /// **What is NOT detected:**
 /// - A kept window's `width` or `height` change. Window size is owned by
@@ -176,9 +144,8 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     .collect();
                 let order_changed = kept_old != kept_new;
                 let tab_order: Vec<String> = np.tabs.iter().map(|t| t.key.clone()).collect();
-                // Kept-tab in-place diffs. Two independent signals per kept tab:
-                //  - metadata (title/group/probe/kill/suspend/split side+size) → live apply, no respawn.
-                //  - terminal spec (dir/shell/startup/load_on_open/split presence+startup) → respawn in place.
+                // Kept-tab in-place diffs: two independent signals per kept tab, `set_meta` and
+                // `respawn_tabs` (the fields behind each are listed on this fn's docblock).
                 let mut set_meta: Vec<(String, TabMeta)> = Vec::new();
                 let mut respawn_tabs: Vec<Tab> = Vec::new();
                 for nt in &np.tabs {

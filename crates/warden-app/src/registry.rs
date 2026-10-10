@@ -620,11 +620,9 @@ impl Registry {
         }
     }
 
-    /// Apply a kept tab's in-place metadata (title/group/probe/kill) from a hot-reload —
-    /// presentation + externally-run commands only, NEVER the surface/PTY. A config
-    /// edit to title/group/probe/kill on a kept tab takes effect live without respawn:
-    /// the row relabels, sidebar re-sections for group, new probe/kill picked up on
-    /// the next poll/kill. No-op if `id` is unknown.
+    /// Apply a kept tab's in-place metadata (`TabMeta`, plus its derived `tree`/`tree_path`)
+    /// from a hot-reload — NEVER the surface/PTY, so the edit takes effect live without respawn.
+    /// Which changes arrive here: `warden_config::reconcile`. No-op if `id` is unknown.
     pub fn set_meta(
         &mut self,
         id: &str,
