@@ -175,6 +175,17 @@ pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
     resolve_with(raw, DEFAULT_SHELL)
 }
 
+impl Config {
+    /// The config an empty file resolves to: no windows, every global at its default. Derived by
+    /// resolving an empty raw config, so it can't drift from the defaults `resolve_with` applies.
+    pub fn empty() -> Self {
+        match resolve(RawConfig::default()) {
+            Ok((config, _)) => config,
+            Err(e) => unreachable!("an empty config always resolves: {e}"),
+        }
+    }
+}
+
 /// Resolve a raw config, defaulting an unset `shell` (at every cascade level) to
 /// `default_shell` — the caller's detected **login shell**. warden is a terminal, so the app
 /// passes your `$SHELL` here; this keeps the crate pure (no env access) by taking the default
@@ -1371,6 +1382,13 @@ colour = "#000000"
         )
         .unwrap();
         assert_eq!(cfg.windows[0].tabs[0].probe, None);
+    }
+
+    #[test]
+    fn empty_config_is_what_an_empty_file_resolves_to() {
+        let (from_file, _) = resolve_str("").unwrap();
+        assert_eq!(Config::empty(), from_file);
+        assert!(Config::empty().windows.is_empty());
     }
 
     #[test]
