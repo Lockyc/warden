@@ -78,8 +78,8 @@ pub struct Window {
 
 /// A project-tree root (`[[window.root]]`): a directory scanned for git projects,
 /// each discovered project synthesized into a `Tab` by the app's scanner. A new
-/// cascade level (root→window→global) for its projects' `shell`/`cmd`/`probe`/`kill`/`suspend`
-/// — discovered projects have no per-tab config, so the root is where those attach.
+/// cascade level (root→window→global) for its projects' resolved fields below —
+/// discovered projects have no per-tab config, so the root is where those attach.
 /// Presentational section header is `name`. The crate does **no** scanning: this is a
 /// declaration the app expands at runtime.
 #[derive(Debug, Clone, PartialEq)]

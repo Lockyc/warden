@@ -126,7 +126,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 - **`rescan_root` diffs a fresh scan against `last_good`** (what's on screen), not two scans (`main.rs::rescan_root`).
 - **Window bounds restore is the geometry plugin's own `on_window_ready` hook** — add no manual trigger (FOOTGUN in `manager.rs::build_window`).
 - **A surface that fails to spawn degrades to a cold tab — never `.expect()`/`unwrap()`**; errors ride the init snapshot or `warden:error` (`registry.rs` `add`/`ensure_spawned`/`activate`).
-- **Tab reconcile shapes:** a kept tab's `title`/`group`/`probe`/`kill`/`suspend`/`split.side`/`split.size` change is `set_meta` (no respawn); `dir`/`cmd`/`shell`/`load_on_open`/split presence/`split.cmd` rides `respawn_tabs`; `dir` with no `id` changes the key → remove + add (`reconcile.rs`).
+- **Tab reconcile shapes** — which kept-tab edits are a live `set_meta` and which a `respawn_tabs`, and why a keyless `dir` change is remove + add: listed once, on `reconcile.rs::reconcile`.
 - **Stale frontend embed:** `ui/` embeds at compile time; `build.rs` watches `ui/index.html` (add any new hand-written page, but don't watch `ui/` broadly — build.rs writes there). "My HTML change didn't take" → touch a `.rs`.
 - **The empty-state placeholder is opaque and composited behind the content** (`#empty-state`); it lives in warden, not chrome-core.
 - **Icon safe area** (824×824 on the 1024 canvas) is enforced by `assets/build-icons.sh` — design the SVG edge-to-edge.
