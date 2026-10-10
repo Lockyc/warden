@@ -1179,13 +1179,7 @@ impl WindowManager {
     /// Reopen the most-recently-closed reopenable window (`⌘⇧T`). Returns whether
     /// a window was reopened.
     pub fn reopen_last(&mut self, app: &AppHandle) -> bool {
-        let configured: HashSet<String> = self
-            .configured_specs()
-            .into_iter()
-            .map(|s| s.label)
-            .collect();
-        let open: HashSet<String> = self.windows.keys().cloned().collect();
-        match crate::plan::next_reopen_target(&self.last_closed, &configured, &open) {
+        match self.reopen_target() {
             Some(label) => self.reopen_window(app, &label),
             None => false,
         }
@@ -1193,13 +1187,19 @@ impl WindowManager {
 
     /// Whether `⌘⇧T` / "Reopen Last Closed" has a reopenable target right now.
     pub fn has_reopen_target(&self) -> bool {
+        self.reopen_target().is_some()
+    }
+
+    /// The window `⌘⇧T` would reopen right now — the one computation behind both the action
+    /// and its menu item's enabled state.
+    fn reopen_target(&self) -> Option<String> {
         let configured: HashSet<String> = self
             .configured_specs()
             .into_iter()
             .map(|s| s.label)
             .collect();
         let open: HashSet<String> = self.windows.keys().cloned().collect();
-        crate::plan::next_reopen_target(&self.last_closed, &configured, &open).is_some()
+        crate::plan::next_reopen_target(&self.last_closed, &configured, &open)
     }
 
     /// Bring the live window set in line with a reloaded config by executing the
