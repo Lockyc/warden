@@ -9,12 +9,33 @@ use serde::Deserialize;
 /// `split` at any cascade level — a table declaring the tab's second pane, or a bool:
 /// `false` opts the level out of an inherited split (the table-valued analogue of
 /// `cmd = ""`), `true` declares the default split (right side, half the hole, bare shell).
-/// Untagged so TOML accepts both `split = false` and `[window.tab.split]`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(untagged)]
+/// Deserialized by hand, not `#[serde(untagged)]`: TOML accepts both `split = false` and
+/// `[window.tab.split]`, and an untagged enum would replace the table's `deny_unknown_fields`
+/// error (which names the bad key) with a generic "did not match any variant".
+#[derive(Debug, Clone, PartialEq)]
 pub enum RawSplit {
     Off(bool),
     On(RawSplitTable),
+}
+
+impl<'de> Deserialize<'de> for RawSplit {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = RawSplit;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a bool or a split table")
+            }
+            fn visit_bool<E: serde::de::Error>(self, b: bool) -> Result<RawSplit, E> {
+                Ok(RawSplit::Off(b))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<RawSplit, A::Error> {
+                RawSplitTable::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(RawSplit::On)
+            }
+        }
+        d.deserialize_any(V)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -384,6 +405,10 @@ split = false
 
     #[test]
     fn split_rejects_unknown_fields() {
-        assert!(parse("[split]\nratio = 0.3\n").is_err());
+        let err = parse("[split]\nratio = 0.3\n").unwrap_err().to_string();
+        assert!(
+            err.contains("ratio"),
+            "the error must name the bad key: {err}"
+        );
     }
 }
