@@ -1,5 +1,6 @@
 use crate::model::{Config, Split, Tab, Window};
 use crate::Colour;
+use std::path::Path;
 
 /// The in-place, non-respawn metadata of a kept tab — fields a consumer can apply to a *live*
 /// tab without killing its PTY: its display `title`, `group` (sidebar sectioning), and the
@@ -86,6 +87,17 @@ pub struct WindowUpdate {
 
 fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
     windows.iter().find(|p| p.title == name)
+}
+
+/// The dir of the `[[window.root]]` tab `t` was discovered under, if any (its `group` names the
+/// root). A discovered tab's sidebar nesting derives from this dir, which the tab itself doesn't
+/// carry — so a moved root re-derives its kept tabs through `set_meta`.
+fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
+    let group = t.group.as_deref()?;
+    w.roots
+        .iter()
+        .find(|r| r.name == group)
+        .map(|r| r.dir.as_path())
 }
 
 /// Diff two configs and return the set of operations needed to bring a running
@@ -181,6 +193,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                             || (ot.split.is_some()
                                 && nt.split.is_some()
                                 && layout(ot) != layout(nt))
+                            || root_dir(op, ot) != root_dir(np, nt)
                         {
                             set_meta.push((
                                 nt.key.clone(),
@@ -835,5 +848,37 @@ colour = "#0f8a8a"
         }
         // Identical splits → no update at all.
         assert!(reconcile(&with, &with).update.is_empty());
+    }
+
+    /// A kept discovered tab under a root whose `dir` moved re-derives its sidebar nesting, so it
+    /// rides `set_meta` though none of the tab's own fields changed.
+    #[test]
+    fn a_moved_root_relabels_its_kept_tabs_via_set_meta() {
+        let with_root = |root: &str| {
+            let mut c = cfg(&format!(
+                r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/a/b/alpha"
+  [[window.root]]
+  name = "projects"
+  dir = "{root}"
+"##
+            ));
+            // A discovered tab, as the app's scanner synthesizes it: grouped under its root.
+            c.windows[0].tabs[0].group = Some("projects".into());
+            c
+        };
+        let r = reconcile(&with_root("/tmp/a"), &with_root("/tmp/a/b"));
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].set_meta.len(), 1);
+        assert!(r.update[0].respawn_tabs.is_empty());
+        // Same root dir → no update.
+        assert!(reconcile(&with_root("/tmp/a"), &with_root("/tmp/a"))
+            .update
+            .is_empty());
     }
 }
