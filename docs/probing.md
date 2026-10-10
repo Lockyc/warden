@@ -114,10 +114,9 @@ the replay reads. **Don't** move the record back to the end of the pass "to take
 ### Probe execution details
 
 Probe `exit 0 = session present`, `exit 3 = recoverable` (see `run_probe`'s exit-code map in
-`probe.rs`, the vocabulary's single source of truth); cwd = the tab's dir; tokens `{dir}`/`{title}` are
-substituted **raw** (not shell-quoted), so quote them in the command (`'… "{dir}"'`) when a
-path/title may contain spaces or `sh` metacharacters — otherwise the probe word-splits and
-silently reports "no session"; stdout/stderr are discarded so a chatty probe can't spam
+`probe.rs`, the vocabulary's single source of truth); cwd = the tab's dir; tokens `{dir}`/`{title}` expand to
+the tab's dir/title as one quoted word (bare, inside `"…"` or inside `'…'`), passed out of band
+in `$WARDEN_DIR`/`$WARDEN_TITLE` so a discovered folder name is never parsed as shell; stdout/stderr are discarded so a chatty probe can't spam
 warden. A window's tabs are probed **concurrently** on a bounded worker pool off the UI
 thread (never on it), and due windows are serviced one after another within a scheduler tick.
 Each probe is bounded by a per-probe timeout (`probe.rs::PROBE_TIMEOUT`, a few seconds): a

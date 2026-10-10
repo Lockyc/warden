@@ -337,15 +337,89 @@ fn presence_changed(prev: &BTreeMap<String, Presence>, id: &str, on: Presence) -
     prev.get(id).copied() != Some(on)
 }
 
-/// Substitute the per-tab tokens into a probe command. `{dir}` → working
-/// directory, `{title}` → tab title. Other text is left verbatim.
-pub fn substitute(probe: &str, dir: &Path, title: &str) -> String {
-    probe
-        .replace("{dir}", &dir.to_string_lossy())
-        .replace("{title}", title)
+/// The env var carrying a tab's `dir` into its `probe`/`kill`/`suspend` command; `{dir}` expands to it.
+const DIR_VAR: &str = "WARDEN_DIR";
+/// The env var carrying a tab's `title` into its `probe`/`kill`/`suspend` command; `{title}` expands to it.
+const TITLE_VAR: &str = "WARDEN_TITLE";
+
+/// Rewrite the per-tab tokens of a `probe`/`kill`/`suspend` command into references to the env vars
+/// [`tab_command`] sets: `{dir}` → [`DIR_VAR`], `{title}` → [`TITLE_VAR`]. The values themselves
+/// never enter the script text, so a `[[window.root]]`-discovered folder named `x$(cmd)` stays data:
+/// it reaches the command as exact text and is never parsed as shell.
+///
+/// Each reference is double-quoted for the quoting context it lands in — `"${VAR}"` unquoted, bare
+/// `${VAR}` inside an existing `"…"`, and `'"${VAR}"'` (close, quote, reopen) inside `'…'` — so a
+/// bare `{dir}`, a `"{dir}"` and a `'{dir}'` all expand to the exact value with no word splitting.
+/// Other text is left verbatim.
+pub fn substitute(cmd: &str) -> String {
+    #[derive(PartialEq)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+    }
+    let mut out = String::with_capacity(cmd.len());
+    let mut quote = Quote::None;
+    let mut rest = cmd;
+    while let Some(c) = rest.chars().next() {
+        let var = [("{dir}", DIR_VAR), ("{title}", TITLE_VAR)]
+            .into_iter()
+            .find(|(token, _)| rest.starts_with(token));
+        if let Some((token, var)) = var {
+            match quote {
+                Quote::None => out.push_str(&format!("\"${{{var}}}\"")),
+                Quote::Double => out.push_str(&format!("${{{var}}}")),
+                Quote::Single => out.push_str(&format!("'\"${{{var}}}\"'")),
+            }
+            rest = &rest[token.len()..];
+            continue;
+        }
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+        match (&quote, c) {
+            // A backslash outside single quotes escapes the next character, quote marks included.
+            (Quote::None | Quote::Double, '\\') => {
+                if let Some(next) = rest.chars().next() {
+                    out.push(next);
+                    rest = &rest[next.len_utf8()..];
+                }
+            }
+            (Quote::None, '\'') => quote = Quote::Single,
+            (Quote::None, '"') => quote = Quote::Double,
+            (Quote::Single, '\'') | (Quote::Double, '"') => quote = Quote::None,
+            _ => {}
+        }
+    }
+    out
 }
 
-/// Run `cmd` via `sh -c` with cwd = `dir`, mapping its exit code to a [`Presence`]:
+/// `sh -c cmd` for tab `dir`/`title`, as every probe, kill and suspend runs: tokens rewritten by
+/// [`substitute`] and their values passed out of band in [`DIR_VAR`]/[`TITLE_VAR`], cwd = `dir`,
+/// stdout/stderr discarded.
+fn tab_command(cmd: &str, dir: &Path, title: &str) -> Command {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(substitute(cmd))
+        .current_dir(dir)
+        // `current_dir` sets the child's cwd but NOT its `PWD`, so `sh` recomputes `PWD` from the
+        // physical `getcwd()` — which differs from `dir` whenever the configured path reaches the
+        // directory logically: through a symlink, or with different case on a case-insensitive
+        // volume. The tab's own shell gets the configured string (libghostty exports it), so
+        // without this the probe and the terminal disagree about the same tab's directory, and any
+        // probe keyed on `$PWD` misses. Canonical case: `amux` shards its tmux sockets on
+        // `cksum "$PWD"` and dir-guards on `@amux_dir = "$PWD"`, so a `dir` whose case differs from
+        // disk probed a socket the session was never on — a permanently hollow presence dot (and,
+        // via the same code path, a `kill` that silently reaped nothing).
+        .env("PWD", dir)
+        .env(DIR_VAR, dir)
+        .env(TITLE_VAR, title)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+/// Run `cmd` for tab `dir`/`title` (see [`tab_command`]), mapping its exit code to a [`Presence`]:
 /// `0` ⇒ [`Presence::Present`] (a live session), `3` ⇒ [`Presence::Recoverable`] (no live session,
 /// but a restorable one — warden ghosts the dot), everything else ⇒ [`Presence::Absent`].
 ///
@@ -358,25 +432,8 @@ pub fn substitute(probe: &str, dir: &Path, title: &str) -> String {
 /// stdout/stderr are otherwise discarded — this runs every `probe_interval` seconds in the
 /// background, so a chatty probe (or one whose stderr isn't redirected) must not spam warden.
 /// Bounded by [`PROBE_TIMEOUT`] so one stuck probe can't freeze the whole poll.
-pub fn run_probe(cmd: &str, dir: &Path) -> Presence {
-    let mut child = match Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .current_dir(dir)
-        // `current_dir` sets the child's cwd but NOT its `PWD`, so `sh` recomputes `PWD` from the
-        // physical `getcwd()` — which differs from `dir` whenever the configured path reaches the
-        // directory logically: through a symlink, or with different case on a case-insensitive
-        // volume. The tab's own shell gets the configured string (libghostty exports it), so
-        // without this the probe and the terminal disagree about the same tab's directory, and any
-        // probe keyed on `$PWD` misses. Canonical case: `amux` shards its tmux sockets on
-        // `cksum "$PWD"` and dir-guards on `@amux_dir = "$PWD"`, so a `dir` whose case differs from
-        // disk probed a socket the session was never on — a permanently hollow presence dot (and,
-        // via the same code path, a `kill` that silently reaped nothing).
-        .env("PWD", dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+pub fn run_probe(cmd: &str, dir: &Path, title: &str) -> Presence {
+    let mut child = match tab_command(cmd, dir, title).spawn() {
         Ok(child) => child,
         Err(e) => {
             // Distinct from a clean non-zero exit: the command itself couldn't run (bad path,
@@ -477,7 +534,7 @@ fn sweep<P, Emit>(
     emit: Emit,
 ) -> BTreeMap<String, Presence>
 where
-    P: Fn(&str, &Path) -> Presence + Sync,
+    P: Fn(&str, &Path, &str) -> Presence + Sync,
     Emit: Fn(&str, Presence) + Sync,
 {
     order_work(&mut work, priority);
@@ -501,8 +558,7 @@ where
                     let Some((id, dir, title, probe)) = next else {
                         break;
                     };
-                    let cmd = substitute(&probe, &dir, &title);
-                    let on = probe_fn(&cmd, &dir);
+                    let on = probe_fn(&probe, &dir, &title);
                     // Hand this result to the caller's observer the instant its own probe finishes
                     // (it records it, then emits only if it changed), then keep it for the settle-diff.
                     emit(&id, on);
@@ -670,22 +726,69 @@ mod tests {
     }
 
     #[test]
-    fn substitute_replaces_dir_and_title() {
-        let out = substitute("x {title} {dir} y", &PathBuf::from("/tmp/p"), "proj");
-        assert_eq!(out, "x proj /tmp/p y");
+    fn substitute_rewrites_tokens_to_quoted_env_refs_per_quoting_context() {
+        assert_eq!(
+            substitute("x {title} {dir} y"),
+            r#"x "${WARDEN_TITLE}" "${WARDEN_DIR}" y"#
+        );
+        assert_eq!(substitute(r#"x "a {dir}" y"#), r#"x "a ${WARDEN_DIR}" y"#);
+        assert_eq!(substitute("x '{dir}' y"), r#"x ''"${WARDEN_DIR}"'' y"#);
+        // An escaped quote mark doesn't open a quoting context.
+        assert_eq!(substitute(r#"x \" {dir}"#), r#"x \" "${WARDEN_DIR}""#);
     }
 
     #[test]
     fn substitute_leaves_unknown_text_verbatim() {
-        let out = substitute("check-session --name proj", &PathBuf::from("/tmp"), "proj");
-        assert_eq!(out, "check-session --name proj");
+        assert_eq!(
+            substitute("check-session --name proj"),
+            "check-session --name proj"
+        );
+    }
+
+    /// A folder name a `[[window.root]]` could discover: every `sh` metacharacter that matters.
+    const HOSTILE: &str = "a b;c'd\"e$(touch pwned)`touch pwned2`$HOME*";
+
+    /// Run `printf %s <form>` as a probe for tab `dir`/`title`, returning what the command saw.
+    fn printed(form: &str, dir: &Path, title: &str) -> String {
+        let out = dir.parent().unwrap().join("out");
+        let cmd = format!("printf %s {form} > '{}'", out.display());
+        assert_eq!(run_probe(&cmd, dir, title), Presence::Present, "{form}");
+        std::fs::read_to_string(out).unwrap()
+    }
+
+    #[test]
+    fn hostile_dir_and_title_reach_the_command_as_exact_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(HOSTILE);
+        std::fs::create_dir(&dir).unwrap();
+        let sentinel = tmp.path().join("sentinel");
+        let title = format!("{HOSTILE}$(touch '{}')", sentinel.display());
+        let dir_s = dir.to_string_lossy();
+
+        assert_eq!(printed("{dir}", &dir, &title), dir_s);
+        assert_eq!(printed("\"{dir}\"", &dir, &title), dir_s);
+        assert_eq!(printed("'{dir}'", &dir, &title), dir_s);
+        assert_eq!(printed("\"<{title}>\"", &dir, &title), format!("<{title}>"));
+        assert_eq!(printed("{title}", &dir, &title), title);
+
+        for created in [
+            sentinel,
+            dir.join("pwned"),
+            dir.join("pwned2"),
+            tmp.path().join("pwned"),
+        ] {
+            assert!(!created.exists(), "{} was created", created.display());
+        }
     }
 
     #[test]
     fn run_probe_true_for_exit_zero() {
-        assert_eq!(run_probe("true", &PathBuf::from("/tmp")), Presence::Present);
         assert_eq!(
-            run_probe("exit 0", &PathBuf::from("/tmp")),
+            run_probe("true", &PathBuf::from("/tmp"), "t"),
+            Presence::Present
+        );
+        assert_eq!(
+            run_probe("exit 0", &PathBuf::from("/tmp"), "t"),
             Presence::Present
         );
     }
@@ -694,9 +797,12 @@ mod tests {
     fn run_probe_false_for_nonzero_exit() {
         // exit 3 is the dedicated recoverable code (see `presence_maps_exit_codes_to_three_states`)
         // — this test covers the plain "nothing at all" case, any other nonzero exit.
-        assert_eq!(run_probe("false", &PathBuf::from("/tmp")), Presence::Absent);
         assert_eq!(
-            run_probe("exit 1", &PathBuf::from("/tmp")),
+            run_probe("false", &PathBuf::from("/tmp"), "t"),
+            Presence::Absent
+        );
+        assert_eq!(
+            run_probe("exit 1", &PathBuf::from("/tmp"), "t"),
             Presence::Absent
         );
     }
@@ -707,7 +813,8 @@ mod tests {
         assert_eq!(
             run_probe(
                 "test \"$(basename \"$PWD\")\" = tmp",
-                &PathBuf::from("/tmp")
+                &PathBuf::from("/tmp"),
+                "t"
             ),
             Presence::Present
         );
@@ -726,7 +833,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let cmd = format!("test \"$PWD\" = {}", link.display());
-        assert_eq!(run_probe(&cmd, &link), Presence::Present);
+        assert_eq!(run_probe(&cmd, &link, "t"), Presence::Present);
     }
 
     #[test]
@@ -734,7 +841,7 @@ mod tests {
         // A cwd that can't exist means `sh` itself can't be spawned there → exec failure, not a
         // clean non-zero exit. Treated as absent (and logged), never a hang.
         assert_eq!(
-            run_probe("true", &PathBuf::from("/no/such/dir/xyzzy")),
+            run_probe("true", &PathBuf::from("/no/such/dir/xyzzy"), "t"),
             Presence::Absent
         );
     }
@@ -745,7 +852,7 @@ mod tests {
         // PROBE_TIMEOUT rather than the sleep duration.
         let start = Instant::now();
         assert_eq!(
-            run_probe("sleep 60", &PathBuf::from("/tmp")),
+            run_probe("sleep 60", &PathBuf::from("/tmp"), "t"),
             Presence::Absent
         );
         assert!(
@@ -864,27 +971,27 @@ mod tests {
     fn presence_maps_exit_codes_to_three_states() {
         let dir = std::path::Path::new("/tmp");
         assert_eq!(
-            run_probe("exit 0", dir),
+            run_probe("exit 0", dir, "t"),
             Presence::Present,
             "exit 0 ⇒ live session"
         );
         assert_eq!(
-            run_probe("exit 3", dir),
+            run_probe("exit 3", dir, "t"),
             Presence::Recoverable,
             "exit 3 ⇒ recoverable"
         );
         assert_eq!(
-            run_probe("exit 1", dir),
+            run_probe("exit 1", dir, "t"),
             Presence::Absent,
             "exit 1 ⇒ nothing"
         );
         assert_eq!(
-            run_probe("exit 2", dir),
+            run_probe("exit 2", dir, "t"),
             Presence::Absent,
             "unknown non-zero ⇒ absent"
         );
         assert_eq!(
-            run_probe("exit 7", dir),
+            run_probe("exit 7", dir, "t"),
             Presence::Absent,
             "unknown non-zero ⇒ absent"
         );
@@ -895,7 +1002,7 @@ mod tests {
         // Load-bearing safety direction: a misconfigured probe must never ghost every tab.
         let dir = std::path::Path::new("/tmp");
         assert_eq!(
-            run_probe("/nonexistent/binary/xyzzy", dir),
+            run_probe("/nonexistent/binary/xyzzy", dir, "t"),
             Presence::Absent,
             "a command that cannot run is absent, never recoverable"
         );
@@ -993,7 +1100,7 @@ mod tests {
             work(&["y1", "n1", "y2"]),
             None,
             4,
-            |cmd: &str, _dir: &Path| {
+            |cmd: &str, _dir: &Path, _title: &str| {
                 if cmd.contains('y') {
                     Presence::Present
                 } else {
@@ -1029,7 +1136,7 @@ mod tests {
             items,
             None,
             4, // cap
-            |_cmd, _dir| {
+            |_cmd, _dir, _title| {
                 let now = live.fetch_add(1, Ordering::SeqCst) + 1;
                 peak.fetch_max(now, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(15)); // force overlap
@@ -1111,7 +1218,7 @@ mod tests {
             work(&["a", "b", "c", "d", "e"]),
             Some("d"),
             1,
-            |cmd, _dir| {
+            |cmd, _dir, _title| {
                 if seq.fetch_add(1, Ordering::SeqCst) == 0 {
                     *first.lock().unwrap() = Some(cmd.to_string());
                 }
@@ -1131,7 +1238,7 @@ mod tests {
     #[ignore = "perf bench; run via `just bench`"]
     fn probe_qos_bench() {
         // A child that burns a fixed slice of CPU (~an absent-path amux --probe), returning Absent.
-        fn burn_child(_cmd: &str, _dir: &Path) -> Presence {
+        fn burn_child(_cmd: &str, _dir: &Path, _title: &str) -> Presence {
             let _ = std::process::Command::new("sh")
                 .arg("-c")
                 .arg("i=0; while [ $i -lt 4000000 ]; do i=$((i+1)); done")
@@ -1201,7 +1308,7 @@ mod tests {
                 for _ in 0..n {
                     s.spawn(|| {
                         for _ in 0..3 {
-                            burn_child("x", Path::new("/tmp"));
+                            burn_child("x", Path::new("/tmp"), "t");
                         }
                     });
                 }
