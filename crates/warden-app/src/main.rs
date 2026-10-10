@@ -31,7 +31,7 @@ use geometry::WebRect;
 
 // Menu-item IDs, matched in the Builder's on_menu_event handler. The App/Config/Window submenus,
 // Close Tab / Close Window / Pop Out Tab, and the tab-nav block are all the shared spine now
-// (`shell_core::menu`) — only warden's own Reopen Last Closed keeps a local id.
+// (`shell_core::menu`); warden's own items keep local ids.
 // Reopen Last Closed (⌘⇧T) is warden-only — curator and lector have no equivalent, so this stays
 // a local item spliced into the spine's Window submenu rather than added to the spine itself
 // (YAGNI — add it there only if a sibling app wants it too).
