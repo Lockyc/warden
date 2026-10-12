@@ -1055,14 +1055,17 @@ impl WardenHostView {
     ///    to the right pane" — while plain typing (`keyDown:`, first-responder-routed) stayed
     ///    put.
     ///
-    /// When the first responder is NOT a host view (the sidebar's webview took it on a click),
-    /// every unhidden view still qualifies, the way it always has: only the key window's
-    /// hierarchy receives these events, so an unhidden view here is the focused terminal even
-    /// when focus arrived by a click that never ran activate(). This is deliberately not a
-    /// FOCUSED_SURFACE match — that pointer can name a surface in ANOTHER window, and gating on
-    /// it once made ⌘C/⌘V dead in a window focused by click until a tab row was clicked. In a
-    /// split in that no-pane-typing state the primary wins the tie, which is also the pane
-    /// `focus_pane` defaults to.
+    /// 3. If the first responder is some OTHER view — the sidebar's webview (its search field,
+    ///    or a click anywhere in the chrome) — no host view owns keys: returning NO from
+    ///    `performKeyEquivalent:` lets AppKit deliver the arrow to the webview's `keyDown:`, the
+    ///    same place plain typing already goes. Otherwise ↑/↓ in the search drove the terminal.
+    ///
+    /// With no view as first responder (the window itself), every unhidden view qualifies: only
+    /// the key window's hierarchy receives these events, so an unhidden view here is the
+    /// focused terminal. This is deliberately not a FOCUSED_SURFACE match — that pointer can
+    /// name a surface in ANOTHER window, and gating on it once made ⌘C/⌘V dead in a window
+    /// focused by click until a tab row was clicked. In a split in that state the primary wins
+    /// the tie, which is also the pane `focus_pane` defaults to.
     ///
     /// SAFETY: must run on the main thread (reads AppKit window state).
     unsafe fn owns_window_keys(&self) -> bool {
@@ -1077,6 +1080,7 @@ impl WardenHostView {
                 let me: &NSResponder = self;
                 ptr::eq(&*fr as *const NSResponder, me as *const NSResponder)
             }
+            Some(fr) if fr.is_kind_of::<NSView>() => false,
             _ => true,
         }
     }
