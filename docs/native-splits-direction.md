@@ -30,8 +30,9 @@ need to become a multiplexer, it needs to stop delegating to one.
 **The unit of progress is the number of terminal emulators between warden and each PTY.**
 An `amux --frame` tab is two (frame + agent); an unframed one is one. Native splits — a
 second surface beside a tab's primary, a shell beside the agent — remove the frame layer
-for local use and take that count to one, without agentmux losing `--frame` for the
-standalone, remote and non-macOS cases it still serves.
+for local use and take that count to one. The destination is zero: warden as the client of
+Rex sessions, with tmux and agentmux retired (agentmux's `docs/multiplexer-direction.md`
+maps where each agentmux capability goes).
 
 What that buys beyond one less parse: native scrollback and selection in the second
 surface, and a **per-client viewport**. Shared scroll across attached clients is tmux's,
@@ -217,13 +218,12 @@ warden's own rather than a tmux popup.
 
 ## Not yet
 
-**Rendering agentmux's status rows and notes as warden chrome.** Those are currently
-painted into tmux's grid by `tmux-status.sh` / `notes.sh`; in a client-owned-viewport
-model they belong to the client, and warden's sidebar, tab-row dots and presence
-indicators are already that client. This is the expensive half of removing the *agent*
-tmux layer and is what makes that layer removable at all. Blocked on agentmux's session
-backend seam existing; revisit once it does — not before, or warden ends up owning chrome
-for a backend that is still the only one.
+**Agent state as warden chrome, from Rex.** agentmux paints agent state into tmux's grid today;
+in a client-owned-viewport model it belongs to warden's sidebar and tab-row dots. The source is
+Rex's event stream (`program_status_changed`, `child_exited`, `session_created`/`destroyed`),
+not agentmux, which gets no new architecture. Blocked on warden being able to host a Rex
+session at all: Rex's client protocol is unpublished. Revisit when it is, or when libghostty
+gains a way to attach a surface to a Rex block.
 
 **A popped-out left-side split's focus ring starts on the wrong hole.** shell-core's detach
 page focuses its FIRST hole on every layout, which for a mirrored (`side = "left"`) pop-out
