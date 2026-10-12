@@ -867,6 +867,12 @@
                   sb.setLive(id, res.live);
                 }
               }
+              // A row clicked from a filtered list: the activated terminal just took first
+              // responder, so hand it back to the search — Esc clears, typing replaces the filter.
+              if (activeId === id && sb.query.trim()) {
+                await invoke("focus_sidebar").catch((err) => console.error("warden: IPC focus_sidebar failed", err));
+                sb.focusSearch();
+              }
             },
             onUnload: unloadTab,
             onPopOut(id) {

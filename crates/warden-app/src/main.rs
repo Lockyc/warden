@@ -417,6 +417,14 @@ fn split_pane(
     Ok(())
 }
 
+/// Make this window's webview the key view, taking first responder from its terminal so the
+/// chrome can focus its own field. The page can't take focus from AppKit itself.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn focus_sidebar(window: tauri::WebviewWindow) {
+    let _ = AsRef::<tauri::Webview<_>>::as_ref(&window).set_focus();
+}
+
 /// Point tab `id`'s keyboard focus at pane `pane` (0 = primary, 1 = secondary). Returns false
 /// (no-op) if that pane doesn't exist — e.g. a stray click on a secondary that just closed.
 #[cfg(target_os = "macos")]
@@ -1377,9 +1385,9 @@ fn main() {
                     serde_json::json!({ "label": label }),
                 );
             } else if id == shell_core::menu::ids::FIND_IN_SIDEBAR {
-                // ⌘⇧F: a terminal NSView holds first responder, and the page can't take it from
-                // AppKit — make the webview the key view first, then the chrome focuses its field.
-                let _ = AsRef::<tauri::Webview<_>>::as_ref(&win).set_focus();
+                // ⌘⇧F: a terminal NSView holds first responder — make the webview the key view
+                // first, then the chrome focuses its field.
+                focus_sidebar(win.clone());
                 let _ = app.emit_to(
                     label.as_str(),
                     "warden:find-in-sidebar",
@@ -1408,6 +1416,7 @@ fn main() {
             unload_tab,
             split_pane,
             focus_pane,
+            focus_sidebar,
             pop_out_tab,
             raise_popped_window,
             pop_in_tab,
