@@ -96,11 +96,11 @@ surface-destroying or lock-taking action takes the same path.
   overrides (which surface within the window) plus per-window `windowDidBecomeKey:`/`windowDidResignKey:`
   observers (which window). Drop the first pair and a clicked terminal types with a hollow cursor, or
   a split's previous pane stays focused; drop the observers and focus goes stale across window switches.
-- **Window-scoped key traffic is claimed by ONE host view per window** — the first responder when
-  it is a terminal view (`WardenHostView::owns_window_keys`, gating `performKeyEquivalent:` and
-  `windowDidBecomeKey:`). AppKit routes function keys (arrows, F-keys, Home/End) through the
-  key-equivalent pass to every host view in subview order, so a visibility-only gate let a split's
-  primary steal arrows typed in the secondary.
+- **Window-scoped key traffic is claimed by at most ONE host view per window** — the first responder
+  when it is a terminal view, none when it is the webview (`WardenHostView::owns_window_keys`, gating
+  `performKeyEquivalent:` and `windowDidBecomeKey:`). AppKit routes function keys (arrows, F-keys,
+  Home/End) through the key-equivalent pass to every host view in subview order, so a looser gate
+  hands arrows to the wrong pane, or to a terminal while the sidebar search has focus.
 - **The app menu gets first refusal** at the top of `performKeyEquivalent:`, or libghostty
   swallows the tab chords. `⌘\`` is reserved for macOS window cycling: return `NO`, never forward
   (a Kitty-protocol TUI would eat it).
