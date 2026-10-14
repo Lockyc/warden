@@ -83,7 +83,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 ## Build / test / run
 
 - `cargo build` / `cargo test`; `warden-app` compiles only on macOS, by design.
-- **`just`** lists recipes: `just run` (against `examples/config.toml` — never your real config), `validate`, `test`, `fmt`, `clippy`, `gate` (fmt-check + clippy + tests + config fmt-check + active-`[patch]` guard), `build`, `deploy`.
+- **`just`** lists recipes: `just run` (against `examples/config.toml` — never your real config), `validate`, `test`, `fmt`, `clippy`, `gate` (fmt-check + clippy + tests + config fmt-check + active-`[patch]` guard), `build`, `install`.
 - **`just hooks` once per clone** — `core.hooksPath` is local config, so a fresh clone has neither the docgraph pre-push gate nor the active-`[patch]` pre-commit guard until it runs. No CI: warden ships on macOS only, so the local `just gate` is the check — green per change and before tagging a release.
 - **Toolchain is pinned** in `rust-toolchain.toml`; config-core carries the canonical pin — bump there first, then here and in curator and lector. The cores build with warden's toolchain, not their own.
 - Vendored libghostty and revendoring: [`docs/surface.md`](docs/surface.md). Packaging, signing, releases, the updater: [`docs/releasing.md`](docs/releasing.md).
@@ -111,7 +111,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 
 ### Call-site pointers (the named code comment carries the why)
 
-- **Deploy launches via shell-core's `scripts/launch-app.sh`, never a bare `open`**, which forwards the deploying terminal's env (`TERM_PROGRAM`, `GHOSTTY_*`, `SHELL`, …) into every tab. Symptom: "misbehaves from `just deploy`, fine from Spotlight."
+- **Install launches via shell-core's `scripts/launch-app.sh`, never a bare `open`**, which forwards the installing terminal's env (`TERM_PROGRAM`, `GHOSTTY_*`, `SHELL`, …) into every tab. Symptom: "misbehaves from `just install`, fine from Spotlight."
 - **Default shell = `$SHELL -l`, absolute** (`warden_config::login_shell`, shared with the `warden` CLI); config shells may be bare, covered by **`restore_login_path`**, which imports the login-shell PATH at startup (best-effort, 3s deadline). Don't drop either expecting the other to cover it.
 - **Probes inherit warden-app's env** — PATH is restored, shell exports aren't, so the canonical probe names `amux` absolutely (`"$HOME/.agentmux/bin/amux" --probe`). `probe.rs`.
 - **The probe child's `$PWD` is the configured `dir`**, set explicitly in `probe.rs::tab_command` (probe, kill and suspend alike) — a `$PWD`-keyed probe otherwise misses its session under a symlinked path.

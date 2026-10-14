@@ -231,7 +231,7 @@ release: gate
 # the relaunch stays here because install.sh never launches the app.
 # Build a release .app, install/replace it in /Applications, then relaunch
 [group("dist")]
-deploy:
+install:
     #!/usr/bin/env bash
     set -euo pipefail
     bash install.sh
@@ -240,7 +240,7 @@ deploy:
     # terminal like warden that hosts your shells, that is a syspolicyd/kernel_task CPU storm on
     # every command run inside it. A Developer ID signature gives the bundle a real Team ID, so the
     # check attributes it and takes the cached fast-path instead of re-failing. (`release`
-    # additionally notarizes for distribution; local deploy only needs the signature + Team ID.)
+    # additionally notarizes for distribution; local install only needs the signature + Team ID.)
     id="$(security find-identity -p codesigning -v 2>/dev/null | awk -F'"' '/Developer ID Application/{print $2; exit}')"
     if [ -n "$id" ]; then
       codesign --force --deep --options runtime --timestamp=none --sign "$id" /Applications/warden.app
@@ -249,7 +249,7 @@ deploy:
       echo "⚠ no Developer ID identity in keychain — warden stays ad-hoc; expect syspolicyd CPU load on macOS 26" >&2
     fi
     echo "→ launching"
-    # Launching is its own shell-core script, NOT a bare `open`: `open` forwards the deploying
+    # Launching is its own shell-core script, NOT a bare `open`: `open` forwards the installing
     # terminal's whole environment to the app, and libghostty gives every surface's shell warden's
     # environment verbatim — so a bare `open` leaks that terminal's context into every tab (SHELL
     # included, which `login_shell` reads). launch-app.sh's header carries the full footgun.
