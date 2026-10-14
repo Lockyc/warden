@@ -11,9 +11,9 @@ export PATH := env_var('HOME') + "/.cargo/bin:" + env_var('PATH')
 default:
     @if command -v perl >/dev/null 2>&1; then just --color always --list | perl -CS -Mutf8 -lpe 'BEGIN{($w)=`stty size 2>/dev/null </dev/tty`=~/ (\d+)/; $w||=100; $col=(-t STDOUT && !exists $ENV{NO_COLOR})} s/\e\[[0-9;]*m//g unless $col; (my $v=$_)=~s/\e\[[0-9;]*m//g; if(length($v)>$w){my($o,$n)=("",0); while(length && $n<$w-1){ if($col && s/^(\e\[[0-9;]*m)//){$o.=$1}else{s/^(.)//;$o.=$1;$n++} } $_=$o."…".($col?"\e[0m":"")}'; else just --list; fi
 
-# git-init the mock example project dirs into real repos so the demo config's [[window.root]]
-# tree section has projects to discover. Idempotent (git init is safe to re-run); the created
-# .git dirs are git-ignored. Run automatically by `just run`.
+# The demo config's [[window.root]] tree section needs real repos to discover. Idempotent (git
+# init is safe to re-run); the created .git dirs are git-ignored. Run automatically by `just run`.
+# git-init the mock example project dirs into real repos for the demo config
 [group("dev")]
 seed-examples:
     @for d in "{{justfile_directory()}}"/examples/projects/*/*/; do git -C "$d" init -q; done
@@ -66,9 +66,9 @@ gate:
     cargo test --workspace
     cargo run -p warden-config --bin warden -- fmt --check examples/config.toml
 
-# Perf bench (macOS): render-starvation A/B for the probe sweep's background-QoS demotion.
 # Prints how long a high-priority "render" thread takes to finish a fixed workload while a
 # probe-equivalent fork storm runs at default vs background QoS. Not a CI gate (machine-specific).
+# Perf bench (macOS): render-starvation A/B for the probe sweep's background-QoS demotion
 [group("bench")]
 bench:
     cargo test -p warden-app --release probe_qos_bench -- --ignored --nocapture
@@ -104,12 +104,12 @@ chrome-pin:
     tmp=$(mktemp); sed -E 's|^\[patch\."https://github.com/Lockyc/chrome-core"\]$|#PATCH:chrome#&|; s|^chrome-core = \{ path = "\.\./chrome-core" \}$|#PATCH:chrome#&|' Cargo.toml > "$tmp" && mv "$tmp" Cargo.toml
     ! grep -qE '^\[patch\."https://github.com/Lockyc/chrome-core"\]$' Cargo.toml || { echo "✗ chrome-pin: chrome-core [patch] still active after re-comment — check Cargo.toml"; exit 1; }
     cargo update -p chrome-core || cargo metadata --format-version 1 >/dev/null # reconcile Cargo.lock on a patch→git flip: bare -p cannot match the patched (path) source, a minimal resolve does
-    echo "✓ pinned chrome-core → $rev (patch deactivated). Commit Cargo.toml + Cargo.lock."
+    echo "✓ pinned chrome-core → $rev (patch deactivated). Commit $dep + Cargo.lock."
 
-# Open chrome-core's visual preview loop (requires ../chrome-core checked out)
+# Serve chrome-core's visual preview with live reload (requires ../chrome-core checked out)
 [group("chrome")]
 chrome-preview:
-    @[ -f ../chrome-core/justfile ] && just -f ../chrome-core/justfile preview || echo "✗ ../chrome-core not found — ghq get github.com/Lockyc/chrome-core"
+    @if [ -f ../chrome-core/justfile ]; then just -f ../chrome-core/justfile dev; else echo "✗ ../chrome-core not found — ghq get github.com/Lockyc/chrome-core"; exit 1; fi
 
 # ── shared config-core dev loop (mirrors chrome-*; config-core is git-pinned in warden-config) ──
 
@@ -142,7 +142,7 @@ config-pin:
     tmp=$(mktemp); sed -E 's|^\[patch\."https://github.com/Lockyc/config-core"\]$|#PATCH:config#&|; s|^config-core = \{ path = "\.\./config-core" \}$|#PATCH:config#&|' Cargo.toml > "$tmp" && mv "$tmp" Cargo.toml
     ! grep -qE '^\[patch\."https://github.com/Lockyc/config-core"\]$' Cargo.toml || { echo "✗ config-pin: config-core [patch] still active after re-comment — check Cargo.toml"; exit 1; }
     cargo update -p config-core || cargo metadata --format-version 1 >/dev/null # reconcile Cargo.lock on a patch→git flip: bare -p cannot match the patched (path) source, a minimal resolve does
-    echo "✓ pinned config-core → $rev (patch deactivated). Commit Cargo.toml + $dep + Cargo.lock."
+    echo "✓ pinned config-core → $rev (patch deactivated). Commit $dep + Cargo.lock."
 
 # ── shared shell-core dev loop (mirrors chrome-*; shell-core is git-pinned in warden-app) ──
 
@@ -175,13 +175,14 @@ shell-pin:
     tmp=$(mktemp); sed -E 's|^\[patch\."https://github.com/Lockyc/shell-core"\]$|#PATCH:shell#&|; s|^shell-core = \{ path = "\.\./shell-core" \}$|#PATCH:shell#&|' Cargo.toml > "$tmp" && mv "$tmp" Cargo.toml
     ! grep -qE '^\[patch\."https://github.com/Lockyc/shell-core"\]$' Cargo.toml || { echo "✗ shell-pin: shell-core [patch] still active after re-comment — check Cargo.toml"; exit 1; }
     cargo update -p shell-core || cargo metadata --format-version 1 >/dev/null # reconcile Cargo.lock on a patch→git flip: bare -p cannot match the patched (path) source, a minimal resolve does
-    echo "✓ pinned shell-core → $rev (patch deactivated). Commit Cargo.toml + Cargo.lock."
+    echo "✓ pinned shell-core → $rev (patch deactivated). Commit $dep + Cargo.lock."
 
 # ── vendored libghostty (built by github.com/lockyc/libghostty-build) ──
 
-# Re-vendor GhosttyKit.xcframework from a libghostty-build release (default: latest), verifying
-# its sha256. After: update vendor/PROVENANCE.md's Ghostty ref/sha (from the release notes), then
-# `cargo clean -p warden-app` + rebuild. Needs `gh` authed to github.com/lockyc/libghostty-build.
+# Verifies each zip's sha256. After: update vendor/PROVENANCE.md's Ghostty ref/sha (from the
+# release notes), then `cargo clean -p warden-app` + rebuild. Needs `gh` authed to
+# github.com/lockyc/libghostty-build.
+# Re-vendor GhosttyKit.xcframework + resources from a libghostty-build release (default: latest)
 [group("ghostty")]
 revendor-ghostty tag="latest":
     #!/usr/bin/env bash
@@ -217,16 +218,17 @@ revendor-ghostty tag="latest":
 build:
     cd crates/warden-app && cargo tauri build
 
-# Build a NOTARIZED warden.app and attach it to its GitHub release (version from Cargo.toml).
-# Run AFTER the release is tagged/pushed and `gh release create v<version>` published the notes
-# (see CLAUDE.md › Releases). Refuses to run without the Apple signing/notary env vars.
+# Version comes from Cargo.toml. Run AFTER the release is tagged/pushed and `gh release create
+# v<version>` published the notes (see CLAUDE.md › Releases). Refuses to run without the Apple
+# signing/notary env vars.
+# Build a NOTARIZED warden.app and attach it to its GitHub release
 [group("dist")]
 release:
     bash scripts/release.sh
 
-# Build a release .app, install/replace it in /Applications, then relaunch.
 # Delegates build+install to install.sh (seeds ~/.config/warden/config.toml only if absent);
 # the relaunch stays here because install.sh never launches the app.
+# Build a release .app, install/replace it in /Applications, then relaunch
 [group("dist")]
 deploy:
     #!/usr/bin/env bash
