@@ -62,8 +62,8 @@ previous tag → **`just release`** (`scripts/release.sh`), which builds the not
 (`ditto`) to `warden-<v>-macos.zip`, and attaches it plus the updater artifacts
 (`warden.app.tar.gz`, `.sig`, `latest.json` from `scripts/gen-latest-json.sh`). `release.sh`
 refuses to run without `APPLE_SIGNING_IDENTITY` or `TAURI_SIGNING_PRIVATE_KEY`, so an unsigned or
-un-updatable release can't pass as official. Run `just gate` green first — the release build
-compiles but doesn't test.
+un-updatable release can't pass as official, and `just release` runs `just gate` first, so a red
+tree attaches nothing.
 
 ## In-app updates
 
