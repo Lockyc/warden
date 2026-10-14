@@ -59,9 +59,10 @@ hooks:
 # The active-[patch] guard also runs via .githooks/pre-commit — see `just hooks`.
 # Full pre-merge gate: fmt-check, clippy, tests, config fmt-check, active-[patch] guard
 [group("check")]
-gate: (_core-patch "guard")
+gate:
     cargo fmt --all --check
     cargo clippy --workspace -- -D warnings
+    @{{ just_executable() }} _core-patch guard # after clippy, whose build.rs generates core-patch.sh on a fresh clone
     cargo test --workspace
     cargo run -p warden-config --bin warden -- fmt --check examples/config.toml
 
