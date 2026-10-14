@@ -7,7 +7,7 @@
 #
 # Two modes, auto-detected:
 #   • IN_REPO     — run from a warden checkout: builds from the current working
-#                   tree (this is the mode `just deploy` uses, so local changes
+#                   tree (this is the mode `just install` uses, so local changes
 #                   are picked up). No clone/pull.
 #   • NOT_IN_REPO — otherwise: manages a persistent source clone at ~/.warden
 #                   (clone if absent, git pull if present) and builds from it.
