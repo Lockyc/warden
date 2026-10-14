@@ -56,14 +56,13 @@ if absent. `just install` delegates to it; the guided path is `/warden:install`
 independently; the tag tracks `warden-app`.
 
 `main` tracks the latest release and stays a clean ancestor of `dev`. Cutting one: on `dev`, bump
-the version + refresh `Cargo.lock` → `chore(release): warden <v>` → `git tag v<v>` →
-fast-forward `main` → push `dev`, `main`, the tag → `gh release create v<v>` with notes since the
-previous tag → **`just release`** (`scripts/release.sh`), which builds the notarized app, zips it
-(`ditto`) to `warden-<v>-macos.zip`, and attaches it plus the updater artifacts
-(`warden.app.tar.gz`, `.sig`, `latest.json` from `scripts/gen-latest-json.sh`). `release.sh`
-refuses to run without `APPLE_SIGNING_IDENTITY` or `TAURI_SIGNING_PRIVATE_KEY`, so an unsigned or
-un-updatable release can't pass as official, and `just release` runs `just gate` first, so a red
-tree attaches nothing.
+the version + refresh `Cargo.lock` → `chore(release): warden <v>` → push `dev` →
+**`just release [notes=<file>]`** (`just gate` + `scripts/release.sh`), which builds the notarized
+app, zips it (`ditto`) to `warden-<v>-macos.zip` with the updater artifacts (`warden.app.tar.gz`,
+`.sig`, `latest.json`), then tags `v<v>`, fast-forwards `main`, pushes both, and publishes the
+GitHub release with the notes (default: commit subjects since the previous tag) and every asset.
+`release.sh` refuses off `dev`, from a dirty or unpushed tree, or without `APPLE_SIGNING_IDENTITY`
+or `TAURI_SIGNING_PRIVATE_KEY`, and nothing goes public until the build succeeds.
 
 ## In-app updates
 
