@@ -323,7 +323,9 @@ impl ghostty_action_s {
         }
         // NOT NUL-terminated — build from the explicit length, never `CStr`.
         let bytes = unsafe { std::slice::from_raw_parts(u.url as *const u8, u.len) };
-        String::from_utf8(bytes.to_vec()).ok().map(|url| (u.kind, url))
+        String::from_utf8(bytes.to_vec())
+            .ok()
+            .map(|url| (u.kind, url))
     }
 
     /// The child's exit code when the surface's process has died, else `None`.

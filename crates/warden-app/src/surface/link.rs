@@ -207,9 +207,7 @@ fn file_decision(url: &NSURL) -> Decision {
             return Decision::Deny(DenialReason::InaccessibleFile);
         };
         let flag = |key: &NSURLResourceKey| -> bool {
-            values
-                .get(key)
-                .is_some_and(|v| msg_send![v, boolValue])
+            values.get(key).is_some_and(|v| msg_send![v, boolValue])
         };
         let is_dir = flag(NSURLIsDirectoryKey);
         // Devices, sockets and other special objects are refused outright.
@@ -336,7 +334,11 @@ const UNSAFE_PATH_EXTENSIONS: &[&str] = &[
 ];
 
 /// Broad system types, so subclasses (shell scripts, app bundles) conform automatically.
-const UNSAFE_CONTENT_TYPES: &[&str] = &["com.apple.application", "public.executable", "public.script"];
+const UNSAFE_CONTENT_TYPES: &[&str] = &[
+    "com.apple.application",
+    "public.executable",
+    "public.script",
+];
 
 // --- Alerts ----------------------------------------------------------------------------------------
 
@@ -478,14 +480,23 @@ mod tests {
     #[test]
     fn malformed_targets_are_refused() {
         assert_eq!(denied(&decide("")), Some(DenialReason::MalformedUrl));
-        assert_eq!(denied(&decide("src/main.rs")), Some(DenialReason::MalformedUrl));
-        assert_eq!(denied(&decide("https:relative")), Some(DenialReason::InvalidWebUrl));
+        assert_eq!(
+            denied(&decide("src/main.rs")),
+            Some(DenialReason::MalformedUrl)
+        );
+        assert_eq!(
+            denied(&decide("https:relative")),
+            Some(DenialReason::InvalidWebUrl)
+        );
         assert_eq!(denied(&decide("mailto:")), Some(DenialReason::MalformedUrl));
         assert_eq!(
             denied(&decide("file://evil.example/etc/hosts")),
             Some(DenialReason::MalformedUrl)
         );
-        assert_eq!(denied(&decide("file:///etc/hosts#x")), Some(DenialReason::MalformedUrl));
+        assert_eq!(
+            denied(&decide("file:///etc/hosts#x")),
+            Some(DenialReason::MalformedUrl)
+        );
     }
 
     #[test]
@@ -496,14 +507,24 @@ mod tests {
             "https://example.com/\nsecond-line",
             "https://example.com/\u{FEFF}",
         ] {
-            assert_eq!(denied(&decide(s)), Some(DenialReason::UnsafeCharacters), "{s:?}");
+            assert_eq!(
+                denied(&decide(s)),
+                Some(DenialReason::UnsafeCharacters),
+                "{s:?}"
+            );
         }
     }
 
     #[test]
     fn custom_schemes_ask_first() {
-        assert!(matches!(decide("x-warden-test://do?thing=1"), Decision::Confirm(_)));
-        assert!(matches!(decide("vscode://file/tmp/a"), Decision::Confirm(_)));
+        assert!(matches!(
+            decide("x-warden-test://do?thing=1"),
+            Decision::Confirm(_)
+        ));
+        assert!(matches!(
+            decide("vscode://file/tmp/a"),
+            Decision::Confirm(_)
+        ));
     }
 
     #[test]
@@ -527,7 +548,11 @@ mod tests {
         std::os::unix::fs::symlink(&exe, &link).unwrap();
         for p in [&cmd, &exe, &link] {
             let url = format!("file://{}", p.display());
-            assert_eq!(denied(&decide(&url)), Some(DenialReason::UnsafeFile), "{url}");
+            assert_eq!(
+                denied(&decide(&url)),
+                Some(DenialReason::UnsafeFile),
+                "{url}"
+            );
         }
     }
 
@@ -540,13 +565,19 @@ mod tests {
         assert!(allowed(&decide(&format!("file://{}/", dir.path().display()))).is_some());
         assert!(allowed(&decide(&format!("file://localhost{}", txt.display()))).is_some());
         let missing = format!("file://{}/nope", dir.path().display());
-        assert_eq!(denied(&decide(&missing)), Some(DenialReason::InaccessibleFile));
+        assert_eq!(
+            denied(&decide(&missing)),
+            Some(DenialReason::InaccessibleFile)
+        );
     }
 
     #[test]
     fn unknown_kind_paths_become_file_urls() {
         let home = std::env::var("HOME").unwrap();
-        assert_eq!(unknown_target("~/notes.txt"), format!("file://{home}/notes.txt"));
+        assert_eq!(
+            unknown_target("~/notes.txt"),
+            format!("file://{home}/notes.txt")
+        );
         assert_eq!(unknown_target("https://example.com"), "https://example.com");
         // Left raw so `decide` still sees the character.
         assert_eq!(unknown_target("a\u{202E}b"), "a\u{202E}b");
@@ -556,7 +587,10 @@ mod tests {
     fn display_string_shows_the_effective_target_on_one_line() {
         // Resolving symlinks also strips a leading `/private`, exactly as before opening.
         assert_eq!(display_string("file:///tmp/../etc//hosts"), "/etc/hosts");
-        assert_eq!(display_string("https://example.com//a"), "https://example.com//a");
+        assert_eq!(
+            display_string("https://example.com//a"),
+            "https://example.com//a"
+        );
         assert_eq!(display_string("a\u{202E}b"), {
             let cwd = std::env::current_dir().unwrap();
             format!("{}/a\\u{{202E}}b", cwd.display())
