@@ -267,7 +267,7 @@ pub struct ghostty_action_desktop_notification_s {
 /// `ghostty_action_open_url_s` (ghostty.h:818-822): the union variant for `OPEN_URL` — libghostty
 /// asking the host to open a link the user clicked. `url` is **not NUL-terminated**: it is a
 /// borrowed `(ptr, len)` slice owned by libghostty and valid only for this call, so copy it out.
-/// `kind` is `ghostty_action_open_url_kind_e` (unknown/text/html/osc8); warden opens all kinds the same.
+/// `kind` is `ghostty_action_open_url_kind_e` (unknown/text/html/osc8); `surface::link` screens by it.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ghostty_action_open_url_s {
@@ -303,11 +303,16 @@ impl ghostty_action_s {
         }
     }
 
-    /// The URL libghostty wants opened, copied out of the borrowed `(ptr, len)` slice. `None` for
-    /// any other tag. Same cast-safety argument as `desktop_notification` (the tag proves the
-    /// variant; the 24-byte struct exactly fills the 8-aligned union).
-    pub fn open_url(&self) -> Option<String> {
-        if self.tag != GHOSTTY_ACTION_OPEN_URL {
+    pub fn is_open_url(&self) -> bool {
+        self.tag == GHOSTTY_ACTION_OPEN_URL
+    }
+
+    /// The `(kind, url)` libghostty wants opened, the URL copied out of the borrowed `(ptr, len)`
+    /// slice. `None` for any other tag, or a null, empty or non-UTF-8 URL. Same cast-safety
+    /// argument as `desktop_notification` (the tag proves the variant; the 24-byte struct exactly
+    /// fills the 8-aligned union).
+    pub fn open_url(&self) -> Option<(u32, String)> {
+        if !self.is_open_url() {
             return None;
         }
         let u = unsafe {
@@ -318,7 +323,7 @@ impl ghostty_action_s {
         }
         // NOT NUL-terminated — build from the explicit length, never `CStr`.
         let bytes = unsafe { std::slice::from_raw_parts(u.url as *const u8, u.len) };
-        String::from_utf8(bytes.to_vec()).ok()
+        String::from_utf8(bytes.to_vec()).ok().map(|url| (u.kind, url))
     }
 
     /// The child's exit code when the surface's process has died, else `None`.
@@ -624,8 +629,8 @@ mod tests {
             },
         );
         assert_eq!(
-            action.open_url().as_deref(),
-            Some("https://example.com/x?a=1")
+            action.open_url(),
+            Some((1, "https://example.com/x?a=1".to_owned()))
         );
         // …and it must not be mistaken for anything else.
         assert!(!action.is_ring_bell());

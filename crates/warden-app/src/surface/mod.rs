@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 
 #[cfg(target_os = "macos")]
 pub mod ghostty;
+#[cfg(target_os = "macos")]
+mod link;
 
 /// A signal a surface raised, in seam-neutral terms (no libghostty/Tauri types). The surface layer
 /// decodes the platform action into this; the app layer routes it to a tab.
