@@ -106,7 +106,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 - **`open --env "WARDEN_CONFIG=<path>" -a /Applications/warden.app` is silently ignored if warden is already running** — and warden is persistent, so quit it first (`osascript -e 'quit app "warden"'`).
 - **"No notifications at all" (not even the badge) is upstream transport, not warden.** The producer must wrap OSC 9/777 once per nested tmux layer (agentmux ≥ 0.14.0 does under `--frame`). Diagnose at the agent→frame boundary: `tmux -L agentmux-frame pipe-pane -t <agent-pane> 'cat >> /tmp/cap'` — a bare `]777` = dying at the frame; a `Ptmux;` envelope = it reaches warden.
 - **Badge but no banner on macOS 26 is the OS, not `notify.rs`** — don't rewrite it. Discriminator and fixes: [`docs/notifications.md`](docs/notifications.md).
-- **A link that won't open is the tmux hop or shift-⌘, not warden's link handling** — check order in [`docs/surface.md`](docs/surface.md).
+- **A link that won't open, with no alert shown, is the tmux hop or shift-⌘** — check order in [`docs/surface.md`](docs/surface.md). An alert is `surface/link.rs` screening the target.
 - **A mousedown drags only if the element under the cursor carries `data-tauri-drag-region`** — children don't inherit it. chrome-core owns `#cc-titlebar`; warden's `#sidebar` carries the attribute.
 
 ### Call-site pointers (the named code comment carries the why)

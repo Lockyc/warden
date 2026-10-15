@@ -57,8 +57,10 @@ renders. On a version jump:
 
 Two link paths, both libghostty's: regex-matched URL text in the cells, and OSC 8 hyperlinks over
 arbitrary label text. An `NSTrackingArea` forwards `mouseMoved`/`mouseExited` (link detection runs
-on motion), `MOUSE_SHAPE` drives the cursor via cursor rects, `OPEN_URL` hands the link to
-`NSWorkspace`. When a link misbehaves, check in this order:
+on motion), `MOUSE_SHAPE` drives the cursor via cursor rects, `OPEN_URL` goes through
+`surface/link.rs`, which screens terminal-output targets the way Ghostty.app does: a custom
+scheme asks first, and anything executable is refused with an alert. When a link misbehaves,
+check in this order:
 
 1. **Under tmux, an OSC 8 link renders as inert styled text** — that is the tmux hop. tmux
    re-emits hyperlinks only when the client has the `hyperlinks` terminal feature, derived from
