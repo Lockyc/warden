@@ -46,11 +46,11 @@ use objc2_app_kit::{
     NSEvent, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF,
     NSResponder, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
     NSWindowDidBecomeKeyNotification, NSWindowDidChangeScreenNotification,
-    NSWindowDidResignKeyNotification, NSWorkspace,
+    NSWindowDidResignKeyNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSDictionary, NSNotification, NSNotificationCenter, NSPoint, NSRect,
-    NSSize, NSString, NSURL,
+    NSSize, NSString,
 };
 
 /// Opaque `CGColorRef`. A msg_send returning or taking one (`-[NSColor CGColor]`,
@@ -165,13 +165,13 @@ struct DispatchObjectS {
 }
 extern "C" {
     static _dispatch_main_q: DispatchObjectS;
-    fn dispatch_async_f(
+    pub(super) fn dispatch_async_f(
         queue: *mut c_void,
         context: *mut c_void,
         work: unsafe extern "C" fn(*mut c_void),
     );
 }
-fn main_queue() -> *mut c_void {
+pub(super) fn main_queue() -> *mut c_void {
     ptr::addr_of!(_dispatch_main_q) as *mut c_void
 }
 /// GCD work item: runs on the main thread, ticks the app passed as `context`.
@@ -219,9 +219,12 @@ unsafe extern "C" fn action_cb(
         return false;
     };
     // Two actions are handled entirely inside the seam — they act on AppKit, not on a tab, so
-    // there is nothing for the app layer to route.
-    if let Some(url) = action.open_url() {
-        open_url(&url);
+    // there is nothing for the app layer to route. A link click always answers `true`, even for a
+    // URL that can't be decoded: `false` makes libghostty retry with its own unscreened opener.
+    if action.is_open_url() {
+        if let Some((kind, url)) = action.open_url() {
+            super::link::open(kind, &url);
+        }
         return true;
     }
     if let Some(shape) = action.mouse_shape() {
@@ -571,18 +574,6 @@ unsafe fn create_app() -> usize {
 }
 fn shared_app() -> ffi::ghostty_app_t {
     (*GHOSTTY_APP.get_or_init(|| unsafe { create_app() })) as ffi::ghostty_app_t
-}
-
-/// Open a link the user clicked in a terminal (`GHOSTTY_ACTION_OPEN_URL`). libghostty only raises
-/// this for a link *it* detected under an explicit click, so the gesture is always user-initiated;
-/// warden just hands it to macOS, exactly as Ghostty.app does. A URL macOS can't parse is dropped.
-fn open_url(url: &str) {
-    unsafe {
-        let s = NSString::from_str(url);
-        if let Some(u) = NSURL::URLWithString(&s) {
-            NSWorkspace::sharedWorkspace().openURL(&u);
-        }
-    }
 }
 
 /// Surface handle → its `WardenHostView`, so an action that names a *surface* can act on the view
