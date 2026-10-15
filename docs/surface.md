@@ -47,7 +47,7 @@ renders. On a version jump:
   xcframework (the one that ships with the linked `libghostty.a`) into `$OUT_DIR/action_tags.rs`.
   **Footgun:** never reintroduce a loose `vendor/ghostty.h` — `just revendor-ghostty` replaces the
   framework, not a header beside it, so a loose copy goes stale and regenerates the same drift.
-  Add a tag by name to `ACTION_TAGS`.
+  Add a tag by name to `DECODED` in `build.rs`.
 - **Callback signatures aren't guarded.** The runtime callbacks are hand-transcribed
   function-pointer types, so a changed signature builds and links, then corrupts the call. Diff
   `ghostty_runtime_*_cb` and every `extern` fn warden declares against the new header.
