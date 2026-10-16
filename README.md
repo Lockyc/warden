@@ -18,11 +18,11 @@
 
 warden is a **config-driven terminal multiplexer**. One TOML file is the source of truth: it defines **windows** and the **project tabs** inside them. warden materializes itself from that config and **hot-reloads on save**. Each window carries a colour + title banner for at-a-glance identity; each tab is a real terminal opened in a working directory, running an optional command.
 
-warden is **generic and content-agnostic** — it knows nothing about any specific tool, so the command a tab runs is whatever you want: a shell, a TUI, a build watcher, an agent launcher. It stands on its own.
+A tab's command can be anything: a shell, a TUI, a build watcher, an agent launcher.
 
 It's also built for a flow: I pair each tab with [**agentmux**](https://github.com/lockyc/agentmux) (`amux`), a tmux-based agent launcher — so the stack nests `warden → agentmux → tmux` (warden itself embedding [libghostty](https://github.com/ghostty-org/ghostty) as its terminal surfaces). A multiplexer for a multiplexer for a multiplexer; it's turtles the rest of the way down.
 
-Targets **macOS**. Linux is a possible future direction, not a commitment; the config crate stays platform-neutral to keep that door open. Windows isn't addressed today — the terminal surface is a macOS-native embed — but it's unstarted, not ruled out.
+macOS only.
 
 ## Features
 
@@ -31,14 +31,14 @@ Targets **macOS**. Linux is a possible future direction, not a commitment; the c
 - **Project tabs** — each tab is a real terminal in a working directory. `load_on_open` tabs spawn at launch and keep running; the rest spawn lazily on first focus — or, with `remember_tabs`, come back loaded if they were open when you quit. Tabs can be **grouped** into labelled sidebar sections.
 - **Project trees** — point a `[[window.root]]` at a directory (e.g. `~/Developer`) and warden auto-discovers every git project under it, rendering them as a collapsible tree of tabs — no per-project config needed. Pair it with amux `probe`/`kill`/`suspend` for a per-project session dot on every discovered project.
 - **Live hot-reload** — edit the config and windows and tabs are added, removed, recoloured, and re-sectioned live on save. A missing config offers to create a starter one and an invalid one shows the error, both on the **home surface**; a parse error mid-edit instead keeps the last-good windows up behind an error banner. The **Config** menu opens the config file in your default editor or reveals it in Finder, so you needn't remember its path.
-- **Tab-row affordances** — a letter/colour tile and a **live/cold dot** (filled when the terminal is spawned, hollow when cold). Hover a live dot for a ✕ that **unloads** the tab — kills the terminal and PTY; it respawns a fresh shell on next focus.
-- **Pop-out tabs** — pop the active tab into its own banner-only window with **⌘⇧O** (or hover the row's letter tile and click its pop-out icon). It's **session-preserving**: the live terminal, its scrollback, and the running process move across untouched — no restart. Closing the popped-out window returns the tab to where it came from (reopening its origin window first if you'd closed it), and the pop-in icon on its sidebar tile brings it back. A popped-out window remembers the size and position you last gave it, so a tab you pop out often reopens where you left it. A split tab pops out with both terminals on the same sides and at the same divider ratio it had, with the same divider and focus ring — the pane UI is identical docked or popped out.
+- **Tab-row affordances** — a letter/colour tile and a **live/cold dot** (filled when the terminal is spawned, hollow when cold). Hover a live dot for a ✕ that **unloads** the tab; it respawns a fresh shell on next focus.
+- **Pop-out tabs** — pop the active tab into its own banner-only window with **⌘⇧O** (or hover the row's letter tile and click its pop-out icon). It's **session-preserving**: the live terminal, its scrollback, and the running process move across untouched — no restart. Closing the popped-out window returns the tab to where it came from (reopening its origin window first if you'd closed it), and the pop-in icon on its sidebar tile brings it back. A popped-out window remembers the size and position you last gave it, so a tab you pop out often reopens where you left it. A split tab pops out with both panes, their sides and the divider ratio intact.
 - **Splits** — a `split` table (global, per-window, per-root, or per-tab) opens a tab already split, second pane on either side, at a declared size, running a declared command beside the tab's own. A tab with no config split still gets one at runtime with **⌘D** (or Tab ▸ Split). Either way you get a thin draggable divider between the two terminals; to close a split, type `exit` in the second shell. A runtime split — and its ratio — is remembered per tab across restarts; a config split's dragged ratio holds only until the tab's terminals relaunch (unload, hot-reload, or app restart), then it snaps back to the declared size. **⌘W** and **⌘⇧O** always act on the whole tab, not just the focused pane: unloading drops both terminals, popping out takes both with it.
-- **Live terminal affordances** — URLs in a terminal are **clickable**: hover one for a hand cursor, click to open it in your default browser. And when a tab's process exits (the shell quits, an agent finishes), the tab goes **cold** — the dot empties and the row respawns a fresh shell on next focus — rather than stranding a dead "Process exited" screen.
-- **Notifications** — a background tab that rings the bell or emits a desktop-notification escape (OSC 9 / OSC 777) gets an amber badge, and a desktop notification additionally raises a macOS banner; the badge clears on focus. This is the channel [agentmux](https://github.com/lockyc/agentmux)'s Claude hooks feed instead of shelling out to `osascript`.
+- **Live terminal affordances** — URLs in a terminal are **clickable**: hover one for a hand cursor, click to open it in your default browser. And when a tab's process exits (the shell quits, an agent finishes), the tab goes **cold** — the dot empties and the row respawns a fresh shell on next focus.
+- **Notifications** — a background tab that rings the bell or emits a desktop-notification escape (OSC 9 / OSC 777) gets an amber badge, and a desktop notification additionally raises a macOS banner; the badge clears on focus. [agentmux](https://github.com/lockyc/agentmux)'s Claude hooks notify through this.
 - **Session-presence probes** — a per-tab `probe` command drives a three-state dot from its exit code: cyan on exit 0 (live), a ghost on exit 3 (crashed but restorable), hollow otherwise — independent of whether warden's own terminal surface is loaded (details below).
 - **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles, folder paths and group names (folders open to show matches). **⌘⇧F** jumps into it from a terminal; **↑**/**↓** pick a match, **Enter** opens it, **Esc** clears the search and returns you to the terminal.
-- **Keyboard navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**). **⌘W** unloads the active tab, **⌘⇧W** closes the window (Safari/Chrome convention), and **⌘⇧O** pops the active tab into its own window (session-preserving; see above). **⌘⇧S** suspends the active tab's session and **⌘⇧K** terminates it — the first ⌘⇧K arms the tab's confirm row, a second one within 4s confirms.
+- **Keyboard navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**). **⌘W** unloads the active tab, **⌘⇧W** closes the window, and **⌘⇧O** pops the active tab into its own window (session-preserving; see above). **⌘⇧S** suspends the active tab's session and **⌘⇧K** terminates it — the first ⌘⇧K arms the tab's confirm row, a second one within 4s confirms.
 - **CLI** — `warden validate` prints the resolved window/tab tree and warnings; `warden fmt` formats a config in warden's house TOML style.
 
 To wire the session-presence dot — pairing with [agentmux](https://github.com/lockyc/agentmux) — set a tab's `probe` to a session check:
@@ -47,9 +47,9 @@ To wire the session-presence dot — pairing with [agentmux](https://github.com/
 probe = '"$HOME/.agentmux/bin/amux" --probe'
 ```
 
-so the dot shows whether its amux session is alive — `amux --probe` exits 0 for the agent session **or** a lingering frame (so the dot stays lit if the agent exits but the frame wrapper is still up; a plain bare-amux without a frame only ever has the agent). It exits 3 instead when the session's gone but restorable — a plain `amux` launch here would offer its restore picker — which warden shows as a ghost rather than cyan. amux owns the session naming and socket layout, so the probe stays a one-liner that can't drift from amux's internals. `probe_interval` is the **settled slow-poll floor in seconds** (default 5) — not the whole cadence: every trigger (tab activate, start, kill, hot-reload, focus) pushes that window into a *fast burst* which polls until the state stops changing, then drops back to this floor, so the rate between a trigger and settling is far higher than the floor. `0` means **event-driven-then-idle** — still bursting on every trigger, just no steady poll between them; it is not "no probing". Because the burst rate is fixed, **`probe_interval` cannot bound the cost of a slow probe command** — keep the probe itself fast. Cadence, bursts and their bounds: [docs/probing.md](docs/probing.md). Name amux by **absolute path**: warden runs the probe via `sh -c` with the `.app`'s own env, which is minimal on a Finder/Dock launch — amux's internal `tmux` calls then resolve via the **login-shell PATH** warden imports at startup. Not using agentmux? Point `probe` at any check that exits 0 when your session exists.
+so the dot shows whether its amux session is alive: cyan while the agent session or its frame is up, a ghost when the session is gone but restorable. `probe_interval` sets the idle poll in seconds (default 5; `0` probes only on events such as tab focus or hot-reload); probes also run in quick bursts after each event, so keep the probe command fast. Details: [docs/probing.md](docs/probing.md). Name amux by **absolute path** — a Finder/Dock launch doesn't have your shell's PATH. Not using agentmux? Point `probe` at any check that exits 0 when your session exists.
 
-A tab's optional `kill` and `suspend` commands end the session the dot represents: click the cyan dot once to arm it, then pick **☠ destroy** (runs `kill`) or **⏻ suspend** (runs `suspend`) — either way the command runs fire-and-forget and the tab unloads. With agentmux, set `kill = '"$HOME/.agentmux/bin/amux" --kill'` and `suspend = '"$HOME/.agentmux/bin/amux" --suspend'` (cwd = the tab dir): both tear down the **whole project** — the agent session plus its frame and scratch terminal — exactly what the probe detects. `--kill` ends the agent tabs for good; `--suspend` keeps any that had a conversation restorable, so the dot turns to a ghost and reopening the tab offers them back in amux's restore picker. Since the controls live on the presence dot, they only do anything on a tab that also sets `probe` (no probe ⇒ no dot to click).
+A tab's optional `kill` and `suspend` commands end the session the dot represents: click the cyan dot once to arm it, then pick **☠ destroy** (runs `kill`) or **⏻ suspend** (runs `suspend`) — either way the command runs fire-and-forget and the tab unloads. With agentmux, set `kill = '"$HOME/.agentmux/bin/amux" --kill'` and `suspend = '"$HOME/.agentmux/bin/amux" --suspend'` (cwd = the tab dir): both tear down the **whole amux project**. `--kill` ends the agent tabs for good; `--suspend` keeps any that had a conversation restorable, so the dot turns to a ghost and reopening the tab offers them back in amux's restore picker. The dot controls need `probe`; ⌘⇧K / ⌘⇧S run `kill` / `suspend` on any tab.
 
 The mirror also holds. When the probe reports the session **gone** on a tab whose terminal is still live — hollow or ghost alike — the same dot becomes a one-click **start**: warden types the tab's `cmd` into the existing shell, so a dead or crashed agent session restarts (or restores) in place — scrollback preserved, no terminal respawn.
 
@@ -109,7 +109,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
 | `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
 | `sidebar_drag` | `true` | The non-interactive sidebar chrome doubles as a window-move drag handle. |
-| `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. The two lists scroll independently — the section grows to 2/5 of the window then scrolls within itself, so paging through a long project list never pushes the open tabs off the top. While the section is showing, the main list below it is dimmed until you hover it. Cascades global → window. |
+| `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. The section grows to 2/5 of the window, then scrolls on its own, independent of the main list. While the section is showing, the main list below it is dimmed until you hover it. Cascades global → window. |
 | `remember_tabs` | `false` | Each window comes back the way you left it: the tabs that had a terminal open respawn when it opens (their `cmd` re-runs, so `amux` reattaches), and the tab you were on is selected. Applies at launch and when you reopen a closed window. Cascades global → window. |
 | `auto_update` | `true` | Check for a new release on launch and every 6h. `false` suppresses the auto-check; **Check for Updates…** still works. Takes effect at next launch. |
 | `notify_debug` | `false` | Trace the notification path to `$TMPDIR/warden-notify-dbg.log` — a debug aid, read at launch (see [`docs/notifications.md`](docs/notifications.md)). |
@@ -184,19 +184,17 @@ Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
 
 ## Updates
 
-warden updates itself — no reinstall. On launch, every 6 hours while open (warden is long-running),
+warden updates itself — no reinstall. On launch, every 6 hours while open,
 and via **warden ▸ Check for Updates…**, it checks GitHub for a newer release; when one exists the
 sidebar shows an *Update available: v X* bar with a one-click **Update & Relaunch**.
 
 - **Confirm-to-install** — nothing installs silently; you approve each update, and the bar's
   **×** dismisses it for the session.
-- **Signed** — each update is verified against warden's own minisign key before it installs,
-  independent of Apple notarization.
+- **Signed** — each update's signature is verified before it installs.
 - **Opt out** with `auto_update = false` (the **Check for Updates…** menu item still works).
 
 Releases ship a **universal binary** — one `warden.app` that runs natively on both Apple Silicon
-and Intel Macs. Re-running the installer (or downloading the `.zip`) is needed only to bootstrap
-the first updater-capable version — **0.6.0** — after which updates land in-app.
+and Intel Macs. Versions before **0.6.0** need one manual reinstall to get in-app updates.
 
 ## Build & use
 
@@ -217,10 +215,7 @@ just build        # build the release warden.app (needs: cargo install tauri-cli
 just install      # build, install to /Applications, and relaunch
 ```
 
-`core.hooksPath` is per-clone local git config that the repo can't carry, so **run `just hooks` once
-after cloning** — without it neither git hook is active.
-
-A source build is ad-hoc signed; `just install` strips the quarantine xattr and, if a *Developer ID Application* cert is in your keychain, re-signs the installed app with it — on **macOS 26** that Team ID keeps every command run inside warden off a slow syspolicyd path. Release signing and notarization: [`docs/releasing.md`](docs/releasing.md).
+A source build is ad-hoc signed; `just install` re-signs it with your *Developer ID Application* cert if one is in your keychain, which on **macOS 26** avoids slow command launches inside warden. Release signing and notarization: [`docs/releasing.md`](docs/releasing.md).
 
 Or with cargo directly:
 
@@ -235,37 +230,29 @@ cargo run -p warden-config --bin warden -- fmt path/to/config.toml
 cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # check only, no write
 ```
 
-`warden-app` materializes a window for each `[[window]]` and hot-reloads on save; edit the config while it's running to watch windows and tabs appear, disappear, and recolour live.
-
 `warden validate` prints the resolved windows/tabs and any warnings; exit code 0 (ok), 1 (load/parse/validation error), 2 (usage). `warden fmt` rewrites a config in warden's house TOML style — consistent indentation, aligned `=`, section spacing (`--check` reports without writing, for a CI gate); `format_on_save = true` applies the same formatting automatically on each clean save.
 
 ## Layout
 
 - `crates/warden-config/` — the config crate (library + `warden` CLI).
-- `crates/warden-app/` — the macOS Tauri app: windows, the sidebar tab list, libghostty surfaces behind the `TerminalSurface` seam, and hot-reload wiring.
+- `crates/warden-app/` — the macOS Tauri app (windows, sidebar, libghostty terminals, hot-reload).
 - `assets/` — icon masters (`icon.svg`, `icon-app.svg`), rendered PNGs, the macOS `warden.icns`, and `build-icons.sh` to regenerate the rasters from the SVGs.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 
 ## Related projects
 
-warden is built on three shared library crates. Building it from source pulls them in
-automatically — they're pinned Git dependencies, resolved by a plain `cargo build` / `just run`
-with nothing extra to install:
+warden is built on three shared library crates; a source build fetches them automatically:
 
 - **[chrome-core](https://github.com/Lockyc/chrome-core)** — the sidebar chrome (banner,
-  grouped tab rows, resize drag, density tokens). A build-dependency: its CSS/JS is
-  materialized into warden's bundled web assets at compile time.
+  grouped tab rows, resize drag, density tokens).
 - **[config-core](https://github.com/Lockyc/config-core)** — the TOML config engine (parse,
   validate, format, hot-reload diff) behind warden's config and `warden fmt`.
-- **[shell-core](https://github.com/Lockyc/shell-core)** — the shared release tooling + a sliver
-  of Tauri runtime setup. `build.rs` materializes the release scripts (git-ignored) and stamps the
-  build; the app registers window geometry persistence/updater/process via its `register_plugins`.
+- **[shell-core](https://github.com/Lockyc/shell-core)** — shared release tooling and app-shell
+  runtime (window geometry, updater).
 
-Those same cores are also shared with two **sibling apps, [curator](https://github.com/Lockyc/curator)**
+The same cores are shared with two **sibling apps, [curator](https://github.com/Lockyc/curator)**
 (curates **browser tabs**) and **[lector](https://github.com/Lockyc/lector)** (curates **local
-documentation sites**), the way warden curates **terminals**. Neither is a dependency of warden —
-they're peer projects that just draw from the same cores. (warden's embedded terminal is a
-separate, vendored third-party component; see the License note below.)
+documentation sites**), the way warden curates **terminals**.
 
 If you want to iterate on a shared core, `just chrome-dev` builds warden against a sibling
 `../chrome-core` checkout (including uncommitted edits) and `just chrome-pin` re-pins to its
