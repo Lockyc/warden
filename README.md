@@ -20,7 +20,7 @@ warden is a **config-driven terminal multiplexer**. One TOML file is the source 
 
 A tab's command can be anything: a shell, a TUI, a build watcher, an agent launcher.
 
-It's also built for a flow: I pair each tab with [**agentmux**](https://github.com/lockyc/agentmux) (`amux`), a tmux-based agent launcher — so the stack nests `warden → agentmux → tmux` (warden itself embedding [libghostty](https://github.com/ghostty-org/ghostty) as its terminal surfaces). A multiplexer for a multiplexer for a multiplexer; it's turtles the rest of the way down.
+It was built around one workflow: I pair each tab with [**agentmux**](https://github.com/lockyc/agentmux) (`amux`), a tmux-based agent launcher — so the stack nests `warden → agentmux → tmux` (warden itself embedding [libghostty](https://github.com/ghostty-org/ghostty) as its terminal surfaces). A multiplexer for a multiplexer for a multiplexer; it's turtles the rest of the way down.
 
 macOS only.
 
@@ -29,7 +29,7 @@ macOS only.
 - **A window per `[[window]]`** — native macOS windows, each with a colour + title banner, a curator-style draggable sidebar, and the terminal under an overlay titlebar. The **Window** menu lists every configured window — raise an open one or reopen one you've closed (**⌘⇧T** reopens the last closed).
 - **Persistent, not last-window-quit** — warden opens the windows you mark `open_on_start` (default all) and shows a **home surface** when none are open, listing every configured window so you can raise or reopen one with a click. Scripts open one by title: `open 'warden://open?window=work'` launches warden if needed and opens (or focuses) that window. It's a persistent app: closing the last window never quits it — **⌘Q** does.
 - **Project tabs** — each tab is a real terminal in a working directory. `load_on_open` tabs spawn at launch and keep running; the rest spawn lazily on first focus — or, with `remember_tabs`, come back loaded if they were open when you quit. Tabs can be **grouped** into labelled sidebar sections.
-- **Project trees** — point a `[[window.root]]` at a directory (e.g. `~/Developer`) and warden auto-discovers every git project under it, rendering them as a collapsible tree of tabs — no per-project config needed. Pair it with amux `probe`/`kill`/`suspend` for a per-project session dot on every discovered project.
+- **Project trees** — point a `[[window.root]]` at a directory (e.g. `~/Developer`) and warden auto-discovers every git project under it, rendering them as a collapsible tree of tabs — no per-project config needed. Set `probe`/`kill`/`suspend` on the root (see the session-presence probes below) for a session dot on every discovered project.
 - **Live hot-reload** — edit the config and windows and tabs are added, removed, recoloured, and re-sectioned live on save. A missing config offers to create a starter one and an invalid one shows the error, both on the **home surface**; a parse error mid-edit instead keeps the last-good windows up behind an error banner. The **Config** menu opens the config file in your default editor or reveals it in Finder, so you needn't remember its path.
 - **Tab-row affordances** — a letter/colour tile and a **live/cold dot** (filled when the terminal is spawned, hollow when cold). Hover a live dot for a ✕ that **unloads** the tab; it respawns a fresh shell on next focus.
 - **Pop-out tabs** — pop the active tab into its own banner-only window with **⌘⇧O** (or hover the row's letter tile and click its pop-out icon). It's **session-preserving**: the live terminal, its scrollback, and the running process move across untouched — no restart. Closing the popped-out window returns the tab to where it came from (reopening its origin window first if you'd closed it), and the pop-in icon on its sidebar tile brings it back. A popped-out window remembers the size and position you last gave it, so a tab you pop out often reopens where you left it. A split tab pops out with both panes, their sides and the divider ratio intact.
@@ -47,11 +47,11 @@ To wire the session-presence dot — pairing with [agentmux](https://github.com/
 probe = '"$HOME/.agentmux/bin/amux" --probe'
 ```
 
-so the dot shows whether its amux session is alive: cyan while the agent session or its frame is up, a ghost when the session is gone but restorable. `probe_interval` sets the idle poll in seconds (default 5; `0` probes only on events such as tab focus or hot-reload); probes also run in quick bursts after each event, so keep the probe command fast. Details: [docs/probing.md](docs/probing.md). Name amux by **absolute path** — a Finder/Dock launch doesn't have your shell's PATH. Not using agentmux? Point `probe` at any check that exits 0 when your session exists.
+so the dot shows whether its amux session is alive: cyan while the amux session is up, a ghost when it's gone but restorable. `probe_interval` sets the idle poll in seconds (default 5; `0` probes only on events such as tab focus or hot-reload); probes also run in quick bursts after each event, so keep the probe command fast. Details: [docs/probing.md](docs/probing.md). Name amux by **absolute path** — a Finder/Dock launch doesn't have your shell's PATH. Not using agentmux? Point `probe` at any check that exits 0 when your session exists.
 
 A tab's optional `kill` and `suspend` commands end the session the dot represents: click the cyan dot once to arm it, then pick **☠ destroy** (runs `kill`) or **⏻ suspend** (runs `suspend`) — either way the command runs fire-and-forget and the tab unloads. With agentmux, set `kill = '"$HOME/.agentmux/bin/amux" --kill'` and `suspend = '"$HOME/.agentmux/bin/amux" --suspend'` (cwd = the tab dir): both tear down the **whole amux project**. `--kill` ends the agent tabs for good; `--suspend` keeps any that had a conversation restorable, so the dot turns to a ghost and reopening the tab offers them back in amux's restore picker. The dot controls need `probe`; ⌘⇧K / ⌘⇧S run `kill` / `suspend` on any tab.
 
-The mirror also holds. When the probe reports the session **gone** on a tab whose terminal is still live — hollow or ghost alike — the same dot becomes a one-click **start**: warden types the tab's `cmd` into the existing shell, so a dead or crashed agent session restarts (or restores) in place — scrollback preserved, no terminal respawn.
+The dot works in reverse too: when the probe reports the session **gone** on a tab whose terminal is still live — hollow or ghost alike — the same dot becomes a one-click **start**: warden types the tab's `cmd` into the existing shell, so a dead or crashed agent session restarts (or restores) in place — scrollback preserved, no terminal respawn.
 
 Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `cmd+N` tabs and windows.
 
@@ -102,8 +102,8 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `cmd` | none | Command typed into that shell on spawn. Cascades. |
 | `probe` | none | Session-presence check, run per tab (cwd = the tab's dir): exit 0 ⇒ cyan dot, exit 3 ⇒ ghost (restorable), anything else ⇒ hollow. Cascades. |
 | `probe_interval` | `5` | Slow-poll floor in seconds once a burst settles. `0` = event-driven only (still bursts on triggers, no steady poll). |
-| `kill` | none | Session-destroy command (☠), run on the presence dot's confirm row; the tab then unloads; ⌘⇧K / ⌘⇧S reach it on a tab without `probe`. Cascades. |
-| `suspend` | none | Session-suspend command (⏻, restorable), run on the presence dot's confirm row; the tab then unloads; ⌘⇧K / ⌘⇧S reach it on a tab without `probe`. Cascades. |
+| `kill` | none | Session-destroy command (☠), run on the presence dot's confirm row; the tab then unloads; ⌘⇧K runs it even on a tab without `probe`. Cascades. |
+| `suspend` | none | Session-suspend command (⏻, restorable), run on the presence dot's confirm row; the tab then unloads; ⌘⇧S runs it even on a tab without `probe`. Cascades. |
 | `split` | none | Give every tab a second pane. A table: `side` (`"left"`/`"right"`, default right), `size` (the second pane's share, `0.1`–`0.9`, default `0.5`), `cmd` (typed into it; absent = bare shell). Cascades as a whole table; `false` opts a level out, `true` = the default split. |
 | `format_on_save` | `false` | Rewrite this file in house style on each clean save (same formatting as `warden fmt`). |
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
@@ -151,7 +151,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `depth` | `6` | How deep to scan; must be ≥ 1. |
 | `shell` / `cmd` / `probe` / `kill` / `suspend` / `split` | inherited from the window | Overrides applied to every project discovered under this root. |
 
-Three rules the tables can't carry. **`cmd` is typed *into* the shell, not exec'd** — so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` resolves, and you drop back to a live prompt when it exits. **The cascading keys resolve nearest-level-wins** — global → window → tab, with `""` opting a level out of an inherited value (`cmd = ""` gives you a bare shell under a global `cmd`); projects discovered under a `[[window.root]]` have no tab level, so they cascade root → window → global instead. `split` cascades the same way but as a **whole table** — the nearest table wins entirely, and `split = false` is its `""`. And **grouping is cosmetic** — `[[window.group]]` only sections the sidebar; loose `[[window.tab]]`s appear first in a headerless section.
+Three rules the tables can't carry. **`cmd` is typed *into* the shell, not exec'd** — so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` resolves, and you drop back to a live prompt when it exits. **The cascading keys resolve nearest-level-wins** — a tab's value beats its window's, which beats the global one, with `""` opting a level out of an inherited value (`cmd = ""` gives you a bare shell under a global `cmd`); projects discovered under a `[[window.root]]` have no tab level, so the root takes the tab's place (root, then window, then global). `split` cascades the same way but as a **whole table** — the nearest table wins entirely, and `split = false` is its `""`. And **grouping is cosmetic** — `[[window.group]]` only sections the sidebar; loose `[[window.tab]]`s appear first in a headerless section.
 
 Everything above hot-reloads on save, except `auto_update` and `notify_debug` (read at launch).
 
@@ -198,10 +198,9 @@ and Intel Macs. Versions before **0.6.0** need one manual reinstall to get in-ap
 
 ## Build & use
 
-With [`just`](https://github.com/casey/just) (run `just` to list recipes):
-
-`just run` launches against [`examples/config.toml`](examples/config.toml), whose tabs point at the
-mock project tree documented in [`examples/projects/README.md`](examples/projects/README.md).
+With [`just`](https://github.com/casey/just) (run `just` to list recipes; `just run` launches
+against [`examples/config.toml`](examples/config.toml), whose tabs point at the mock project tree
+documented in [`examples/projects/README.md`](examples/projects/README.md)):
 
 ```sh
 just hooks        # once per clone: enable .githooks (pre-push doc gate + active-[patch] guard)
@@ -250,9 +249,9 @@ warden is built on three shared library crates; a source build fetches them auto
 - **[shell-core](https://github.com/Lockyc/shell-core)** — shared release tooling and app-shell
   runtime (window geometry, updater).
 
-The same cores are shared with two **sibling apps, [curator](https://github.com/Lockyc/curator)**
-(curates **browser tabs**) and **[lector](https://github.com/Lockyc/lector)** (curates **local
-documentation sites**), the way warden curates **terminals**.
+Two **sibling apps** share the same cores: [curator](https://github.com/Lockyc/curator) curates
+**browser tabs** and [lector](https://github.com/Lockyc/lector) curates **local documentation
+sites**, the way warden curates **terminals**.
 
 If you want to iterate on a shared core, `just chrome-dev` builds warden against a sibling
 `../chrome-core` checkout (including uncommitted edits) and `just chrome-pin` re-pins to its
