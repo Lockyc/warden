@@ -67,8 +67,8 @@ gate:
     cargo run -p warden-config --bin warden -- fmt --check examples/config.toml
 
 # Prints how long a high-priority "render" thread takes to finish a fixed workload while a
-# probe-equivalent fork storm runs at default vs background QoS. Not a CI gate (machine-specific).
-# Perf bench (macOS): render-starvation A/B for the probe sweep's background-QoS demotion
+# probe-equivalent fork storm runs at default vs utility QoS. Not a CI gate (machine-specific).
+# Perf bench (macOS): render-starvation A/B for the probe sweep's utility-QoS demotion
 [group("bench")]
 bench:
     cargo test -p warden-app --release probe_qos_bench -- --ignored --nocapture

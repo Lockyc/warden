@@ -73,11 +73,10 @@ type ProbeWork = (String, PathBuf, String, String);
 ///
 /// **Two mitigations bound this cost so it no longer stutters rendering:** agentmux's
 /// `session_log.sh dropped` short-circuits (grep-cost) when the cwd never appears in the ledger —
-/// the dominant `[[window.root]]` case — and every sweep worker runs at background QoS (see
-/// `set_background_qos`), so the `amux --probe` children inherit it and yield P-cores to
-/// libghostty's render thread even when a probe is expensive. `just bench` (`probe_qos_bench`) is
-/// the manual A/B that surfaces the QoS half. The QoS half is also why the probe burst lands on the
-/// E-cores: that is the intended shape, not misscheduling.
+/// the dominant `[[window.root]]` case — and every sweep worker runs at utility QoS (see
+/// `set_utility_qos`), so the `amux --probe` children inherit it and yield to libghostty's render
+/// thread even when a probe is expensive. `just bench` (`probe_qos_bench`) is the manual A/B that
+/// surfaces the QoS half.
 ///
 /// The ledger's cwd filter is exact string equality against the *interactive shell's* logical
 /// `$PWD`, which is why [`tab_command`] hands the child the configured `dir` as its `PWD` rather than
@@ -198,18 +197,25 @@ fn idle_due(now: Instant) -> Instant {
     now + Duration::from_secs(365 * 24 * 3600)
 }
 
-/// Demote the calling thread to background QoS (macOS). Spawned child processes inherit the
+/// Demote the calling thread to utility QoS (macOS). Spawned child processes inherit the
 /// spawning thread's QoS via `posix_spawn`, so a probe sweep worker that calls this makes its
-/// `sh -c "<probe>"` children background-QoS too — the scheduler parks them on the E-cores and
-/// starves them whenever libghostty's render thread wants a P-core. No-op off macOS so the pure
-/// probe unit tests stay portable. Orthogonal to cadence / concurrency / priority ordering.
+/// `sh -c "<probe>"` children utility-QoS too — below libghostty's user-interactive render thread,
+/// so the fork storm yields to rendering. No-op off macOS so the pure probe unit tests stay
+/// portable. Orthogonal to cadence / concurrency / priority ordering.
+///
+/// **Utility, never background.** Background QoS is starved without bound under contention (CPU
+/// and tier-3 I/O throttling): on a saturated machine a background-QoS `posix_spawn` of `/bin/sh`
+/// does not return for minutes. The spawn blocks *before* [`PROBE_TIMEOUT`] arms, so every pool
+/// worker wedges in the syscall, the sweep's `thread::scope` never joins, and the single scheduler
+/// stops probing every window — no dot updates at all until the load clears. Utility spawns the
+/// same `sh` in ~0.1s under that load.
 #[cfg(target_os = "macos")]
-fn set_background_qos() {
+fn set_utility_qos() {
     // SAFETY: a thread-local libpthread call with no preconditions; the return is advisory.
-    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0) };
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) };
 }
 #[cfg(not(target_os = "macos"))]
-fn set_background_qos() {}
+fn set_utility_qos() {}
 
 /// Background presence-probe scheduler. Owns per-window `WindowSchedule`s; wakes on a `bump` or every
 /// [`TICK`]. On a bump a window goes Fast (probe asap, reset agreement + burst clock); each due window
@@ -576,10 +582,10 @@ where
     thread::scope(|scope| {
         for _ in 0..n {
             scope.spawn(|| {
-                // Worker (and the probe children it spawns, via QoS inheritance) run at background
-                // QoS so the fork storm yields P-cores to libghostty's render thread. See
-                // set_background_qos. Must stay first — a child spawned before this would not inherit.
-                set_background_qos();
+                // Worker (and the probe children it spawns, via QoS inheritance) run at utility
+                // QoS so the fork storm yields to libghostty's render thread. See
+                // set_utility_qos. Must stay first — a child spawned before this would not inherit.
+                set_utility_qos();
                 loop {
                     // Claim the next item and release the cursor lock BEFORE probing — never hold it
                     // across the (slow) probe, or the pool serializes on it.
@@ -745,13 +751,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn set_background_qos_demotes_calling_thread() {
-        set_background_qos();
+    fn set_utility_qos_demotes_calling_thread() {
+        set_utility_qos();
         let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
         let mut prio: std::os::raw::c_int = 0;
         // SAFETY: reads the calling thread's QoS via libpthread; both out-params are stack-owned.
         unsafe { libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut prio) };
-        assert_eq!(class as u32, libc::qos_class_t::QOS_CLASS_BACKGROUND as u32);
+        assert_eq!(class as u32, libc::qos_class_t::QOS_CLASS_UTILITY as u32);
     }
 
     #[test]
@@ -1292,7 +1298,7 @@ mod tests {
     }
 
     // Perf bench (not a correctness test) — run via `just bench`. Measures whether demoting the
-    // probe sweep's child processes to background QoS keeps a high-priority "render" thread from
+    // probe sweep's child processes to utility QoS keeps a high-priority "render" thread from
     // being starved by the fork storm. A/B: baseline forks the burst from a default-QoS thread;
     // treatment routes the identical burst through the real `sweep` (workers demoted in Task 4).
     #[cfg(target_os = "macos")]
@@ -1376,12 +1382,12 @@ mod tests {
                 }
             });
         });
-        // Treatment: identical burst through the real sweep (workers demoted to background QoS).
+        // Treatment: identical burst through the real sweep (workers demoted to utility QoS).
         let treat = render_time_under(n_render, || {
             let _ = sweep(work.clone(), None, n, burn_child, |_, _| {});
         });
-        eprintln!("render under DEFAULT-qos burst   : {base:?}");
-        eprintln!("render under BACKGROUND-qos burst: {treat:?}");
+        eprintln!("render under DEFAULT-qos burst: {base:?}");
+        eprintln!("render under UTILITY-qos burst: {treat:?}");
         eprintln!(
             "(treatment should be <= baseline — the demoted burst yields P-cores to rendering)"
         );
