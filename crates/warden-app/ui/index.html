@@ -906,8 +906,9 @@
               // Refresh control on a [[window.root]] section header: re-scan the
               // window's roots so projects added/removed on disk appear/vanish.
               // The component passes the group name; the backend rescans the whole
-              // config, so it's ignored here (forward-compat).
-              invokeSafe("rescan_root");
+              // config, so it's ignored here (forward-compat). The returned promise drives the
+              // component's spinner + outcome; `rescan_root` emits its refresh before it returns.
+              return invokeSafe("rescan_root");
             },
             onSearchExit() {
               // Esc in the sidebar search: typing goes back to the terminal it came from.
