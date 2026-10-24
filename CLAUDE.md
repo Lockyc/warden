@@ -129,7 +129,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 - **Tab reconcile shapes** — which kept-tab edits are a live `set_meta` and which a `respawn_tabs`, and why a keyless `dir` change is remove + add: listed once, on `reconcile.rs::reconcile`.
 - **Stale frontend embed:** `ui/` embeds at compile time; `build.rs` watches `ui/index.html` (add any new hand-written page, but don't watch `ui/` broadly — build.rs writes there). "My HTML change didn't take" → touch a `.rs`.
 - **The empty-state placeholder is opaque and composited behind the content** (`#empty-state`); it lives in warden, not chrome-core.
-- **Icon safe area** (824×824 on the 1024 canvas) is enforced by `assets/build-icons.sh` — design the SVG edge-to-edge.
+- **Icon safe area** (824×824 on the 1024 canvas) is enforced by `plate icon`, which `assets/build-icons.sh` calls — design the SVG edge-to-edge.
 
 ## Shared cores: chrome-core and shell-core
 
