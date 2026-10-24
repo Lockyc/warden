@@ -173,6 +173,9 @@ pub struct InitDto {
     /// `[SPLIT_SIZE_MIN, SPLIT_SIZE_MAX]`: the share either pane of a split may take. The
     /// chrome clamps its divider drag to it and rejects a saved ratio outside it.
     pub split_band: [f64; 2],
+    /// This window's `[[window.root]]` names, from `last_good`: chrome-core paints a
+    /// root's section (head, ⟳ rescan, "No projects found") even when it found no projects.
+    pub trees: Vec<String>,
     pub tabs: Vec<TabDto>,
     /// The registry's active tab. The chrome owns selection, so it reads this on init only —
     /// to open on the tab `build_window` activated (a `remember_tabs` restore) rather than
@@ -641,6 +644,13 @@ impl WindowManager {
                 open_tabs_section: ws.open_tabs_section,
                 auto_update: self.last_good.auto_update,
                 split_band: SPLIT_BAND,
+                trees: self
+                    .last_good
+                    .windows
+                    .iter()
+                    .find(|w| w.title == ws.title)
+                    .map(|w| w.roots.iter().map(|r| r.name.clone()).collect())
+                    .unwrap_or_default(),
                 active: ws.registry.active_tab().map(str::to_string),
                 tabs,
                 error: ws.spawn_error.clone(),
