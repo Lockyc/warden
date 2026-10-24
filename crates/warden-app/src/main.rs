@@ -227,8 +227,8 @@ fn probe_now(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) {
     //  1. Replay the last-known presence from the cache NOW. A probe pass that finished between this
     //     window's build (when `init_dto` snapshotted an empty cache → hollow dots) and the listener
     //     registering had its live per-tab emits dropped, and — `prev` populated — no later pass
-    //     re-emits, so those dots would be stuck dark (the "launchpad dot never lights" bug, worst
-    //     for a tab whose session pre-existed so its state never changes after that lost first pass).
+    //     re-emits, so those dots would stay dark — for good, on a tab whose session pre-existed and
+    //     so never changes state after that lost first pass.
     //  2. Bump so a live burst refreshes anything that changed since.
     let snapshot = state.lock().presence_cache.snapshot(window.label());
     probe::emit_presence_snapshot(window.app_handle(), window.label(), &snapshot);

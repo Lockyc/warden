@@ -518,10 +518,9 @@ impl Registry {
     /// Snapshot every tab for the chrome.
     ///
     /// `warn` is **derived here, per render** — deliberately not cached on the entry.
-    /// A tab's directory can appear or vanish long after the tab is materialized (the
-    /// case that produced this: a config edit declared a tab ~30s before the repo was
-    /// cloned into place, and the ⚠ then stuck for the whole session, since `set_meta`
-    /// relabels a kept tab without touching a cached flag). The filesystem is the one
+    /// A tab's directory can appear or vanish long after the tab is materialized, and
+    /// `set_meta` relabels a kept tab without touching a cached flag, so a cached ⚠
+    /// would outlive the directory arriving. The filesystem is the one
     /// source of truth for "does this dir exist"; don't reintroduce a copy. The cost is
     /// one `stat` per tab, and this runs per sidebar render (window init / reconcile /
     /// activate), not per frame.
