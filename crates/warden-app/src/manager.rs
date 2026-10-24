@@ -163,9 +163,8 @@ pub struct InitDto {
     /// every snapshot — init and hot-reload refresh — applies the current mode.
     pub sidebar_drag: bool,
     /// Whether the sidebar pins a section of the currently-open tabs above the main
-    /// list, from the global `open_tabs_section` config (default false). Carried
-    /// per-window (it's global) so every snapshot — init and hot-reload refresh —
-    /// applies the current mode.
+    /// list: this window's resolved `open_tabs_section` (global → window, default
+    /// false), read from `WindowState`.
     pub open_tabs_section: bool,
     /// Whether warden checks for a new release on launch, from the global
     /// `auto_update` config (default true). Carried per-window (it's global); the
