@@ -71,11 +71,12 @@ echo "→ building release bundle (this takes a few minutes)"
 # 5. Install the built app into /Applications.
 bash scripts/install-app.sh "target/release/bundle/macos/warden.app"
 
-# 6. Seed the user config from the example (never overwrite an existing one).
+# 6. Seed the user config from the starter config — the one the home screen's "Create a starter
+#    config" writes (never overwrite an existing one).
 mkdir -p "$HOME/.config/warden"
 if [ ! -f "$HOME/.config/warden/config.toml" ]; then
-  cp examples/config.toml "$HOME/.config/warden/config.toml"
-  echo "→ seeded ~/.config/warden/config.toml from the example"
+  cp crates/warden-app/src/default-config.toml "$HOME/.config/warden/config.toml"
+  echo "→ seeded ~/.config/warden/config.toml from the starter config"
 else
   echo "→ ~/.config/warden/config.toml already exists — left untouched"
 fi

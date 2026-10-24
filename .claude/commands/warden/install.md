@@ -93,7 +93,7 @@ a few minutes. **If it fails, show the full output and stop** — do not run lat
 
 ### 5. Configure
 
-`install.sh` has already seeded `~/.config/warden/config.toml` from the example if it was
+`install.sh` has already seeded `~/.config/warden/config.toml` from the starter config if it was
 absent. Use AskUserQuestion to offer to open it for editing now:
 
 - **Open in editor** → `open -e ~/.config/warden/config.toml`
@@ -135,7 +135,7 @@ Print:
 **Installed**
 - warden vX.Y.Z → `/Applications/warden.app` ✓
 - Source clone → `~/.warden` (NOT_IN_REPO) or "built from checkout" (IN_REPO)
-- Config → `~/.config/warden/config.toml` (seeded from example / already existed)
+- Config → `~/.config/warden/config.toml` (seeded from the starter config / already existed)
 
 **Next steps**
 - Edit `~/.config/warden/config.toml` to define your windows + tabs (hot-reloads on save).
