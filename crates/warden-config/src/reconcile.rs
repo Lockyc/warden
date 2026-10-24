@@ -86,6 +86,9 @@ pub struct WindowUpdate {
     pub set_meta: Vec<(String, TabMeta)>,
     /// Kept tabs to tear down and respawn in place, each carrying its new full `Tab`.
     pub respawn_tabs: Vec<Tab>,
+    /// Kept tabs (by `Tab::key`) whose `load_on_open` turned on: spawn now if cold. A live
+    /// tab is left running.
+    pub spawn_tabs: Vec<String>,
 }
 
 fn find<'a>(windows: &'a [Window], name: &str) -> Option<&'a Window> {
@@ -118,7 +121,10 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 ///     `kill`, `suspend`, split `side`/`size` (a live re-layout), or the dir of the
 ///     `[[window.root]]` it was discovered under (its sidebar nesting derives from it).
 ///   - `respawn_tabs` — torn down and respawned in place, since a terminal can't migrate its
-///     cwd/session: a kept tab's [`TerminalSpec`] or `load_on_open`.
+///     cwd/session: a kept tab's [`TerminalSpec`].
+///   - `spawn_tabs` — a kept tab's `load_on_open` turned on. `load_on_open` says only when a
+///     tab comes up, so it never respawns one: turning it on spawns a cold tab, and turning
+///     it off leaves a live one running until the next launch.
 ///
 /// **What is NOT detected:**
 /// - A kept window's `width` or `height` change. Window size is owned by
@@ -186,6 +192,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 // `respawn_tabs` (the fields behind each are listed on this fn's docblock).
                 let mut set_meta: Vec<(String, TabMeta)> = Vec::new();
                 let mut respawn_tabs: Vec<Tab> = Vec::new();
+                let mut spawn_tabs: Vec<String> = Vec::new();
                 for nt in &np.tabs {
                     if let Some(ot) = op.tabs.iter().find(|ot| ot.key == nt.key) {
                         let layout = |t: &Tab| t.split.as_ref().map(|s| (s.side, s.size));
@@ -211,10 +218,11 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                                 },
                             ));
                         }
-                        if ot.terminal_spec() != nt.terminal_spec()
-                            || ot.load_on_open != nt.load_on_open
-                        {
+                        if ot.terminal_spec() != nt.terminal_spec() {
+                            // A respawn already honours the new load_on_open.
                             respawn_tabs.push(nt.clone());
+                        } else if !ot.load_on_open && nt.load_on_open {
+                            spawn_tabs.push(nt.key.clone());
                         }
                     }
                 }
@@ -225,6 +233,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     || order_changed
                     || !set_meta.is_empty()
                     || !respawn_tabs.is_empty()
+                    || !spawn_tabs.is_empty()
                 {
                     update.push(WindowUpdate {
                         title: np.title.clone(),
@@ -235,6 +244,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                         tab_order,
                         set_meta,
                         respawn_tabs,
+                        spawn_tabs,
                     });
                 }
             }
@@ -304,6 +314,24 @@ colour = "#0f8a8a"
             })
         );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn load_on_open_never_respawns_and_turning_it_on_spawns() {
+        let on = cfg(&BASE.replace(
+            "dir = \"/tmp/alpha\"",
+            "dir = \"/tmp/alpha\"\n  load_on_open = true",
+        ));
+        let r = reconcile(&cfg(BASE), &on);
+        assert_eq!(r.update.len(), 1);
+        assert!(r.update[0].respawn_tabs.is_empty());
+        assert_eq!(
+            r.update[0].spawn_tabs,
+            vec![on.windows[0].tabs[0].key.clone()]
+        );
+        // Off again: nothing to do — a live tab keeps running until the next launch.
+        let r = reconcile(&on, &cfg(BASE));
+        assert!(r.update.is_empty());
     }
 
     #[test]
