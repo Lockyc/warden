@@ -38,7 +38,7 @@ forwards the installing terminal's environment (`TERM_PROGRAM`, `TERMINFO`, `GHO
 into every tab. The script carries the why.
 
 The bundle icon is `crates/warden-app/icons/icon.icns`, from the SVG masters via
-`assets/build-icons.sh`, which also enforces the 824×824 safe area on the 1024 canvas (design the
+`assets/build-icons.sh`, whose `plate icon` call enforces the 824×824 safe area on the 1024 canvas (design the
 SVG edge-to-edge; the script wraps it).
 
 ## Install from source
