@@ -176,7 +176,7 @@ curl -fsSL https://raw.githubusercontent.com/lockyc/warden/main/install.sh | bas
 
 This clones warden to `~/.warden`, builds the release bundle (`cargo tauri build`),
 installs `warden.app` to `/Applications`, and seeds `~/.config/warden/config.toml`
-from the example if you don't already have one. Re-run it any time to update
+from the starter config if you don't already have one. Re-run it any time to update
 (it git-pulls and rebuilds). macOS only.
 
 Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
