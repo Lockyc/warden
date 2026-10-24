@@ -1238,6 +1238,7 @@ impl WindowManager {
                     order,
                     set_meta,
                     respawn_tabs,
+                    spawn_tabs,
                     open_tabs_section,
                 } => {
                     if let Some(ws) = self.windows.get_mut(&label) {
@@ -1258,6 +1259,7 @@ impl WindowManager {
                             && order == current_order
                             && set_meta.is_empty()
                             && respawn_tabs.is_empty()
+                            && spawn_tabs.is_empty()
                         {
                             continue;
                         }
@@ -1289,6 +1291,16 @@ impl WindowManager {
                         for m in &set_meta {
                             ws.registry
                                 .set_meta(&m.id, &m.meta, m.tree, m.tree_path.clone());
+                        }
+                        // load_on_open turned on: bring a cold tab up now, as a launch
+                        // would. A live tab is untouched, and a popped-out one is live.
+                        for id in &spawn_tabs {
+                            if ws.registry.is_detached(id) {
+                                continue;
+                            }
+                            if let Err(e) = ws.registry.ensure_spawned_by_id(id) {
+                                eprintln!("warden: spawn on load_on_open failed for {id:?}: {e}");
+                            }
                         }
                         ws.registry.reorder(&order);
                         // If the on-screen tab was respawned, it went cold — re-activate it

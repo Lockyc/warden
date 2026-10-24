@@ -273,6 +273,8 @@ pub enum WindowOp {
         set_meta: Vec<MetaPlan>,
         // Kept tabs whose terminal spec changed — respawn in place (remove+add by id).
         respawn_tabs: Vec<TabPlan>,
+        // Kept tab ids whose load_on_open turned on — spawn if cold, never respawn.
+        spawn_tabs: Vec<String>,
     },
 }
 
@@ -369,6 +371,7 @@ pub fn reconcile_ops(
             order: u.tab_order.clone(),
             set_meta,
             respawn_tabs,
+            spawn_tabs: u.spawn_tabs.clone(),
         });
     }
 
@@ -916,6 +919,7 @@ colour = "#111111"
                 tab_order: vec!["/r/Dev/gh/lockyc/warden".into()],
                 set_meta: Vec::new(),
                 respawn_tabs: Vec::new(),
+                spawn_tabs: Vec::new(),
             }],
         };
         let new_config = Config {
