@@ -163,8 +163,7 @@ come *up*). The transition is asynchronous: `amux --kill` returns before tmux te
 lands, and a started session takes a second or two to spin up. A plain burst treats each "still
 the old state" pass as *agreement*, so ~`AGREE_TARGET`×`FAST` (~1.2s) of the transition-not-yet-
 landed **settles** the window onto the pre-transition state and drops it to the slow floor
-(`probe_interval`, default 5s) — the real change is then only caught on the next slow poll (the
-"~5s dot lag after kill/start" bug).
+(`probe_interval`, default 5s) — the real change is then only caught on the next slow poll.
 
 The await closes that: it stashes `(id, want_present)` on the `WindowSchedule`, and the settle
 logic (`advance`, gated by `await_pending`) refuses to settle while that tab is still on the old
@@ -176,8 +175,7 @@ what makes it self-satisfying: an `activate` of an already-live tab arms `want_p
 `await_pending` returns false on the first pass (already `Present`), so a plain tab-switch never
 bursts to `CAP`. It is a **polling-duration heuristic only** — dots are always driven by the
 per-tab changed-only emit, so a mis-judged await can at worst poll `Fast` a bit longer, never
-paint a wrong dot. **This replaces `start_session`'s old fixed 1s/3s re-bump band-aid** — a single
-`bump_tab_await` now covers a slow start (don't reintroduce the delayed re-bumps). `activate_tab`
+paint a wrong dot. A single `bump_tab_await` covers a slow start; don't add delayed re-bumps. `activate_tab`
 arms it only for a **fresh cold-spawn of a probe-enabled tab** (`Registry::activate` reports the
 fresh spawn; `tab_has_probe` gates it) so a warm switch or a dotless tab stays a plain `bump_tab`.
 
