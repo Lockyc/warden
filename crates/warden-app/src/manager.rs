@@ -1328,10 +1328,8 @@ impl WindowManager {
 /// - Gone → unloaded, then removed: the unload is what leans the selection to a live neighbour
 ///   when this was the visible tab, exactly as unloading it by hand does. Returns
 ///   `Some(new_active)` (`Registry::unload`'s answer) so the caller can tell the chrome.
-/// - Terminal spec changed (`dir`/`shell`/startup/split presence or its startup — the fields
-///   `warden_config::reconcile` routes to `respawn_tabs`) → respawned through
-///   `apply_tab_reconcile`, exactly as a docked tab would have been. The entry moves to the
-///   end; the caller reorders.
+/// - [`warden_config::TerminalSpec`] changed → respawned through `apply_tab_reconcile`, exactly
+///   as a docked tab would have been. The entry moves to the end; the caller reorders.
 /// - Otherwise → `set_meta` from the plan (title/group/probe/kill/suspend/split layout/tree).
 ///
 /// `None` whenever the tab stays.
@@ -1346,13 +1344,11 @@ fn reconcile_returned_tab(
         registry.remove(id);
         return Some(new_active);
     };
-    let second_cmd = |s: &TabSpec| s.split.as_ref().map(|sp| sp.startup.clone());
+    fn terminal(s: &TabSpec) -> warden_config::TerminalSpec<'_> {
+        warden_config::TerminalSpec::new(&s.dir, &s.shell, s.startup.as_deref(), s.split.as_ref())
+    }
     let n = &tp.spec;
-    if spawned.dir != n.dir
-        || spawned.shell != n.shell
-        || spawned.startup != n.startup
-        || second_cmd(spawned) != second_cmd(n)
-    {
+    if terminal(spawned) != terminal(n) {
         apply_tab_reconcile(registry, &[], &[], std::slice::from_ref(tp));
         return None;
     }

@@ -22,6 +22,45 @@ pub struct TabMeta {
     pub split: Option<Split>,
 }
 
+/// What a tab's terminal runs — the fields a running PTY can't take on in place, so a change to
+/// any of them means a respawn. The one home for that decision: [`reconcile`] and the app's
+/// popped-out-tab return path both compare these, so a docked and a detached tab decide alike.
+/// `split_startup` is `None` for no declared split, `Some(None)` for a split running a bare shell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalSpec<'a> {
+    pub dir: &'a Path,
+    pub shell: &'a str,
+    pub startup: Option<&'a str>,
+    pub split_startup: Option<Option<&'a str>>,
+}
+
+impl<'a> TerminalSpec<'a> {
+    pub fn new(
+        dir: &'a Path,
+        shell: &'a str,
+        startup: Option<&'a str>,
+        split: Option<&'a Split>,
+    ) -> Self {
+        Self {
+            dir,
+            shell,
+            startup,
+            split_startup: split.map(|s| s.startup.as_deref()),
+        }
+    }
+}
+
+impl Tab {
+    pub fn terminal_spec(&self) -> TerminalSpec<'_> {
+        TerminalSpec::new(
+            &self.dir,
+            &self.shell,
+            self.startup.as_deref(),
+            self.split.as_ref(),
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reconciliation {
     pub open: Vec<Window>,
@@ -79,8 +118,7 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 ///     `kill`, `suspend`, split `side`/`size` (a live re-layout), or the dir of the
 ///     `[[window.root]]` it was discovered under (its sidebar nesting derives from it).
 ///   - `respawn_tabs` — torn down and respawned in place, since a terminal can't migrate its
-///     cwd/session: a kept tab's `dir`, `shell`, `startup` (`cmd`), `load_on_open`, or split
-///     presence/`startup` (the second pane has to be (re)spawned to run it).
+///     cwd/session: a kept tab's [`TerminalSpec`] or `load_on_open`.
 ///
 /// **What is NOT detected:**
 /// - A kept window's `width` or `height` change. Window size is owned by
@@ -151,7 +189,6 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 for nt in &np.tabs {
                     if let Some(ot) = op.tabs.iter().find(|ot| ot.key == nt.key) {
                         let layout = |t: &Tab| t.split.as_ref().map(|s| (s.side, s.size));
-                        let second_cmd = |t: &Tab| t.split.as_ref().map(|s| s.startup.clone());
                         if ot.title != nt.title
                             || ot.group != nt.group
                             || ot.probe != nt.probe
@@ -174,11 +211,8 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                                 },
                             ));
                         }
-                        if ot.dir != nt.dir
-                            || ot.shell != nt.shell
-                            || ot.startup != nt.startup
+                        if ot.terminal_spec() != nt.terminal_spec()
                             || ot.load_on_open != nt.load_on_open
-                            || second_cmd(ot) != second_cmd(nt)
                         {
                             respawn_tabs.push(nt.clone());
                         }
