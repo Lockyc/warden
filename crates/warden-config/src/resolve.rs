@@ -2317,7 +2317,7 @@ title = "a"
   [[window.tab]]
   title = "t"
   dir = "~/proj"
-  server = "nucleus"
+  server = "remote-host"
 "#,
         )
         .unwrap();
@@ -2358,7 +2358,7 @@ title = "a"
   [[window.root]]
   name = "projects"
   dir = "/srv/projects"
-  server = "nucleus"
+  server = "remote-host"
 "#,
         )
         .unwrap();
