@@ -1,0 +1,13 @@
+[package]
+name = "warden-relay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rex-client = { path = "../rex-client" }
+serde_json = "1"
+libc = "0.2"
+
+[dev-dependencies]
+rex-client = { path = "../rex-client", features = ["fake"] }
