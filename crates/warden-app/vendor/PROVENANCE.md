@@ -26,8 +26,8 @@ directory). The library and the resources come from the **same release** — kee
 - **Toolchain:** Zig 0.17.0 (Ghostty's `minimum_zig_version` at that commit) on a GitHub `macos-15`
   runner (Sequoia SDK — the SDK the build is verified against). Built via Ghostty's own
   `-Demit-xcframework` target.
-- **Provenance:** the release carries a GitHub **build-provenance attestation** over the zip
-  (`gh attestation verify GhosttyKit.xcframework.zip --repo lockyc/libghostty-build`).
+- **Provenance:** the release carries a GitHub **build-provenance attestation** over each of the
+  three zips (`gh attestation verify <zip> --repo lockyc/libghostty-build`).
 
 ## `resources/` — required, not optional
 
