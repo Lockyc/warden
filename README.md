@@ -140,6 +140,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `id` | unset | Stable identity, needed only to disambiguate two tabs that share a `dir`. Otherwise the `dir` *is* the identity. |
 | `load_on_open` | `false` | Spawn at launch and keep running in the background. Otherwise a tab spawns lazily on first focus. |
 | `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Per-tab overrides. |
+| `project_colour` | assigned | `#rgb` / `#rrggbb` colour pinning this project's mark. Unset, warden assigns each project one from a fixed pool of twelve, stable across runs; a pinned pool colour is left out of everyone else's pick. Tab and root only. |
 
 **`[[window.group]]`** — a labelled sidebar section:
 
@@ -155,6 +156,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `name` | basename of `dir` | Section header for the discovered tree. |
 | `depth` | `6` | How deep to scan; must be ≥ 1. |
 | `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Overrides applied to every project discovered under this root. |
+| `project_colour` | assigned | Pins one colour for every project discovered under this root (see the tab key of the same name). |
 
 Three rules the tables can't carry. **`cmd` is typed *into* the shell, not exec'd** — so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` resolves, and you drop back to a live prompt when it exits. **The cascading keys resolve nearest-level-wins** — a tab's value beats its window's, which beats the global one, with `""` opting a level out of an inherited value (`cmd = ""` gives you a bare shell under a global `cmd`); projects discovered under a `[[window.root]]` have no tab level, so the root takes the tab's place (root, then window, then global). `split` cascades the same way but as a **whole table** — the nearest table wins entirely, and `split = false` is its `""`. And **grouping is cosmetic** — `[[window.group]]` only sections the sidebar; loose `[[window.tab]]`s appear first in a headerless section.
 

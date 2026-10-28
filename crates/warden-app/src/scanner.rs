@@ -40,6 +40,7 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 kill: root.kill.clone(),
                 suspend: root.suspend.clone(),
                 resume: root.resume.clone(),
+                project_colour: root.project_colour,
                 server: root.server.clone(),
                 split: root.split.clone(),
             }
@@ -79,6 +80,7 @@ mod tests {
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -127,6 +129,7 @@ mod tests {
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -148,6 +151,7 @@ mod tests {
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -204,6 +208,7 @@ mod tests {
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -217,5 +222,28 @@ mod tests {
         assert_eq!(warden.startup.as_deref(), Some("run"));
         assert_eq!(warden.probe.as_deref(), Some("p"));
         assert!(!warden.load_on_open);
+    }
+    #[test]
+    fn discovered_tab_inherits_root_project_colour() {
+        use warden_config::{Colour, Root};
+        let base = tmp("pcolour");
+        git(&base.join("proj"));
+        let root = Root {
+            name: "Developer".into(),
+            dir: base.clone(),
+            depth: 6,
+            shell: "sh".into(),
+            startup: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            resume: None,
+            project_colour: Some(Colour::parse("#112233").unwrap()),
+            server: None,
+            split: None,
+        };
+        let tabs = synthesize_tabs(&root);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].project_colour, Colour::parse("#112233").ok());
     }
 }

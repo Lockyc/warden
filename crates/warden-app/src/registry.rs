@@ -1176,6 +1176,7 @@ impl Registry {
             t.primary.spec.kill = meta.kill.clone();
             t.primary.spec.suspend = meta.suspend.clone();
             t.primary.spec.resume = meta.resume.clone();
+            t.primary.spec.project_colour = meta.project_colour;
             t.primary.spec.split = meta.split.clone();
             // Tree-ness can flip on a kept tab when its group moves between a root
             // section and a plain group (curated↔discovered shadowing) — recomputed
@@ -2109,6 +2110,7 @@ mod tests {
             split: None,
             server: None,
             resume: None,
+            project_colour: None,
         }
     }
     fn spec_with_probe(id: &str, dir: &str, probe: Option<&str>) -> TabSpec {
@@ -2127,6 +2129,7 @@ mod tests {
             split: None,
             server: None,
             resume: None,
+            project_colour: None,
         }
     }
 
@@ -2224,6 +2227,7 @@ mod tests {
                 kill: Some("kill-y".into()),
                 suspend: None,
                 resume: None,
+                project_colour: None,
                 split: None,
             },
             true,
@@ -2248,6 +2252,7 @@ mod tests {
                 kill: None,
                 suspend: None,
                 resume: None,
+                project_colour: None,
                 split: None,
             },
             false,
@@ -2796,6 +2801,7 @@ mod tests {
                 kill: None,
                 suspend: None,
                 resume: None,
+                project_colour: None,
                 title: "a".into(),
                 split: Some(warden_config::Split {
                     side: warden_config::SplitSide::Right,
@@ -3407,6 +3413,7 @@ mod tests {
                 kill: None,
                 suspend: None,
                 resume: Some("agent-wrapper".into()),
+                project_colour: None,
                 split: None,
             },
             false,

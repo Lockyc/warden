@@ -50,6 +50,7 @@ pub fn tab_to_plan(root_dirs: &HashMap<&str, &Path>, t: &Tab) -> TabPlan {
             split: t.split.clone(),
             server: t.server.clone(),
             resume: t.resume.clone(),
+            project_colour: t.project_colour,
         },
         load_on_open: t.load_on_open,
     }
@@ -617,6 +618,7 @@ colour = "#0f8a8a"
                 kill: None,
                 suspend: None,
                 resume: None,
+                project_colour: None,
                 server: None,
                 split: None,
             }],
@@ -630,6 +632,7 @@ colour = "#0f8a8a"
                 kill: None,
                 suspend: None,
                 resume: None,
+                project_colour: None,
                 server: None,
                 split: None,
             }],
@@ -912,6 +915,7 @@ colour = "#111111"
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -950,6 +954,7 @@ colour = "#111111"
                     kill: None,
                     suspend: None,
                     resume: None,
+                    project_colour: None,
                     server: None,
                     split: None,
                 }],
@@ -1003,6 +1008,7 @@ colour = "#111111"
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -1042,6 +1048,7 @@ colour = "#111111"
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -1062,6 +1069,7 @@ colour = "#111111"
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };

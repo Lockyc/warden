@@ -1534,6 +1534,7 @@ fn reconcile_returned_tab(
         kill: n.kill.clone(),
         suspend: n.suspend.clone(),
         resume: n.resume.clone(),
+        project_colour: n.project_colour,
         title: n.title.clone(),
         split: n.split.clone(),
     };
@@ -1638,6 +1639,7 @@ mod tests {
             split: None,
             server: None,
             resume: None,
+            project_colour: None,
         }
     }
 
@@ -1739,6 +1741,7 @@ mod tests {
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };
@@ -1752,6 +1755,7 @@ mod tests {
             kill: None,
             suspend: None,
             resume: None,
+            project_colour: None,
             server: None,
             split: None,
         };

@@ -345,6 +345,7 @@ mod tests {
             split: None,
             server: Some(server.into()),
             resume: None,
+            project_colour: None,
         }
     }
 
