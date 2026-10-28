@@ -116,7 +116,7 @@ pub(crate) fn sync_server_menu(app: &tauri::AppHandle) {
         let why = hub.stoppable(&server).err();
         let _ = item.set_enabled(why.is_none());
         let _ = item.set_text(match why {
-            None => format!("{server}…"),
+            None => server.clone(),
             Some(why) => format!("{server} — {why}"),
         });
     }

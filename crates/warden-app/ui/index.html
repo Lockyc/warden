@@ -362,8 +362,7 @@
       #server-sleep ul { margin: 0; padding: 0; list-style: none; max-height: 40vh; overflow-y: auto;
         display: flex; flex-direction: column; gap: 2px; }
       #server-sleep li { display: flex; gap: 6px; align-items: baseline; }
-      #server-sleep .ss-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-        white-space: nowrap; }
+      #server-sleep .ss-name { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
       #server-sleep .ss-kind { flex: none; color: #d9a7a7; font-size: 11px; }
       #server-sleep .ss-btns { display: flex; gap: 6px; justify-content: flex-end; }
       #server-sleep button { font: inherit; color: inherit; border: 0; cursor: pointer;
@@ -1836,7 +1835,6 @@
         list.replaceChildren(...losses.map((l) => {
           const li = agentEl("li");
           li.append(agentEl("span", "ss-name", l.name), agentEl("span", "ss-kind", SS_KIND[l.kind] || l.kind));
-          li.title = l.name;
           return li;
         }));
         placeServerSleep();

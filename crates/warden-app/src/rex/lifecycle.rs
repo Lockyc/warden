@@ -347,15 +347,18 @@ impl RexHub {
     }
 
     /// What sleeping `server` does, from its session list as last heard: per listed session, the
-    /// main pane mapped to it sleeps its live resumable agent records and loses the rest (its
-    /// windows as the hub follows them, else as recorded); a split mapped to it is a shell lost;
-    /// one nothing maps is a session lost. `title` names a tab by its key.
+    /// main pane mapped to it sleeps its live resumable agent records and loses the rest, matched
+    /// against the session's windows — as the hub follows them, else read now
+    /// ([`RexHub::read_windows`]), so a window no record knows is listed too; a split mapped to it
+    /// is a shell lost; one nothing maps is a session lost. `title` names a tab by its key. Reads
+    /// the network (worker only); `Err` when a session's windows can't be read, since the plan
+    /// would then miss what it loses.
     pub fn plan_server_sleep(
         &self,
-        store: &AgentStore,
+        store: &Mutex<AgentStore>,
         server: &str,
         title: &dyn Fn(&str) -> Option<String>,
-    ) -> ServerSleepPlan {
+    ) -> Result<ServerSleepPlan, RexError> {
         let (sessions, mapped) = {
             let st = self.inner.lock();
             let sessions = st.sessions(server).map(<[_]>::to_vec).unwrap_or_default();
@@ -387,11 +390,12 @@ impl RexHub {
                     });
                     continue;
                 }
-                let mut records = store.records(key);
-                if self.inner.watching(server, &s.id) {
-                    let windows = self.windows(server, &s.id);
-                    records = agents::reconcile(key, &records, &windows, true, 0);
-                }
+                let windows = if self.inner.watching(server, &s.id) {
+                    self.windows(server, &s.id)
+                } else {
+                    self.read_windows(server, &s.id)?
+                };
+                let records = agents::reconcile(key, &lock(store).records(key), &windows, true, 0);
                 let tab = title(key).unwrap_or_else(|| key.to_owned());
                 for r in agents::in_list_order(&records) {
                     match (r.state, &r.resume) {
@@ -406,7 +410,7 @@ impl RexHub {
             }
         }
         plan.lose = [agents, shells, unowned].concat();
-        plan
+        Ok(plan)
     }
 
     /// Sleep `server` as `plan` says: each of its records, one at a time under its pane's hold,
@@ -655,28 +659,24 @@ pub fn current_list(app: &AppHandle, tab_id: &str) -> Option<AgentListDto> {
     Some(dto)
 }
 
-/// Sleep Rex server `server` from window `label` (main thread). With a loss not among `accepted`
-/// (the names the user confirmed), nothing happens yet: window `label` is asked to confirm
+/// Sleep Rex server `server` from window `label` (main thread). A worker plans it
+/// ([`RexHub::plan_server_sleep`], which reads Rex). With a loss not among `accepted` (the names
+/// the user confirmed), nothing happens yet: window `label` is asked to confirm
 /// (`warden:server-sleep-confirm`, every loss by name) and answers with this again. Otherwise
-/// every pane on the server lets go of its surface — each tab goes cold, as an unload — and a
-/// worker sleeps the server ([`RexHub::sleep_server`]); its failure goes to `label`'s error
-/// banner. Then the server's agent lists and presence repaint.
+/// every pane on the server lets go of its surface ([`let_go`]) and a worker sleeps the server
+/// ([`RexHub::sleep_server`]). A failure goes to `label`'s error banner; after the sleep the
+/// server's agent lists and presence repaint.
 pub fn sleep_server(
     app: &AppHandle,
     label: &str,
     server: &str,
     accepted: &[String],
 ) -> Result<(), String> {
-    let (Some(hub), Some(store)) = (
-        app.try_state::<RexHub>(),
-        app.try_state::<Mutex<AgentStore>>(),
-    ) else {
-        return Err("Rex isn't available".to_owned());
-    };
+    let hub = app.try_state::<RexHub>().ok_or("Rex isn't available")?;
     hub.stoppable(server)
         .map_err(|why| format!("Rex server {server}: {why}"))?;
-    let st = app.state::<ManagerState>();
     let titles: std::collections::HashMap<String, String> = {
+        let st = app.state::<ManagerState>();
         let m = st.lock();
         m.windows
             .values()
@@ -688,19 +688,79 @@ pub fn sleep_server(
             })
             .collect()
     };
-    let plan = hub.plan_server_sleep(&lock(&store), server, &|k| titles.get(k).cloned());
-    if !plan.unconfirmed(accepted).is_empty() {
-        let _ = app.emit_to(
-            label,
-            "warden:server-sleep-confirm",
-            serde_json::json!({ "label": label, "server": server, "losses": plan.lose }),
-        );
-        return Ok(());
-    }
+    let (app, label, server) = (app.clone(), label.to_owned(), server.to_owned());
+    let accepted = accepted.to_vec();
+    worker("warden-server-sleep", move || {
+        let planned = match (
+            app.try_state::<RexHub>(),
+            app.try_state::<Mutex<AgentStore>>(),
+        ) {
+            (Some(hub), Some(store)) => {
+                hub.plan_server_sleep(&store, &server, &|k| titles.get(k).cloned())
+            }
+            _ => Err(RexError::Unreachable),
+        };
+        let main = app.clone();
+        let _ = app.run_on_main_thread(move || match planned {
+            Err(e) => fail(
+                &main,
+                &label,
+                &format!("couldn't sleep Rex server {server}: {e}"),
+            ),
+            Ok(plan) if !plan.unconfirmed(&accepted).is_empty() => {
+                let _ = main.emit_to(
+                    label.as_str(),
+                    "warden:server-sleep-confirm",
+                    serde_json::json!({ "label": label, "server": server, "losses": plan.lose }),
+                );
+            }
+            Ok(plan) => {
+                let projects = let_go(&main, &server);
+                stop_server(&main, label, server, plan, projects);
+            }
+        });
+    })
+}
+
+/// Run `f` on a named worker thread; `Err` says it couldn't start.
+fn worker(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(f)
+        .map(|_| ())
+        .map_err(|e| format!("couldn't start {name}: {e}"))
+}
+
+/// Show `message` in window `label`'s error banner (main thread).
+fn fail(app: &AppHandle, label: &str, message: &str) {
+    eprintln!("warden: {label}: {message}");
+    let _ = app.emit_to(
+        label,
+        "warden:error",
+        serde_json::json!({ "label": label, "message": message }),
+    );
+}
+
+/// Every pane on `server` lets go of its surface (main thread), so no relay sees its stream die
+/// and reads it as an exit: a popped-out tab on it ends whole, as when its program exits
+/// ([`WindowManager::end_detached`](crate::manager::WindowManager::end_detached)), and every
+/// docked tab on it goes cold, as an unload. Returns the tabs, for their lists to repaint.
+fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
+    let st = app.state::<ManagerState>();
     let mut projects = Vec::new();
     let mut exited = Vec::new();
+    let mut ended = Vec::new();
     {
         let mut m = st.lock();
+        let popped: Vec<String> = m
+            .detached
+            .iter()
+            .filter(|(_, d)| d.spec.server.as_deref() == Some(server))
+            .map(|(l, _)| l.clone())
+            .collect();
+        for dlabel in popped {
+            ended.extend(m.end_detached(app, &dlabel));
+        }
         let labels: Vec<String> = m.windows.keys().cloned().collect();
         for l in labels {
             let Some(ws) = m.windows.get_mut(&l) else {
@@ -719,6 +779,9 @@ pub fn sleep_server(
             m.record_session(&l);
         }
     }
+    for e in ended {
+        crate::manager::announce_detached_ended(app, e);
+    }
     for (l, id, new_active) in exited {
         let _ = app.emit_to(
             l.as_str(),
@@ -729,10 +792,22 @@ pub fn sleep_server(
     crate::sync_agent_menu(app);
     projects.sort();
     projects.dedup();
-    let (app, label, server) = (app.clone(), label.to_owned(), server.to_owned());
-    std::thread::Builder::new()
-        .name("warden-server-sleep".into())
-        .spawn(move || {
+    projects
+}
+
+/// Sleep `server` as `plan` says on a worker, then repaint `projects`' lists, the server's
+/// presence and the Sleep Server menu (main thread); a failure goes to window `label`'s banner.
+fn stop_server(
+    app: &AppHandle,
+    label: String,
+    server: String,
+    plan: ServerSleepPlan,
+    projects: Vec<String>,
+) {
+    let app = app.clone();
+    let started = worker("warden-server-stop", {
+        let (app, label) = (app.clone(), label.clone());
+        move || {
             let result = match (
                 app.try_state::<RexHub>(),
                 app.try_state::<Mutex<AgentStore>>(),
@@ -743,12 +818,10 @@ pub fn sleep_server(
             let main = app.clone();
             let _ = app.run_on_main_thread(move || {
                 if let Err(e) = result {
-                    let message = format!("couldn't sleep Rex server {server}: {e}");
-                    eprintln!("warden: {label}: {message}");
-                    let _ = main.emit_to(
-                        label.as_str(),
-                        "warden:error",
-                        serde_json::json!({ "label": label, "message": message }),
+                    fail(
+                        &main,
+                        &label,
+                        &format!("couldn't sleep Rex server {server}: {e}"),
                     );
                 }
                 for p in &projects {
@@ -757,9 +830,11 @@ pub fn sleep_server(
                 super::spawn::hub_changed(&main, Some(&server));
                 crate::sync_server_menu(&main);
             });
-        })
-        .map(|_| ())
-        .map_err(|e| format!("couldn't start sleeping Rex server: {e}"))
+        }
+    });
+    if let Err(e) = started {
+        fail(&app, &label, &e);
+    }
 }
 
 /// Run `op` on tab `tab_id`'s agent pane for window `label` (main thread). A refusal answers at
@@ -1619,7 +1694,7 @@ mod tests {
             ],
         );
 
-        let plan = hub.plan_server_sleep(&s.lock().unwrap(), "local", &title);
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
         assert_eq!(plan.sleep, ["a"], "only a live, resumable agent sleeps");
         let item = |kind, name: &str| LossItem {
             kind,
@@ -1635,6 +1710,47 @@ mod tests {
         );
         let v = serde_json::to_value(&plan.lose[1]).unwrap();
         assert_eq!(v, json!({"kind": "shell", "name": "Proj · terminal"}));
+    }
+
+    #[test]
+    fn plan_reads_the_windows_of_a_session_the_hub_doesnt_follow() {
+        use super::{LossItem, LossKind};
+        let f = fake(Some("session:old"), vec![]);
+        let read = crate::rex::agent_open::tests::view(
+            "session:old",
+            &[
+                ("window:1", "block:1", "a"),
+                ("window:9", "block:9", "stray"),
+            ],
+        );
+        f.reply("session.view", read["view"].clone());
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        hub.connect("local").expect("connect");
+        let s = store(vec![record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        )]);
+
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
+        assert_eq!(f.requests_for("session.view").len(), 1);
+        assert_eq!(plan.sleep, ["a"]);
+        assert_eq!(
+            plan.lose,
+            [LossItem {
+                kind: LossKind::Agent,
+                name: "Proj · stray".into(),
+            }],
+            "a window no record knows still ends"
+        );
+        assert_eq!(
+            state_of(&s, "a").unwrap().state,
+            RecordState::Live,
+            "planning changes no record"
+        );
     }
 
     #[test]
@@ -1657,7 +1773,7 @@ mod tests {
                 ),
             ],
         );
-        let plan = hub.plan_server_sleep(&s.lock().unwrap(), "local", &title);
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
         assert_eq!(plan.sleep, ["a", "b"]);
         assert!(plan.lose.is_empty());
         assert!(
@@ -1675,7 +1791,7 @@ mod tests {
                 Some("claude --resume aaa"),
             )],
         );
-        let plan = hub.plan_server_sleep(&s.lock().unwrap(), "local", &title);
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
         let named: Vec<String> = plan.lose.iter().map(|l| l.name.clone()).collect();
         assert!(plan.unconfirmed(&named).is_empty(), "every loss confirmed");
         let fewer = &named[..named.len() - 1];
@@ -1722,7 +1838,7 @@ mod tests {
             rex_client::fake::Reply::ok(json!({}))
         });
 
-        let plan = hub.plan_server_sleep(&s.lock().unwrap(), "local", &title);
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
         hub.sleep_server(&s, "local", &plan).expect("sleep server");
 
         assert_eq!(
@@ -1765,7 +1881,7 @@ mod tests {
                 Some("claude --resume aaa"),
             )],
         );
-        let plan = hub.plan_server_sleep(&s.lock().unwrap(), "local", &title);
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
         hub.sleep_server(&s, "local", &plan).expect("sleep server");
         assert!(f.stopped());
         assert_eq!(f.wait_control_connections(0, Duration::from_secs(5)), 0);
@@ -1789,7 +1905,7 @@ mod tests {
             )],
         );
         f.fail("server.stop", "forbidden", "local socket only", 403);
-        let plan = hub.plan_server_sleep(&s.lock().unwrap(), "local", &title);
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
         assert!(hub.sleep_server(&s, "local", &plan).is_err());
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
         assert_eq!(hub.live_sessions("local").len(), 1);
