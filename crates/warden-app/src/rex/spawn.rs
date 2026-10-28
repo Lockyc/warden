@@ -256,11 +256,14 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, project: Option<String>)
                         let left = hub.end_agent_if_exited(&pane_key);
                         let store = app.try_state::<Mutex<AgentStore>>();
                         if let (Some(left), Some(store)) = (left, store) {
-                            let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
-                            let records = store.records(project);
-                            let next =
-                                agents::reconcile(project, &records, &left, true, unix_now());
-                            store.set_project(project, next);
+                            {
+                                let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+                                let records = store.records(project);
+                                let next =
+                                    agents::reconcile(project, &records, &left, true, unix_now());
+                                store.set_project(project, next);
+                            }
+                            super::lifecycle::emit_agents(&app, project);
                         }
                     }
                 }
@@ -272,8 +275,9 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, project: Option<String>)
     }
 }
 
-/// Destroy the Rex sessions of `pane_keys` (☠ on tab `id` of window `label`) on a worker, then
-/// refresh ([`hub_changed`]) and burst the window's probes the way a `kill` command's end does.
+/// Destroy the Rex sessions of `pane_keys` (☠ on tab `id` of window `label`) on a worker, drop
+/// the tab's agent records with them, then refresh ([`hub_changed`]) and burst the window's probes
+/// the way a `kill` command's end does.
 pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -286,6 +290,15 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
                     }
                 }
             }
+            if let Some(store) = app.try_state::<Mutex<AgentStore>>() {
+                let removed = store
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove_project(&id);
+                if removed {
+                    super::lifecycle::emit_agents(&app, &id);
+                }
+            }
             hub_changed(&app, None);
             crate::probe::bump_tab_await(&label, &id, false);
         });
@@ -295,7 +308,7 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
 }
 
 /// Now, in Unix seconds: the stamp on a record that closes.
-fn unix_now() -> u64 {
+pub(super) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())

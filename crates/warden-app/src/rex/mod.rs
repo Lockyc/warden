@@ -24,6 +24,7 @@
 
 pub mod agent_open;
 pub mod agents;
+pub mod lifecycle;
 pub mod reports;
 pub mod server;
 pub mod size;
@@ -172,6 +173,9 @@ struct State {
     /// Agent key → the main pane whose session holds that agent's window, bound by
     /// [`RexHub::open_agents`]; the agent's block is in `blocks` under the agent key.
     agents: HashMap<String, String>,
+    /// Main panes opened as agent panes with a session, whose windows are followed as agent tabs
+    /// ([`RexHub::agent_panes`]).
+    agent_panes: HashSet<String>,
     next_gen: u64,
 }
 
@@ -501,6 +505,7 @@ impl Inner {
         st.adopted.remove(pane_key);
         st.blocks.remove(pane_key);
         st.requested.remove(pane_key);
+        st.agent_panes.remove(pane_key);
         let agents: Vec<String> = st
             .agents
             .iter()

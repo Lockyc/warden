@@ -42,7 +42,8 @@ public. Rex is chosen per tab.
 | `rex/size.rs` | The size worker (`Sizer`) behind every claim and resize. |
 | `rex/unclaimed.rs` | Sessions no tab claims, as sidebar rows under `Rex · <server>`. |
 | `rex/windows.rs` | Each attached session's windows (new, close, relabel) and every terminal block's status: its root OSC 7501 record and its title, from Rex's events. |
-| `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed), and opening a main pane: which agents are live, which shows, waking on a user open. |
+| `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live, which shows, waking on a user open. |
+| `rex/lifecycle.rs` | The agent tab list: new, wake, sleep, close, reopen, rename (`RexHub::agent_op`), following a pane's windows and statuses, storing reported resume commands, and the list `warden:agents` carries. |
 
 Who holds which connection:
 
@@ -60,8 +61,9 @@ The relay mints its own tickets, so the stream belongs to the relay's client and
 the relay does. The one channel between warden-app and a relay is the report socket
 (`--report`, `rex/reports.rs`): a program in the block can write `ESC _ warden1;resume=<base64>
 ESC \`, which `StreamDemux` strips from the output and the relay forwards as a JSON line
-`{"session","block","resume"}`. A missing or unreachable socket drops the report; streaming
-continues. The path must fit macOS's 104-byte `sun_path`.
+`{"session","block","resume"}`, which warden-app stores on the block's agent record
+(`AgentStore::report_resume`, which accepts only the known resume shapes). A missing or unreachable
+socket drops the report; streaming continues. The path must fit macOS's 104-byte `sun_path`.
 
 The protocol's reference is the one each server serves at `GET /llms.txt` on its socket; Rex's docs
 site omits it.
@@ -105,7 +107,9 @@ site omits it.
 | Event | The pane's Rex session | Where |
 |---|---|---|
 | ⌘W unload, closing a window, quitting warden | Detached: the relay exits, the session keeps running. The next open reattaches. | `Registry::unload` |
-| ☠ destroy | Both panes' sessions destroyed. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
+| ☠ destroy | Both panes' sessions destroyed, and the tab's agent records dropped. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
+| An agent tab sleeps or closes | Its window closes; the record stays asleep, or goes to the closed fold, to wake later typing its resume command. One that never reported a resume command can't sleep, and closes for good only once confirmed. | `lifecycle::run` → `RexHub::agent_op` |
+| A window opens or closes elsewhere (Rex.app, the phone) | Appended as a tab, ungrouped; a closed one goes to the closed fold if resumable, else drops, and the selection leans to a live neighbour. | `lifecycle::watch_agents` → `AgentOp::Refresh` |
 | ⏻ suspend | Runs the `suspend` command on this Mac, so only a `"local"` Rex tab offers it. | `registry::suspend_cmd` |
 | The pane's program exits (`exit`, an agent quitting) | Destroyed if its block was the session's last; otherwise the pane lets go and the session lists as unclaimed. The pane goes cold, and the next open creates a fresh session: an exited block would only leave a dead screen that reads as live. An agent's exit closes only its window (the session's last ends as above) and its record closes or drops; the pane shows a live neighbour, else goes cold. | `spawn::end_if_exited` → `RexHub::destroy_if_exited` / `end_agent_if_exited`; `Registry::close_agent` |
 | The server restarts, crashes, or the Mac reboots | Every mapped session is gone; a split's next open creates a fresh one and types `cmd` again. A main pane's resumable agents come back asleep, the rest drop; a user open recreates the session waking the last-selected one. | `RexHub::ensure_session`, `RexHub::open_agents` |
