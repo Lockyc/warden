@@ -142,6 +142,21 @@ impl RexHub {
             .unwrap_or_default()
     }
 
+    /// `session_id`'s windows on `server` as Rex has them now (`session.view`), without following
+    /// the session. Empty once the session is gone.
+    pub fn read_windows(
+        &self,
+        server: &str,
+        session_id: &str,
+    ) -> Result<Vec<AgentWindow>, RexError> {
+        let (client, _) = self.inner.conn(server)?;
+        match client.call("session.view", json!({ "session_id": session_id })) {
+            Ok(view) => Ok(parse_windows(&view)),
+            Err(e) if api_code(&e) == Some("session_not_found") => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// What `block_id`'s program last reported, if anything.
     pub fn block_status(&self, block_id: &str) -> Option<BlockStatus> {
         self.inner
