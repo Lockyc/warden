@@ -129,6 +129,29 @@ impl AgentStore {
         self.save();
     }
 
+    /// Write back records a caller changed from `before` (what it read) to `after`, keeping every
+    /// write made in between: only the fields the caller changed are applied, a record it added
+    /// is inserted, and one it dropped is removed unless it changed in the meantime. Records it
+    /// never read are untouched. Persists.
+    pub fn merge(&mut self, before: &[AgentRecord], after: Vec<AgentRecord>) {
+        let was = |id: &str| before.iter().find(|r| r.id == id);
+        for b in before {
+            let dropped = !after.iter().any(|a| a.id == b.id);
+            if dropped {
+                self.records.retain(|r| r.id != b.id || r != b);
+            }
+        }
+        for a in after {
+            match (was(&a.id), self.records.iter_mut().find(|r| r.id == a.id)) {
+                (Some(b), Some(cur)) => merge_fields(cur, b, &a),
+                (Some(_), None) => {} // removed meanwhile
+                (None, Some(cur)) => *cur = a,
+                (None, None) => self.records.push(a),
+            }
+        }
+        self.save();
+    }
+
     /// Forget the record with `id` and persist.
     pub fn remove(&mut self, id: &str) {
         let before = self.records.len();
@@ -165,6 +188,20 @@ impl AgentStore {
             }
         }
     }
+}
+
+/// Set on `current` each field `after` changed from `before`; the rest keep `current`'s value.
+fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRecord) {
+    macro_rules! changed {
+        ($($f:ident),*) => {$(
+            if after.$f != before.$f {
+                current.$f = after.$f.clone();
+            }
+        )*};
+    }
+    changed!(
+        project, name, group, position, resume, state, window_id, block_id, closed_at, selected
+    );
 }
 
 /// Merge `project`'s `records` with its session's current `windows`. Live records follow their
@@ -415,6 +452,27 @@ mod tests {
         let by = |id: &str| r.iter().find(|x| x.id == id).unwrap().resume.clone();
         assert_eq!(by("a"), None);
         assert_eq!(by("b").as_deref(), Some("claude --resume x"));
+    }
+
+    #[test]
+    fn merge_keeps_writes_made_between_read_and_write() {
+        let mut s = AgentStore::default();
+        s.upsert(rec("a", RecordState::Live, Some("w1"), None));
+        s.upsert(rec("b", RecordState::Live, Some("w2"), None));
+        s.upsert(rec("c", RecordState::Live, Some("w3"), None));
+        let before = s.records("p");
+        // The caller drops `b` and `c` and renames `a`…
+        let mut a = before[0].clone();
+        a.name = "renamed".into();
+        // …while `a` and `c` report a resume.
+        assert!(s.report_resume("b-w1", "claude --resume aaa"));
+        assert!(s.report_resume("b-w3", "claude --resume ccc"));
+        s.merge(&before, vec![a]);
+        let r = s.records("p");
+        let ids: Vec<&str> = r.iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(ids, ["a", "c"], "c changed meanwhile, so it stays");
+        assert_eq!(r[0].name, "renamed");
+        assert_eq!(r[0].resume.as_deref(), Some("claude --resume aaa"));
     }
 
     #[test]
