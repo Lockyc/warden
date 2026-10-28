@@ -681,9 +681,11 @@ impl Inner {
             .map(|c| (c.client.clone(), c.endpoint.clone()))
     }
 
-    /// `server`'s connection, opening it if there is none, within [`OPEN_BUDGET`].
+    /// `server`'s connection, opening it if there is none, within [`OPEN_BUDGET`] — never
+    /// starting Rex: only a tab open does that ([`Inner::conn_until`]). Ending or checking a
+    /// session on a server that isn't running has nothing to end or tell.
     fn conn(self: &Arc<Self>, server: &str) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
-        self.conn_until(server, Instant::now() + OPEN_BUDGET)
+        self.conn_with(server, Instant::now() + OPEN_BUDGET, false)
     }
 
     /// Hold `pane_key` until the guard drops, waiting while another call holds it — until

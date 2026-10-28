@@ -1057,6 +1057,41 @@ fn the_launch_connect_never_starts_rex() {
     assert_eq!(AUTOSTARTS.load(Ordering::SeqCst), 1);
 }
 
+static END_AUTOSTARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn counting_end_autostart(_: Duration) -> Result<(), RexError> {
+    END_AUTOSTARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+#[test]
+fn ending_or_checking_a_session_never_starts_rex() {
+    use std::sync::atomic::Ordering;
+    let fake = scripted(json!([]));
+    let dir = tempfile::tempdir().unwrap();
+    let hub = RexHub::for_test_autostart(
+        dir.path().join("rex-sessions.json"),
+        info(),
+        fake.endpoint(),
+        counting_end_autostart,
+    );
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    // The user quits Rex: the socket is gone.
+    drop(fake);
+    next_event(&rx, |e| matches!(e, HubEvent::Disconnected { .. }));
+
+    assert!(!hub.block_exited("tab-a"), "unreachable can't tell");
+    assert_eq!(hub.destroy("tab-a"), Err(RexError::Unreachable));
+    assert_eq!(
+        END_AUTOSTARTS.load(Ordering::SeqCst),
+        0,
+        "a Rex the user quit stays quit"
+    );
+}
+
 #[test]
 fn an_unopened_unclaimed_row_reads_alive_while_listed() {
     let fake = scripted(json!([{"session_id": "session:orphan", "label": "o"}]));
