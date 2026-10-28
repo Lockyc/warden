@@ -45,6 +45,9 @@ pub struct AgentRecord {
     /// Forks made from this tab; numbers the next fork's default name.
     #[serde(default)]
     pub forks_made: u32,
+    /// The record this tab was forked from; places the parent's next fork below this one.
+    #[serde(default)]
+    pub forked_from: Option<String>,
     /// The user named the tab, so a generated summary never overwrites the name.
     #[serde(default)]
     pub user_named: bool,
@@ -428,8 +431,21 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
         )*};
     }
     changed!(
-        project, name, group, position, resume, state, window_id, block_id, closed_at, selected,
-        forks_made, user_named, summary, subject
+        project,
+        name,
+        group,
+        position,
+        resume,
+        state,
+        window_id,
+        block_id,
+        closed_at,
+        selected,
+        forks_made,
+        forked_from,
+        user_named,
+        summary,
+        subject
     );
 }
 
@@ -524,6 +540,7 @@ pub fn reconcile(
                 closed_at: None,
                 selected: false,
                 forks_made: 0,
+                forked_from: None,
                 user_named: false,
                 summary: None,
                 subject: None,
@@ -557,6 +574,7 @@ mod tests {
             closed_at: None,
             selected: false,
             forks_made: 0,
+            forked_from: None,
             user_named: false,
             summary: None,
             subject: None,

@@ -389,6 +389,7 @@ pub(crate) mod tests {
             closed_at: None,
             selected: false,
             forks_made: 0,
+            forked_from: None,
             user_named: false,
             summary: None,
             subject: None,
