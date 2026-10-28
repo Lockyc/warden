@@ -316,16 +316,20 @@ impl RexHub {
         true
     }
 
-    /// Whether `pane_key` is mapped to a session its server's live list holds. False when it's
-    /// unmapped, or the server isn't connected.
+    /// Whether `pane_key` is mapped to a session its server's live list holds — or, for an
+    /// unclaimed session's row not yet opened (so not yet adopted), whether its session is in a
+    /// connected server's live list. False when it's unmapped, or the server isn't connected.
     pub fn session_alive(&self, pane_key: &str) -> bool {
         let st = self.inner.lock();
-        let Some(rec) = st.record(pane_key) else {
-            return false;
-        };
-        st.conns
-            .get(&rec.server)
-            .is_some_and(|c| c.live.iter().any(|s| s.id == rec.session_id))
+        let listed = |conn: &Conn, id: &str| conn.live.iter().any(|s| s.id == id);
+        match st.record(pane_key) {
+            Some(rec) => st
+                .conns
+                .get(&rec.server)
+                .is_some_and(|c| listed(c, &rec.session_id)),
+            None => unclaimed::session_of(pane_key)
+                .is_some_and(|id| st.conns.values().any(|c| listed(c, id))),
+        }
     }
 
     /// End `pane_key`'s session and forget its mapping. The mapping goes even if the server
@@ -631,9 +635,11 @@ impl RexHub {
         );
     }
 
-    /// Connect to `server` now, within [`OPEN_BUDGET`], if it isn't connected.
+    /// Connect to `server` now, within [`OPEN_BUDGET`], if it isn't connected — without starting
+    /// the local server: only opening a Rex tab does that, so a Rex the user quit stays quit.
     pub fn connect(&self, server: &str) -> Result<(), RexError> {
-        self.inner.conn(server).map(|_| ())
+        let deadline = Instant::now() + OPEN_BUDGET;
+        self.inner.conn_with(server, deadline, false).map(|_| ())
     }
 
     /// A receiver for every [`HubEvent`] from now on.
@@ -711,13 +717,24 @@ impl Inner {
         })
     }
 
-    /// `server`'s connection, or `Unreachable` if none is usable by `deadline`. While another
-    /// caller is connecting to `server` this waits for that attempt rather than opening a second
-    /// connection, then tries itself if it failed.
+    /// [`Inner::conn_with`], starting the local server if it must.
     fn conn_until(
         self: &Arc<Self>,
         server: &str,
         deadline: Instant,
+    ) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
+        self.conn_with(server, deadline, true)
+    }
+
+    /// `server`'s connection, or `Unreachable` if none is usable by `deadline`. While another
+    /// caller is connecting to `server` this waits for that attempt rather than opening a second
+    /// connection, then tries itself if it failed. `start`: whether an unreachable local server
+    /// may be started for it.
+    fn conn_with(
+        self: &Arc<Self>,
+        server: &str,
+        deadline: Instant,
+        start: bool,
     ) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
         {
             let mut st = self.lock();
@@ -740,7 +757,7 @@ impl Inner {
             }
             st.connecting.insert(server.to_owned());
         }
-        let opened = self.open(server, deadline);
+        let opened = self.open(server, deadline, start);
         self.lock().connecting.remove(server);
         self.connected.notify_all();
         match opened {
@@ -752,20 +769,21 @@ impl Inner {
     }
 
     /// Open and install `server`'s connection by `deadline`. A label resolves through the local
-    /// server's host list; an unreachable local server is started once and retried.
+    /// server's host list; an unreachable local server is started once and retried, when `start`.
     fn open(
         self: &Arc<Self>,
         server: &str,
         deadline: Instant,
+        start: bool,
     ) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
         let endpoint = if server == LOCAL {
             self.local.clone()
         } else {
-            let (local, _) = self.conn_until(LOCAL, deadline)?;
+            let (local, _) = self.conn_with(LOCAL, deadline, start)?;
             server::resolve_until(server, &local, deadline)?
         };
         let connect = || ControlClient::connect_until(&endpoint, &self.client, deadline);
-        let client = match (connect(), self.autostart) {
+        let client = match (connect(), self.autostart.filter(|_| start)) {
             (Err(RexError::Unreachable), Some(start)) if server == LOCAL => {
                 // Autostart gets what's left of this caller's budget; with too little left to
                 // start and still connect, it isn't tried.
