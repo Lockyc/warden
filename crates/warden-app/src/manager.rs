@@ -107,6 +107,17 @@ impl PresenceCache {
     }
 }
 
+/// Fill every `TabDto.accent` with its project's assigned colour. Assignment runs over every
+/// window's tabs of `config` (the effective config, so discovered tabs count), so a project keeps
+/// one colour across windows and a pin anywhere leaves the pool for all.
+pub fn patch_accents(config: &Config, tabs: &mut [TabDto]) {
+    let all: Vec<warden_config::Tab> = config.windows.iter().flat_map(|w| w.tabs.clone()).collect();
+    let colours = warden_config::assign_project_colours(&all);
+    for t in tabs {
+        t.accent = colours.get(&t.id).map(|c| c.hex());
+    }
+}
+
 /// Expand a config's project-tree roots into the effective tab set: for each window,
 /// append the scanner-synthesized project tabs for every `[[window.root]]` to `tabs`.
 /// This is what the whole pipeline (window_specs / reconcile / registry) consumes, so a
@@ -690,6 +701,7 @@ impl WindowManager {
             // cyan dots on the first render, not after the chrome boots + re-probes.
             let mut tabs = ws.registry.tab_dtos();
             self.presence_cache.patch(label, &mut tabs);
+            patch_accents(&self.last_good, &mut tabs);
             InitDto {
                 label: label.to_string(),
                 title: ws.title.clone(),
@@ -1869,6 +1881,7 @@ mod tests {
             split_layout: None,
             agents: false,
             presence: None,
+            accent: None,
         }
     }
 
@@ -2004,6 +2017,49 @@ mod tests {
         let mut tabs = vec![dto("t0")];
         cache.patch("w1", &mut tabs);
         assert_eq!(tabs[0].presence, Some(Presence::Present));
+    }
+
+    #[test]
+    fn tab_dto_carries_assigned_accent() {
+        let (cfg, _) = warden_config::resolve::resolve(
+            warden_config::raw::parse(
+                r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  title = "plain"
+  dir = "/a"
+  [[window.tab]]
+  title = "pinned"
+  dir = "/b"
+  project_colour = "#112233"
+  [[window.tab]]
+  title = "rex"
+  dir = "/c"
+  server = "local"
+"##,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let tabs = &cfg.windows[0].tabs;
+        let mut dtos: Vec<TabDto> = tabs.iter().map(|t| dto(&t.key)).collect();
+        patch_accents(&cfg, &mut dtos);
+        let want = warden_config::assign_project_colours(tabs);
+        for (d, t) in dtos.iter().zip(tabs) {
+            assert_eq!(
+                d.accent.as_deref(),
+                Some(want[&t.key].hex().as_str()),
+                "{}",
+                t.title
+            );
+        }
+        assert_eq!(dtos[1].accent.as_deref(), Some("#112233"));
+        assert!(dtos[0].accent.as_deref().unwrap().starts_with('#'));
+        assert!(
+            dtos[2].accent.is_some(),
+            "a Rex tab is coloured like a plain one"
+        );
     }
 
     #[test]

@@ -192,6 +192,11 @@ pub struct TabDto {
     /// window paints its dots on the first render instead of waiting for a post-boot probe
     /// emit.
     pub presence: Option<crate::probe::Presence>,
+    /// The project's colour as `#rrggbb`, for chrome-core's row mark. Like `presence`, the Registry
+    /// never sets it: the colour is assigned across every tab of the config
+    /// (`warden_config::assign_project_colours`), which no single registry sees — the manager
+    /// patches it in `init_dto`.
+    pub accent: Option<String>,
 }
 
 /// A tab's surface is live, cold, or detached. Cold = not yet spawned, or
@@ -1089,6 +1094,7 @@ impl Registry {
                 }),
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
+                accent: None,   // filled by the manager (`patch_accents`), not the Registry
             })
             .collect()
     }
