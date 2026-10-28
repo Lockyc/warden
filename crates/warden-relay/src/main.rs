@@ -22,8 +22,13 @@ const USAGE: &str =
 const EX_USAGE: i32 = 64;
 /// The server couldn't be reached at start (sysexits `EX_TEMPFAIL`).
 const EX_TEMPFAIL: i32 = 75;
-/// Written before every snapshot, so a restarted stream redraws over the old screen.
+/// Written before every snapshot, so it draws on a blank screen.
 const CLEAR: &[u8] = b"\x1b[H\x1b[2J";
+/// Written before a restarted stream's snapshot (RIS): the formatter emits only modes that differ
+/// from their defaults, so whatever the old stream turned on (alternate screen, mouse tracking,
+/// bracketed paste, keyboard modes, scroll region) must be reset or it outlives the redraw. It
+/// also drops the pane's scrollback, which the new snapshot's VT carries again.
+const RESET: &[u8] = b"\x1bc";
 /// One dim line per outage, written when the first reconnect attempt has failed.
 const RECONNECTING: &[u8] = "\r\n\x1b[2m[rex: reconnecting…]\x1b[22m\r\n".as_bytes();
 /// Seconds between reconnect attempts; the last repeats.
@@ -197,6 +202,7 @@ fn relay_stream(
     out: &mut impl Write,
 ) -> Result<std::convert::Infallible, Stop> {
     let mut backoff = Backoff::default();
+    let mut restart = false;
     loop {
         let mut stream = match open_stream(args, link) {
             Ok(s) => s,
@@ -212,7 +218,8 @@ fn relay_stream(
             }
         };
         backoff.reset();
-        let mut feed = Feed::new(stream.nonce());
+        let mut feed = Feed::new(stream.nonce(), restart);
+        restart = true;
         loop {
             let code = loop {
                 match stream.read() {
@@ -276,13 +283,16 @@ fn resume(
 struct Feed {
     snapshot: Option<Vec<u8>>,
     demux: StreamDemux,
+    /// This stream replaces an earlier one in the same pane, so its redraw resets the pane first.
+    restart: bool,
 }
 
 impl Feed {
-    fn new(nonce: u64) -> Feed {
+    fn new(nonce: u64, restart: bool) -> Feed {
         Feed {
             snapshot: Some(Vec::new()),
             demux: StreamDemux::new(nonce),
+            restart,
         }
     }
 
@@ -294,6 +304,9 @@ impl Feed {
                 buf.extend_from_slice(chunk);
                 match vt::snapshot_to_vt(buf) {
                     Ok((screen, len)) => {
+                        if self.restart {
+                            out.write_all(RESET)?;
+                        }
                         out.write_all(CLEAR)?;
                         out.write_all(&screen)?;
                         let rest = buf.split_off(len);

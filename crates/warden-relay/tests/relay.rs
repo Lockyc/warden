@@ -236,12 +236,16 @@ fn relay_restarts_stream_after_refused_resume() {
     assert_eq!(fake.requests_for("data.connect").len(), 2);
     let first = find(&out, b"first").expect("first");
     let second = find(&out, b"second").expect("second");
-    let clear = find(&out[first..], CLEAR).map(|i| first + i);
+    // The restart resets the pane (RIS) before redrawing; the startup redraw only clears.
+    let redraw = [b"\x1bc".as_slice(), CLEAR].concat();
+    let reset = find(&out[first..], &redraw).map(|i| first + i);
     assert!(
-        clear.is_some_and(|c| c < second),
+        reset.is_some_and(|c| c < second),
         "{:?}",
         String::from_utf8_lossy(&out)
     );
+    assert!(out.starts_with(CLEAR));
+    assert!(find(&out[..first], b"\x1bc").is_none(), "{out:?}");
 }
 
 #[test]
