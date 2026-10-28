@@ -164,7 +164,7 @@ impl RexHub {
             }
         }
         let opened = self.bind_agents(project, session.as_ref(), &records, shown);
-        lock(store).set_project(project, records);
+        lock(store).merge(&held, records);
         Ok(opened)
     }
 
@@ -666,6 +666,37 @@ mod tests {
         let ids: Vec<&str> = left.iter().map(|w| w.window_id.as_str()).collect();
         assert_eq!(ids, ["window:1"]);
         assert!(!hub.block_exited(&b), "let go of");
+    }
+
+    #[test]
+    fn a_resume_reported_during_an_open_survives_it() {
+        let f = fake(Some("session:old"), vec![("window:1", "block:1", "a")]);
+        let s = std::sync::Arc::new(store(vec![
+            record("a", RecordState::Live, Some("window:1"), None),
+            record("b", RecordState::Asleep, None, Some("claude --resume bbb")),
+        ]));
+        // The agent reports while the open is waiting on Rex, between its read and its write.
+        let during = s.clone();
+        f.on("session.attach", move |p, _| {
+            let id = p["session_id"].as_str().unwrap_or_default();
+            let mut st = during.lock().unwrap();
+            assert!(st.report_resume("block:1", "claude --resume aaa"));
+            Reply::ok(view(id, &[("window:1", "block:1", "renamed")]))
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+
+        hub.open_agents(&s, &open(true, None), 7).expect("open");
+        let a = state_of(&s, "a").unwrap();
+        assert_eq!(
+            a.resume.as_deref(),
+            Some("claude --resume aaa"),
+            "the report is kept"
+        );
+        assert_eq!(a.name, "renamed", "the open's own change lands");
+        assert!(a.selected);
+        assert_eq!(state_of(&s, "b").unwrap().state, RecordState::Asleep);
     }
 
     #[test]
