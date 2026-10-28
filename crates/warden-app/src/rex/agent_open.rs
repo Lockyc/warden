@@ -15,6 +15,7 @@ use std::time::Instant;
 use rex_client::{Endpoint, RexError};
 
 use super::agents::{self, AgentRecord, AgentStore, RecordState};
+use super::lifecycle::settle;
 use super::windows::AgentWindow;
 use super::{api_error, budgeted, lock, PaneTarget, RexHub, OPEN_BUDGET};
 use crate::registry::{agent_key, AgentsOpened, RexOpen};
@@ -87,14 +88,14 @@ impl RexHub {
             }
             None => agents::reconcile(project, &held, &[], false, now),
         };
-        let mut shown = last_selected(&records).filter(|&i| records[i].state == RecordState::Live);
-        if !req.auto && shown.is_none() {
-            let asleep =
-                last_selected(&records).filter(|&i| records[i].state == RecordState::Asleep);
+        let choice = last_selected(&records);
+        let mut woken = None;
+        if !req.auto && !choice.is_some_and(|i| records[i].state == RecordState::Live) {
+            let asleep = choice.filter(|&i| records[i].state == RecordState::Asleep);
             match asleep.filter(|&i| records[i].resume.is_some()) {
                 Some(i) => {
                     self.wake_until(req, &mut session, &mut records[i], deadline)?;
-                    shown = Some(i);
+                    woken = Some(i);
                 }
                 None if records.iter().any(|r| r.state == RecordState::Live) => {}
                 None => {
@@ -113,13 +114,7 @@ impl RexHub {
                 }
             }
         }
-        // Nothing selected live: the first live agent in list order.
-        let shown = shown.or_else(|| first_live(&records));
-        if let Some(i) = shown {
-            for (j, r) in records.iter_mut().enumerate() {
-                r.selected = j == i;
-            }
-        }
+        let shown = settle(&mut records, woken, req.auto);
         let opened = self.bind_agents(project, session.as_ref(), &records, shown);
         lock(store).merge(&held, records);
         Ok(opened)
@@ -266,8 +261,8 @@ impl RexHub {
     }
 }
 
-/// The record a pane last showed: the one marked selected, else the first in list order. Closed
-/// records are never shown.
+/// The record a user open wakes when it is asleep: the one marked selected, else the first in
+/// list order, never a closed one. Which record then shows is [`settle`]'s.
 fn last_selected(records: &[AgentRecord]) -> Option<usize> {
     let open = |r: &AgentRecord| r.state != RecordState::Closed;
     records
@@ -281,16 +276,6 @@ fn last_selected(records: &[AgentRecord]) -> Option<usize> {
                 .min_by_key(|(_, r)| r.position)
                 .map(|(i, _)| i)
         })
-}
-
-/// The first live record in list order.
-fn first_live(records: &[AgentRecord]) -> Option<usize> {
-    records
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.state == RecordState::Live)
-        .min_by_key(|(_, r)| r.position)
-        .map(|(i, _)| i)
 }
 
 #[cfg(test)]
@@ -602,6 +587,40 @@ pub(super) mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(got.selected.as_deref(), Some(records[0].id.as_str()));
         assert!(records[0].selected && !records[1].selected);
+    }
+
+    #[test]
+    fn auto_open_keeps_an_asleep_last_selected_record_selected() {
+        let f = fake(Some("session:old"), vec![("window:2", "block:2", "b")]);
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut a = record("a", RecordState::Asleep, None, Some("claude --resume aaa"));
+        a.selected = true;
+        let s = store(vec![
+            a,
+            record("b", RecordState::Live, Some("window:2"), None),
+        ]);
+
+        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
+        assert!(
+            f.requests_for("session.new_window").is_empty(),
+            "wakes nothing"
+        );
+        assert_eq!(
+            got.selected.as_deref(),
+            Some("b"),
+            "the live neighbour shows"
+        );
+        let a = state_of(&s, "a").unwrap();
+        assert_eq!(a.state, RecordState::Asleep);
+        assert!(a.selected, "the next user open wakes it");
+        assert!(!state_of(&s, "b").unwrap().selected);
+
+        hub.open_agents(&s, &open(false, None), 8)
+            .expect("user open");
+        assert_eq!(f.requests_for("session.new_window").len(), 1);
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Live);
     }
 
     #[test]

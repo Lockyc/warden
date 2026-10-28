@@ -240,7 +240,7 @@ impl RexHub {
             }
         }
         renumber(&mut records);
-        let shown = settle(&mut records, want);
+        let shown = settle(&mut records, want, false);
         if let Some(id) = drop {
             records.retain(|r| r.id != id);
         }
@@ -502,14 +502,22 @@ fn renumber(records: &mut [AgentRecord]) {
     }
 }
 
-/// Settle which of `records` (one project's) is selected — at most one: `want`, else the
-/// selected one while it is live, else its nearest live neighbour in list order, else the first
-/// live one. With nothing live the choice stays for the next open, unless it closed.
-fn settle(records: &mut [AgentRecord], want: Option<usize>) -> Option<usize> {
+/// Settle which of `records` (one project's) a pane shows and which is selected — at most one:
+/// `want`, else the selected one while it is live, else its nearest live neighbour in list order,
+/// else the first live one. The one shown becomes the selected one, except that with
+/// `keep_asleep_choice` (an automatic open) an asleep selected record stays selected while its
+/// neighbour shows, so the next user open wakes it. With nothing live the choice stays for the
+/// next open, unless it closed. The one decider for both an open and every [`AgentOp`].
+pub(super) fn settle(
+    records: &mut [AgentRecord],
+    want: Option<usize>,
+    keep_asleep_choice: bool,
+) -> Option<usize> {
     let live = |r: &AgentRecord| r.state == RecordState::Live;
     let mut order: Vec<usize> = (0..records.len()).collect();
     order.sort_by_key(|&i| records[i].position);
-    let shown = want.or_else(|| match records.iter().position(|r| r.selected) {
+    let chosen = records.iter().position(|r| r.selected);
+    let shown = want.or_else(|| match chosen {
         Some(c) if live(&records[c]) => Some(c),
         Some(c) => {
             let at = order.iter().position(|&i| i == c)?;
@@ -518,11 +526,14 @@ fn settle(records: &mut [AgentRecord], want: Option<usize>) -> Option<usize> {
         }
         None => order.iter().copied().find(|&i| live(&records[i])),
     });
+    let keep = keep_asleep_choice
+        && want.is_none()
+        && chosen.is_some_and(|c| records[c].state == RecordState::Asleep);
     for (j, r) in records.iter_mut().enumerate() {
         match shown {
-            Some(i) => r.selected = j == i,
-            None if r.state == RecordState::Closed => r.selected = false,
-            None => {}
+            Some(i) if !keep => r.selected = j == i,
+            _ if r.state == RecordState::Closed => r.selected = false,
+            _ => {}
         }
     }
     shown
