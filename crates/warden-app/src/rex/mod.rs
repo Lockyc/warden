@@ -649,6 +649,16 @@ impl RexHub {
             .unwrap_or_default()
     }
 
+    /// Every server the hub has heard from — connected, or dropped with its last list kept —
+    /// sorted.
+    pub fn servers(&self) -> Vec<String> {
+        let st = self.inner.lock();
+        let mut servers: Vec<String> = st.conns.keys().chain(st.heard.keys()).cloned().collect();
+        servers.sort();
+        servers.dedup();
+        servers
+    }
+
     /// The sessions `pane_keys` map to in the store, on any server. An adopted pane claims
     /// nothing: its session is still the unclaimed one it was opened from.
     pub fn claimed_session_ids<'k>(
