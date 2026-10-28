@@ -51,6 +51,27 @@ impl Drop for RawMode {
     }
 }
 
+/// The size of the terminal the relay runs in (stdout's, else stdin's), or `None` when neither
+/// is a terminal or it reports no size.
+pub fn pane_size() -> Option<crate::vt::PaneSize> {
+    [1, 0].into_iter().find_map(|fd| {
+        let mut ws = MaybeUninit::<libc::winsize>::uninit();
+        // SAFETY: TIOCGWINSZ writes a winsize through a valid pointer; read only on success.
+        let ws = unsafe {
+            if libc::ioctl(fd, libc::TIOCGWINSZ, ws.as_mut_ptr()) != 0 {
+                return None;
+            }
+            ws.assume_init()
+        };
+        (ws.ws_col > 0 && ws.ws_row > 0).then(|| crate::vt::PaneSize {
+            cols: ws.ws_col,
+            rows: ws.ws_row,
+            cell_w: u32::from(ws.ws_xpixel / ws.ws_col),
+            cell_h: u32::from(ws.ws_ypixel / ws.ws_row),
+        })
+    })
+}
+
 fn restore() {
     if let Some(saved) = SAVED.get() {
         // SAFETY: tcsetattr is async-signal-safe; `saved` came from tcgetattr.
