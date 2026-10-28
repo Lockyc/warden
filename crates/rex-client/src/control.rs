@@ -854,7 +854,9 @@ mod tests {
         assert!(!msg.contains("SECRET-TOKEN"), "{msg}");
         assert!(msg.contains("protocol"), "names the field: {msg}");
         let not_one = json!({"type": "error", "reconnect_token": "SECRET-TOKEN"});
-        let msg = check_welcome(&not_one).expect_err("not a welcome").to_string();
+        let msg = check_welcome(&not_one)
+            .expect_err("not a welcome")
+            .to_string();
         assert!(!msg.contains("SECRET-TOKEN"), "{msg}");
         assert!(msg.contains("type"), "names the field: {msg}");
         let ok = json!({"type": "welcome", "protocol": CONTROL_PROTOCOL});
