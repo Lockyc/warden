@@ -2111,30 +2111,33 @@ title = "w"
     #[test]
     fn apply_resume_swaps_program_only() {
         assert_eq!(
-            apply_resume(Some("claude-personal"), "claude --resume X"),
-            "claude-personal --resume X"
+            apply_resume(Some("wrapper"), "agent --resume X"),
+            "wrapper --resume X"
         );
     }
 
     #[test]
     fn apply_resume_none_keeps_report() {
-        assert_eq!(apply_resume(None, "claude --resume X"), "claude --resume X");
+        assert_eq!(apply_resume(None, "agent --resume X"), "agent --resume X");
     }
 
     #[test]
     fn apply_resume_keeps_quoted_args() {
         assert_eq!(
-            apply_resume(Some("cx"), "codex resume 'a b'"),
-            "cx resume 'a b'"
+            apply_resume(Some("wrapper"), "agent resume 'a b'"),
+            "wrapper resume 'a b'"
         );
     }
 
     #[test]
     fn apply_resume_edge_shapes() {
-        assert_eq!(apply_resume(Some("cx"), "codex"), "cx");
-        assert_eq!(apply_resume(Some("cx"), "  codex  resume"), "  cx  resume");
-        assert_eq!(apply_resume(Some("cx"), ""), "");
-        assert_eq!(apply_resume(Some("cx"), "  \t"), "  \t");
+        assert_eq!(apply_resume(Some("wrapper"), "agent"), "wrapper");
+        assert_eq!(
+            apply_resume(Some("wrapper"), "  agent  resume"),
+            "  wrapper  resume"
+        );
+        assert_eq!(apply_resume(Some("wrapper"), ""), "");
+        assert_eq!(apply_resume(Some("wrapper"), "  \t"), "  \t");
     }
 
     #[test]
