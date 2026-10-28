@@ -1200,18 +1200,18 @@ fn attend(app: &AppHandle, block_id: &str) {
             })
         };
         if let Some((label, title)) = tab {
-            let why = match state {
-                AgentState::Blocked => "blocked",
-                AgentState::Error => "error",
-                _ => "done",
-            };
-            let body = status.and_then(|s| s.msg).unwrap_or_else(|| why.to_owned());
+            let banner = crate::notify::agent_banner(
+                &title,
+                &record.name,
+                state,
+                status.and_then(|s| s.msg),
+            );
             crate::notify::raise(
                 app,
                 &label,
                 &record.project,
                 false,
-                Some((format!("{title} · {}", record.name), body)),
+                Some(banner),
                 Some(&record.id),
             );
         }

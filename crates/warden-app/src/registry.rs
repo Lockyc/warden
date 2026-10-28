@@ -58,6 +58,11 @@ pub(crate) fn agent_key(tab_id: &str, record_id: &str) -> String {
     format!("{tab_id}::agent:{record_id}")
 }
 
+/// Whether `key` is an [`agent_key`] (a Rex agent tab's pane key) rather than a plain pane's.
+pub(crate) fn is_agent_key(key: &str) -> bool {
+    key.contains("::agent:")
+}
+
 /// Starts a [`RexOpen`] somewhere that may block, and answers later through
 /// [`Registry::rex_opened`] on the main thread. Must not block its caller, nor answer from
 /// inside the call. `Err` (the reason) when it couldn't start, so nothing will answer.
