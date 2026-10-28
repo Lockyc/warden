@@ -63,6 +63,7 @@ probe_interval = 5
 # fallback. Only reachable on a tab that also sets `probe` (no probe ⇒ no dot to click).
 kill    = '"$HOME/.agentmux/bin/amux" --kill'
 suspend = '"$HOME/.agentmux/bin/amux" --suspend'
+# resume = "my-launcher"  # agent tabs: swap the first word of a reported resume command (cascades; "" opts out)
 # server = "local"  # keep tabs' panes in Rex sessions: "local" or a host label (cascades; "" opts out)
 
 [split] # every tab opens split: a scratch shell on the left, 30% wide
