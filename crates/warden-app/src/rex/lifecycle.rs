@@ -325,6 +325,14 @@ pub struct ServerSleepPlan {
     pub lose: Vec<LossItem>,
 }
 
+/// How [`RexHub::sleep_server`] ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSlept {
+    Stopped,
+    /// Not stopped: the server now loses something its plan didn't list — this plan, to confirm.
+    Unconfirmed(ServerSleepPlan),
+}
+
 impl ServerSleepPlan {
     /// The losses not among `accepted` (names the user confirmed). Empty: go ahead.
     pub fn unconfirmed(&self, accepted: &[String]) -> Vec<&LossItem> {
@@ -416,14 +424,18 @@ impl RexHub {
     /// Sleep `server` as `plan` says: each of its records, one at a time under its pane's hold,
     /// has its window closed and is stored asleep — so a sleep cut short anywhere leaves every
     /// record matching Rex, and a refused stop leaves the agents asleep rather than stranded —
-    /// then `server.stop`. Once Rex has stopped, the hub forgets the server's sessions and doesn't
-    /// reconnect: only a tab open starts it again.
+    /// then `server.stop` — unless planning again just before it ([`RexHub::plan_server_sleep`],
+    /// `title` naming tabs) finds a loss `plan` didn't list (a window opened meanwhile): then
+    /// nothing stops, the slept records stay asleep, and the answer is that plan, to confirm.
+    /// Once Rex has stopped, the hub forgets the server's sessions and doesn't reconnect: only a
+    /// tab open starts it again.
     pub fn sleep_server(
         &self,
         store: &Mutex<AgentStore>,
         server: &str,
         plan: &ServerSleepPlan,
-    ) -> Result<(), RexError> {
+        title: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<ServerSlept, RexError> {
         for id in &plan.sleep {
             let Some(project) = lock(store).project_of_record(id).filter(|p| {
                 self.inner
@@ -459,13 +471,18 @@ impl RexHub {
             r.state = RecordState::Asleep;
             lock(store).merge(&before, after);
         }
+        let now = self.plan_server_sleep(store, server, title)?;
+        let listed: Vec<String> = plan.lose.iter().map(|l| l.name.clone()).collect();
+        if !now.unconfirmed(&listed).is_empty() {
+            return Ok(ServerSlept::Unconfirmed(now));
+        }
         let (client, _) = self.inner.current(server).ok_or(RexError::Unreachable)?;
         self.inner.lock().stopping.insert(server.to_owned());
         match client.call("server.stop", serde_json::json!({})) {
             Ok(_) => {
                 drop(client);
                 self.inner.forget_server(server);
-                Ok(())
+                Ok(ServerSlept::Stopped)
             }
             Err(e) => {
                 self.inner.lock().stopping.remove(server);
@@ -708,18 +725,23 @@ pub fn sleep_server(
                 &format!("couldn't sleep Rex server {server}: {e}"),
             ),
             Ok(plan) if !plan.unconfirmed(&accepted).is_empty() => {
-                let _ = main.emit_to(
-                    label.as_str(),
-                    "warden:server-sleep-confirm",
-                    serde_json::json!({ "label": label, "server": server, "losses": plan.lose }),
-                );
+                confirm(&main, &label, &server, &plan)
             }
             Ok(plan) => {
                 let projects = let_go(&main, &server);
-                stop_server(&main, label, server, plan, projects);
+                stop_server(&main, label, server, plan, titles, projects);
             }
         });
     })
+}
+
+/// Ask window `label` to confirm sleeping `server`, listing `plan`'s losses (main thread).
+fn confirm(app: &AppHandle, label: &str, server: &str, plan: &ServerSleepPlan) {
+    let _ = app.emit_to(
+        label,
+        "warden:server-sleep-confirm",
+        serde_json::json!({ "label": label, "server": server, "losses": plan.lose }),
+    );
 }
 
 /// Run `f` on a named worker thread; `Err` says it couldn't start.
@@ -742,9 +764,9 @@ fn fail(app: &AppHandle, label: &str, message: &str) {
 }
 
 /// Every pane on `server` lets go of its surface (main thread), so no relay sees its stream die
-/// and reads it as an exit: a popped-out tab on it ends whole, as when its program exits
-/// ([`WindowManager::end_detached`](crate::manager::WindowManager::end_detached)), and every
-/// docked tab on it goes cold, as an unload. Returns the tabs, for their lists to repaint.
+/// and reads it as an exit: every docked tab on it goes cold, as an unload, then a popped-out tab
+/// on it ends whole, as when its program exits
+/// ([`WindowManager::end_detached`](crate::manager::WindowManager::end_detached)). Returns the tabs, for their lists to repaint.
 fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
     let st = app.state::<ManagerState>();
     let mut projects = Vec::new();
@@ -752,15 +774,9 @@ fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
     let mut ended = Vec::new();
     {
         let mut m = st.lock();
-        let popped: Vec<String> = m
-            .detached
-            .iter()
-            .filter(|(_, d)| d.spec.server.as_deref() == Some(server))
-            .map(|(l, _)| l.clone())
-            .collect();
-        for dlabel in popped {
-            ended.extend(m.end_detached(app, &dlabel));
-        }
+        // Docked tabs first: a pop-out ending while its origin still runs a sibling agent shows
+        // that sibling (`DetachedEnded::SiblingShown`), whose open could restart Rex after the
+        // stop. Unloaded first, the origin holds nothing live and the pop-out ends it cold.
         let labels: Vec<String> = m.windows.keys().cloned().collect();
         for l in labels {
             let Some(ws) = m.windows.get_mut(&l) else {
@@ -778,9 +794,15 @@ fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
             }
             m.record_session(&l);
         }
-    }
-    for e in ended {
-        crate::manager::announce_detached_ended(app, e);
+        let popped: Vec<String> = m
+            .detached
+            .iter()
+            .filter(|(_, d)| d.spec.server.as_deref() == Some(server))
+            .map(|(l, _)| l.clone())
+            .collect();
+        for dlabel in popped {
+            ended.extend(m.end_detached(app, &dlabel));
+        }
     }
     for (l, id, new_active) in exited {
         let _ = app.emit_to(
@@ -789,6 +811,9 @@ fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
             serde_json::json!({ "label": l, "id": id, "newActive": new_active }),
         );
     }
+    for e in ended {
+        crate::manager::announce_detached_ended(app, e);
+    }
     crate::sync_agent_menu(app);
     projects.sort();
     projects.dedup();
@@ -796,12 +821,14 @@ fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
 }
 
 /// Sleep `server` as `plan` says on a worker, then repaint `projects`' lists, the server's
-/// presence and the Sleep Server menu (main thread); a failure goes to window `label`'s banner.
+/// presence and the Sleep Server menu (main thread). A failure goes to window `label`'s banner;
+/// a loss found just before the stop asks `label` to confirm again.
 fn stop_server(
     app: &AppHandle,
     label: String,
     server: String,
     plan: ServerSleepPlan,
+    titles: std::collections::HashMap<String, String>,
     projects: Vec<String>,
 ) {
     let app = app.clone();
@@ -812,17 +839,21 @@ fn stop_server(
                 app.try_state::<RexHub>(),
                 app.try_state::<Mutex<AgentStore>>(),
             ) {
-                (Some(hub), Some(store)) => hub.sleep_server(&store, &server, &plan),
+                (Some(hub), Some(store)) => {
+                    hub.sleep_server(&store, &server, &plan, &|k| titles.get(k).cloned())
+                }
                 _ => Err(RexError::Unreachable),
             };
             let main = app.clone();
             let _ = app.run_on_main_thread(move || {
-                if let Err(e) = result {
-                    fail(
+                match result {
+                    Ok(ServerSlept::Stopped) => {}
+                    Ok(ServerSlept::Unconfirmed(now)) => confirm(&main, &label, &server, &now),
+                    Err(e) => fail(
                         &main,
                         &label,
                         &format!("couldn't sleep Rex server {server}: {e}"),
-                    );
+                    ),
                 }
                 for p in &projects {
                     emit_agents(&main, p);
@@ -1839,7 +1870,11 @@ mod tests {
         });
 
         let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
-        hub.sleep_server(&s, "local", &plan).expect("sleep server");
+        assert_eq!(
+            hub.sleep_server(&s, "local", &plan, &title)
+                .expect("sleep server"),
+            super::ServerSlept::Stopped
+        );
 
         assert_eq!(
             *at_stop.lock().unwrap(),
@@ -1882,7 +1917,11 @@ mod tests {
             )],
         );
         let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
-        hub.sleep_server(&s, "local", &plan).expect("sleep server");
+        assert_eq!(
+            hub.sleep_server(&s, "local", &plan, &title)
+                .expect("sleep server"),
+            super::ServerSlept::Stopped
+        );
         assert!(f.stopped());
         assert_eq!(f.wait_control_connections(0, Duration::from_secs(5)), 0);
         std::thread::sleep(Duration::from_millis(50));
@@ -1890,6 +1929,52 @@ mod tests {
         assert!(hub.live_sessions("local").is_empty());
         assert_eq!(hub.stoppable("local"), Err(super::NOT_RUNNING));
         assert!(hub.agent_panes("local", "session:old").is_empty());
+    }
+
+    #[test]
+    fn a_window_opened_after_the_plan_asks_again_instead_of_stopping() {
+        use super::{LossItem, LossKind, ServerSlept};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let f = fake(Some("session:old"), vec![]);
+        let reads = AtomicUsize::new(0);
+        f.on("session.view", move |_, _| {
+            let windows: &[(&str, &str, &str)] = match reads.fetch_add(1, Ordering::SeqCst) {
+                0 => &[("window:1", "block:1", "a")],
+                _ => &[("window:9", "block:9", "stray")],
+            };
+            let read = crate::rex::agent_open::tests::view("session:old", windows);
+            rex_client::fake::Reply::ok(read["view"].clone())
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        hub.connect("local").expect("connect");
+        let s = store(vec![record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        )]);
+
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
+        assert!(plan.lose.is_empty(), "nothing to confirm at first");
+        let got = hub
+            .sleep_server(&s, "local", &plan, &title)
+            .expect("sleep server");
+
+        assert_eq!(
+            got,
+            ServerSlept::Unconfirmed(super::ServerSleepPlan {
+                sleep: vec![],
+                lose: vec![LossItem {
+                    kind: LossKind::Agent,
+                    name: "Proj · stray".into(),
+                }],
+            })
+        );
+        assert!(f.requests_for("server.stop").is_empty(), "nothing stops");
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+        assert_eq!(hub.stoppable("local"), Ok(()));
     }
 
     #[test]
@@ -1906,7 +1991,7 @@ mod tests {
         );
         f.fail("server.stop", "forbidden", "local socket only", 403);
         let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
-        assert!(hub.sleep_server(&s, "local", &plan).is_err());
+        assert!(hub.sleep_server(&s, "local", &plan, &title).is_err());
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
         assert_eq!(hub.live_sessions("local").len(), 1);
         assert_eq!(hub.stoppable("local"), Ok(()));
