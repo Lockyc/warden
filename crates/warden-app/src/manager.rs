@@ -1366,7 +1366,13 @@ fn reconcile_returned_tab(
         return Some(new_active);
     };
     fn terminal(s: &TabSpec) -> warden_config::TerminalSpec<'_> {
-        warden_config::TerminalSpec::new(&s.dir, &s.shell, s.startup.as_deref(), s.split.as_ref())
+        warden_config::TerminalSpec::new(
+            &s.dir,
+            &s.shell,
+            s.startup.as_deref(),
+            s.split.as_ref(),
+            None,
+        )
     }
     let n = &tp.spec;
     if terminal(spawned) != terminal(n) {
@@ -1580,6 +1586,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let root = Root {
@@ -1591,6 +1598,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let cfg = Config {

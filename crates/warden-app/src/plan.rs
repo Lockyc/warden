@@ -614,6 +614,7 @@ colour = "#0f8a8a"
                 probe: None,
                 kill: None,
                 suspend: None,
+                server: None,
                 split: None,
             }],
             roots: vec![Root {
@@ -625,6 +626,7 @@ colour = "#0f8a8a"
                 probe: None,
                 kill: None,
                 suspend: None,
+                server: None,
                 split: None,
             }],
         };
@@ -905,6 +907,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let recon = Reconciliation {
@@ -941,6 +944,7 @@ colour = "#111111"
                     probe: None,
                     kill: None,
                     suspend: None,
+                    server: None,
                     split: None,
                 }],
             }],
@@ -992,6 +996,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let mk_window = |tabs: Vec<Tab>| Window {
@@ -1029,6 +1034,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let old = mk_cfg(vec![discovered]);
@@ -1047,6 +1053,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let new = mk_cfg(vec![curated]);

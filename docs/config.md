@@ -41,6 +41,7 @@ probe_interval = 5                     # optional; slow-poll floor in seconds on
                                        #   0 = event-driven only — burst on triggers, then Idle, no steady poll)
 kill  = "…"                            # optional; session-kill (☠ destroy) command, cascades global→window→tab; run fire-and-forget on confirm via the cyan dot
 suspend = "…"                          # optional; session-suspend (⏻, restorable) command, cascades exactly like kill
+server = "…"                           # optional; Rex server hosting the tabs' panes: "local" or a host label; cascades global→window→tab
 notify_debug = false                   # optional; default false — trace the notification path to $TMPDIR/warden-notify-dbg.log (per-user temp dir, e.g. /var/folders/…/T/; debug aid, read at launch; see docs/notifications.md)
 
 [split]                                # optional; declare every tab's SECOND pane — cascades global→window→tab
@@ -62,6 +63,7 @@ cmd    = "amux"                        # optional; per-window startup override
 probe  = "…"                           # optional; session-presence probe override for this window
 kill   = "…"                           # optional; session-kill command override for this window
 suspend = "…"                          # optional; session-suspend command override for this window
+server = "…"                           # optional; Rex server override for this window's tabs
 split  = false                         # optional; a whole `[window.split]` table, or false to opt this window out
 
   [[window.tab]]                       # = a project terminal (loose/ungrouped → headerless section, first)
@@ -76,6 +78,7 @@ split  = false                         # optional; a whole `[window.split]` tabl
   probe      = "…"                     # optional; session-presence probe override for this tab ("" = opt out)
   kill       = "…"                     # optional; session-kill command override for this tab ("" = opt out)
   suspend    = "…"                     # optional; session-suspend command override for this tab ("" = opt out)
+  server     = "…"                     # optional; Rex server for this tab ("" = opt out → plain tab)
   split      = true                    # optional; a whole `[window.tab.split]` table, `true` = the default split, `false` = opt out
 
   [[window.group]]                     # = a sidebar section (optional; loose tabs need no group)
@@ -94,6 +97,7 @@ split  = false                         # optional; a whole `[window.split]` tabl
   probe = "…"                          # optional; per-root probe override ("" = opt out)
   kill  = "…"                          # optional; per-root kill override ("" = opt out)
   suspend = "…"                        # optional; per-root suspend override ("" = opt out)
+  server = "local"                     # optional; must resolve to "local" or unset — a remote root is warned and skipped
   split = false                        # optional; a whole `[window.root.split]` table for discovered projects, or false
 ```
 
@@ -114,6 +118,8 @@ here *would* offer you its restore picker. `--pending` is the read-only twin of 
 picker itself uses; amux owns it precisely so warden's config doesn't have to know the ledger exists
 (the same reason the probe delegates rather than inlining `tmux has-session` legs). The ghost
 therefore means exactly one thing: **a plain launch here would offer a restore**.
+
+**`server` puts a tab's panes in sessions on a Rex server** (`"local"` or a host label). It cascades tab → window → global like `probe`; `""` opts a level out (→ `Tab.server: None`, a plain tab). A tab's `server` is part of its `TerminalSpec`, so changing it respawns the tab. On a remote tab (`server` set and not `"local"`) `dir` is a path on that server: it is kept verbatim (no `~` expansion) and not checked for existence. `[[window.root]]` discovery scans the local disk, so a root whose resolved `server` is not `"local"` is skipped with the warning `root "<name>": server must be "local" (remote roots aren't discovered yet)`; the unlock is a Rex-side directory listing, which the client does not yet call.
 
 **`kill` and `suspend` are the two ways to end a tab's session** — ☠ destroy and ⏻ suspend on the presence dot's confirm row. Each cascades and resolves identically to `probe` (`""` opts a level out → `Tab.kill`/`Tab.suspend: Option<String>`), independently of the other. Clicking the cyan dot arms the row (so does **⌘⇧K**, Tab ▸ Terminate Session…, whose second press confirms ☠; **⌘⇧S** suspends without arming); confirming either action runs that command **fire-and-forget** via `sh -c` (cwd = tab dir; `{dir}`/`{title}` expand exactly as in `probe`, as one quoted word) **and unloads the tab** (same cold state as ⌘W). A tab with only one of the two shows the other disabled on the armed row. `end_session` runs the command then bumps the window so the scheduler fast-bursts; the chrome does **not** optimistically clear the dot — it tracks `warden:session-state` alone, dropping once, with no flicker (see `docs/probing.md` and CLAUDE.md's kill-flicker footgun). A genuinely-failed command leaves the session present, so the dot correctly stays lit. The arm-state lives in the chrome only — no IPC until confirm. The mouse route lives **on** the presence dot, so on a tab without `probe` (no cyan dot) only ⌘⇧S / ⌘⇧K reach them. Both inherit the same probe PATH/env footgun (half-closed by `restore_login_path` — see CLAUDE.md's probe-env footgun): absolute paths stay the robust choice, since warden imports PATH only, not your shell exports. The canonical pair is `kill = '"$HOME/.agentmux/bin/amux" --kill'` and `suspend = '"$HOME/.agentmux/bin/amux" --suspend'`, mirrors of `amux --probe`: with cwd = the tab dir each tears down the **whole project** — the agent session plus its `-frame`/`-term` sessions — so it reaps exactly what the probe detects. `--kill` ends the agent tabs for good; `--suspend` leaves them recorded as open, so the probe exits 3, the dot ghosts, and activating the tab types `cmd`, whose restore picker brings them back (only a tab that has had a conversation is restorable — an agent never prompted has nothing to resume). (amux itself shells bare `tmux`; same login-PATH resolution.)
 

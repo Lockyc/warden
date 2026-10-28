@@ -3,7 +3,7 @@ use crate::raw::{RawConfig, RawSplit, RawWindow};
 use crate::{Colour, ColourError};
 use config_core::{Density, TabDigitKeys, Warning};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Last-resort shell when no `shell` is set at any level *and* the caller injected none.
@@ -30,6 +30,9 @@ pub const DEFAULT_COLOUR: Colour = Colour {
 pub const DEFAULT_SPLIT_SIZE: f64 = 0.5;
 pub const SPLIT_SIZE_MIN: f64 = 0.1;
 pub const SPLIT_SIZE_MAX: f64 = 0.9;
+
+/// The `server` value naming this machine's own Rex server; any other value is a remote host label.
+pub const LOCAL_SERVER: &str = "local";
 
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
@@ -201,6 +204,7 @@ pub fn resolve_with(
         probe: raw.probe.as_deref(),
         kill: raw.kill.as_deref(),
         suspend: raw.suspend.as_deref(),
+        server: raw.server.as_deref(),
         split: global_split.as_ref(),
     };
     let mut warnings = Vec::new();
@@ -251,6 +255,7 @@ struct Globals<'a> {
     probe: Option<&'a str>,
     kill: Option<&'a str>,
     suspend: Option<&'a str>,
+    server: Option<&'a str>,
     split: Option<&'a Option<Split>>,
 }
 
@@ -346,14 +351,17 @@ fn resolve_window(
 
     let mut roots = Vec::with_capacity(rp.roots.len());
     for rr in &rp.roots {
-        let root = resolve_root(
+        let Some(root) = resolve_root(
             rr,
             rp,
             default_shell,
             globals,
             window_split.as_ref(),
             warnings,
-        )?;
+        )?
+        else {
+            continue;
+        };
         if !seen_sections.insert(root.name.clone()) {
             return Err(ResolveError::DuplicateSection {
                 window: rp.title.clone(),
@@ -397,7 +405,15 @@ fn resolve_tab(
             window: rp.title.clone(),
         });
     }
-    let dir = config_core::expand_tilde(dir_str);
+    // A remote tab's `dir` is a path on the server: no tilde expansion, no existence check.
+    let server =
+        cascade(rt.server.as_deref(), rp.server.as_deref(), globals.server).map(String::from);
+    let remote = server.as_deref().is_some_and(|s| s != LOCAL_SERVER);
+    let dir = if remote {
+        PathBuf::from(dir_str)
+    } else {
+        config_core::expand_tilde(dir_str)
+    };
     if let Some(ref t) = rt.title {
         if t.trim().is_empty() {
             return Err(ResolveError::EmptyTabTitle {
@@ -426,7 +442,7 @@ fn resolve_tab(
             identity: key,
         });
     }
-    if !dir.exists() {
+    if !remote && !dir.exists() {
         warnings.push(Warning {
             window: rp.title.clone(),
             message: format!("dir does not exist: {}", dir.display()),
@@ -465,6 +481,7 @@ fn resolve_tab(
         probe,
         kill,
         suspend,
+        server,
         split,
     })
 }
@@ -541,12 +558,24 @@ fn resolve_root(
     globals: &Globals,
     window_split: Option<&Option<Split>>,
     warnings: &mut Vec<Warning>,
-) -> Result<Root, ResolveError> {
+) -> Result<Option<Root>, ResolveError> {
     // name/dir/depth validation + tilde expansion + basename default are shared with lector via
     // config-core's `resolve_root_dir` — leaf-free, so it hands back a bare RootDir and warden
     // maps its error onto ResolveError with this window's context.
     let root_dir = config_core::resolve_root_dir(rr.name.as_deref(), &rr.dir, rr.depth)
         .map_err(|e| map_root_error(e, &rp.title))?;
+    let server =
+        cascade(rr.server.as_deref(), rp.server.as_deref(), globals.server).map(String::from);
+    if server.as_deref().is_some_and(|s| s != LOCAL_SERVER) {
+        warnings.push(Warning {
+            window: rp.title.clone(),
+            message: format!(
+                "root \"{}\": server must be \"local\" (remote roots aren't discovered yet)",
+                root_dir.name
+            ),
+        });
+        return Ok(None);
+    }
     if !root_dir.dir.exists() {
         warnings.push(Warning {
             window: rp.title.clone(),
@@ -574,7 +603,7 @@ fn resolve_root(
         globals,
         window_split,
     )?;
-    Ok(Root {
+    Ok(Some(Root {
         name: root_dir.name,
         dir: root_dir.dir,
         depth: root_dir.depth,
@@ -583,8 +612,9 @@ fn resolve_root(
         probe,
         kill,
         suspend,
+        server,
         split,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -2232,5 +2262,108 @@ split = false
             cfg.windows[0].roots[0].split, None,
             "a window-level false opts a root out too, over the global table"
         );
+    }
+    #[test]
+    fn server_cascades_tab_over_window_over_global() {
+        let (cfg, _) = resolve_str(
+            r#"
+server = "g"
+[[window]]
+title = "a"
+server = "w"
+  [[window.tab]]
+  title = "own"
+  dir = "/x"
+  server = "t"
+  [[window.tab]]
+  title = "win"
+  dir = "/y"
+[[window]]
+title = "b"
+  [[window.tab]]
+  title = "glob"
+  dir = "/z"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].server.as_deref(), Some("t"));
+        assert_eq!(cfg.windows[0].tabs[1].server.as_deref(), Some("w"));
+        assert_eq!(cfg.windows[1].tabs[0].server.as_deref(), Some("g"));
+    }
+
+    #[test]
+    fn blank_server_opts_out() {
+        let (cfg, _) = resolve_str(
+            r#"
+[[window]]
+title = "a"
+server = "local"
+  [[window.tab]]
+  title = "t"
+  dir = "/x"
+  server = ""
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].server, None);
+    }
+
+    #[test]
+    fn remote_dir_keeps_tilde_and_skips_missing_warning() {
+        let (cfg, warnings) = resolve_str(
+            r#"
+[[window]]
+title = "a"
+  [[window.tab]]
+  title = "t"
+  dir = "~/proj"
+  server = "nucleus"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].tabs[0].dir, PathBuf::from("~/proj"));
+        assert!(!warnings
+            .iter()
+            .any(|w| w.message.contains("dir does not exist")));
+    }
+
+    #[test]
+    fn local_server_dir_still_expands_and_warns() {
+        let (cfg, warnings) = resolve_str(
+            r#"
+[[window]]
+title = "a"
+  [[window.tab]]
+  title = "t"
+  dir = "~/warden-no-such-dir-xyz"
+  server = "local"
+"#,
+        )
+        .unwrap();
+        assert_ne!(
+            cfg.windows[0].tabs[0].dir,
+            PathBuf::from("~/warden-no-such-dir-xyz")
+        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.message.contains("dir does not exist")));
+    }
+
+    #[test]
+    fn remote_root_is_warned_and_skipped() {
+        let (cfg, warnings) = resolve_str(
+            r#"
+[[window]]
+title = "a"
+  [[window.root]]
+  name = "projects"
+  dir = "/srv/projects"
+  server = "nucleus"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.windows[0].roots.is_empty());
+        assert!(warnings.iter().any(|w| w.message
+            == "root \"projects\": server must be \"local\" (remote roots aren't discovered yet)"));
     }
 }

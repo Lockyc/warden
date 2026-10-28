@@ -97,6 +97,8 @@ pub struct Root {
     pub kill: Option<String>,
     /// Resolved session-suspend command for discovered projects (`None` = no suspend action).
     pub suspend: Option<String>,
+    /// Rex server hosting this tab's panes: `Some("local")` or a host label; `None` = a plain tab.
+    pub server: Option<String>,
     /// Resolved second-pane split for discovered projects (`None` = no split).
     pub split: Option<Split>,
 }
@@ -135,6 +137,8 @@ pub struct Tab {
     /// identically. `None` = no suspend action. The app runs it when the user confirms
     /// suspending the tab's session.
     pub suspend: Option<String>,
+    /// Rex server hosting this tab's panes: `Some("local")` or a host label; `None` = a plain tab.
+    pub server: Option<String>,
     /// Resolved second pane for this tab (cascaded tab→window→global, whole-table). `None`
     /// = no split (a single pane).
     pub split: Option<Split>,
