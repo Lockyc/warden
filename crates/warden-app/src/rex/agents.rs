@@ -42,6 +42,12 @@ pub struct AgentRecord {
     /// Unix seconds, stamped by the caller of `reconcile`.
     pub closed_at: Option<u64>,
     pub selected: bool,
+    /// Forks made from this tab; numbers the next fork's default name.
+    #[serde(default)]
+    pub forks_made: u32,
+    /// The user named the tab, so a generated summary never overwrites the name.
+    #[serde(default)]
+    pub user_named: bool,
 }
 
 /// A fresh record id: wall-clock nanoseconds plus a process-wide counter, in hex. Unique within
@@ -70,6 +76,40 @@ fn resume_is_safe(s: &str) -> bool {
     id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         && RESUME_SHAPES.contains(&fixed)
+}
+
+/// The flag that turns a `RESUME_SHAPES` row into a fork of that conversation. A harness without
+/// a row has no fork command, so its tab can't be forked; Codex has none.
+#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
+const FORK_FLAGS: &[(&[&str], &str)] = &[(&["claude", "--resume"], "--fork-session")];
+
+/// The split of a safe resume command into its fixed words and trailing id; `None` for anything
+/// `resume_is_safe` refuses.
+#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
+fn split_resume(resume: &str) -> Option<(Vec<&str>, &str)> {
+    if !resume_is_safe(resume) {
+        return None;
+    }
+    let mut words: Vec<&str> = resume.split(' ').collect();
+    let id = words.pop()?;
+    Some((words, id))
+}
+
+/// The command that forks the conversation a stored resume command resumes. Derived from the
+/// already-checked resume command, never reported, so a forged report can't choose a program, a
+/// flag or a file. `None` for an unsafe command or a harness with no `FORK_FLAGS` row.
+#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
+pub fn fork_command(resume: &str) -> Option<String> {
+    let (fixed, _) = split_resume(resume)?;
+    let (_, flag) = FORK_FLAGS.iter().find(|(shape, _)| *shape == fixed)?;
+    Some(format!("{resume} {flag}"))
+}
+
+/// The conversation id a safe resume command ends with; it names the transcript file. `None` for
+/// an unsafe command.
+#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
+pub fn resume_id(resume: &str) -> Option<&str> {
+    split_resume(resume).map(|(_, id)| id)
 }
 
 /// A folded group of a project's list.
@@ -351,7 +391,8 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
         )*};
     }
     changed!(
-        project, name, group, position, resume, state, window_id, block_id, closed_at, selected
+        project, name, group, position, resume, state, window_id, block_id, closed_at, selected,
+        forks_made, user_named
     );
 }
 
@@ -445,6 +486,8 @@ pub fn reconcile(
                 block_id: w.block_id.clone(),
                 closed_at: None,
                 selected: false,
+                forks_made: 0,
+                user_named: false,
             });
             next += 1;
         }
@@ -474,6 +517,8 @@ mod tests {
             block_id: window.map(|w| format!("b-{w}")),
             closed_at: None,
             selected: false,
+            forks_made: 0,
+            user_named: false,
         }
     }
 
@@ -483,6 +528,50 @@ mod tests {
             block_id: Some(format!("b-{id}")),
             label: label.into(),
         }
+    }
+
+    #[test]
+    fn fork_command_for_claude_appends_fork_session() {
+        assert_eq!(
+            fork_command("claude --resume abc-123").as_deref(),
+            Some("claude --resume abc-123 --fork-session")
+        );
+        assert_eq!(resume_id("claude --resume abc-123"), Some("abc-123"));
+        assert_eq!(fork_command("claude --resume -x"), None);
+        assert_eq!(resume_id("claude --resume a; rm"), None);
+    }
+
+    #[test]
+    fn no_fork_for_codex() {
+        assert_eq!(fork_command("codex resume abc"), None);
+        assert_eq!(resume_id("codex resume abc"), Some("abc"));
+    }
+
+    #[test]
+    fn old_store_without_new_fields_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.json");
+        std::fs::write(
+            &path,
+            r#"{"records":[{"id":"a","project":"p","name":"a","group":null,"position":0,
+            "resume":"claude --resume x","state":"Asleep","window_id":null,"block_id":null,
+            "closed_at":null,"selected":false}]}"#,
+        )
+        .unwrap();
+        let s = AgentStore::load(path);
+        let r = &s.records[0];
+        assert_eq!((r.forks_made, r.user_named), (0, false));
+    }
+
+    #[test]
+    fn merge_carries_forks_made_and_user_named() {
+        let before = rec("a", RecordState::Live, Some("w1"), None);
+        let mut after = before.clone();
+        after.forks_made = 2;
+        after.user_named = true;
+        let mut current = before.clone();
+        merge_fields(&mut current, &before, &after);
+        assert_eq!((current.forks_made, current.user_named), (2, true));
     }
 
     #[test]

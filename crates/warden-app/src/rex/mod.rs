@@ -33,6 +33,7 @@ pub mod spawn;
 pub mod store;
 #[cfg(test)]
 mod tests;
+pub mod transcript;
 pub mod unclaimed;
 pub mod windows;
 
