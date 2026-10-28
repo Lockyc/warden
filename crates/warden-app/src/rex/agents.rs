@@ -136,9 +136,9 @@ impl AgentStore {
     }
 
     /// Move `project`'s record `id` into `group` (trimmed; blank or `None` is ungrouped) at
-    /// `index` among that group's other records, or last; a group no record holds yet goes after
-    /// the others. Positions are renumbered in list order ([`in_list_order`]). False for an
-    /// unknown record.
+    /// `index` among that group's other rows (its records not closed, as the list shows them), or
+    /// last; a group no row holds yet goes after the others. Closed records keep their place.
+    /// Positions are renumbered in list order ([`in_list_order`]). False for an unknown record.
     pub fn set_group(
         &mut self,
         project: &str,
@@ -156,7 +156,7 @@ impl AgentStore {
             .filter(|g| !g.is_empty())
             .map(Into::into);
         let members: Vec<usize> = (0..list.len())
-            .filter(|&i| list[i].group == moved.group)
+            .filter(|&i| list[i].group == moved.group && list[i].state != RecordState::Closed)
             .collect();
         let to = match (members.get(index.unwrap_or(usize::MAX)), members.last()) {
             (Some(&i), _) => i,
@@ -664,6 +664,39 @@ mod tests {
         let positions: Vec<u32> = s.records("p").iter().map(|r| r.position).collect();
         assert_eq!(positions, [0, 1, 2]);
         assert!(!s.set_group("p", "nope", None, None));
+    }
+
+    #[test]
+    fn grouping_indexes_rows_not_closed_records() {
+        let mut s = AgentStore::default();
+        for (i, (id, state)) in [
+            ("x", RecordState::Closed),
+            ("y", RecordState::Live),
+            ("z", RecordState::Live),
+            ("m", RecordState::Live),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut r = rec(id, state, None, None);
+            r.position = i as u32;
+            r.group = (id != "m").then(|| "g".to_string());
+            s.upsert(r);
+        }
+        // The list shows g as [y, z]; dropping m at 1 puts it between them.
+        assert!(s.set_group("p", "m", Some("g"), Some(1)));
+        let rows: Vec<String> = s
+            .records("p")
+            .into_iter()
+            .filter(|r| r.state != RecordState::Closed)
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(rows, ["y", "m", "z"]);
+        assert_eq!(
+            ids(&s),
+            ["x", "y", "m", "z"],
+            "the closed record keeps its place"
+        );
     }
 
     #[test]
