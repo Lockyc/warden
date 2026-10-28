@@ -56,17 +56,18 @@ const MENU_TAB_SPLIT: &str = "warden:split-pane";
 const MENU_TAB_SUSPEND: &str = "warden:suspend-tab";
 const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
-/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) / Fork Agent Tab (⌥⌘F) — act on the agent tab list of the focused
-/// window's active tab, enabled only while there is one ([`sync_agent_menu`]). The id doubles as
-/// the event name, sent with the tab's id. ⌘⇧T reaches the same list as `warden:agent-reopen`
+/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) / Fork Agent Tab (⌥⌘F) — act on the agent
+/// tab list of the focused window's active tab, enabled only while there is one
+/// ([`sync_agent_menu`]). The id doubles as the event name, sent with the tab's id. ⌘⇧T reaches the same list as `warden:agent-reopen`
 /// when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
 const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const MENU_AGENT_FORK: &str = "warden:agent-fork";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 
-/// New Agent Tab, Sleep Agent Tab, Fork Agent Tab and Reopen Last Closed, kept from the last menu build so their
-/// enabled state follows the focused window's active tab without a rebuild ([`sync_agent_menu`]).
+/// New Agent Tab, Sleep Agent Tab, Fork Agent Tab and Reopen Last Closed, kept from the last menu
+/// build so their enabled state follows the focused window's active tab without a rebuild
+/// ([`sync_agent_menu`]).
 #[cfg(target_os = "macos")]
 #[derive(Default)]
 struct AgentMenu(std::sync::Mutex<Option<[tauri::menu::MenuItem<tauri::Wry>; 4]>>);
@@ -1733,9 +1734,9 @@ fn main() {
                 return;
             }
 
-            // ⌘T / ⌥⌘S / ⌥⌘F / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
-            // chrome gets the active tab's id. ⌘T, ⌥⌘S and ⌥⌘F are disabled elsewhere (`sync_agent_menu`);
-            // ⌘⇧T falls through to reopening a window.
+            // ⌘T / ⌥⌘S / ⌥⌘F / ⌘⇧T in an agent pane act on its agent tab list: the focused
+            // window's chrome gets the active tab's id. ⌘T, ⌥⌘S and ⌥⌘F are disabled elsewhere
+            // (`sync_agent_menu`); ⌘⇧T falls through to reopening a window.
             if id == MENU_AGENT_NEW
                 || id == MENU_AGENT_SLEEP
                 || id == MENU_AGENT_FORK

@@ -252,10 +252,19 @@ impl RexHub {
                     .and_then(agents::fork_command)
                     .ok_or(Failed::Refused(NO_FORK))?;
                 let name = format!("{} \u{2442} {}", parent.name, parent.forks_made + 1);
-                let (group, target) = (
-                    parent.group.clone(),
-                    parent.position + parent.forks_made + 1,
-                );
+                // Below the parent and every fork of it still in its group, wherever they have
+                // been moved or closed to since.
+                let group = parent.group.clone();
+                let target = records
+                    .iter()
+                    .filter(|r| {
+                        r.id == *id
+                            || (r.forked_from.as_deref() == Some(id.as_str()) && r.group == group)
+                    })
+                    .map(|r| r.position)
+                    .max()
+                    .unwrap_or(parent.position)
+                    + 1;
                 let cmd = warden_config::apply_resume(req.resume.as_deref(), &fork);
                 let made =
                     self.agent_window(req, &mut session, Some(&cmd), Some(&name), deadline)?;
@@ -281,6 +290,7 @@ impl RexHub {
                 if let Some(n) = new {
                     records[n].group = group;
                     records[n].position = target;
+                    records[n].forked_from = Some(id.clone());
                 }
                 if let Some(p) = records.iter_mut().find(|r| r.id == *id) {
                     p.forks_made += 1;
@@ -2327,5 +2337,59 @@ mod tests {
         );
         assert_eq!(f.requests_for("session.new_window").len(), 1);
         assert_eq!(names(&s), ["a", "a \u{2442} 1", "b"]);
+    }
+
+    #[test]
+    fn fork_after_closed_earlier_fork_lands_below_parent() {
+        let (_f, s, hub, _d) = fork_fixture(Some("claude --resume aaa"), RecordState::Live);
+        // `b` ungrouped like `a`, so a misplaced fork shows up below it.
+        let b = crate::rex::agents::AgentRecord {
+            group: None,
+            ..state_of(&s, "b").unwrap()
+        };
+        s.lock().unwrap().upsert(b);
+        hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .expect("fork 1");
+        let first = crate::rex::agents::in_list_order(&s.lock().unwrap().records("t"))[1]
+            .id
+            .clone();
+        // A fresh fork has no resume yet, so a confirmed close drops it for good.
+        hub.agent_op(
+            &s,
+            &open(false, None),
+            &AgentOp::Close {
+                id: first,
+                confirmed: true,
+            },
+            8,
+        )
+        .expect("close");
+        // Any later op renumbers the list, closing the gap the dropped fork left.
+        hub.agent_op(&s, &open(false, None), &AgentOp::Refresh, 8)
+            .expect("refresh");
+        assert_eq!(names(&s), ["a", "b"]);
+        hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 9)
+            .expect("fork 2");
+        assert_eq!(names(&s), ["a", "a \u{2442} 2", "b"]);
+    }
+
+    #[test]
+    fn fork_after_earlier_fork_moved_groups_lands_below_parent() {
+        let (_f, s, hub, _d) = fork_fixture(Some("claude --resume aaa"), RecordState::Live);
+        // `b` ungrouped like `a`, so a misplaced fork shows up below it.
+        let b = crate::rex::agents::AgentRecord {
+            group: None,
+            ..state_of(&s, "b").unwrap()
+        };
+        s.lock().unwrap().upsert(b);
+        hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .expect("fork 1");
+        let first = crate::rex::agents::in_list_order(&s.lock().unwrap().records("t"))[1]
+            .id
+            .clone();
+        s.lock().unwrap().set_group("t", &first, Some("g"), None);
+        hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 8)
+            .expect("fork 2");
+        assert_eq!(names(&s), ["a", "a \u{2442} 2", "b", "a \u{2442} 1"]);
     }
 }
