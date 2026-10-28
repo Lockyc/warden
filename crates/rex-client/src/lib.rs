@@ -3,7 +3,23 @@
 //! stream), at control API revision 7. No async runtime — background work is `std::thread` plus
 //! `std::sync::mpsc`.
 
+mod control;
+mod data;
+mod endpoint;
+#[cfg(any(test, feature = "fake"))]
+pub mod fake;
 pub mod wire;
+
+pub use control::{ClientInfo, ControlClient, Event};
+pub use data::DataStream;
+pub use endpoint::Endpoint;
+
+/// The control connection's WebSocket subprotocol.
+pub const CONTROL_PROTOCOL: &str = "rex.control.v1";
+/// The terminal data stream's WebSocket subprotocol.
+pub const DATA_PROTOCOL: &str = "rex.data.terminal.v1";
+/// The control API revision this client speaks.
+pub const API_REVISION: u64 = 7;
 
 /// Everything that can go wrong talking to a Rex server.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
