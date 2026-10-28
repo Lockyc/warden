@@ -390,6 +390,20 @@ pub(crate) fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> 
     })
 }
 
+/// The Rex key of the surface pane `which` of that tab shows when it is agent `agent`'s (a
+/// popped-out agent's: its [`agent_key`]), else [`rex_pane_key`]. What a popped-out surface's
+/// size claims and exit check name.
+pub(crate) fn shown_rex_key(
+    primary: &TabSpec,
+    which: PaneIdx,
+    agent: Option<&str>,
+) -> Option<String> {
+    match agent.filter(|_| which == PaneIdx::Primary && primary.server.is_some()) {
+        Some(record_id) => Some(agent_key(&primary.id, record_id)),
+        None => rex_pane_key(primary, which),
+    }
+}
+
 /// Whether pane `which` of the tab whose primary runs `primary` holds agent tabs: the main pane of
 /// a Rex tab. An unclaimed session's row shows the one session it lists, and a split pane is one
 /// terminal.
@@ -814,15 +828,11 @@ impl Registry {
         }
     }
 
-    /// Test-only: tab `id`'s main pane's selected agent, on screen or not.
-    #[cfg(test)]
+    /// The agent tab `id`'s main pane has selected, on screen or not; `None` for a pane holding
+    /// no agents. Pop-out records it as the agent whose surface travels.
     pub fn selected_agent(&self, id: &str) -> Option<&str> {
-        self.tabs
-            .iter()
-            .find(|t| t.id == id)?
-            .primary
-            .selected
-            .as_deref()
+        let pane = &self.tabs.iter().find(|t| t.id == id)?.primary;
+        pane.selected.as_deref().filter(|r| pane.agent(r).is_some())
     }
 
     /// The agent tab `id`'s main pane shows: its selected one, while the tab is the one on screen
@@ -1608,13 +1618,15 @@ impl Registry {
     /// (`secondary_spec`, the same derivation `split` and `mark_detached` use) rather than
     /// refusing: refusing would end a live PTY purely because its slot is missing.
     ///
-    /// A main pane holding agents takes the returning surface back into the agent slot `detach`
-    /// left `Detached`; one rebuilt while the tab was out has no such slot and takes it as its own.
+    /// A returning `agent`'s surface (the record `selected_agent` named at pop-out) lands in that
+    /// agent's slot — the one `detach` left `Detached`, or, in a pane rebuilt while it was out, a
+    /// slot made for it — and is selected, so its key stays the agent's for size and exit.
     pub fn attach(
         &mut self,
         id: &str,
         primary: GhosttySurface,
         secondary: Option<GhosttySurface>,
+        agent: Option<&str>,
     ) -> Result<(), (GhosttySurface, Option<GhosttySurface>)> {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return Err((primary, secondary));
@@ -1630,17 +1642,27 @@ impl Registry {
         {
             return Err((primary, secondary));
         }
-        let out = t
-            .primary
-            .agents
-            .iter_mut()
-            .find(|a| matches!(a.slot, TabSlot::Detached));
-        match out {
-            Some(a) => {
-                a.slot = TabSlot::Spawned(primary);
-                let back = a.record_id.clone();
-                t.primary.selected = Some(back);
-                t.primary.slot = TabSlot::Cold;
+        let agent = agent.filter(|_| hosts_agents(&t.primary.spec, PaneIdx::Primary));
+        if agent.is_some_and(|r| {
+            t.primary
+                .agent(r)
+                .is_some_and(|a| matches!(a.slot, TabSlot::Spawned(_)))
+        }) {
+            return Err((primary, secondary));
+        }
+        match agent {
+            Some(record_id) => {
+                let main = &mut t.primary;
+                match main.agent_mut(record_id) {
+                    Some(a) => a.slot = TabSlot::Spawned(primary),
+                    None => main.agents.push(AgentSlot {
+                        record_id: record_id.to_string(),
+                        slot: TabSlot::Spawned(primary),
+                        rex: RexState::Idle,
+                    }),
+                }
+                main.selected = Some(record_id.to_string());
+                main.slot = TabSlot::Cold;
             }
             None => t.primary.slot = TabSlot::Spawned(primary),
         }
@@ -3272,6 +3294,36 @@ mod tests {
         assert_eq!(r.close_agent("t", "r1"), Some(AgentClosed::PaneCold(None)));
         assert!(r.agent_keys("t").is_empty());
         assert_eq!(r.close_agent("t", "gone"), None);
+    }
+
+    #[test]
+    fn a_popped_out_agent_keeps_its_agent_key() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.add(&spec("p", "/tmp"), false).unwrap();
+        r.force_agents("t", &["r1", "r2"], Some("r2"));
+        // What pop-out records as the travelling agent, and the key its exit and size then name.
+        let agent = r.selected_agent("t");
+        assert_eq!(agent, Some("r2"));
+        let t = r.spec_of("t").unwrap();
+        assert_eq!(
+            shown_rex_key(t, PaneIdx::Primary, agent).as_deref(),
+            Some("t::agent:r2")
+        );
+        assert_eq!(
+            shown_rex_key(t, PaneIdx::Secondary, agent).as_deref(),
+            Some("t::2"),
+            "a split pane is never an agent"
+        );
+        assert_eq!(
+            shown_rex_key(t, PaneIdx::Primary, None).as_deref(),
+            Some("t")
+        );
+        assert_eq!(r.selected_agent("p"), None);
+        assert_eq!(
+            shown_rex_key(r.spec_of("p").unwrap(), PaneIdx::Primary, None),
+            None
+        );
     }
 
     #[test]

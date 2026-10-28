@@ -300,9 +300,18 @@ pub struct DetachedSurface {
     pub spec: TabSpec,
     pub origin_label: String,
     pub tab_id: String,
+    /// The agent whose surface travelled (`Registry::selected_agent` at pop-out), for a Rex
+    /// tab's main pane holding agents; `None` otherwise.
+    pub agent: Option<String>,
 }
 
 impl DetachedSurface {
+    /// The Rex key pane `which`'s travelling surface answers to: the agent's own for an agent,
+    /// else the pane's (`registry::shown_rex_key`). `None` for a plain tab.
+    pub fn rex_key(&self, which: crate::registry::PaneIdx) -> Option<String> {
+        crate::registry::shown_rex_key(&self.spec, which, self.agent.as_deref())
+    }
+
     /// Whether this window's holes are laid out secondary-first: a left-side split with its
     /// second pane still live. Once the secondary is gone the one remaining hole is the
     /// primary's whatever the side was, so this is keyed on `secondary`'s presence, not just
@@ -788,12 +797,15 @@ impl WindowManager {
         let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
             return; // already gone (redocked or closed) — drop the signal
         };
-        if let Some(key) = lock
-            .detached
-            .get(&dlabel)
-            .and_then(|d| crate::registry::rex_pane_key(&d.spec, which))
-        {
-            crate::rex::spawn::end_if_exited(app, key, None);
+        if let Some(d) = lock.detached.get(&dlabel) {
+            if let Some(key) = d.rex_key(which) {
+                let project = d
+                    .agent
+                    .as_ref()
+                    .filter(|_| which == crate::registry::PaneIdx::Primary)
+                    .map(|_| d.tab_id.clone());
+                crate::rex::spawn::end_if_exited(app, key, project);
+            }
         }
         match which {
             crate::registry::PaneIdx::Secondary => {
@@ -812,6 +824,7 @@ impl WindowManager {
                     secondary,
                     origin_label,
                     tab_id,
+                    agent: _,
                 } = lock.detached.remove(&dlabel).expect("located above");
                 // The whole tab ends, scratch pane included — the same one-dead-tab semantic the
                 // docked primary path applies via `unload`.
@@ -1022,7 +1035,7 @@ impl WindowManager {
             crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
         };
         s.set_frame(rect);
-        crate::rex::size::PaneSize::of(crate::registry::rex_pane_key(&ds.spec, which)?, s)
+        crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
     }
 
     /// The size of the live Rex pane surface `surface_id` shows, docked or popped out; `None`
@@ -1041,7 +1054,7 @@ impl WindowManager {
             crate::registry::PaneIdx::Primary => &ds.surface,
             crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
         };
-        crate::rex::size::PaneSize::of(crate::registry::rex_pane_key(&ds.spec, which)?, s)
+        crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
     }
 
     /// The user turned to a Rex pane ([`SurfaceSignal::UserInput`]): claim its block for
@@ -1109,6 +1122,7 @@ impl WindowManager {
             spec: spawned,
             origin_label,
             tab_id,
+            agent,
         } = self.detached.remove(detached_label)?;
 
         // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
@@ -1138,7 +1152,10 @@ impl WindowManager {
                         let _ = s.reparent(nsw as *mut c_void, INITIAL_RECT);
                     }
                 }
-                match ws.registry.attach(&tab_id, surface, secondary) {
+                match ws
+                    .registry
+                    .attach(&tab_id, surface, secondary, agent.as_deref())
+                {
                     // Re-assert the origin's CURRENT selection — NOT the returned tab. The chrome
                     // owns selection (warden passes no `active`), so force-activating the returned
                     // tab here would show its terminal while the sidebar still highlights whatever

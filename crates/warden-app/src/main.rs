@@ -556,7 +556,7 @@ fn pop_out_tab(
 
     // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
     // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, secondary, secondary_left, tab_spec, spec, token) = {
+    let (surface, secondary, secondary_left, tab_spec, spec, token, agent) = {
         let mut m = state.lock();
         let ws = m
             .windows
@@ -578,6 +578,8 @@ fn pop_out_tab(
                     .to_string(),
             );
         }
+        // The agent whose surface travels, so its size and exit still name the agent.
+        let agent = ws.registry.selected_agent(&id).map(str::to_string);
         let (surface, secondary) = ws
             .registry
             .detach(&id)
@@ -619,7 +621,15 @@ fn pop_out_tab(
             ]),
         };
         let token = crate::plan::detach_window_token(&origin_label, &id);
-        (surface, secondary, secondary_left, tab_spec, spec, token)
+        (
+            surface,
+            secondary,
+            secondary_left,
+            tab_spec,
+            spec,
+            token,
+            agent,
+        )
     };
 
     // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
@@ -742,7 +752,10 @@ fn pop_out_tab(
             let secondary = secondary_opt.take();
             let mut m = state.lock();
             if let Some(ws) = m.windows.get_mut(&origin_label) {
-                match ws.registry.attach(&id, surface, secondary) {
+                match ws
+                    .registry
+                    .attach(&id, surface, secondary, agent.as_deref())
+                {
                     // Re-assert the origin's CURRENT selection (not this tab — pop-out can be
                     // driven on a background tab, and `activate` would move the shown surface
                     // out from under the sidebar's highlight). This is what re-applies the
@@ -775,6 +788,7 @@ fn pop_out_tab(
                 spec: tab_spec,
                 origin_label: origin_label.clone(),
                 tab_id: id.clone(),
+                agent,
             },
         );
     }
