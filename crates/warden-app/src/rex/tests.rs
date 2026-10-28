@@ -1252,13 +1252,14 @@ fn windows_follow_created_and_closed() {
     let (fake, held) = windowed(&[("window:1", "main", "block:new")]);
     let dir = tempfile::tempdir().unwrap();
     let (hub, _) = hub_on(fake.endpoint(), &dir);
-    let rx = hub.subscribe();
     hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
         .expect("ensure_session");
     assert_eq!(
         hub.windows("local", "session:new"),
         [agent("window:1", Some("block:new"), "main")]
     );
+    // Subscribed after the attach, so its own view isn't what the next event matches.
+    let rx = hub.subscribe();
 
     // Another client opens a window: Rex sends window_created, then session_view_changed.
     {
@@ -1271,15 +1272,23 @@ fn windows_follow_created_and_closed() {
         "window_created",
         json!({"window_id": "window:2", "label": "review"}),
     );
+    next_event(&rx, |e| {
+        matches!(e, HubEvent::WindowsChanged { server, session_id }
+            if server == "local" && session_id == "session:new")
+    });
+    assert_eq!(
+        hub.windows("local", "session:new"),
+        [
+            agent("window:1", Some("block:new"), "main"),
+            agent("window:2", None, "review"),
+        ],
+        "listed from the event alone, its block unknown until the view"
+    );
     fake.push_session_event(
         "session:new",
         "session_view_changed",
         json!({"revision": 2}),
     );
-    next_event(&rx, |e| {
-        matches!(e, HubEvent::WindowsChanged { server, session_id }
-            if server == "local" && session_id == "session:new")
-    });
     eventually("the new window's block", || {
         hub.windows("local", "session:new")
             == [
@@ -1342,8 +1351,8 @@ fn status_from_program_status_changed() {
         "session:new",
         "block:new",
         "program_status_changed",
-        json!({"record": {"state": "blocked", "kind": "permission", "msg": "Allow edit?",
-               "updated_at": "2026-10-28T00:00:01Z"}, "reason": "report"}),
+        json!({"id": "", "record": {"state": "blocked", "kind": "permission",
+               "msg": "Allow edit?", "updated_at": "2026-10-28T00:00:01Z"}, "reason": "report"}),
     );
     next_event(
         &rx,
@@ -1369,19 +1378,21 @@ fn status_from_program_status_changed() {
             "session:new",
             "block:new",
             "program_status_changed",
-            json!({"record": {"state": state, "updated_at": "2026-10-28T00:00:02Z"}}),
+            json!({"id": "", "record": {"state": state, "updated_at": "2026-10-28T00:00:02Z"},
+                   "reason": "report"}),
         );
         eventually(state, || {
             hub.block_status("block:new").map(|s| (s.state, s.msg)) == Some((want, None))
         });
     }
 
-    // Removing the root record leaves no status.
+    // Removing only a child keeps the root's status; a new prompt removes the root too.
     fake.push_block_event(
         "session:new",
         "block:new",
         "program_status_changed",
-        json!({"record": {"state": "working", "updated_at": "2026-10-28T00:00:03Z"}}),
+        json!({"id": "", "record": {"state": "working", "updated_at": "2026-10-28T00:00:03Z"},
+               "reason": "report"}),
     );
     eventually("working", || {
         hub.block_status("block:new").map(|s| s.state) == Some(AgentState::Working)
@@ -1390,9 +1401,31 @@ fn status_from_program_status_changed() {
         "session:new",
         "block:new",
         "program_status_removed",
-        json!({"ids": [""], "reason": "exit"}),
+        json!({"ids": ["build/test"], "reason": "clear"}),
     );
-    eventually("the removal", || hub.block_status("block:new").is_none());
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "title_changed",
+        json!({"title": "after the child", "owner": {"pid": 1, "name": "sh"}}),
+    );
+    eventually("the title after the child's removal", || {
+        hub.block_status("block:new").and_then(|s| s.title) == Some("after the child".into())
+    });
+    assert_eq!(
+        hub.block_status("block:new").map(|s| s.state),
+        Some(AgentState::Working)
+    );
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_removed",
+        json!({"ids": ["", "build/test"], "reason": "prompt"}),
+    );
+    eventually("the removal", || {
+        hub.block_status("block:new").map(|s| s.state) == Some(AgentState::Idle)
+            && hub.block_status("block:new").and_then(|s| s.msg).is_none()
+    });
 }
 
 #[test]
