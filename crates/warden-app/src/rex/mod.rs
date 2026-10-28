@@ -7,10 +7,11 @@
 //! [`RexHub::subscribe`]rs.
 //!
 //! Threads: the hub's methods block their caller on the network and never hold the state lock
-//! across a call. Getting a usable connection — waiting for another caller's connect, then
-//! connecting, resolving a host label and reading the session list — is bounded by
-//! [`CONNECT_BUDGET`] and reports `Unreachable` past it, because it runs on the path that opens a
-//! tab. Each connection has one watcher thread that applies its events to the state; when the
+//! across a call. Opening a pane — waiting for another open of the same pane, getting a usable
+//! connection (connecting, resolving a host label, reading the session list), then finding or
+//! creating its session — shares one deadline, [`OPEN_BUDGET`], and reports `Unreachable` past
+//! it, because it runs on the path that opens a tab. Calls on one pane key are serialized, so two
+//! opens of a pane never make two sessions. Each connection has one watcher thread that applies its events to the state; when the
 //! connection ends, that thread removes it, reports `Disconnected`, and reconnects with the
 //! reconnect token (backing off), rereading the session list and attaching the claimed sessions
 //! again. A reconnect attempt holds nothing a caller waits on: callers connect alongside it, and
@@ -41,9 +42,10 @@ const TERMINAL_FLAVOR: &str = "com.superlogical.terminal.shell";
 /// Reconnect backoff: the first retry is immediate, then this, doubling up to the cap.
 const RECONNECT_FIRST: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
-/// The longest a caller waits for a usable connection. Opening a tab calls the hub, and an
-/// unreachable server must answer within 3 s; the margin covers the work after the deadline.
-const CONNECT_BUDGET: Duration = Duration::from_millis(2700);
+/// The longest opening a pane takes, start to answer, and the longest any caller waits for a
+/// usable connection. A tab must open or report its server unreachable within 3 s; the margin
+/// covers the work after the deadline.
+const OPEN_BUDGET: Duration = Duration::from_millis(2700);
 /// Less budget than this left, and autostart isn't worth starting.
 const AUTOSTART_MIN: Duration = Duration::from_millis(250);
 
@@ -102,6 +104,23 @@ struct Inner {
     /// Signalled when a caller's connect attempt for some server ends.
     connected: Condvar,
     subscribers: Mutex<Vec<mpsc::Sender<HubEvent>>>,
+    /// Pane keys a call is working on right now ([`Inner::hold_pane`]).
+    panes_busy: Mutex<HashSet<String>>,
+    /// Signalled when a pane key is released.
+    pane_free: Condvar,
+}
+
+/// A pane key held by one call; released on drop.
+struct PaneHold<'a> {
+    inner: &'a Inner,
+    key: String,
+}
+
+impl Drop for PaneHold<'_> {
+    fn drop(&mut self) {
+        lock(&self.inner.panes_busy).remove(&self.key);
+        self.inner.pane_free.notify_all();
+    }
 }
 
 #[derive(Default)]
@@ -209,6 +228,8 @@ impl RexHub {
                 }),
                 connected: Condvar::new(),
                 subscribers: Mutex::default(),
+                panes_busy: Mutex::default(),
+                pane_free: Condvar::new(),
             }),
         }
     }
@@ -216,6 +237,10 @@ impl RexHub {
     /// The session `pane_key` shows on `server`: its mapped session if that still exists there,
     /// else a new one with one terminal in `dir`, typing `startup` and a newline. A new mapping
     /// is persisted. The session is attached on the hub's connection either way.
+    ///
+    /// The whole call, waiting included, ends by [`OPEN_BUDGET`]: past it the answer is
+    /// `Unreachable`. A second open of the same pane waits for the first and then reattaches what
+    /// it found or made.
     pub fn ensure_session(
         &self,
         pane_key: &str,
@@ -224,11 +249,70 @@ impl RexHub {
         startup: Option<&str>,
         label: &str,
     ) -> Result<PaneTarget, RexError> {
-        let inner = &self.inner;
-        let (client, endpoint) = inner.conn(server)?;
+        let deadline = Instant::now() + OPEN_BUDGET;
+        let _held = self.inner.hold_pane(pane_key, Some(deadline))?;
+        match self
+            .inner
+            .ensure_until(pane_key, server, dir, startup, label, deadline)
+        {
+            Err(RexError::Timeout) => Err(RexError::Unreachable),
+            Err(_) if Instant::now() >= deadline => Err(RexError::Unreachable),
+            r => r,
+        }
+    }
+
+    /// End `pane_key`'s session if its terminal has finished ([`RexHub::block_exited`]), as one
+    /// step no open of that pane can come between. Returns whether it did.
+    pub fn destroy_if_exited(&self, pane_key: &str) -> bool {
+        let Ok(_held) = self.inner.hold_pane(pane_key, None) else {
+            return false;
+        };
+        if !self.block_exited(pane_key) {
+            return false;
+        }
+        if let Err(e) = self.inner.destroy(pane_key) {
+            eprintln!("warden: couldn't end Rex session for {pane_key:?}: {e}");
+        }
+        true
+    }
+
+    /// Whether `pane_key` is mapped to a session its server's live list holds. False when it's
+    /// unmapped, or the server isn't connected.
+    pub fn session_alive(&self, pane_key: &str) -> bool {
+        let st = self.inner.lock();
+        let Some(rec) = st.store.get(pane_key) else {
+            return false;
+        };
+        st.conns
+            .get(&rec.server)
+            .is_some_and(|c| c.live.iter().any(|s| s.id == rec.session_id))
+    }
+
+    /// End `pane_key`'s session and forget its mapping. The mapping goes even if the server
+    /// can't be told, so the pane never reattaches a session it was asked to end; a session that
+    /// survives that shows as unclaimed. An unmapped pane is a no-op.
+    pub fn destroy(&self, pane_key: &str) -> Result<(), RexError> {
+        let _held = self.inner.hold_pane(pane_key, None)?;
+        self.inner.destroy(pane_key)
+    }
+}
+
+impl Inner {
+    /// [`RexHub::ensure_session`]'s work, every call waiting until `deadline`.
+    fn ensure_until(
+        self: &Arc<Self>,
+        pane_key: &str,
+        server: &str,
+        dir: &Path,
+        startup: Option<&str>,
+        label: &str,
+        deadline: Instant,
+    ) -> Result<PaneTarget, RexError> {
+        let inner = self;
+        let (client, endpoint) = inner.conn_until(server, deadline)?;
         let previous = inner.lock().store.get(pane_key).cloned();
         if let Some(rec) = previous.as_ref().filter(|r| r.server == server) {
-            match inner.attach(server, &client, &rec.session_id, None) {
+            match inner.attach(server, &client, &rec.session_id, Some(deadline)) {
                 Ok(view) => {
                     if let Some(block_id) = terminal_block(&view) {
                         inner
@@ -252,7 +336,7 @@ impl RexHub {
         if let Some(s) = startup.filter(|s| !s.is_empty()) {
             options["initial_input"] = json!(format!("{s}\n"));
         }
-        let created = client.call(
+        let (_, created) = client.call_seq_until(
             "session.create",
             json!({
                 "label": label,
@@ -260,6 +344,7 @@ impl RexHub {
                     {"layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": options}}}
                 ],
             }),
+            deadline,
         )?;
         let session_id = str_field(&created["session_id"], "session.create session_id")?;
         let block_id = str_field(
@@ -282,7 +367,7 @@ impl RexHub {
             );
             st.blocks.insert(pane_key.to_owned(), block_id.clone());
         }
-        inner.attach(server, &client, &session_id, None)?;
+        inner.attach(server, &client, &session_id, Some(deadline))?;
         Ok(PaneTarget {
             endpoint,
             session_id,
@@ -290,11 +375,9 @@ impl RexHub {
         })
     }
 
-    /// End `pane_key`'s session and forget its mapping. The mapping goes even if the server
-    /// can't be told, so the pane never reattaches a session it was asked to end; a session that
-    /// survives that shows as unclaimed. An unmapped pane is a no-op.
-    pub fn destroy(&self, pane_key: &str) -> Result<(), RexError> {
-        let inner = &self.inner;
+    /// [`RexHub::destroy`]'s work, for a caller already holding `pane_key`.
+    fn destroy(self: &Arc<Self>, pane_key: &str) -> Result<(), RexError> {
+        let inner = self;
         let rec = {
             let mut st = inner.lock();
             let rec = st.store.get(pane_key).cloned();
@@ -317,7 +400,9 @@ impl RexHub {
             Err(e) => Err(e),
         }
     }
+}
 
+impl RexHub {
     /// Whether `pane_key`'s terminal has finished: `terminal.process` reports an exit, or its
     /// session or block is gone. False when it can't be told (unmapped, or unreachable), so an
     /// uncertain answer never ends a session.
@@ -400,9 +485,40 @@ impl Inner {
             .map(|c| (c.client.clone(), c.endpoint.clone()))
     }
 
-    /// `server`'s connection, opening it if there is none, within [`CONNECT_BUDGET`].
+    /// `server`'s connection, opening it if there is none, within [`OPEN_BUDGET`].
     fn conn(self: &Arc<Self>, server: &str) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
-        self.conn_until(server, Instant::now() + CONNECT_BUDGET)
+        self.conn_until(server, Instant::now() + OPEN_BUDGET)
+    }
+
+    /// Hold `pane_key` until the guard drops, waiting while another call holds it — until
+    /// `deadline` when one is set (then `Unreachable`), else for as long as it takes: every
+    /// holder is itself bounded.
+    fn hold_pane(
+        &self,
+        pane_key: &str,
+        deadline: Option<Instant>,
+    ) -> Result<PaneHold<'_>, RexError> {
+        let mut busy = lock(&self.panes_busy);
+        while busy.contains(pane_key) {
+            busy = match deadline {
+                None => self.pane_free.wait(busy).unwrap_or_else(|e| e.into_inner()),
+                Some(d) => {
+                    let left = d.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(RexError::Unreachable);
+                    }
+                    self.pane_free
+                        .wait_timeout(busy, left)
+                        .map(|(g, _)| g)
+                        .unwrap_or_else(|e| e.into_inner().0)
+                }
+            };
+        }
+        busy.insert(pane_key.to_owned());
+        Ok(PaneHold {
+            inner: self,
+            key: pane_key.to_owned(),
+        })
     }
 
     /// `server`'s connection, or `Unreachable` if none is usable by `deadline`. While another
