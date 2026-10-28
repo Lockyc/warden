@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/warden-config", "crates/warden-app", "crates/rex-client", "crates/warden-relay"]
+members = ["crates/warden-config", "crates/warden-app", "crates/rex-client", "crates/warden-relay", "crates/warden-summary"]
 
 # ── shared-core local-dev overrides (managed by `just chrome-dev`/`chrome-pin`, `config-dev`/`config-pin`, `shell-dev`/`shell-pin`) ──
 # Leave COMMENTED in git — an active path patch builds green for you but is unresolvable for every
