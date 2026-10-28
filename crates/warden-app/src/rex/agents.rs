@@ -122,6 +122,13 @@ impl AgentStore {
         self.save();
     }
 
+    /// Replace `project`'s records with `records` (a `reconcile` result) and persist.
+    pub fn set_project(&mut self, project: &str, records: Vec<AgentRecord>) {
+        self.records.retain(|r| r.project != project);
+        self.records.extend(records);
+        self.save();
+    }
+
     /// Forget the record with `id` and persist.
     pub fn remove(&mut self, id: &str) {
         let before = self.records.len();

@@ -8,14 +8,17 @@
 //! main thread never waits on the network.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rex_client::RexError;
 use tauri::{AppHandle, Emitter, Manager};
 
+use super::agents::{self, AgentStore};
 use super::server::LOCAL;
 use super::{unclaimed, HubEvent, PaneTarget, RexHub};
 use crate::probe::Presence;
-use crate::registry::{RexLanded, RexOpen, RexOpener};
+use crate::registry::{RexAnswer, RexLanded, RexOpen, RexOpener};
 use crate::surface::TabSpec;
 use crate::ManagerState;
 
@@ -82,7 +85,8 @@ pub fn open_error(server: &str, e: &RexError) -> String {
 
 /// The [`RexOpener`] for window `label`: each open runs on its own worker thread and lands back
 /// on the main thread through [`landed`]. The answer's own presence refresh runs on the worker, so
-/// a connection a caller (not the hub's watcher) restored still repaints the dots.
+/// a connection a caller (not the hub's watcher) restored still repaints the dots. An agent
+/// pane's open is [`RexHub::open_agents`], over the app's [`AgentStore`].
 pub fn opener(app: AppHandle, label: String) -> RexOpener {
     Box::new(move |req: RexOpen| {
         let (app, label) = (app.clone(), label.clone());
@@ -94,6 +98,13 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
                     // Without the relay the pane's command would fail at once, with no reason
                     // shown; say what's missing instead.
                     _ if !relay.is_file() => Err(format!("{} is missing", relay.display())),
+                    Some(hub) if req.agents => match app.try_state::<Mutex<AgentStore>>() {
+                        Some(store) => hub
+                            .open_agents(&store, &req, unix_now())
+                            .map(RexAnswer::Agents)
+                            .map_err(|e| open_error(&req.server, &e)),
+                        None => Err(format!("Rex server {}: no agent tabs store", req.server)),
+                    },
                     Some(hub) => {
                         // An unclaimed session's pane attaches the session it lists.
                         if unclaimed::is_unclaimed(&req.pane_key, &req.dir, Some(&req.server)) {
@@ -108,6 +119,7 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
                             req.startup.as_deref(),
                             &req.label,
                         )
+                        .map(RexAnswer::Pane)
                         .map_err(|e| open_error(&req.server, &e))
                     }
                     None => Err(format!("Rex server {}: no connection to Rex", req.server)),
@@ -125,7 +137,7 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
 /// Give window `label`'s registry the answer to `req` (main thread), then repaint that window's
 /// chrome: a fresh snapshot (the row now live, or warning), and the reason on its error banner
 /// when the open or the spawn failed. An answer the pane stopped waiting for changes nothing.
-fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<PaneTarget, String>) {
+fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer, String>) {
     let Some(st) = app.try_state::<ManagerState>() else {
         return;
     };
@@ -226,13 +238,32 @@ pub fn watch_presence(app: AppHandle) {
 /// A Rex pane's program exited (its relay did): let go of its session if its terminal really
 /// finished ([`RexHub::destroy_if_exited`]), on a worker, then refresh ([`hub_changed`]). A relay that left for any other reason (the server
 /// unreachable, the pane closed) leaves the session for the next open to reattach.
-pub fn end_if_exited(app: &AppHandle, pane_key: String) {
+///
+/// For an agent's key (`project` names its tab) only that agent's window is let go
+/// ([`RexHub::end_agent_if_exited`]), and its record follows the windows left: closed when it can
+/// resume, else dropped (`agents::reconcile`).
+pub fn end_if_exited(app: &AppHandle, pane_key: String, project: Option<String>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("warden-rex-exit".into())
         .spawn(move || {
             if let Some(hub) = app.try_state::<RexHub>() {
-                hub.destroy_if_exited(&pane_key);
+                match &project {
+                    None => {
+                        hub.destroy_if_exited(&pane_key);
+                    }
+                    Some(project) => {
+                        let left = hub.end_agent_if_exited(&pane_key);
+                        let store = app.try_state::<Mutex<AgentStore>>();
+                        if let (Some(left), Some(store)) = (left, store) {
+                            let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+                            let records = store.records(project);
+                            let next =
+                                agents::reconcile(project, &records, &left, true, unix_now());
+                            store.set_project(project, next);
+                        }
+                    }
+                }
             }
             hub_changed(&app, None);
         });
@@ -261,6 +292,13 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
     if let Err(e) = spawned {
         eprintln!("warden: couldn't start ending a tab's Rex sessions: {e}");
     }
+}
+
+/// Now, in Unix seconds: the stamp on a record that closes.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// `s` as one shell word: bare when it holds only characters no shell treats specially, else in

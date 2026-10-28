@@ -22,6 +22,7 @@
 //! whichever connection is installed first wins. Watchers hold the hub weakly: dropping the last
 //! `RexHub` closes every connection and ends them.
 
+pub mod agent_open;
 pub mod agents;
 pub mod reports;
 pub mod server;
@@ -168,15 +169,25 @@ struct State {
     windows: HashMap<(String, String), windows::SessionWindows>,
     /// Block → what its program last reported ([`windows`]).
     statuses: HashMap<String, windows::Tracked>,
+    /// Agent key → the main pane whose session holds that agent's window, bound by
+    /// [`RexHub::open_agents`]; the agent's block is in `blocks` under the agent key.
+    agents: HashMap<String, String>,
     next_gen: u64,
 }
 
 impl State {
-    /// Where `pane_key`'s session lives: its stored mapping, else its adoption.
+    /// Where `pane_key`'s session lives: its stored mapping, else its adoption; for an agent key,
+    /// its main pane's.
     fn record(&self, pane_key: &str) -> Option<&PaneRecord> {
-        self.store
-            .get(pane_key)
-            .or_else(|| self.adopted.get(pane_key))
+        let own = |k: &str| self.store.get(k).or_else(|| self.adopted.get(k));
+        own(pane_key).or_else(|| own(self.agents.get(pane_key)?))
+    }
+
+    /// Forget agent `agent_key`'s binding, block and size.
+    fn unbind_agent(&mut self, agent_key: &str) {
+        self.agents.remove(agent_key);
+        self.blocks.remove(agent_key);
+        self.requested.remove(agent_key);
     }
 
     /// `server`'s session list: its connection's, else the last heard while it's disconnected.
@@ -318,14 +329,10 @@ impl RexHub {
     ) -> Result<PaneTarget, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let _held = self.inner.hold_pane(pane_key, Some(deadline))?;
-        match self
+        let made = self
             .inner
-            .ensure_until(pane_key, server, dir, startup, label, deadline)
-        {
-            Err(RexError::Timeout) => Err(RexError::Unreachable),
-            Err(_) if Instant::now() >= deadline => Err(RexError::Unreachable),
-            r => r,
-        }
+            .ensure_until(pane_key, server, dir, startup, label, None, deadline);
+        budgeted(deadline, made)
     }
 
     /// Let `pane_key` go of its session if its terminal has finished ([`RexHub::block_exited`]),
@@ -376,7 +383,9 @@ impl RexHub {
 }
 
 impl Inner {
-    /// [`RexHub::ensure_session`]'s work, every call waiting until `deadline`.
+    /// [`RexHub::ensure_session`]'s work, every call waiting until `deadline`. A session it creates
+    /// names its window `window_label`, or leaves the name to Rex.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_until(
         self: &Arc<Self>,
         pane_key: &str,
@@ -384,6 +393,7 @@ impl Inner {
         dir: &Path,
         startup: Option<&str>,
         label: &str,
+        window_label: Option<&str>,
         deadline: Instant,
     ) -> Result<PaneTarget, RexError> {
         let inner = self;
@@ -428,14 +438,14 @@ impl Inner {
         }
 
         let options = terminal_options(dir, startup);
+        let mut window =
+            json!({"layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": options}}});
+        if let Some(w) = window_label {
+            window["window_label"] = json!(w);
+        }
         let (_, created) = client.call_seq_until(
             "session.create",
-            json!({
-                "label": label,
-                "initial_windows": [
-                    {"layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": options}}}
-                ],
-            }),
+            json!({ "label": label, "initial_windows": [window] }),
             deadline,
         )?;
         let session_id = str_field(&created["session_id"], "session.create session_id")?;
@@ -491,6 +501,15 @@ impl Inner {
         st.adopted.remove(pane_key);
         st.blocks.remove(pane_key);
         st.requested.remove(pane_key);
+        let agents: Vec<String> = st
+            .agents
+            .iter()
+            .filter(|(_, pane)| *pane == pane_key)
+            .map(|(agent, _)| agent.clone())
+            .collect();
+        for agent in agents {
+            st.unbind_agent(&agent);
+        }
         if let Some(a) = st.attached.get_mut(&rec.server) {
             a.remove(&rec.session_id);
         }
@@ -1190,6 +1209,16 @@ fn str_field(v: &Value, what: &str) -> Result<String, RexError> {
     v.as_str()
         .map(str::to_owned)
         .ok_or_else(|| RexError::Protocol(format!("{what} missing")))
+}
+
+/// The answer of a call bounded by `deadline`, as a tab open reports it: a timeout, or any
+/// failure past the deadline, is `Unreachable`.
+fn budgeted<T>(deadline: Instant, r: Result<T, RexError>) -> Result<T, RexError> {
+    match r {
+        Err(RexError::Timeout) => Err(RexError::Unreachable),
+        Err(_) if Instant::now() >= deadline => Err(RexError::Unreachable),
+        r => r,
+    }
 }
 
 /// A new terminal's options: started in `dir`, typing `startup` and a newline.

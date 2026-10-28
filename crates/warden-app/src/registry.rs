@@ -18,7 +18,8 @@ pub enum EndTarget {
 }
 
 /// A Rex pane's session to find or create — `RexHub::ensure_session`'s arguments — and the token
-/// its answer carries back to [`Registry::rex_opened`].
+/// its answer carries back to [`Registry::rex_opened`]. A main pane holding agents (`agents`) is
+/// opened by `RexHub::open_agents` instead, which reads `auto` and `resume`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RexOpen {
     pub pane_key: String,
@@ -27,6 +28,34 @@ pub struct RexOpen {
     pub startup: Option<String>,
     pub label: String,
     pub token: u64,
+    /// Opened by warden itself (launch, `load_on_open`, `remember_tabs`, hot reload) rather than
+    /// by the user selecting the tab: attaches what is live and wakes nothing.
+    pub auto: bool,
+    /// The pane is a Rex tab's main pane, whose session's windows are its agent tabs.
+    pub agents: bool,
+    /// The tab's `resume` program as configured now.
+    pub resume: Option<String>,
+}
+
+/// What an agent pane's open found: each live agent tab's terminal, in list order, and the one
+/// to show. Empty when nothing is live (every tab asleep, or none yet on an automatic open).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentsOpened {
+    pub agents: Vec<(String, PaneTarget)>,
+    pub selected: Option<String>,
+}
+
+/// A Rex open's answer: the one terminal a pane shows, or an agent pane's agents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RexAnswer {
+    Pane(PaneTarget),
+    Agents(AgentsOpened),
+}
+
+/// The Rex pane key and surface id of agent `record_id` in tab `tab_id`'s main pane. The one
+/// spelling: the registry, the hub's per-agent bindings and size claims all use it.
+pub(crate) fn agent_key(tab_id: &str, record_id: &str) -> String {
+    format!("{tab_id}::agent:{record_id}")
 }
 
 /// Starts a [`RexOpen`] somewhere that may block, and answers later through
@@ -45,6 +74,15 @@ pub enum RexLanded {
     Opened(Result<(), SurfaceError>),
 }
 
+/// What became of a tab when one of its agents' relays exited ([`Registry::close_agent`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum AgentClosed {
+    /// Another agent of the pane is live; the pane shows it if the closed one was on screen.
+    PaneLive,
+    /// Nothing live was left: the tab went cold, and the sidebar leans to this tab (as `unload`).
+    PaneCold(Option<String>),
+}
+
 /// Where a Rex pane stands on its way to a session. Lives beside the slot, which stays `Cold`
 /// until a surface exists.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +92,9 @@ enum RexState {
     Opening(u64),
     /// The session answered; the next spawn runs the relay on it.
     Ready(PaneTarget),
+    /// An agent pane's open found nothing live (every agent asleep, or none yet). Only a user open
+    /// asks again, since only a user open wakes an agent.
+    Asleep,
 }
 
 /// The chrome-facing shape of a declared split — the two layout facts the chrome seeds the
@@ -206,12 +247,29 @@ impl PaneIdx {
     }
 }
 
+/// One agent tab of a Rex tab's main pane: its record, its own surface (a relay on the agent's
+/// window's first terminal block, under [`agent_key`]), and the terminal it attaches. The target
+/// is kept after a spawn, so a slot whose relay exits reattaches the same block when shown again.
+struct AgentSlot {
+    record_id: String,
+    slot: TabSlot,
+    rex: RexState,
+}
+
 /// One terminal within a tab: its spawn recipe plus its live/cold/detached slot, and — for a pane
 /// whose spec names a `server` — how far its Rex session has got.
+///
+/// A Rex tab's main pane ([`hosts_agents`]) shows its session's windows as agent tabs: `rex` is
+/// the open of the whole pane, `agents` holds one slot per live agent the open found, and only
+/// the `selected` one is ever on screen. Its own `slot` stays `Cold` — `Detached` while popped
+/// out, and `Spawned` only for a surface that returned from a pop-out with no agent slot left to
+/// land in.
 struct Pane {
     spec: TabSpec,
     slot: TabSlot,
     rex: RexState,
+    agents: Vec<AgentSlot>,
+    selected: Option<String>,
 }
 
 impl Pane {
@@ -220,7 +278,64 @@ impl Pane {
             spec,
             slot,
             rex: RexState::Idle,
+            agents: Vec::new(),
+            selected: None,
         }
+    }
+
+    fn agent(&self, record_id: &str) -> Option<&AgentSlot> {
+        self.agents.iter().find(|a| a.record_id == record_id)
+    }
+
+    fn agent_mut(&mut self, record_id: &str) -> Option<&mut AgentSlot> {
+        self.agents.iter_mut().find(|a| a.record_id == record_id)
+    }
+
+    /// The slot this pane puts on screen: the selected agent's while it holds agents, else its own.
+    fn shown_slot(&self) -> Option<&TabSlot> {
+        if self.agents.is_empty() {
+            return Some(&self.slot);
+        }
+        Some(&self.agent(self.selected.as_deref()?)?.slot)
+    }
+
+    /// The live surface this pane puts on screen, if any.
+    fn shown(&self) -> Option<&GhosttySurface> {
+        match self.shown_slot()? {
+            TabSlot::Spawned(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Every live surface of this pane, its own and its agents'.
+    fn surfaces(&self) -> impl Iterator<Item = &GhosttySurface> {
+        std::iter::once(&self.slot)
+            .chain(self.agents.iter().map(|a| &a.slot))
+            .filter_map(|s| match s {
+                TabSlot::Spawned(s) => Some(s),
+                _ => None,
+            })
+    }
+
+    /// Whether any surface of this pane is live.
+    fn live(&self) -> bool {
+        self.surfaces().next().is_some()
+    }
+
+    /// Close every live surface of this pane, leaving `Detached` placeholders in place. Returns
+    /// whether one was closed.
+    fn close_live(&mut self) -> bool {
+        let mut closed = false;
+        let agents = self.agents.iter_mut().map(|a| &mut a.slot);
+        for slot in std::iter::once(&mut self.slot).chain(agents) {
+            if matches!(slot, TabSlot::Spawned(_)) {
+                if let TabSlot::Spawned(s) = std::mem::replace(slot, TabSlot::Cold) {
+                    s.close();
+                    closed = true;
+                }
+            }
+        }
+        closed
     }
 }
 
@@ -259,6 +374,19 @@ pub(crate) fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> 
         PaneIdx::Primary => primary.id.clone(),
         PaneIdx::Secondary => secondary_spec(primary, &primary.id).id,
     })
+}
+
+/// Whether pane `which` of the tab whose primary runs `primary` holds agent tabs: the main pane of
+/// a Rex tab. An unclaimed session's row shows the one session it lists, and a split pane is one
+/// terminal.
+fn hosts_agents(primary: &TabSpec, which: PaneIdx) -> bool {
+    which == PaneIdx::Primary
+        && primary.server.is_some()
+        && !crate::rex::unclaimed::is_unclaimed(
+            &primary.id,
+            &primary.dir,
+            primary.server.as_deref(),
+        )
 }
 
 /// Whether `spec`'s presence comes from its `probe` command: it has one, and isn't a Rex tab.
@@ -402,12 +530,8 @@ impl Registry {
         let mut err = None;
         if load_on_open {
             let idx = self.tabs.len() - 1;
-            match self.ensure_spawned(idx, PaneIdx::Primary) {
-                Ok(_) => {
-                    if let TabSlot::Spawned(s) = &self.tabs[idx].primary.slot {
-                        s.hide();
-                    }
-                }
+            match self.ensure_spawned(idx, PaneIdx::Primary, true) {
+                Ok(_) => self.tabs[idx].primary.surfaces().for_each(|s| s.hide()),
                 Err(e) => err = Some(e),
             }
         }
@@ -420,8 +544,8 @@ impl Registry {
         if spec.split.is_some() {
             let idx = self.tabs.len() - 1;
             self.split(&spec.id);
-            if matches!(self.tabs[idx].primary.slot, TabSlot::Spawned(_)) {
-                match self.ensure_spawned(idx, PaneIdx::Secondary) {
+            if self.tabs[idx].primary.live() {
+                match self.ensure_spawned(idx, PaneIdx::Secondary, true) {
                     Ok(_) => {
                         if let Some(TabSlot::Spawned(s)) =
                             self.tabs[idx].secondary.as_ref().map(|p| &p.slot)
@@ -455,7 +579,7 @@ impl Registry {
         self.tabs
             .iter()
             .find(|t| t.id == id)
-            .is_some_and(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
+            .is_some_and(|t| t.panes().any(Pane::live))
     }
 
     /// Give tab `id` a second pane: the tab's own shell, in the tab's own dir, running the
@@ -518,7 +642,7 @@ impl Registry {
         if had {
             t.focused = PaneIdx::Primary;
             if is_active {
-                if let TabSlot::Spawned(s) = &t.primary.slot {
+                if let Some(s) = t.primary.shown() {
                     s.focus();
                 }
             }
@@ -643,6 +767,76 @@ impl Registry {
             .is_some_and(|p| matches!(p.slot, TabSlot::Detached))
     }
 
+    /// Test-only: give tab `id`'s main pane cold agent slots for `records`, `selected` among them,
+    /// with no terminal in hand — so nothing can spawn against the null test window.
+    #[cfg(test)]
+    pub fn force_agents(&mut self, id: &str, records: &[&str], selected: Option<&str>) {
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
+            t.primary.agents = records
+                .iter()
+                .map(|r| AgentSlot {
+                    record_id: (*r).to_string(),
+                    slot: TabSlot::Cold,
+                    rex: RexState::Idle,
+                })
+                .collect();
+            t.primary.selected = selected.map(str::to_string);
+        }
+    }
+
+    /// The agent tab `id`'s main pane shows: its selected one, while the tab is the one on screen
+    /// here. `activate` and `select_agent` show that agent's surface and hide the rest by it.
+    fn visible_agent(&self, id: &str) -> Option<&str> {
+        if self.active.as_deref() != Some(id) {
+            return None;
+        }
+        let pane = &self.tabs.iter().find(|t| t.id == id)?.primary;
+        if matches!(pane.slot, TabSlot::Detached) {
+            return None;
+        }
+        pane.selected.as_deref().filter(|r| pane.agent(r).is_some())
+    }
+
+    /// The agent keys of tab `id`'s main pane ([`agent_key`]), in list order; empty for a tab
+    /// holding no agents.
+    // The agent tab list's commands are its first callers outside the tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn agent_keys(&self, id: &str) -> Vec<String> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| {
+                t.primary
+                    .agents
+                    .iter()
+                    .map(|a| agent_key(id, &a.record_id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Show agent `record_id` in tab `id`'s main pane and hide its others. On the visible tab its
+    /// surface spawns (attaching its terminal) if cold, is sized to the pane and takes focus when
+    /// the main pane has it; off screen the choice waits for `activate`. Returns whether the tab
+    /// has that agent; an unknown one changes nothing.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn select_agent(&mut self, id: &str, record_id: &str) -> Result<bool, SurfaceError> {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return Ok(false);
+        };
+        let pane = &mut self.tabs[idx].primary;
+        if pane.agent(record_id).is_none() {
+            return Ok(false);
+        }
+        pane.selected = Some(record_id.to_string());
+        if self.active.as_deref() != Some(id) {
+            return Ok(true);
+        }
+        let spawned = self.spawn_agent(idx, record_id);
+        self.show_active();
+        spawned.map(|_| true)
+    }
+
     /// Snapshot every tab for the chrome.
     ///
     /// `warn` is **derived here, per render** — deliberately not cached on the entry.
@@ -672,7 +866,7 @@ impl Registry {
                     (!is_remote(spec) && !unclaimed && !spec.dir.exists())
                         .then(|| format!("directory not found: {}", spec.dir.display()))
                 }),
-                spawned: matches!(t.primary.slot, TabSlot::Spawned(_)),
+                spawned: t.primary.live(),
                 group: t.primary.spec.group.clone(),
                 has_probe: t.primary.spec.probe.is_some() || t.primary.spec.server.is_some(),
                 has_kill: t.primary.spec.kill.is_some() || t.primary.spec.server.is_some(),
@@ -806,12 +1000,12 @@ impl Registry {
             .map(|s| s.side)
     }
 
-    /// Ids of the tabs with a terminal standing — primary `Spawned` here, or `Detached` into a
+    /// Ids of the tabs with a terminal standing — primary live here, or `Detached` into a
     /// popped-out window — in sidebar order. What `remember_tabs` records as "loaded".
     pub fn loaded_ids(&self) -> Vec<String> {
         self.tabs
             .iter()
-            .filter(|t| matches!(t.primary.slot, TabSlot::Spawned(_) | TabSlot::Detached))
+            .filter(|t| t.primary.live() || matches!(t.primary.slot, TabSlot::Detached))
             .map(|t| t.id.clone())
             .collect()
     }
@@ -834,25 +1028,53 @@ impl Registry {
             .map(|t| t.title.clone())
     }
 
-    /// Map a surface handle back to (tab id, which pane). Both panes are searched — a
-    /// secondary's bell, notification or child-exit is otherwise silently unroutable,
-    /// which is exactly how a split tab would stop badging.
+    /// Map a surface handle back to (tab id, which pane). Every pane and every agent of a main
+    /// pane is searched — a secondary's or an agent's bell, notification or child-exit is
+    /// otherwise silently unroutable, which is exactly how a split tab would stop badging.
     pub fn locate_surface(&self, surface_id: usize) -> Option<(String, PaneIdx)> {
-        for t in &self.tabs {
-            for (which, pane) in [
-                (PaneIdx::Primary, Some(&t.primary)),
-                (PaneIdx::Secondary, t.secondary.as_ref()),
-            ] {
-                if let Some(p) = pane {
-                    if let TabSlot::Spawned(s) = &p.slot {
-                        if s.id() == surface_id {
-                            return Some((t.id.clone(), which));
-                        }
-                    }
+        let (tab, which, _) = self.locate_key(&self.surface_key(surface_id)?)?;
+        Some((tab, which))
+    }
+
+    /// The key of the live surface `surface_id`: its pane's spec id (the tab key for a main pane,
+    /// `secondary_id` for a split) or, for an agent's surface, its [`agent_key`]. `None` if it
+    /// isn't in this registry.
+    pub fn surface_key(&self, surface_id: usize) -> Option<String> {
+        let is = |slot: &TabSlot| matches!(slot, TabSlot::Spawned(s) if s.id() == surface_id);
+        self.tabs.iter().find_map(|t| {
+            t.panes().find_map(|p| {
+                if is(&p.slot) {
+                    return Some(p.spec.id.clone());
                 }
-            }
-        }
-        None
+                let a = p.agents.iter().find(|a| is(&a.slot))?;
+                Some(agent_key(&t.id, &a.record_id))
+            })
+        })
+    }
+
+    /// The tab, pane and — for an agent's key — agent record that key `key` names here.
+    pub fn locate_key(&self, key: &str) -> Option<(String, PaneIdx, Option<String>)> {
+        self.tabs.iter().find_map(|t| {
+            t.panes_indexed().find_map(|(which, p)| {
+                if p.spec.id == key {
+                    return Some((t.id.clone(), which, None));
+                }
+                let a = p
+                    .agents
+                    .iter()
+                    .find(|a| agent_key(&t.id, &a.record_id) == key)?;
+                Some((t.id.clone(), which, Some(a.record_id.clone())))
+            })
+        })
+    }
+
+    /// The Rex pane key of live surface `surface_id` ([`surface_key`](Self::surface_key)): what
+    /// its size claims and exit check name. `None` for a plain tab's surface.
+    pub fn rex_key_of_surface(&self, surface_id: usize) -> Option<String> {
+        let key = self.surface_key(surface_id)?;
+        let (tab, _, _) = self.locate_key(&key)?;
+        self.spec_of(&tab)?.server.as_ref()?;
+        Some(key)
     }
 
     /// The id of the tab owning the spawned surface with handle `surface_id`
@@ -894,7 +1116,18 @@ impl Registry {
     /// flight at a time. With a session in hand it spawns `warden-relay` on it
     /// (`rex::spawn::effective_spec`), using the session up — the next spawn asks again, so an
     /// unload/relaunch reattaches whatever the session is by then.
-    fn ensure_spawned(&mut self, idx: usize, which: PaneIdx) -> Result<bool, SurfaceError> {
+    ///
+    /// A main pane holding agents ([`hosts_agents`]) asks once for all of them
+    /// (`RexOpen.agents`) and then spawns only its selected agent's surface. `auto` says warden,
+    /// not the user, is opening it: an automatic open never wakes an agent, so after one that found
+    /// nothing live (`RexState::Asleep`) only a user open asks again.
+    fn ensure_spawned(
+        &mut self,
+        idx: usize,
+        which: PaneIdx,
+        auto: bool,
+    ) -> Result<bool, SurfaceError> {
+        let agents = hosts_agents(&self.tabs[idx].primary.spec, which);
         let tab = &mut self.tabs[idx];
         let suffix = match which {
             PaneIdx::Primary => " · main",
@@ -909,6 +1142,18 @@ impl Registry {
         if !matches!(pane.slot, TabSlot::Cold) {
             return Ok(false);
         }
+        if agents && !pane.agents.is_empty() {
+            let shown = pane
+                .selected
+                .clone()
+                .filter(|r| pane.agent(r).is_some())
+                .or_else(|| pane.agents.first().map(|a| a.record_id.clone()));
+            pane.selected = shown.clone();
+            return match shown {
+                Some(r) => self.spawn_agent(idx, &r),
+                None => Ok(false),
+            };
+        }
         let rex = std::mem::replace(&mut pane.rex, RexState::Idle);
         let spec = match (pane.spec.server.clone(), rex) {
             (None, _) => pane.spec.clone(),
@@ -917,11 +1162,15 @@ impl Registry {
                 &target,
                 self.report_socket.as_deref(),
             ),
-            (Some(_), opening @ RexState::Opening(_)) => {
-                pane.rex = opening;
+            (Some(_), held @ RexState::Opening(_)) => {
+                pane.rex = held;
                 return Ok(false);
             }
-            (Some(server), RexState::Idle) => {
+            (Some(_), RexState::Asleep) if auto => {
+                pane.rex = RexState::Asleep;
+                return Ok(false);
+            }
+            (Some(server), RexState::Idle | RexState::Asleep) => {
                 let Some(open) = &self.rex_opener else {
                     tab.rex_error = Some(format!("Rex server {server}: no connection to Rex"));
                     return Ok(false);
@@ -935,6 +1184,9 @@ impl Registry {
                     startup: pane.spec.startup.clone(),
                     label,
                     token,
+                    auto,
+                    agents,
+                    resume: pane.spec.resume.clone(),
                 });
                 match started {
                     Ok(()) => pane.rex = RexState::Opening(token),
@@ -955,6 +1207,28 @@ impl Registry {
         Ok(true)
     }
 
+    /// Spawn agent `record_id`'s surface in tab `idx`'s main pane if it is cold with its terminal
+    /// in hand: a relay on that agent's block, under its [`agent_key`], born at the main pane's
+    /// rect. Returns whether it spawned this call.
+    fn spawn_agent(&mut self, idx: usize, record_id: &str) -> Result<bool, SurfaceError> {
+        let t = &self.tabs[idx];
+        let Some(a) = t.primary.agent(record_id) else {
+            return Ok(false);
+        };
+        let (TabSlot::Cold, RexState::Ready(target)) = (&a.slot, &a.rex) else {
+            return Ok(false);
+        };
+        let mut spec = t.primary.spec.clone();
+        spec.id = agent_key(&t.id, record_id);
+        let spec = crate::rex::spawn::effective_spec(&spec, target, self.report_socket.as_deref());
+        let s = GhosttySurface::new(self.ns_window, self.rect_for(PaneIdx::Primary), &spec)?;
+        match self.tabs[idx].primary.agent_mut(record_id) {
+            Some(a) => a.slot = TabSlot::Spawned(s),
+            None => s.close(),
+        }
+        Ok(true)
+    }
+
     /// Kill tab `id`'s surface + PTY, returning it to cold (it respawns a fresh
     /// shell on next focus, exactly like a never-opened tab). No-op if the tab is
     /// unknown or already cold. If the killed tab was the active one, switch to an
@@ -970,19 +1244,15 @@ impl Registry {
         for pane in self.tabs[idx].panes_mut() {
             // An open still in flight is no longer wanted: its answer lands stale.
             pane.rex = RexState::Idle;
-            match std::mem::replace(&mut pane.slot, TabSlot::Cold) {
-                TabSlot::Spawned(s) => {
-                    s.close();
-                    any_closed = true;
-                }
-                TabSlot::Cold => {} // nothing live to kill; stays Cold
-                TabSlot::Detached => {
-                    // No local surface to kill — it lives in another window's
-                    // registry (a pop-out). Restore the placeholder; leaving it
-                    // `Cold` here would make it look locally respawnable, which
-                    // would spawn a second surface for the same tab identity.
-                    pane.slot = TabSlot::Detached;
-                }
+            // A `Detached` slot keeps its placeholder: its surface lives in another window's
+            // registry (a pop-out), and a `Cold` one would look locally respawnable, spawning a
+            // second surface for the same identity.
+            any_closed |= pane.close_live();
+            // The agents go with their surfaces; the next open reconciles them afresh. One out in
+            // a pop-out keeps its slot to return to.
+            pane.agents.retain(|a| matches!(a.slot, TabSlot::Detached));
+            if pane.agents.is_empty() {
+                pane.selected = None;
             }
         }
         // A config split whose shell exited comes back on relaunch — this is the relaunch. Declared
@@ -1005,11 +1275,15 @@ impl Registry {
     /// the visible tab is re-activated (shown and focused, as a click would have), any other is
     /// spawned hidden, and either way a Rex primary that just went live brings its declared
     /// split up after it, as `activate` would.
+    ///
+    /// An agent pane's answer gives it one slot per live agent and spawns only the selected one's
+    /// surface. With nothing live the pane stays cold and settles `Asleep`: no automatic open asks
+    /// again, and nothing is put on screen.
     pub fn rex_opened(
         &mut self,
         pane_key: &str,
         token: u64,
-        result: Result<PaneTarget, String>,
+        result: Result<RexAnswer, String>,
     ) -> RexLanded {
         let Some((idx, which)) = self.tabs.iter().enumerate().find_map(|(i, t)| {
             t.panes_indexed()
@@ -1028,8 +1302,28 @@ impl Registry {
                 tab.rex_error = Some(reason);
                 RexLanded::Failed
             }
-            Ok(target) => {
-                pane.rex = RexState::Ready(target);
+            Ok(answer) => {
+                match answer {
+                    RexAnswer::Pane(target) => pane.rex = RexState::Ready(target),
+                    RexAnswer::Agents(found) => {
+                        pane.agents = found
+                            .agents
+                            .into_iter()
+                            .map(|(record_id, target)| AgentSlot {
+                                record_id,
+                                slot: TabSlot::Cold,
+                                rex: RexState::Ready(target),
+                            })
+                            .collect();
+                        pane.selected = found.selected;
+                        if pane.agents.is_empty() {
+                            pane.rex = RexState::Asleep;
+                            tab.rex_error = None;
+                            return RexLanded::Opened(Ok(()));
+                        }
+                        pane.rex = RexState::Idle;
+                    }
+                }
                 tab.rex_error = None;
                 let id = tab.id.clone();
                 if self.active.as_deref() == Some(id.as_str()) {
@@ -1037,20 +1331,17 @@ impl Registry {
                 }
                 // A secondary spawns only beside a primary live in this registry — the gate
                 // `activate` and `ensure_spawned_by_id` share. Without it, it waits `Ready`.
-                let primary_live =
-                    |r: &Self| matches!(r.tabs[idx].primary.slot, TabSlot::Spawned(_));
+                let primary_live = |r: &Self| r.tabs[idx].primary.live();
                 let spawned = if which == PaneIdx::Primary || primary_live(self) {
-                    self.ensure_spawned(idx, which).map(|_| ())
+                    self.ensure_spawned(idx, which, true).map(|_| ())
                 } else {
                     Ok(())
                 };
                 if primary_live(self) {
-                    let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
+                    let _ = self.ensure_spawned(idx, PaneIdx::Secondary, true);
                 }
                 for p in self.tabs[idx].panes() {
-                    if let TabSlot::Spawned(s) = &p.slot {
-                        s.hide();
-                    }
+                    p.surfaces().for_each(|s| s.hide());
                 }
                 RexLanded::Opened(spawned)
             }
@@ -1067,6 +1358,7 @@ impl Registry {
 
     /// The Rex pane key of tab `id`'s pane `which` (its `TabSpec.id`), or `None` when that pane
     /// doesn't exist or isn't a Rex pane.
+    #[cfg(test)]
     pub fn rex_pane_key(&self, id: &str, which: PaneIdx) -> Option<String> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         t.pane(which)?;
@@ -1090,7 +1382,7 @@ impl Registry {
         let live: Vec<bool> = self
             .tabs
             .iter()
-            .map(|t| t.panes().any(|p| matches!(p.slot, TabSlot::Spawned(_))))
+            .map(|t| t.panes().any(Pane::live))
             .collect();
         let n = shell_core::pick_live_neighbour(idx, &live)?;
         let next = self.tabs[n].id.clone();
@@ -1114,6 +1406,8 @@ impl Registry {
                 pane.slot = TabSlot::Cold;
                 any = true;
             }
+            // The agent that went out with the pane ended there.
+            pane.agents.retain(|a| !matches!(a.slot, TabSlot::Detached));
         }
         if !any {
             return None;
@@ -1148,18 +1442,41 @@ impl Registry {
     /// no-op, not a second extraction). The primary is decided **first**, so a
     /// refused detach leaves the secondary untouched rather than half-extracting a
     /// tab that isn't going anywhere.
+    ///
+    /// A main pane holding agents carries its selected agent's surface out, leaving that agent's
+    /// slot and the pane's own `Detached`; its other agents stay here, hidden, until it returns.
     pub fn detach(&mut self, id: &str) -> Option<(GhosttySurface, Option<GhosttySurface>)> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        let primary = match std::mem::replace(&mut self.tabs[idx].primary.slot, TabSlot::Detached) {
-            TabSlot::Spawned(s) => s,
-            TabSlot::Cold => {
-                self.tabs[idx].primary.slot = TabSlot::Cold;
-                return None;
+        let main = &mut self.tabs[idx].primary;
+        let shown = main
+            .selected
+            .as_deref()
+            .and_then(|r| main.agents.iter().position(|a| a.record_id == r));
+        let primary = match shown {
+            Some(i) => {
+                if !matches!(main.agents[i].slot, TabSlot::Spawned(_)) {
+                    return None;
+                }
+                let TabSlot::Spawned(s) =
+                    std::mem::replace(&mut main.agents[i].slot, TabSlot::Detached)
+                else {
+                    return None;
+                };
+                main.slot = TabSlot::Detached;
+                s
             }
-            TabSlot::Detached => {
-                self.tabs[idx].primary.slot = TabSlot::Detached;
-                return None;
-            }
+            None if !main.agents.is_empty() => return None,
+            None => match std::mem::replace(&mut main.slot, TabSlot::Detached) {
+                TabSlot::Spawned(s) => s,
+                TabSlot::Cold => {
+                    main.slot = TabSlot::Cold;
+                    return None;
+                }
+                TabSlot::Detached => {
+                    main.slot = TabSlot::Detached;
+                    return None;
+                }
+            },
         };
         let secondary = match self.tabs[idx].secondary.as_mut() {
             None => None,
@@ -1198,13 +1515,14 @@ impl Registry {
     /// another window, `detach` will refuse, and spawning its secondary here would leave a
     /// stray surface in a window the tab isn't showing in — with no pop-out to carry it out
     /// again.
+    ///
+    /// Warden, not the user, is bringing the tab up (`load_on_open` turned on, a pop-out), so an
+    /// agent pane opens automatically: it wakes nothing.
     pub fn ensure_spawned_by_id(&mut self, id: &str) -> Result<(), SurfaceError> {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
-            self.ensure_spawned(idx, PaneIdx::Primary)?;
-            if matches!(self.tabs[idx].primary.slot, TabSlot::Spawned(_))
-                && self.tabs[idx].secondary.is_some()
-            {
-                let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
+            self.ensure_spawned(idx, PaneIdx::Primary, true)?;
+            if self.tabs[idx].primary.live() && self.tabs[idx].secondary.is_some() {
+                let _ = self.ensure_spawned(idx, PaneIdx::Secondary, true);
             }
         }
         Ok(())
@@ -1238,6 +1556,9 @@ impl Registry {
     /// A returning `secondary` whose tab has **no** secondary pane recreates the pane
     /// (`secondary_spec`, the same derivation `split` and `mark_detached` use) rather than
     /// refusing: refusing would end a live PTY purely because its slot is missing.
+    ///
+    /// A main pane holding agents takes the returning surface back into the agent slot `detach`
+    /// left `Detached`; one rebuilt while the tab was out has no such slot and takes it as its own.
     pub fn attach(
         &mut self,
         id: &str,
@@ -1258,7 +1579,20 @@ impl Registry {
         {
             return Err((primary, secondary));
         }
-        t.primary.slot = TabSlot::Spawned(primary);
+        let out = t
+            .primary
+            .agents
+            .iter_mut()
+            .find(|a| matches!(a.slot, TabSlot::Detached));
+        match out {
+            Some(a) => {
+                a.slot = TabSlot::Spawned(primary);
+                let back = a.record_id.clone();
+                t.primary.selected = Some(back);
+                t.primary.slot = TabSlot::Cold;
+            }
+            None => t.primary.slot = TabSlot::Spawned(primary),
+        }
         match secondary {
             Some(s) => match t.secondary.as_mut() {
                 Some(p) => p.slot = TabSlot::Spawned(s),
@@ -1295,7 +1629,21 @@ impl Registry {
     /// If the lazy spawn fails the tab is marked active anyway but stays cold, so the hole shows
     /// the blank placeholder; the error is returned for the caller to surface, and re-activating
     /// retries.
+    ///
+    /// Warden itself shows the tab (a window's first tab, a hot reload, a landed open), so an
+    /// agent pane opens automatically and wakes nothing; [`activate_user`](Self::activate_user) is
+    /// the user selecting it.
     pub fn activate(&mut self, id: &str) -> Result<bool, SurfaceError> {
+        self.activate_as(id, true)
+    }
+
+    /// [`activate`](Self::activate) for the user selecting tab `id`: an agent pane with nothing
+    /// live asks the hub to wake its last-selected agent.
+    pub fn activate_user(&mut self, id: &str) -> Result<bool, SurfaceError> {
+        self.activate_as(id, false)
+    }
+
+    fn activate_as(&mut self, id: &str, auto: bool) -> Result<bool, SurfaceError> {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return Ok(false);
         };
@@ -1311,16 +1659,35 @@ impl Registry {
         // secondary is still `Cold`, so an ungated `activate` on that id would spawn a surface
         // in the ORIGIN window for a tab that isn't showing there — with no pop-out left to
         // carry it out again.
-        let spawned = self.ensure_spawned(idx, PaneIdx::Primary);
-        if matches!(self.tabs[idx].primary.slot, TabSlot::Spawned(_))
-            && self.tabs[idx].secondary.is_some()
-        {
-            let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
+        let spawned = self.ensure_spawned(idx, PaneIdx::Primary, auto);
+        if self.tabs[idx].primary.live() && self.tabs[idx].secondary.is_some() {
+            let _ = self.ensure_spawned(idx, PaneIdx::Secondary, auto);
         }
-        for (i, t) in self.tabs.iter().enumerate() {
+        self.active = Some(id.to_string());
+        self.show_active();
+        spawned
+    }
+
+    /// Put the active tab on screen and every other surface away: each of its panes shows its one
+    /// surface — a main pane holding agents, its [`visible_agent`](Self::visible_agent)'s — sized
+    /// to that pane's hole, and hides the rest.
+    fn show_active(&self) {
+        for t in &self.tabs {
+            let on_screen = self.active.as_deref() == Some(t.id.as_str());
             for (which, pane) in t.panes_indexed() {
-                if let TabSlot::Spawned(s) = &pane.slot {
-                    if i == idx {
+                let shown = match self
+                    .visible_agent(&t.id)
+                    .filter(|_| which == PaneIdx::Primary)
+                {
+                    Some(r) => match pane.agent(r).map(|a| &a.slot) {
+                        Some(TabSlot::Spawned(s)) => Some(s),
+                        _ => None,
+                    },
+                    None if on_screen && pane.agents.is_empty() => pane.shown(),
+                    None => None,
+                };
+                for s in pane.surfaces() {
+                    if shown.is_some_and(|v| std::ptr::eq(v, s)) {
                         // Each pane gets ITS OWN hole's last-reported rect, not a shared
                         // one — see `rect_for`'s doc comment. Applying the primary's rect
                         // to the secondary here would immediately undo the size
@@ -1339,8 +1706,6 @@ impl Registry {
                 }
             }
         }
-        self.active = Some(id.to_string());
-        spawned
     }
 
     /// Apply a hole's rect to the pane that occupies it, and remember it for later spawns.
@@ -1353,22 +1718,57 @@ impl Registry {
         }
         let active = self.active.clone()?;
         let t = self.tabs.iter().find(|t| t.id == active)?;
-        let TabSlot::Spawned(s) = &t.pane(which)?.slot else {
-            return None;
-        };
+        let pane = t.pane(which)?;
+        let s = pane.shown()?;
         s.set_frame(rect);
-        PaneSize::of(rex_pane_key(&t.primary.spec, which)?, s)
+        let key = match pane.selected.as_deref().filter(|_| !pane.agents.is_empty()) {
+            Some(agent) => agent_key(&t.id, agent),
+            None => rex_pane_key(&t.primary.spec, which)?,
+        };
+        PaneSize::of(key, s)
     }
 
     /// The size of the live Rex pane surface `surface_id` shows, or `None` when it shows a plain
     /// pane or isn't in this registry.
     pub fn rex_size_of_surface(&self, surface_id: usize) -> Option<PaneSize> {
-        let (id, which) = self.locate_surface(surface_id)?;
-        let t = self.tabs.iter().find(|t| t.id == id)?;
-        let TabSlot::Spawned(s) = &t.pane(which)?.slot else {
-            return None;
-        };
-        PaneSize::of(rex_pane_key(&t.primary.spec, which)?, s)
+        let key = self.rex_key_of_surface(surface_id)?;
+        let s = self.tabs.iter().find_map(|t| {
+            t.panes()
+                .find_map(|p| p.surfaces().find(|s| s.id() == surface_id))
+        })?;
+        PaneSize::of(key, s)
+    }
+
+    /// Agent `record_id`'s relay in tab `id`'s main pane exited: close its surface and drop its
+    /// slot (its window is let go on a worker, `rex::spawn::end_if_exited`). When it was the one
+    /// on screen the pane shows its nearest live agent instead; with none live left the pane goes
+    /// cold as [`unload`](Self::unload) leaves it. `None` for an unknown agent.
+    pub fn close_agent(&mut self, id: &str, record_id: &str) -> Option<AgentClosed> {
+        let idx = self.tabs.iter().position(|t| t.id == id)?;
+        let pane = &mut self.tabs[idx].primary;
+        let at = pane.agents.iter().position(|a| a.record_id == record_id)?;
+        // Every live agent but this one, in list order.
+        let live: Vec<bool> = pane
+            .agents
+            .iter()
+            .enumerate()
+            .map(|(i, a)| i != at && matches!(a.slot, TabSlot::Spawned(_)))
+            .collect();
+        if !live.contains(&true) {
+            // The pane's last live terminal: it ends as the tab's does.
+            return Some(AgentClosed::PaneCold(self.unload(id)));
+        }
+        if pane.selected.as_deref() == Some(record_id) {
+            pane.selected = shell_core::pick_live_neighbour(at, &live)
+                .map(|n| pane.agents[n].record_id.clone());
+        }
+        if let TabSlot::Spawned(s) = pane.agents.remove(at).slot {
+            s.close();
+        }
+        if self.active.as_deref() == Some(id) {
+            self.show_active();
+        }
+        Some(AgentClosed::PaneLive)
     }
 
     #[cfg(test)]
@@ -1381,9 +1781,7 @@ impl Registry {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
             let mut entry = self.tabs.remove(pos);
             for pane in entry.panes_mut() {
-                if let TabSlot::Spawned(s) = std::mem::replace(&mut pane.slot, TabSlot::Cold) {
-                    s.close();
-                }
+                pane.close_live();
             }
             if self.active.as_deref() == Some(id) {
                 self.active = None;
@@ -1402,9 +1800,7 @@ impl Registry {
     pub fn close_all(&mut self) {
         for mut entry in self.tabs.drain(..) {
             for pane in entry.panes_mut() {
-                if let TabSlot::Spawned(s) = std::mem::replace(&mut pane.slot, TabSlot::Cold) {
-                    s.close();
-                }
+                pane.close_live();
             }
         }
         self.active = None;
@@ -2560,7 +2956,7 @@ mod tests {
             session_id: "session:s".into(),
             block_id: "block:b".into(),
         };
-        let landed = r.rex_opened(&req.pane_key, req.token, Ok(target));
+        let landed = r.rex_opened(&req.pane_key, req.token, Ok(RexAnswer::Pane(target)));
         assert!(matches!(landed, RexLanded::Stale));
         assert!(!r.tab_dtos()[0].spawned);
     }
@@ -2620,5 +3016,185 @@ mod tests {
         );
         assert_eq!(r.rex_pane_key("plain", PaneIdx::Primary), None);
         assert_eq!(r.rex_tabs(), [("t".to_string(), "local".to_string())]);
+    }
+
+    // --- agent tabs (a Rex tab's main pane) ----------------------------------
+    //
+    // A landed agent answer with live agents spawns a relay surface, which needs AppKit; these
+    // tests reach agent slots through `force_agents` (no target, so nothing can spawn) or an
+    // answer with nothing live, and read which agent a pane shows from `visible_agent`, the
+    // decision `activate` and `select_agent` show and hide surfaces by.
+
+    fn nothing_live(r: &mut Registry, req: &RexOpen) -> RexLanded {
+        r.rex_opened(
+            &req.pane_key,
+            req.token,
+            Ok(RexAnswer::Agents(AgentsOpened::default())),
+        )
+    }
+
+    #[test]
+    fn selecting_agent_hides_others() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.add(&rex_spec("u", "local"), false).unwrap();
+        r.force_agents("t", &["r1", "r2", "r3"], Some("r1"));
+        let _ = r.activate("t");
+        assert_eq!(r.visible_agent("t"), Some("r1"));
+        assert!(r.select_agent("t", "r2").unwrap());
+        assert_eq!(
+            r.visible_agent("t"),
+            Some("r2"),
+            "only the selected one shows"
+        );
+        assert!(
+            !r.select_agent("t", "gone").unwrap(),
+            "an unknown agent changes nothing"
+        );
+        assert!(!r.select_agent("nope", "r1").unwrap());
+        assert_eq!(r.visible_agent("t"), Some("r2"));
+        assert_eq!(
+            r.agent_keys("t"),
+            ["t::agent:r1", "t::agent:r2", "t::agent:r3"]
+        );
+        // Another tab on screen hides every agent of this one; selection survives.
+        r.force_agents("u", &["x"], Some("x"));
+        let _ = r.activate("u");
+        assert_eq!(r.visible_agent("t"), None);
+        assert!(r.select_agent("t", "r3").unwrap());
+        assert_eq!(
+            r.visible_agent("t"),
+            None,
+            "selecting off screen shows nothing"
+        );
+        let _ = r.activate("t");
+        assert_eq!(r.visible_agent("t"), Some("r3"));
+    }
+
+    #[test]
+    fn locate_surface_finds_agent_key() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.split("t");
+        r.force_agents("t", &["r1"], Some("r1"));
+        let at = |key: &str| r.locate_key(key);
+        assert_eq!(
+            at(&agent_key("t", "r1")),
+            Some(("t".to_string(), PaneIdx::Primary, Some("r1".to_string())))
+        );
+        assert_eq!(
+            at("t::2"),
+            Some(("t".to_string(), PaneIdx::Secondary, None))
+        );
+        assert_eq!(at("t"), Some(("t".to_string(), PaneIdx::Primary, None)));
+        assert_eq!(at(&agent_key("t", "zz")), None);
+        assert_eq!(agent_key("t", "r1"), "t::agent:r1");
+    }
+
+    #[test]
+    fn auto_open_after_restart_wakes_nothing() {
+        let (mut r, asked) = rex_registry();
+        r.add(&rex_spec("t", "local"), true).unwrap();
+        let req = asked.lock().unwrap()[0].clone();
+        assert!(
+            req.auto && req.agents,
+            "an eager add is an automatic agent-pane open"
+        );
+        // Every record came back asleep: the hub found nothing live.
+        assert!(matches!(
+            nothing_live(&mut r, &req),
+            RexLanded::Opened(Ok(()))
+        ));
+        // build_window's activate and a hot reload's spawn don't ask again.
+        let _ = r.activate("t");
+        let _ = r.ensure_spawned_by_id("t");
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert!(asked.iter().all(|o| o.auto), "no open woke anything");
+        assert!(!r.is_spawned("t"), "no surface");
+        assert!(!r.is_connecting("t"));
+        assert!(r.agent_keys("t").is_empty());
+    }
+
+    #[test]
+    fn user_open_wakes_last_selected_only() {
+        // The registry's half: only a user open asks the hub to wake, once, with the tab's
+        // `resume` as configured now. Which record wakes is the hub's (`rex::agent_open`).
+        let (mut r, asked) = rex_registry();
+        let mut s = rex_spec("t", "local");
+        s.resume = Some("old-wrapper".into());
+        r.add(&s, true).unwrap();
+        let req = asked.lock().unwrap()[0].clone();
+        nothing_live(&mut r, &req);
+        r.set_meta(
+            "t",
+            &warden_config::TabMeta {
+                title: "t".into(),
+                group: None,
+                probe: None,
+                kill: None,
+                suspend: None,
+                resume: Some("agent-wrapper".into()),
+                split: None,
+            },
+            false,
+            Vec::new(),
+        );
+        assert!(
+            !r.activate_user("t").unwrap(),
+            "nothing on screen until the answer"
+        );
+        assert!(r.is_connecting("t"));
+        let _ = r.activate_user("t");
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 2, "one wake in flight");
+        assert!(!asked[1].auto);
+        assert_eq!(asked[1].resume.as_deref(), Some("agent-wrapper"));
+    }
+
+    #[test]
+    fn an_unloaded_agent_pane_drops_its_agents() {
+        let (mut r, _) = rex_registry();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_agents("t", &["r1", "r2"], Some("r2"));
+        r.unload("t");
+        assert!(
+            r.agent_keys("t").is_empty(),
+            "the next open reconciles afresh"
+        );
+    }
+
+    #[test]
+    fn plain_tab_unchanged() {
+        let (mut r, asked) = rex_registry();
+        r.add(&spec("p", "/tmp"), false).unwrap();
+        r.split("p");
+        r.add(&unclaimed_spec("session:x"), false).unwrap();
+        assert!(r.agent_keys("p").is_empty());
+        assert!(!r.select_agent("p", "r1").unwrap());
+        assert_eq!(r.visible_agent("p"), None);
+        assert_eq!(
+            r.locate_key("p"),
+            Some(("p".to_string(), PaneIdx::Primary, None))
+        );
+        assert_eq!(
+            r.locate_key("p::2"),
+            Some(("p".to_string(), PaneIdx::Secondary, None))
+        );
+        // An unclaimed session's row shows the one session it lists, not agent tabs.
+        let _ = r.activate_user("rex:session:x");
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert!(!asked[0].agents);
+        // A Rex tab's split pane keeps its one-session key.
+        drop(asked);
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.split("t");
+        r.force_agents("t", &["r1"], Some("r1"));
+        assert_eq!(
+            r.rex_pane_key("t", PaneIdx::Secondary).as_deref(),
+            Some("t::2")
+        );
+        assert_eq!(r.agent_keys("t"), ["t::agent:r1"]);
     }
 }

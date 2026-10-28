@@ -42,6 +42,7 @@ public. Rex is chosen per tab.
 | `rex/size.rs` | The size worker (`Sizer`) behind every claim and resize. |
 | `rex/unclaimed.rs` | Sessions no tab claims, as sidebar rows under `Rex · <server>`. |
 | `rex/windows.rs` | Each attached session's windows (new, close, relabel) and every terminal block's status: its root OSC 7501 record and its title, from Rex's events. |
+| `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed), and opening a main pane: which agents are live, which shows, waking on a user open. |
 
 Who holds which connection:
 
@@ -69,14 +70,20 @@ site omits it.
 
 - **A pane's Rex identity is its spec id** (`registry::rex_pane_key`): the tab key for the main
   pane, `registry::secondary_id` of it for the split, `rex:<session id>` for an unclaimed row
-  (`unclaimed::is_unclaimed`). A runtime ⌘D split therefore reattaches the same session a config
-  split would. Two windows holding the same tab key share one session.
-- **warden keeps no shadow of Rex's state.** Beyond the store's pane → session mapping, everything —
-  which sessions exist, who owns a block, whether a program exited — is read from Rex.
-- **A pane shows one block:** the first terminal block of its session's first window. Windows made
-  elsewhere (Rex.app, the phone) stay reachable from those clients.
+  (`unclaimed::is_unclaimed`); an agent's is `registry::agent_key`, bound to its block by the
+  open. A runtime ⌘D split therefore reattaches the same session a config split would. Two
+  windows holding the same tab key share one session.
+- **warden keeps no shadow of Rex's state.** Beyond the store's pane → session mapping and the
+  agent records Rex can't hold, everything — which sessions and windows exist, who owns a block,
+  whether a program exited — is read from Rex.
+- **A main pane's session windows are its agent tabs**, one surface each — the window's first
+  terminal block — with only the selected one on screen. A split pane and an unclaimed row show
+  one block: the first terminal block of their session's first window.
 - **`cmd` and the split's `cmd` are typed once, when warden creates the session**
-  (`initial_input`); reattaching types nothing (`spawn::effective_spec` clears `startup`).
+  (`initial_input`); a woken agent's window types its resume command instead. Reattaching types
+  nothing (`spawn::effective_spec` clears `startup`).
+- **Only a user open wakes an agent** (`RexOpen.auto`): one warden makes itself (launch,
+  `load_on_open`, `remember_tabs`, hot reload) attaches what is live and creates nothing.
 - **Size has one writer: warden-app.** A block's size is its owner's. warden-app claims
   (`own_block take`, then `resize`) when the user turns to a pane — focus gained in the key window,
   the window becoming key, a key or mouse press — taken from AppKit (`SurfaceSignal::UserInput`,
@@ -100,8 +107,8 @@ site omits it.
 | ⌘W unload, closing a window, quitting warden | Detached: the relay exits, the session keeps running. The next open reattaches. | `Registry::unload` |
 | ☠ destroy | Both panes' sessions destroyed. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
 | ⏻ suspend | Runs the `suspend` command on this Mac, so only a `"local"` Rex tab offers it. | `registry::suspend_cmd` |
-| The pane's program exits (`exit`, an agent quitting) | Destroyed if its block was the session's last; otherwise the pane lets go and the session lists as unclaimed. The pane goes cold, and the next open creates a fresh session: an exited block would only leave a dead screen that reads as live. | `spawn::end_if_exited` → `RexHub::destroy_if_exited` |
-| The server restarts, crashes, or the Mac reboots | Every mapped session is gone; each pane's next open creates a fresh one and types `cmd` again. | `RexHub::ensure_session` |
+| The pane's program exits (`exit`, an agent quitting) | Destroyed if its block was the session's last; otherwise the pane lets go and the session lists as unclaimed. The pane goes cold, and the next open creates a fresh session: an exited block would only leave a dead screen that reads as live. An agent's exit closes only its window (the session's last ends as above) and its record closes or drops; the pane shows a live neighbour, else goes cold. | `spawn::end_if_exited` → `RexHub::destroy_if_exited` / `end_agent_if_exited`; `Registry::close_agent` |
+| The server restarts, crashes, or the Mac reboots | Every mapped session is gone; a split's next open creates a fresh one and types `cmd` again. A main pane's resumable agents come back asleep, the rest drop; a user open recreates the session waking the last-selected one. | `RexHub::ensure_session`, `RexHub::open_agents` |
 | Opening an unclaimed row | A temporary tab: adopted in memory, never persisted, never creates a session, can't split. ☠ ends the session. | `RexHub::adopt`, `Registry::split` |
 | The relay's stream drops | Resumed at its exact byte count; if refused, a new ticket and a full reset + redraw from a fresh snapshot. | `warden-relay` `RESET` |
 | The hub's control connection drops | Reconnected with the reconnect token; the session list is reread and claimed sessions reattached. | the hub's watcher |

@@ -27,8 +27,8 @@ use rex_client::{ControlClient, Event, RexError};
 use serde_json::{json, Value};
 
 use super::{
-    call_seq, str_field, terminal_options, view_blocks, HubEvent, Inner, RexHub, OPEN_BUDGET,
-    TERMINAL_CREATOR, TERMINAL_FLAVOR,
+    budgeted, call_seq, str_field, terminal_options, view_blocks, HubEvent, Inner, RexHub,
+    OPEN_BUDGET, TERMINAL_CREATOR, TERMINAL_FLAVOR,
 };
 
 const PROGRAM_STATUS: &str = "com.superlogical.terminal.program_status";
@@ -165,14 +165,10 @@ impl RexHub {
         label: &str,
     ) -> Result<AgentWindow, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
-        match self
+        let made = self
             .inner
-            .new_window_until(server, session_id, dir, startup, label, deadline)
-        {
-            Err(RexError::Timeout) => Err(RexError::Unreachable),
-            Err(_) if Instant::now() >= deadline => Err(RexError::Unreachable),
-            r => r,
-        }
+            .new_window_until(server, session_id, dir, startup, label, deadline);
+        budgeted(deadline, made)
     }
 
     /// Close `window_id` and every block in it. A window already gone is closed.
@@ -222,7 +218,7 @@ impl RexHub {
 
 impl Inner {
     /// [`RexHub::new_window`]'s work, every call waiting until `deadline`.
-    fn new_window_until(
+    pub(super) fn new_window_until(
         self: &Arc<Self>,
         server: &str,
         session_id: &str,
