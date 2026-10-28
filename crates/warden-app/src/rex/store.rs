@@ -44,11 +44,6 @@ impl RexStore {
         self.records.get(pane_key)
     }
 
-    #[cfg(test)]
-    pub fn records(&self) -> impl Iterator<Item = (&String, &PaneRecord)> {
-        self.records.iter()
-    }
-
     /// Set `pane_key`'s record (`None` forgets it) and persist, writing only on a change.
     pub fn set(&mut self, pane_key: &str, record: Option<PaneRecord>) {
         let changed = match record {

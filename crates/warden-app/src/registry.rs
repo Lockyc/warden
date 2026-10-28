@@ -238,11 +238,17 @@ impl Pane {
 /// child-exit to nothing.
 fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
-    spec.id = format!("{tab_id}::2");
+    spec.id = secondary_id(tab_id);
     // A config split names what the second pane runs; a runtime split is a bare scratch shell.
     spec.startup = primary.split.as_ref().and_then(|s| s.startup.clone());
     spec.split = None;
     spec
+}
+
+/// Tab `tab_id`'s second pane's id (see [`secondary_spec`]), for a reader holding only the tab's
+/// key, such as the unclaimed-session list counting a tab's Rex panes.
+pub(crate) fn secondary_id(tab_id: &str) -> String {
+    format!("{tab_id}::2")
 }
 
 /// The Rex pane key of pane `which` of the tab whose primary runs `primary` — that pane's spec
@@ -453,15 +459,23 @@ impl Registry {
     ///
     /// The secondary's `TabSpec.id` is `"<tab>::2"`, distinct from the tab id — see
     /// `secondary_spec`, the one home for that derivation.
-    pub fn split(&mut self, id: &str) {
+    ///
+    /// Returns whether the tab is split now. An unclaimed Rex session's tab never is: its pane
+    /// attaches the session it lists, and a second pane would have to make a session of its own.
+    pub fn split(&mut self, id: &str) -> bool {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
-            return;
+            return false;
         };
         if t.secondary.is_some() {
-            return;
+            return true;
+        }
+        let p = &t.primary.spec;
+        if crate::rex::unclaimed::is_unclaimed(&p.id, &p.dir, p.server.as_deref()) {
+            return false;
         }
         let spec = secondary_spec(&t.primary.spec, id);
         t.secondary = Some(Pane::new(spec, TabSlot::Cold));
+        true
     }
 
     /// Drop tab `id`'s second pane, freeing its surface. Returns whether there was one.
@@ -636,7 +650,12 @@ impl Registry {
                 title: t.title.clone(),
                 warn: t.rex_error.clone().or_else(|| {
                     let spec = &t.primary.spec;
-                    (!is_remote(spec) && !spec.dir.exists())
+                    let unclaimed = crate::rex::unclaimed::is_unclaimed(
+                        &spec.id,
+                        &spec.dir,
+                        spec.server.as_deref(),
+                    );
+                    (!is_remote(spec) && !unclaimed && !spec.dir.exists())
                         .then(|| format!("directory not found: {}", spec.dir.display()))
                 }),
                 spawned: matches!(t.primary.slot, TabSlot::Spawned(_)),
@@ -2499,6 +2518,34 @@ mod tests {
         let landed = r.rex_opened(&req.pane_key, req.token, Ok(target));
         assert!(matches!(landed, RexLanded::Stale));
         assert!(!r.tab_dtos()[0].spawned);
+    }
+
+    fn unclaimed_spec(session: &str) -> TabSpec {
+        let mut s = rex_spec(&format!("rex:{session}"), "local");
+        s.dir = PathBuf::new();
+        s.startup = None;
+        s
+    }
+
+    #[test]
+    fn an_unclaimed_session_tab_has_no_dir_to_miss() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&unclaimed_spec("session:x"), false).unwrap();
+        assert_eq!(r.tab_dtos()[0].warn, None);
+    }
+
+    #[test]
+    fn an_unclaimed_session_tab_refuses_a_split() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&unclaimed_spec("session:x"), false).unwrap();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        assert!(
+            !r.split("rex:session:x"),
+            "its session is shown, never one made for a split"
+        );
+        assert!(!r.is_split("rex:session:x"));
+        assert!(r.split("t"));
+        assert!(r.split("t"), "already split");
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! The Rex hub: warden-app's one owner of Rex control connections.
 //!
-//! One `ControlClient` per server, connected the first time a pane needs that server and attached
+//! One `ControlClient` per server, connected the first time a pane needs that server (or at
+//! launch, for the servers config names: [`unclaimed::connect`]) and attached
 //! with `session.attach_all` (scope `session`) for the server-wide session list, plus
-//! `session.attach` for each session a pane shows. It finds or creates each pane's session,
+//! `session.attach` for each session a pane shows. It finds or creates each pane's session —
+//! or, for an unclaimed session's pane ([`unclaimed`]), attaches the one it was pointed at —
 //! persists pane → session ids ([`store`]), tracks block owners, claims and sizes a pane's block
 //! for warden ([`RexHub::claim`], driven by [`size`]), and reports changes to
 //! [`RexHub::subscribe`]rs.
@@ -25,6 +27,7 @@ pub mod spawn;
 pub mod store;
 #[cfg(test)]
 mod tests;
+pub mod unclaimed;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -140,7 +143,22 @@ struct State {
     blocks: HashMap<String, String>,
     /// Pane key → the last size warden asked for: by which client, for which block.
     requested: HashMap<String, Requested>,
+    /// Pane key → an existing session it was pointed at for this run ([`RexHub::adopt`]): looked
+    /// up after the store, never persisted, never claimed, and never replaced by a new session.
+    adopted: HashMap<String, PaneRecord>,
+    /// A server's session list as last heard on a connection that has since dropped, so its
+    /// sessions stay listed until a new connection rereads it.
+    heard: HashMap<String, Vec<SessionInfo>>,
     next_gen: u64,
+}
+
+impl State {
+    /// Where `pane_key`'s session lives: its stored mapping, else its adoption.
+    fn record(&self, pane_key: &str) -> Option<&PaneRecord> {
+        self.store
+            .get(pane_key)
+            .or_else(|| self.adopted.get(pane_key))
+    }
 }
 
 /// A terminal size warden asks a block for: its grid, and a cell's device-pixel size when known.
@@ -302,7 +320,7 @@ impl RexHub {
     /// unmapped, or the server isn't connected.
     pub fn session_alive(&self, pane_key: &str) -> bool {
         let st = self.inner.lock();
-        let Some(rec) = st.store.get(pane_key) else {
+        let Some(rec) = st.record(pane_key) else {
             return false;
         };
         st.conns
@@ -332,7 +350,15 @@ impl Inner {
     ) -> Result<PaneTarget, RexError> {
         let inner = self;
         let (client, endpoint) = inner.conn_until(server, deadline)?;
-        let previous = inner.lock().store.get(pane_key).cloned();
+        let (previous, adopted) = {
+            let st = inner.lock();
+            match st.store.get(pane_key) {
+                Some(r) => (Some(r.clone()), false),
+                None => (st.adopted.get(pane_key).cloned(), true),
+            }
+        };
+        let adopted = adopted && previous.is_some();
+        let mut no_terminal = false;
         if let Some(rec) = previous.as_ref().filter(|r| r.server == server) {
             match inner.attach(server, &client, &rec.session_id, Some(deadline)) {
                 Ok(view) => {
@@ -348,10 +374,19 @@ impl Inner {
                         });
                     }
                     // No terminal left in it: leave it for other clients, make a new one.
+                    no_terminal = true;
                 }
                 Err(RexError::Api { code, .. }) if code == "session_not_found" => {}
                 Err(e) => return Err(e),
             }
+        }
+        // An adopted pane shows the session it was pointed at, or nothing.
+        if adopted {
+            return Err(if no_terminal {
+                api_error("no_terminal", "this Rex session has no terminal to show", 0)
+            } else {
+                api_error("session_not_found", "this Rex session has ended", 404)
+            });
         }
 
         let mut options = json!({ "cwd": dir.to_string_lossy() });
@@ -402,9 +437,10 @@ impl Inner {
         let inner = self;
         let rec = {
             let mut st = inner.lock();
-            let rec = st.store.get(pane_key).cloned();
+            let rec = st.record(pane_key).cloned();
             if let Some(r) = &rec {
                 st.store.set(pane_key, None);
+                st.adopted.remove(pane_key);
                 st.blocks.remove(pane_key);
                 st.requested.remove(pane_key);
                 if let Some(a) = st.attached.get_mut(&r.server) {
@@ -432,8 +468,7 @@ impl Inner {
         let _held = self.hold_pane(pane_key, Some(deadline))?;
         let (server, client, session_id, block_id, owns, asked) = {
             let st = self.lock();
-            let (Some(rec), Some(block_id)) = (st.store.get(pane_key), st.blocks.get(pane_key))
-            else {
+            let (Some(rec), Some(block_id)) = (st.record(pane_key), st.blocks.get(pane_key)) else {
                 return Ok(false);
             };
             let Some(conn) = st.conns.get(&rec.server) else {
@@ -499,7 +534,7 @@ impl RexHub {
         let (rec, block) = {
             let st = self.inner.lock();
             (
-                st.store.get(pane_key).cloned(),
+                st.record(pane_key).cloned(),
                 st.blocks.get(pane_key).cloned(),
             )
         };
@@ -557,26 +592,48 @@ impl RexHub {
         self.inner.size(pane_key, size, false)
     }
 
-    /// The sessions on `server`, as last heard; empty when it isn't connected.
-    #[cfg(test)]
+    /// The sessions on `server`, as last heard — kept while its connection is down, since its
+    /// sessions outlive the connection; empty when it never connected.
     pub fn live_sessions(&self, server: &str) -> Vec<SessionInfo> {
-        self.inner
-            .lock()
-            .conns
+        let st = self.inner.lock();
+        st.conns
             .get(server)
-            .map(|c| c.live.clone())
+            .map(|c| &c.live)
+            .or_else(|| st.heard.get(server))
+            .cloned()
             .unwrap_or_default()
     }
 
-    /// Every session some pane is mapped to, on any server.
-    #[cfg(test)]
-    pub fn claimed_session_ids(&self) -> HashSet<String> {
-        self.inner
-            .lock()
-            .store
-            .records()
-            .map(|(_, r)| r.session_id.clone())
+    /// The sessions `pane_keys` map to in the store, on any server. An adopted pane claims
+    /// nothing: its session is still the unclaimed one it was opened from.
+    pub fn claimed_session_ids<'k>(
+        &self,
+        pane_keys: impl IntoIterator<Item = &'k str>,
+    ) -> HashSet<String> {
+        let st = self.inner.lock();
+        pane_keys
+            .into_iter()
+            .filter_map(|k| st.store.get(k))
+            .map(|r| r.session_id.clone())
             .collect()
+    }
+
+    /// Point `pane_key` at `server`'s existing session `session_id`, for this run only: its
+    /// [`RexHub::ensure_session`] attaches that session, or fails, and never creates one.
+    /// A stored mapping for `pane_key` still wins.
+    pub fn adopt(&self, pane_key: &str, server: &str, session_id: &str) {
+        self.inner.lock().adopted.insert(
+            pane_key.to_owned(),
+            PaneRecord {
+                server: server.to_owned(),
+                session_id: session_id.to_owned(),
+            },
+        );
+    }
+
+    /// Connect to `server` now, within [`OPEN_BUDGET`], if it isn't connected.
+    pub fn connect(&self, server: &str) -> Result<(), RexError> {
+        self.inner.conn(server).map(|_| ())
     }
 
     /// A receiver for every [`HubEvent`] from now on.
@@ -752,6 +809,7 @@ impl Inner {
             if let Some(c) = st.conns.get(server) {
                 return Ok((c.client.clone(), false));
             }
+            st.heard.remove(server);
             st.next_gen += 1;
             let gen = st.next_gen;
             st.conns.insert(
@@ -873,6 +931,8 @@ impl Inner {
                         if let Some(a) = st.attached.get_mut(server) {
                             a.remove(&id);
                         }
+                        st.adopted
+                            .retain(|_, r| !(r.server == server && r.session_id == id));
                         out.push(sessions_changed());
                     }
                 }
@@ -939,7 +999,9 @@ fn watch(
             let mut st = inner.lock();
             let ours = st.conns.get(&server).is_some_and(|c| c.gen == gen);
             if ours {
-                st.conns.remove(&server);
+                if let Some(c) = st.conns.remove(&server) {
+                    st.heard.insert(server.clone(), c.live);
+                }
             }
             ours
         };
@@ -988,6 +1050,14 @@ fn call_seq(
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn api_error(code: &str, message: &str, status: u16) -> RexError {
+    RexError::Api {
+        code: code.to_owned(),
+        message: message.to_owned(),
+        status,
+    }
 }
 
 fn str_field(v: &Value, what: &str) -> Result<String, RexError> {

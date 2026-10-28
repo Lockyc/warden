@@ -111,8 +111,10 @@ impl PresenceCache {
 /// append the scanner-synthesized project tabs for every `[[window.root]]` to `tabs`.
 /// This is what the whole pipeline (window_specs / reconcile / registry) consumes, so a
 /// discovered project is just a `Tab` and needs no special-casing downstream. Roots'
-/// tabs come after loose + grouped tabs, matching the "sections in file order" rule.
-pub fn effective_config(config: &Config) -> Config {
+/// tabs come after loose + grouped tabs, matching the "sections in file order" rule. With the
+/// Rex hub, each window then lists the unclaimed sessions on its Rex tabs' servers
+/// ([`crate::rex::unclaimed::append`]) — lock-only reads, no network.
+pub fn effective_config(config: &Config, rex: Option<&crate::rex::RexHub>) -> Config {
     let mut eff = config.clone();
     for window in &mut eff.windows {
         // A discovered project's key is its normalized dir. Seeding `seen` with every curated
@@ -136,6 +138,9 @@ pub fn effective_config(config: &Config) -> Config {
                 }
             }
         }
+    }
+    if let Some(hub) = rex {
+        crate::rex::unclaimed::append(&mut eff, hub);
     }
     eff
 }
@@ -312,7 +317,7 @@ pub struct WindowManager {
     pub names: HashMap<String, String>,        // window title -> label
     pub last_good: Config,
     /// The RAW config as loaded (roots UNexpanded). `last_good` is its expanded
-    /// form (`effective_config(&raw_config)`, i.e. with discovered project tabs
+    /// form (`effective_config(&raw_config, hub)`, i.e. with discovered project tabs
     /// appended); `raw_config` is retained so `rescan_root` can re-expand + re-scan
     /// without a config-file change.
     pub raw_config: Config,
@@ -603,7 +608,7 @@ impl WindowManager {
     /// (the reconcile baseline) holds the expanded form so a reopened window
     /// still carries its discovered project tabs.
     pub fn materialize(&mut self, app: &AppHandle, config: Config) {
-        let effective = effective_config(&config);
+        let effective = effective_config(&config, app.try_state::<crate::rex::RexHub>().as_deref());
         self.materialize_effective(app, config, effective);
     }
 
@@ -628,6 +633,7 @@ impl WindowManager {
         self.raw_config = config;
         self.last_good = effective;
         self.sync_empty_surface(app);
+        crate::rex::unclaimed::connect(app, &self.last_good);
     }
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {
@@ -1676,7 +1682,7 @@ mod tests {
             auto_update: true,
             notify_debug: false,
         };
-        let eff = effective_config(&cfg);
+        let eff = effective_config(&cfg, None);
         let keys: Vec<_> = eff.windows[0].tabs.iter().map(|t| t.key.as_str()).collect();
         assert_eq!(keys, vec!["mine"]);
         let _ = std::fs::remove_dir_all(&base);

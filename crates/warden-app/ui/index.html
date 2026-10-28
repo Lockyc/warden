@@ -735,8 +735,8 @@
       // own empty-state backstop covers it until `activate` finishes spawning) and `splitById` is
       // recorded as the authoritative answer right away, not left to a later refresh.
       //
-      // On a genuine `split_pane` failure — reachable only when the
-      // WINDOW itself wasn't found (see the Rust doc comment on `split_pane`'s early `?` — the
+      // On a genuine `split_pane` failure — the WINDOW wasn't found, or the tab can't split (an
+      // unclaimed Rex session's) — (see the Rust doc comment on `split_pane`'s early returns — the
       // "could not open the second pane" arm still means `Registry::split` ran, so the secondary
       // genuinely exists there) — NOTHING was actually created server-side, so the optimistic
       // split above must be undone: without this, nothing would ever run `collapseSplit` (there
