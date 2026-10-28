@@ -196,6 +196,23 @@ fn response_result(v: &Value) -> Result<(u64, Value), RexError> {
     }
 }
 
+/// Whether `welcome` is a control welcome. The error names the field that's wrong and never
+/// quotes the message, which carries the reconnect token — a secret never to be logged.
+fn check_welcome(welcome: &Value) -> Result<(), RexError> {
+    let field = |k: &str| welcome.get(k).and_then(Value::as_str);
+    if field("type") != Some("welcome") {
+        return Err(RexError::Protocol(
+            "expected a welcome; the reply's type is missing or different".into(),
+        ));
+    }
+    if field("protocol") != Some(CONTROL_PROTOCOL) {
+        return Err(RexError::Protocol(format!(
+            "the welcome's protocol is missing or not {CONTROL_PROTOCOL}"
+        )));
+    }
+    Ok(())
+}
+
 fn close_code(f: Option<CloseFrame>) -> u16 {
     f.map_or(1005, |f| f.code.into())
 }
@@ -294,13 +311,7 @@ impl ControlClient {
                 Err(e) => return Err(ws_err(e, closed)),
             }
         };
-        if welcome.get("type").and_then(Value::as_str) != Some("welcome")
-            || welcome.get("protocol").and_then(Value::as_str) != Some(CONTROL_PROTOCOL)
-        {
-            return Err(RexError::Protocol(format!(
-                "expected a {CONTROL_PROTOCOL} welcome, got {welcome}"
-            )));
-        }
+        check_welcome(&welcome)?;
         let max_message_bytes = welcome
             .pointer("/limits/max_message_bytes")
             .and_then(Value::as_u64)
@@ -484,6 +495,13 @@ impl ControlClient {
             self.block_call(session, block, "write", json!({"data": chunk}))?;
         }
         Ok(())
+    }
+
+    /// Stop holding events for a first [`ControlClient::events`] call that will never come: the
+    /// ones held are dropped, and later ones reach only receivers that already exist. For a
+    /// client that never reads events, so a long-lived connection doesn't grow without bound.
+    pub fn ignore_events(&self) {
+        self.shared.lock().backlog = None;
     }
 
     /// A new receiver for this connection's events. The first one also gets every event that
@@ -811,6 +829,36 @@ mod tests {
                 status: 404,
             })
         );
+    }
+
+    #[test]
+    fn a_client_ignoring_events_holds_none() {
+        let fake = FakeServer::start();
+        let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
+        c.ignore_events();
+        for i in 0..50 {
+            fake.push_event("session_destroyed", json!({"session_id": format!("s:{i}")}));
+        }
+        // A round trip after the pushes: the I/O thread has read every event before the answer.
+        c.call("ping", json!({})).expect("round trip");
+        assert_eq!(c.shared.lock().backlog.as_ref().map_or(0, Vec::len), 0);
+        assert_eq!(c.shared.lock().subscribers.len(), 0);
+    }
+
+    #[test]
+    fn a_malformed_welcome_never_reports_its_token() {
+        let welcome = json!({"type": "welcome", "protocol": "rex.other.v9",
+            "client": {"id": "client:1", "reconnect_token": "SECRET-TOKEN"}});
+        let e = check_welcome(&welcome).expect_err("wrong protocol");
+        let msg = e.to_string();
+        assert!(!msg.contains("SECRET-TOKEN"), "{msg}");
+        assert!(msg.contains("protocol"), "names the field: {msg}");
+        let not_one = json!({"type": "error", "reconnect_token": "SECRET-TOKEN"});
+        let msg = check_welcome(&not_one).expect_err("not a welcome").to_string();
+        assert!(!msg.contains("SECRET-TOKEN"), "{msg}");
+        assert!(msg.contains("type"), "names the field: {msg}");
+        let ok = json!({"type": "welcome", "protocol": CONTROL_PROTOCOL});
+        assert_eq!(check_welcome(&ok), Ok(()));
     }
 
     #[test]
