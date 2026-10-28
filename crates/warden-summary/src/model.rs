@@ -58,9 +58,18 @@ impl Model for HttpModel {
         if !resp.status().is_success() {
             return None;
         }
-        let text = resp.body_mut().read_to_string().ok()?;
+        let text = strip_control_bytes(&resp.body_mut().read_to_string().ok()?);
         content_of(&serde_json::from_str::<Value>(&text).ok()?)
     }
+}
+
+/// The body without raw control bytes (`\x00-\x08`, `\x0b-\x1f`, `\x7f`; tab and newline stay).
+/// A non-conformant backend that emits them unescaped inside a JSON string would otherwise fail
+/// the parse and silence the summary for good.
+fn strip_control_bytes(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(*c, '\x00'..='\x08' | '\x0b'..='\x1f' | '\x7f'))
+        .collect()
 }
 
 /// The reply text of a parsed completion; `None` for an `.error` body, absent or non-string
@@ -171,6 +180,14 @@ mod tests {
             model(url, Duration::from_millis(300)).complete("s", "u"),
             None
         );
+    }
+
+    #[test]
+    fn http_model_tolerates_raw_control_bytes() {
+        let r = "{\"choices\":[{\"message\":{\"content\":\"sec\u{1}ret\u{7f} label\"}}]}";
+        let (url, _rx) = fake("200 OK", r, Duration::ZERO);
+        let got = model(url, Duration::from_secs(5)).complete("s", "u");
+        assert_eq!(got.as_deref(), Some("secret label"));
     }
 
     #[test]
