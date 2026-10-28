@@ -5,12 +5,17 @@ mod claude;
 mod gate;
 mod model;
 mod prompt;
+mod refresh;
 mod rows;
 
 pub use claude::Claude;
 pub use gate::strip_unbacked_done;
 pub use model::{HttpModel, Model};
 pub use prompt::{label, stand};
+pub use refresh::{
+    apply, due, refresh, RefreshResult, SummaryState, DIGEST_BUDGET, DRIFT_TICKS, LABEL_WORDS,
+    STAND_WORDS, SUBJECT_MIN_SEGMENTS, THROTTLE,
+};
 pub use rows::{parse_stand, StandRows};
 
 use std::path::Path;
