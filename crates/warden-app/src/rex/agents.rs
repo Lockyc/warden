@@ -48,6 +48,13 @@ pub struct AgentRecord {
     /// The user named the tab, so a generated summary never overwrites the name.
     #[serde(default)]
     pub user_named: bool,
+    /// The conversation's last good done/now/next rows ([`super::summary`]). Cleared with
+    /// `subject` when `resume` changes: a new id is a new conversation.
+    #[serde(default)]
+    pub summary: Option<warden_summary::StandRows>,
+    /// The conversation's stable subject label, kept across refreshes and restarts.
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 /// A fresh record id: wall-clock nanoseconds plus a process-wide counter, in hex. Unique within
@@ -63,7 +70,11 @@ pub fn new_id() -> String {
 /// The resume shapes a report may take: the fixed words (program and flags) before the one id.
 /// A closed table because a forged report must not choose the program or its flags; a new
 /// harness, or a new syntax for one, is one row.
-const RESUME_SHAPES: &[&[&str]] = &[&["claude", "--resume"], &["codex", "resume"]];
+const RESUME_SHAPES: &[&[&str]] = &[CLAUDE_RESUME, &["codex", "resume"]];
+
+/// Claude Code's row of `RESUME_SHAPES`: the one harness with a fork flag and a transcript warden
+/// reads.
+const CLAUDE_RESUME: &[&str] = &["claude", "--resume"];
 
 /// Whether a reported resume command is safe to store: exactly a row of `RESUME_SHAPES`, then
 /// one id of `[A-Za-z0-9][A-Za-z0-9-]*` (never a leading `-`, which the CLI would read as a
@@ -80,12 +91,11 @@ fn resume_is_safe(s: &str) -> bool {
 
 /// The flag that turns a `RESUME_SHAPES` row into a fork of that conversation. A harness without
 /// a row has no fork command, so its tab can't be forked; Codex has none.
-#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
-const FORK_FLAGS: &[(&[&str], &str)] = &[(&["claude", "--resume"], "--fork-session")];
+#[allow(dead_code, reason = "consumed by the fork task")]
+const FORK_FLAGS: &[(&[&str], &str)] = &[(CLAUDE_RESUME, "--fork-session")];
 
 /// The split of a safe resume command into its fixed words and trailing id; `None` for anything
 /// `resume_is_safe` refuses.
-#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
 fn split_resume(resume: &str) -> Option<(Vec<&str>, &str)> {
     if !resume_is_safe(resume) {
         return None;
@@ -98,7 +108,7 @@ fn split_resume(resume: &str) -> Option<(Vec<&str>, &str)> {
 /// The command that forks the conversation a stored resume command resumes. Derived from the
 /// already-checked resume command, never reported, so a forged report can't choose a program, a
 /// flag or a file. `None` for an unsafe command or a harness with no `FORK_FLAGS` row.
-#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
+#[allow(dead_code, reason = "consumed by the fork task")]
 pub fn fork_command(resume: &str) -> Option<String> {
     let (fixed, _) = split_resume(resume)?;
     let (_, flag) = FORK_FLAGS.iter().find(|(shape, _)| *shape == fixed)?;
@@ -107,9 +117,13 @@ pub fn fork_command(resume: &str) -> Option<String> {
 
 /// The conversation id a safe resume command ends with; it names the transcript file. `None` for
 /// an unsafe command.
-#[allow(dead_code, reason = "consumed by the fork and summary tasks")]
 pub fn resume_id(resume: &str) -> Option<&str> {
     split_resume(resume).map(|(_, id)| id)
+}
+
+/// Whether a safe resume command resumes a Claude Code conversation.
+pub fn is_claude(resume: &str) -> bool {
+    split_resume(resume).is_some_and(|(fixed, _)| fixed == CLAUDE_RESUME)
 }
 
 /// A folded group of a project's list.
@@ -298,8 +312,29 @@ impl AgentStore {
         v
     }
 
+    /// The record with `id`.
+    pub fn record(&self, id: &str) -> Option<AgentRecord> {
+        self.records.iter().find(|r| r.id == id).cloned()
+    }
+
+    /// The record showing `block_id`.
+    pub fn by_block(&self, block_id: &str) -> Option<AgentRecord> {
+        self.records
+            .iter()
+            .find(|r| r.block_id.as_deref() == Some(block_id))
+            .cloned()
+    }
+
+    /// Every live record, of every project.
+    pub fn live(&self) -> Vec<AgentRecord> {
+        self.records
+            .iter()
+            .filter(|r| r.state == RecordState::Live)
+            .cloned()
+            .collect()
+    }
+
     /// Insert `record`, or replace the one with its id, and persist.
-    #[cfg(test)]
     pub fn upsert(&mut self, record: AgentRecord) {
         match self.records.iter_mut().find(|r| r.id == record.id) {
             Some(slot) => *slot = record,
@@ -349,7 +384,9 @@ impl AgentStore {
     }
 
     /// Store an agent's reported resume command on the record owning `block_id`. The one place a
-    /// report enters the records; an unsafe report is refused. Returns whether a record took it.
+    /// report enters the records; an unsafe report is refused. A different command is a different
+    /// conversation, so it clears the record's summary and subject. Returns whether a record took
+    /// it.
     pub fn report_resume(&mut self, block_id: &str, resume: &str) -> bool {
         if !resume_is_safe(resume) {
             return false;
@@ -363,6 +400,8 @@ impl AgentStore {
         };
         if rec.resume.as_deref() != Some(resume) {
             rec.resume = Some(resume.to_string());
+            rec.summary = None;
+            rec.subject = None;
             self.save();
         }
         true
@@ -392,7 +431,7 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
     }
     changed!(
         project, name, group, position, resume, state, window_id, block_id, closed_at, selected,
-        forks_made, user_named
+        forks_made, user_named, summary, subject
     );
 }
 
@@ -488,6 +527,8 @@ pub fn reconcile(
                 selected: false,
                 forks_made: 0,
                 user_named: false,
+                summary: None,
+                subject: None,
             });
             next += 1;
         }
@@ -519,6 +560,8 @@ mod tests {
             selected: false,
             forks_made: 0,
             user_named: false,
+            summary: None,
+            subject: None,
         }
     }
 
@@ -561,6 +604,54 @@ mod tests {
         let s = AgentStore::load(path);
         let r = &s.records[0];
         assert_eq!((r.forks_made, r.user_named), (0, false));
+    }
+
+    #[test]
+    fn resume_change_clears_summary_and_subject() {
+        let mut a = rec(
+            "a",
+            RecordState::Live,
+            Some("w1"),
+            Some("claude --resume x"),
+        );
+        a.summary = Some(warden_summary::StandRows {
+            now: Some("reading".into()),
+            ..Default::default()
+        });
+        a.subject = Some("auth flow".into());
+        let mut s = AgentStore::default();
+        s.upsert(a);
+
+        assert!(s.report_resume("b-w1", "claude --resume x"));
+        let kept = s.record("a").unwrap();
+        assert!(
+            kept.summary.is_some() && kept.subject.is_some(),
+            "the same conversation keeps its summary"
+        );
+
+        assert!(s.report_resume("b-w1", "claude --resume y"));
+        let cleared = s.record("a").unwrap();
+        assert_eq!(cleared.resume.as_deref(), Some("claude --resume y"));
+        assert_eq!((cleared.summary, cleared.subject), (None, None));
+    }
+
+    #[test]
+    fn merge_carries_summary_and_subject() {
+        let before = rec("a", RecordState::Live, Some("w1"), None);
+        let mut after = before.clone();
+        after.subject = Some("s".into());
+        after.summary = Some(warden_summary::StandRows::default());
+        let mut current = before.clone();
+        merge_fields(&mut current, &before, &after);
+        assert_eq!(current.subject.as_deref(), Some("s"));
+        assert!(current.summary.is_some());
+    }
+
+    #[test]
+    fn only_claude_resumes_are_claude() {
+        assert!(is_claude("claude --resume abc"));
+        assert!(!is_claude("codex resume abc"));
+        assert!(!is_claude("claude --resume -x"));
     }
 
     #[test]

@@ -282,7 +282,7 @@ fn last_selected(records: &[AgentRecord]) -> Option<usize> {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
@@ -390,6 +390,8 @@ pub(super) mod tests {
             selected: false,
             forks_made: 0,
             user_named: false,
+            summary: None,
+            subject: None,
         }
     }
 

@@ -1163,8 +1163,14 @@ fn agents_init(
 /// after this arrives as `warden:strip`. `None` for a tab without one.
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn strip_init(state: tauri::State<ManagerState>, tab_id: String) -> Option<strip::StripDto> {
-    strip::strip_dto(&state.lock().last_good, &tab_id)
+fn strip_init(
+    state: tauri::State<ManagerState>,
+    agents: tauri::State<std::sync::Mutex<rex::agents::AgentStore>>,
+    tab_id: String,
+) -> Option<strip::StripDto> {
+    let m = state.lock();
+    let agents = agents.lock().unwrap_or_else(|e| e.into_inner());
+    strip::strip_dto(&m.last_good, &agents, &tab_id)
 }
 
 /// A new agent tab in tab `tab_id`'s main pane, typing the tab's `cmd`, selected.
@@ -1930,12 +1936,14 @@ fn main() {
                 // Read the `notify_debug` toggle from the loaded config (default false) before the
                 // config is consumed by materialize — it gates notify.rs's diagnostic trace.
                 let mut notify_debug = false;
+                let mut summary = None;
                 match warden_config::load_with(
                     &warden_config::config_path(),
                     &warden_config::login_shell(),
                 ) {
                     Ok(loaded) => {
                         notify_debug = loaded.config.notify_debug;
+                        summary = loaded.config.summary.clone();
                         mgr.materialize(&handle, loaded.config);
                     }
                     Err(e) => {
@@ -1960,6 +1968,8 @@ fn main() {
                 // reports.
                 rex::lifecycle::watch_agents(handle.clone());
                 rex::lifecycle::watch_reports(handle.clone());
+                // Local Claude Code agent tabs' done/now/next summaries, off without `[summary]`.
+                rex::summary::start(&handle, summary.as_ref());
 
                 // Background presence-probe scheduler — the single probe driver. Per-window
                 // fast-until-stable bursts on key moments (tab activate, window focus/open, session
@@ -2051,6 +2061,9 @@ fn main() {
                                     let new_density = loaded.config.density;
                                     let old_drag = m.last_good.sidebar_drag;
                                     let new_drag = loaded.config.sidebar_drag;
+                                    // `[summary]` is global too: handed to the summary driver
+                                    // below when it changed.
+                                    let old_summary = m.last_good.summary.clone();
                                     // Recover (materialize, fresh-launch semantics that respect
                                     // open_on_start) ONLY when there is no baseline to reconcile
                                     // against — an empty `last_good` means we never had a valid
@@ -2114,6 +2127,12 @@ fn main() {
                                     // hold the lock, then release it before any lock-free work.
                                     m.set_probe_interval(loaded.config.probe_interval);
                                     drop(m);
+                                    if old_summary != loaded.config.summary {
+                                        rex::summary::configure(
+                                            &wh,
+                                            loaded.config.summary.as_ref(),
+                                        );
+                                    }
                                     // Opt-in tidy: rewrite the file formatted. Diff-guarded in
                                     // format_file, so warden's own write doesn't loop the watcher.
                                     // Only runs on a clean parse (this branch).
