@@ -713,7 +713,8 @@ impl WindowManager {
     /// **A Rex pane** exits the same way (its relay is the child), and additionally has its Rex
     /// session ended when the program in it finished (`rex::spawn::end_if_exited`, on a worker),
     /// so the next open makes a fresh one. A relay that left for any other reason leaves the
-    /// session to be reattached.
+    /// session to be reattached. An agent's relay exiting closes that agent alone
+    /// (`Registry::close_agent`): the tab stays live while another of its agents is.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
@@ -726,15 +727,35 @@ impl WindowManager {
             let Some(ws) = lock.windows.get_mut(&label) else {
                 return;
             };
-            let Some((tab_id, which)) = ws.registry.locate_surface(surface_id) else {
+            let Some(key) = ws.registry.surface_key(surface_id) else {
                 return;
             };
-            // A Rex pane's relay exited: its session ends too if its program did.
-            if let Some(key) = ws.registry.rex_pane_key(&tab_id, which) {
-                crate::rex::spawn::end_if_exited(app, key);
+            let Some((tab_id, which, agent)) = ws.registry.locate_key(&key) else {
+                return;
+            };
+            // A Rex pane's relay exited: its session (an agent's: its window) ends too if its
+            // program did.
+            if let Some(key) = ws.registry.rex_key_of_surface(surface_id) {
+                let project = agent.as_ref().map(|_| tab_id.clone());
+                crate::rex::spawn::end_if_exited(app, key, project);
             }
-            let new_active = match which {
-                crate::registry::PaneIdx::Secondary => {
+            let new_active = match (which, agent) {
+                (crate::registry::PaneIdx::Primary, Some(record)) => {
+                    match ws.registry.close_agent(&tab_id, &record) {
+                        Some(crate::registry::AgentClosed::PaneCold(next)) => next,
+                        // Another agent of the pane is live and on screen now: the tab stays.
+                        _ => {
+                            lock.record_session(&label);
+                            let dto = lock.init_dto(&label);
+                            drop(lock);
+                            if let Some(dto) = dto {
+                                let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
+                            }
+                            return;
+                        }
+                    }
+                }
+                (crate::registry::PaneIdx::Secondary, _) => {
                     ws.registry.close_secondary(&tab_id);
                     drop(lock);
                     // `warden:tab-exited` means "the whole tab went cold" to the chrome
@@ -749,7 +770,7 @@ impl WindowManager {
                     );
                     return;
                 }
-                crate::registry::PaneIdx::Primary => ws.registry.unload(&tab_id),
+                (crate::registry::PaneIdx::Primary, None) => ws.registry.unload(&tab_id),
             };
             lock.record_session(&label);
             drop(lock);
@@ -772,7 +793,7 @@ impl WindowManager {
             .get(&dlabel)
             .and_then(|d| crate::registry::rex_pane_key(&d.spec, which))
         {
-            crate::rex::spawn::end_if_exited(app, key);
+            crate::rex::spawn::end_if_exited(app, key, None);
         }
         match which {
             crate::registry::PaneIdx::Secondary => {

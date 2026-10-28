@@ -283,7 +283,7 @@ fn activate_tab(
         let out = match m.windows.get_mut(window.label()) {
             Some(ws) => {
                 let has_probe = ws.registry.tab_has_probe(&id);
-                let (fresh, err) = match ws.registry.activate(&id) {
+                let (fresh, err) = match ws.registry.activate_user(&id) {
                     Ok(fresh) => (fresh, None),
                     Err(e) => (false, Some(e)),
                 };
@@ -405,7 +405,7 @@ fn split_pane(
                 "this tab can't split: it shows a Rex session opened from the sidebar".into(),
             );
         }
-        ws.registry.activate(&id)
+        ws.registry.activate_user(&id)
     };
     if let Err(e) = primary {
         eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
@@ -1497,6 +1497,11 @@ fn main() {
                 };
                 app.manage(rex::size::Sizer::start(hub.clone()));
                 app.manage(hub);
+                // What warden keeps about agent tabs, read and written by agent panes' opens.
+                app.manage(std::sync::Mutex::new(match scoped(rex::agents::STEM) {
+                    Some(path) => rex::agents::AgentStore::load(path),
+                    None => rex::agents::AgentStore::default(),
+                }));
                 // Load config; a config that parses (even with zero `[[window]]` entries) always
                 // materializes — `materialize` builds nothing for an empty window list and
                 // `sync_empty_surface` shows the home surface's window list (empty or not). A
