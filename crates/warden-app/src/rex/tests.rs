@@ -617,9 +617,66 @@ fn destroy_if_exited_ends_only_a_finished_block() {
         "com.superlogical.terminal.process",
         json!({"last_exit": {"exit_code": 0}}),
     );
+    fake.reply("session.list_blocks", blocks(&["block:new"]));
     assert!(hub.destroy_if_exited("tab-a"));
-    assert_eq!(fake.requests_for("session.destroy").len(), 1);
+    assert_eq!(
+        fake.requests_for("session.destroy").len(),
+        1,
+        "the pane's block was the session's last"
+    );
     assert!(hub.claimed_session_ids(["tab-a"]).is_empty());
+}
+
+/// `session.list_blocks`' answer: one block per id.
+fn blocks(ids: &[&str]) -> Value {
+    let blocks: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({"block_id": id, "label": "shell", "placement": "placed"}))
+        .collect();
+    json!({ "blocks": blocks })
+}
+
+#[test]
+fn an_exited_pane_leaves_a_session_with_other_blocks() {
+    let fake = scripted(json!([]));
+    // A second window, made elsewhere, holds block:phone.
+    fake.reply("session.list_blocks", blocks(&["block:new", "block:phone"]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, path) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    fake.reply(
+        "com.superlogical.terminal.process",
+        json!({"last_exit": {"exit_code": 0}}),
+    );
+
+    assert!(hub.destroy_if_exited("tab-a"), "the pane is done");
+    assert!(
+        fake.requests_for("session.destroy").is_empty(),
+        "a window made elsewhere keeps the session"
+    );
+    assert!(RexStore::load(path).get("tab-a").is_none(), "forgotten");
+    assert!(
+        hub.claimed_session_ids(["tab-a"]).is_empty(),
+        "so it lists as unclaimed"
+    );
+}
+
+#[test]
+fn session_alive_holds_while_the_server_is_disconnected() {
+    let fake = scripted(json!([{"session_id": "session:new", "label": "w · main"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert!(hub.session_alive("tab-a"));
+    drop(fake);
+    next_event(&rx, |e| matches!(e, HubEvent::Disconnected { .. }));
+    assert!(
+        hub.session_alive("tab-a"),
+        "a session isn't gone because warden's control link is"
+    );
 }
 
 #[test]

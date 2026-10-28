@@ -52,6 +52,8 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 /// usable connection. A tab must open or report its server unreachable within 3 s; the margin
 /// covers the work after the deadline.
 const OPEN_BUDGET: Duration = Duration::from_millis(2700);
+/// The longest session label Rex accepts, in characters; a longer one fails `session.create`.
+pub const SESSION_LABEL_MAX: usize = 128;
 /// Less budget than this left, and autostart isn't worth starting.
 const AUTOSTART_MIN: Duration = Duration::from_millis(250);
 
@@ -158,6 +160,14 @@ impl State {
         self.store
             .get(pane_key)
             .or_else(|| self.adopted.get(pane_key))
+    }
+
+    /// `server`'s session list: its connection's, else the last heard while it's disconnected.
+    fn sessions(&self, server: &str) -> Option<&[SessionInfo]> {
+        self.conns
+            .get(server)
+            .map(|c| c.live.as_slice())
+            .or_else(|| self.heard.get(server).map(Vec::as_slice))
     }
 }
 
@@ -301,8 +311,10 @@ impl RexHub {
         }
     }
 
-    /// End `pane_key`'s session if its terminal has finished ([`RexHub::block_exited`]), as one
-    /// step no open of that pane can come between. Returns whether it did.
+    /// Let `pane_key` go of its session if its terminal has finished ([`RexHub::block_exited`]),
+    /// as one step no open of that pane can come between: the session is destroyed when that
+    /// block was its last, else only the mapping goes, so blocks made elsewhere keep running and
+    /// the session lists as unclaimed. Returns whether the pane let go.
     pub fn destroy_if_exited(&self, pane_key: &str) -> bool {
         let Ok(_held) = self.inner.hold_pane(pane_key, None) else {
             return false;
@@ -310,25 +322,30 @@ impl RexHub {
         if !self.block_exited(pane_key) {
             return false;
         }
-        if let Err(e) = self.inner.destroy(pane_key) {
+        if self.inner.session_outlives_pane(pane_key) {
+            self.inner.forget(pane_key);
+        } else if let Err(e) = self.inner.destroy(pane_key) {
             eprintln!("warden: couldn't end Rex session for {pane_key:?}: {e}");
         }
         true
     }
 
-    /// Whether `pane_key` is mapped to a session its server's live list holds — or, for an
-    /// unclaimed session's row not yet opened (so not yet adopted), whether its session is in a
-    /// connected server's live list. False when it's unmapped, or the server isn't connected.
+    /// Whether `pane_key` is mapped to a session its server's session list holds — or, for an
+    /// unclaimed session's row not yet opened (so not yet adopted), whether its session is in any
+    /// server's list. The list is the live one, or the last heard while the server is
+    /// disconnected: a session isn't gone because warden's control link is. False when it's
+    /// unmapped, or the server was never heard from.
     pub fn session_alive(&self, pane_key: &str) -> bool {
         let st = self.inner.lock();
-        let listed = |conn: &Conn, id: &str| conn.live.iter().any(|s| s.id == id);
+        let listed = |list: &[SessionInfo], id: &str| list.iter().any(|s| s.id == id);
         match st.record(pane_key) {
             Some(rec) => st
-                .conns
-                .get(&rec.server)
-                .is_some_and(|c| listed(c, &rec.session_id)),
-            None => unclaimed::session_of(pane_key)
-                .is_some_and(|id| st.conns.values().any(|c| listed(c, id))),
+                .sessions(&rec.server)
+                .is_some_and(|l| listed(l, &rec.session_id)),
+            None => unclaimed::session_of(pane_key).is_some_and(|id| {
+                st.conns.values().any(|c| listed(&c.live, id))
+                    || st.heard.values().any(|l| listed(l, id))
+            }),
         }
     }
 
@@ -438,29 +455,55 @@ impl Inner {
 
     /// [`RexHub::destroy`]'s work, for a caller already holding `pane_key`.
     fn destroy(self: &Arc<Self>, pane_key: &str) -> Result<(), RexError> {
-        let inner = self;
-        let rec = {
-            let mut st = inner.lock();
-            let rec = st.record(pane_key).cloned();
-            if let Some(r) = &rec {
-                st.store.set(pane_key, None);
-                st.adopted.remove(pane_key);
-                st.blocks.remove(pane_key);
-                st.requested.remove(pane_key);
-                if let Some(a) = st.attached.get_mut(&r.server) {
-                    a.remove(&r.session_id);
-                }
-            }
-            rec
-        };
-        let Some(rec) = rec else {
+        let Some(rec) = self.forget(pane_key) else {
             return Ok(());
         };
-        let (client, _) = inner.conn(&rec.server)?;
+        let (client, _) = self.conn(&rec.server)?;
         match client.call("session.destroy", json!({ "session_id": rec.session_id })) {
             Ok(_) => Ok(()),
             Err(RexError::Api { code, .. }) if code == "session_not_found" => Ok(()),
             Err(e) => Err(e),
+        }
+    }
+
+    /// Drop everything warden holds for `pane_key` — its mapping, adoption, block and size — and
+    /// return the session it was mapped to. The session itself is untouched.
+    fn forget(&self, pane_key: &str) -> Option<PaneRecord> {
+        let mut st = self.lock();
+        let rec = st.record(pane_key).cloned()?;
+        st.store.set(pane_key, None);
+        st.adopted.remove(pane_key);
+        st.blocks.remove(pane_key);
+        st.requested.remove(pane_key);
+        if let Some(a) = st.attached.get_mut(&rec.server) {
+            a.remove(&rec.session_id);
+        }
+        Some(rec)
+    }
+
+    /// Whether `pane_key`'s session holds a block besides the pane's own — placed or detached,
+    /// made by anyone — per `session.list_blocks`. True when it can't be told, so an uncertain
+    /// answer never destroys another client's work; false once the session is gone.
+    fn session_outlives_pane(self: &Arc<Self>, pane_key: &str) -> bool {
+        let (rec, block) = {
+            let st = self.lock();
+            match (st.record(pane_key), st.blocks.get(pane_key)) {
+                (Some(r), Some(b)) => (r.clone(), b.clone()),
+                _ => return true,
+            }
+        };
+        let Ok((client, _)) = self.conn(&rec.server) else {
+            return true;
+        };
+        let args = json!({ "session_id": rec.session_id });
+        match client.call("session.list_blocks", args) {
+            Ok(v) => v["blocks"].as_array().is_none_or(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b["block_id"].as_str() != Some(block.as_str()))
+            }),
+            Err(RexError::Api { code, .. }) => code != "session_not_found",
+            Err(_) => true,
         }
     }
 
@@ -599,12 +642,10 @@ impl RexHub {
     /// The sessions on `server`, as last heard — kept while its connection is down, since its
     /// sessions outlive the connection; empty when it never connected.
     pub fn live_sessions(&self, server: &str) -> Vec<SessionInfo> {
-        let st = self.inner.lock();
-        st.conns
-            .get(server)
-            .map(|c| &c.live)
-            .or_else(|| st.heard.get(server))
-            .cloned()
+        self.inner
+            .lock()
+            .sessions(server)
+            .map(<[SessionInfo]>::to_vec)
             .unwrap_or_default()
     }
 

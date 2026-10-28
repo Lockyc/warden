@@ -94,14 +94,16 @@ site omits it.
 | ⌘W unload, closing a window, quitting warden | Detached: the relay exits, the session keeps running. The next open reattaches. | `Registry::unload` |
 | ☠ destroy | Both panes' sessions destroyed. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
 | ⏻ suspend | Runs the `suspend` command on this Mac, so only a `"local"` Rex tab offers it. | `registry::suspend_cmd` |
-| The pane's program exits (`exit`, an agent quitting) | Destroyed; the pane goes cold, and the next open creates a fresh session. An exited block would only leave a dead screen that reads as live. | `spawn::end_if_exited` → `RexHub::destroy_if_exited` |
+| The pane's program exits (`exit`, an agent quitting) | Destroyed if its block was the session's last; otherwise the pane lets go and the session lists as unclaimed. The pane goes cold, and the next open creates a fresh session: an exited block would only leave a dead screen that reads as live. | `spawn::end_if_exited` → `RexHub::destroy_if_exited` |
 | The server restarts, crashes, or the Mac reboots | Every mapped session is gone; each pane's next open creates a fresh one and types `cmd` again. | `RexHub::ensure_session` |
 | Opening an unclaimed row | A temporary tab: adopted in memory, never persisted, never creates a session, can't split. ☠ ends the session. | `RexHub::adopt`, `Registry::split` |
 | The relay's stream drops | Resumed at its exact byte count; if refused, a new ticket and a full reset + redraw from a fresh snapshot. | `warden-relay` `RESET` |
 | The hub's control connection drops | Reconnected with the reconnect token; the session list is reread and claimed sessions reattached. | the hub's watcher |
 
-**Presence.** A Rex tab's dot is whether its session is in the hub's live list: cyan or hollow,
-never a ghost. Its `probe` is not run (`docs/probing.md`).
+**Presence.** A Rex tab's dot is whether its session is in its server's session list — the
+last heard while the hub's connection is down: cyan or hollow, never a ghost. It never offers ▶
+start, which types `cmd`: opening the tab is its start. Its `probe` is not run
+(`docs/probing.md`).
 
 **Remote servers.** `dir` is a path on the server (no `~` expansion, no existence check — see
 `docs/config.md`); the relay itself runs locally from `/`.

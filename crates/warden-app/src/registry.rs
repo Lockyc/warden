@@ -272,6 +272,12 @@ fn suspend_cmd(spec: &TabSpec) -> Option<&String> {
     spec.suspend.as_ref().filter(|_| !is_remote(spec))
 }
 
+/// The command ▶ start types into a tab's live shell. A Rex tab has none: its pane runs the
+/// relay, so typed text lands in the session's running program, and opening the tab is its start.
+fn start_cmd(spec: &TabSpec) -> Option<&String> {
+    spec.startup.as_ref().filter(|_| spec.server.is_none())
+}
+
 /// Whether `spec` runs on a Rex server other than this Mac's, so its `dir` is a path there.
 fn is_remote(spec: &TabSpec) -> bool {
     spec.server
@@ -663,7 +669,7 @@ impl Registry {
                 has_probe: t.primary.spec.probe.is_some() || t.primary.spec.server.is_some(),
                 has_kill: t.primary.spec.kill.is_some() || t.primary.spec.server.is_some(),
                 has_suspend: suspend_cmd(&t.primary.spec).is_some(),
-                has_cmd: t.primary.spec.startup.is_some(),
+                has_cmd: start_cmd(&t.primary.spec).is_some(),
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
                 detached: matches!(t.primary.slot, TabSlot::Detached),
@@ -731,14 +737,14 @@ impl Registry {
     /// Restart tab `id`'s session by typing its startup command into the **live** shell and
     /// submitting it (`TerminalSurface::run_command` — text inject + a real Enter keypress) — the
     /// runtime twin of how the tab launched. Preserves the terminal/scrollback (no respawn). Returns
-    /// `false` (no-op) when the tab is unknown, has no startup command, or is cold — a cold tab has
+    /// `false` (no-op) when the tab is unknown, has no startup command (`start_cmd`), or is cold — a cold tab has
     /// no shell to type into and is (re)started by activating it. The chrome only offers this on a
     /// live+startable tab with an absent session, so `false` means a stale/racing click.
     pub fn start_session(&self, id: &str) -> bool {
         let Some(t) = self.tabs.iter().find(|t| t.id == id) else {
             return false;
         };
-        let Some(cmd) = t.primary.spec.startup.as_ref() else {
+        let Some(cmd) = start_cmd(&t.primary.spec) else {
             return false;
         };
         match &t.primary.slot {
@@ -881,14 +887,13 @@ impl Registry {
     /// unload/relaunch reattaches whatever the session is by then.
     fn ensure_spawned(&mut self, idx: usize, which: PaneIdx) -> Result<bool, SurfaceError> {
         let tab = &mut self.tabs[idx];
-        let label = format!(
-            "{} · {}",
-            tab.title,
-            match which {
-                PaneIdx::Primary => "main",
-                PaneIdx::Secondary => "split",
-            }
-        );
+        let suffix = match which {
+            PaneIdx::Primary => " · main",
+            PaneIdx::Secondary => " · split",
+        };
+        // Rex refuses a longer label, so a long title is cut to fit, keeping the pane's suffix.
+        let room = crate::rex::SESSION_LABEL_MAX.saturating_sub(suffix.chars().count());
+        let label: String = tab.title.chars().take(room).chain(suffix.chars()).collect();
         let Some(pane) = tab.pane_mut(which) else {
             return Ok(false);
         };
@@ -2446,6 +2451,30 @@ mod tests {
         let dto = &r.tab_dtos()[0];
         assert!(dto.has_kill, "☠ destroys its Rex sessions");
         assert!(dto.has_probe, "its dot comes from Rex");
+    }
+
+    #[test]
+    fn a_server_tab_never_offers_start() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("rex", "local"), false).unwrap();
+        assert!(
+            !r.tab_dtos()[0].has_cmd,
+            "opening a Rex tab is its start; typing cmd would land in the running program"
+        );
+        assert!(!r.start_session("rex"));
+    }
+
+    #[test]
+    fn a_long_title_caps_the_session_label() {
+        let (mut r, asked) = rex_registry();
+        let mut s = rex_spec("t", "local");
+        s.title = "é".repeat(200);
+        r.add(&s, false).unwrap();
+        let _ = r.activate("t");
+        let asked = asked.lock().unwrap();
+        let label = &asked[0].label;
+        assert_eq!(label.chars().count(), crate::rex::SESSION_LABEL_MAX);
+        assert!(label.starts_with('é'));
     }
 
     #[test]
