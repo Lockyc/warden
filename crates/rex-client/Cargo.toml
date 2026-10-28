@@ -1,0 +1,23 @@
+[package]
+name = "rex-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# `fake`: an in-process Rex server on a Unix socket, for other crates' tests (enable it in their
+# dev-dependencies). This crate's own tests use it regardless.
+fake = []
+
+[dependencies]
+# Blocking WebSocket, no async runtime. `rustls-tls-native-roots` enables `client_tls_with_config`
+# for `Endpoint::Https`; the rustls config itself (ring provider + native roots) is built in
+# `endpoint.rs`, so rustls's default aws-lc provider is never pulled in.
+tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+serde_json = "1"
+base64 = "0.22"
+libc = "0.2"
+thiserror = "1"
+dirs = "5"
