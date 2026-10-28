@@ -221,9 +221,8 @@ warden's own rather than a tmux popup.
 **Agent state as warden chrome, from Rex.** agentmux paints agent state into tmux's grid today;
 in a client-owned-viewport model it belongs to warden's sidebar and tab-row dots. The source is
 Rex's event stream (`program_status_changed`, `child_exited`, `session_created`/`destroyed`),
-not agentmux, which gets no new architecture. warden hosts Rex sessions and its hub receives that
-stream (`docs/rex.md`); the chrome lands with the agent tab list
-(`docs/FOLLOWUPS.md`).
+not agentmux, which gets no new architecture. warden holds a control connection per Rex server
+(`docs/rex.md`); consuming those events is the agent tab list's job (`docs/FOLLOWUPS.md`).
 
 **A popped-out left-side split's focus ring starts on the wrong hole.** shell-core's detach
 page focuses its FIRST hole on every layout, which for a mirrored (`side = "left"`) pop-out
