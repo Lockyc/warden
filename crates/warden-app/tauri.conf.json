@@ -20,6 +20,11 @@
     "resources": {
       "vendor/resources/terminfo": "terminfo",
       "vendor/resources/ghostty": "ghostty"
+    },
+    "macOS": {
+      "files": {
+        "MacOS/warden-relay": "binaries/warden-relay"
+      }
     }
   },
   "plugins": {
