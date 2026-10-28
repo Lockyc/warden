@@ -91,7 +91,6 @@ fn resume_is_safe(s: &str) -> bool {
 
 /// The flag that turns a `RESUME_SHAPES` row into a fork of that conversation. A harness without
 /// a row has no fork command, so its tab can't be forked; Codex has none.
-#[allow(dead_code, reason = "consumed by the fork task")]
 const FORK_FLAGS: &[(&[&str], &str)] = &[(CLAUDE_RESUME, "--fork-session")];
 
 /// The split of a safe resume command into its fixed words and trailing id; `None` for anything
@@ -108,7 +107,6 @@ fn split_resume(resume: &str) -> Option<(Vec<&str>, &str)> {
 /// The command that forks the conversation a stored resume command resumes. Derived from the
 /// already-checked resume command, never reported, so a forged report can't choose a program, a
 /// flag or a file. `None` for an unsafe command or a harness with no `FORK_FLAGS` row.
-#[allow(dead_code, reason = "consumed by the fork task")]
 pub fn fork_command(resume: &str) -> Option<String> {
     let (fixed, _) = split_resume(resume)?;
     let (_, flag) = FORK_FLAGS.iter().find(|(shape, _)| *shape == fixed)?;

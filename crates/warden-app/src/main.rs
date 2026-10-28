@@ -56,19 +56,20 @@ const MENU_TAB_SPLIT: &str = "warden:split-pane";
 const MENU_TAB_SUSPEND: &str = "warden:suspend-tab";
 const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
-/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) — act on the agent tab list of the focused
+/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) / Fork Agent Tab (⌥⌘F) — act on the agent tab list of the focused
 /// window's active tab, enabled only while there is one ([`sync_agent_menu`]). The id doubles as
 /// the event name, sent with the tab's id. ⌘⇧T reaches the same list as `warden:agent-reopen`
 /// when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
 const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
+const MENU_AGENT_FORK: &str = "warden:agent-fork";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 
-/// New Agent Tab, Sleep Agent Tab and Reopen Last Closed, kept from the last menu build so their
+/// New Agent Tab, Sleep Agent Tab, Fork Agent Tab and Reopen Last Closed, kept from the last menu build so their
 /// enabled state follows the focused window's active tab without a rebuild ([`sync_agent_menu`]).
 #[cfg(target_os = "macos")]
 #[derive(Default)]
-struct AgentMenu(std::sync::Mutex<Option<[tauri::menu::MenuItem<tauri::Wry>; 3]>>);
+struct AgentMenu(std::sync::Mutex<Option<[tauri::menu::MenuItem<tauri::Wry>; 4]>>);
 
 /// Tab ▸ Sleep Server ▸ `<server>` — one item per Rex server; the id is this prefix plus the
 /// server.
@@ -124,10 +125,10 @@ pub(crate) fn sync_server_menu(app: &tauri::AppHandle) {
 }
 
 /// What the focused window's active tab offers the agent menu items: `(label, tab, sleep,
-/// reopen)` when it holds agent tabs — its selected agent tab can sleep, it has a closed one to
-/// reopen — else `None`.
+/// reopen, fork)` when it holds agent tabs — its selected agent tab can sleep, it has a closed
+/// one to reopen, its selected agent tab can fork — else `None`.
 #[cfg(target_os = "macos")]
-fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bool)> {
+fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bool, bool)> {
     use tauri::Manager;
     let label = app
         .webview_windows()
@@ -144,8 +145,8 @@ fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bo
             .active_agent_tab()?
             .to_owned()
     };
-    let (sleep, reopen) = rex::lifecycle::menu_actions(app, &tab);
-    Some((label, tab, sleep, reopen))
+    let (sleep, reopen, fork) = rex::lifecycle::menu_actions(app, &tab);
+    Some((label, tab, sleep, reopen, fork))
 }
 
 /// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
@@ -165,9 +166,10 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some([new, sleep, reopen]) = items {
+    if let Some([new, sleep, fork, reopen]) = items {
         let _ = new.set_enabled(agent.is_some());
         let _ = sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
+        let _ = fork.set_enabled(agent.as_ref().is_some_and(|a| a.4));
         let _ = reopen.set_enabled(agent.as_ref().is_some_and(|a| a.3) || reopen_window);
     }
 }
@@ -275,6 +277,10 @@ fn build_app_menu(
         .accelerator("Alt+Cmd+KeyS")
         .enabled(false)
         .build(app)?;
+    let agent_fork_item = MenuItemBuilder::with_id(MENU_AGENT_FORK, "Fork Agent Tab")
+        .accelerator("Alt+Cmd+KeyF")
+        .enabled(false)
+        .build(app)?;
     // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
     // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
     tab_menu = tab_menu
@@ -288,7 +294,8 @@ fn build_app_menu(
         .item(&terminate_item)
         .separator()
         .item(&agent_new_item)
-        .item(&agent_sleep_item);
+        .item(&agent_sleep_item)
+        .item(&agent_fork_item);
     // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
     // disabled line says so.
     let server_items = servers
@@ -339,8 +346,12 @@ fn build_app_menu(
         .build()?;
     app.set_menu(menu)?;
     if let Some(keep) = tauri::Manager::try_state::<AgentMenu>(app) {
-        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some([agent_new_item, agent_sleep_item, reopen_last]);
+        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = Some([
+            agent_new_item,
+            agent_sleep_item,
+            agent_fork_item,
+            reopen_last,
+        ]);
     }
     if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
         *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = server_items;
@@ -1211,6 +1222,20 @@ fn agent_sleep(
     rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
 }
 
+/// Fork agent tab `record_id` into a new tab below it; refused while it hasn't reported a
+/// resume command warden can fork. The original is untouched.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_fork(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Fork(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
 /// Wake asleep agent tab `record_id`.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -1708,10 +1733,14 @@ fn main() {
                 return;
             }
 
-            // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
-            // chrome gets the active tab's id. ⌘T and ⌥⌘S are disabled elsewhere (`sync_agent_menu`);
+            // ⌘T / ⌥⌘S / ⌥⌘F / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
+            // chrome gets the active tab's id. ⌘T, ⌥⌘S and ⌥⌘F are disabled elsewhere (`sync_agent_menu`);
             // ⌘⇧T falls through to reopening a window.
-            if id == MENU_AGENT_NEW || id == MENU_AGENT_SLEEP || id == MENU_WINDOW_REOPEN_LAST {
+            if id == MENU_AGENT_NEW
+                || id == MENU_AGENT_SLEEP
+                || id == MENU_AGENT_FORK
+                || id == MENU_WINDOW_REOPEN_LAST
+            {
                 // ⌘⇧T reaches the list only when it has a closed agent tab; otherwise it reopens
                 // a window, as everywhere else.
                 let target = focused_agent_tab(app)
@@ -1880,6 +1909,7 @@ fn main() {
             agent_new,
             agent_select,
             agent_sleep,
+            agent_fork,
             agent_wake,
             agent_close,
             agent_reopen,
