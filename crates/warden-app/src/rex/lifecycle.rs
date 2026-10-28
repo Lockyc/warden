@@ -1025,6 +1025,8 @@ fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<Agent
             Some((l.clone(), m.init_dto(l)?))
         })
         .collect();
+    // The op may have changed which agent tab is selected, and the strip shows its summary.
+    crate::strip::emit(app, &m.last_good, tab_id);
     drop(m);
     for (l, dto) in dtos {
         let _ = app.emit_to(l.as_str(), "warden:refresh", dto);
@@ -1277,6 +1279,10 @@ pub fn watch_reports(app: AppHandle) {
                 };
                 if let Some(project) = project {
                     emit_agents(&app, &project);
+                    // A new conversation cleared the record's summary.
+                    let st = app.state::<ManagerState>();
+                    let m = st.lock();
+                    crate::strip::emit(&app, &m.last_good, &project);
                 }
             }
         });

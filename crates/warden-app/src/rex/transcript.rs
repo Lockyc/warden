@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 /// The `~/.claude*` directories directly under `$HOME`, canonical. Several can exist (one per
 /// account profile), and the transcript of a given id lives in whichever ran it.
-#[allow(dead_code, reason = "consumed by the summary task")]
 pub fn claude_profiles() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -16,7 +15,6 @@ pub fn claude_profiles() -> Vec<PathBuf> {
     profiles_in(&home)
 }
 
-#[allow(dead_code, reason = "consumed by the summary task")]
 fn profiles_in(home: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(home) else {
         return Vec::new();
@@ -35,7 +33,6 @@ fn profiles_in(home: &Path) -> Vec<PathBuf> {
 /// The first `<profile>/projects/*/<id>.jsonl` that exists, canonical. A hit whose real path
 /// leaves the profile it was found in (a symlink out) is skipped, so the id can only ever name a
 /// file inside a profile. `id` is trusted to be a `resume_id` (alphanumerics and `-`).
-#[allow(dead_code, reason = "consumed by the summary task")]
 pub fn locate(id: &str, profiles: &[PathBuf]) -> Option<PathBuf> {
     let file = format!("{id}.jsonl");
     for profile in profiles {

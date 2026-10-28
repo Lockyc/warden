@@ -31,6 +31,7 @@ pub mod server;
 pub mod size;
 pub mod spawn;
 pub mod store;
+pub mod summary;
 #[cfg(test)]
 mod tests;
 pub mod transcript;
