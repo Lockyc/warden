@@ -31,3 +31,6 @@ examples/projects/**/.git/
 # Generated updater manifest (scripts/gen-latest-json.sh, for a release upload)
 /latest.json
 .DS_Store
+
+# Staged by scripts/stage-relay.sh; bundled into Contents/MacOS by tauri.conf.json
+/crates/warden-app/binaries/

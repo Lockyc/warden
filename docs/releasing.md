@@ -17,6 +17,8 @@ install-app}.sh`) are generated from shell-core and git-ignored — edit them th
 `just build` produces the release `warden.app` (needs `cargo install tauri-cli --version ^2`);
 `just install` installs it to `/Applications` via `install.sh` and relaunches.
 
+**The bundle carries a second executable, `Contents/MacOS/warden-relay`** (the Rex relay; warden-app finds it as its sibling). `scripts/stage-relay.sh` builds it into the git-ignored `crates/warden-app/binaries/` and `bundle.macOS.files` copies it in. It is not an `externalBin`, which tauri-build validates at compile time and would break a plain `cargo build` on a clean tree. `just build`/`install.sh` stage host-arch, `just release` stages universal to match the release bundle, and with `APPLE_SIGNING_IDENTITY` set the script signs the relay with hardened runtime itself, since tauri seals the copied file without re-signing it and notarization rejects an unsigned nested executable.
+
 **Signing is env-driven, not pinned in `tauri.conf.json`.** With `APPLE_SIGNING_IDENTITY` (a
 Developer ID Application cert) plus `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID` (or
 `APPLE_API_KEY`/`APPLE_API_ISSUER`/`APPLE_API_KEY_PATH`) in the environment, `cargo tauri build`

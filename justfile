@@ -159,6 +159,7 @@ revendor-ghostty tag="latest":
 # Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)
 [group("dist")]
 build:
+    bash scripts/stage-relay.sh
     cd crates/warden-app && cargo tauri build
 
 # Run on dev with the crates/warden-app/Cargo.toml version bump committed and pushed (see
@@ -168,6 +169,7 @@ build:
 # Release: gate → notarized build → tag v<version> → fast-forward main → push → GitHub release
 [group("dist")]
 release notes="": gate
+    bash scripts/stage-relay.sh universal
     bash scripts/release.sh "{{notes}}"
 
 # Delegates build+install to install.sh (seeds ~/.config/warden/config.toml only if absent);

@@ -66,6 +66,8 @@ fi
 # 4. Build the release bundle from crates/warden-app.
 cd "$SRC"
 echo "→ building release bundle (this takes a few minutes)"
+bash scripts/stage-relay.sh
+bash scripts/stage-relay.sh
 ( cd crates/warden-app && cargo tauri build )
 
 # 5. Install the built app into /Applications.
