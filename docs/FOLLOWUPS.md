@@ -66,7 +66,6 @@ The client is in `docs/rex.md`; these are its known edges and the projects after
 - **DNS lookup sits outside the open budget.** rex-client bounds every connect step by the caller's deadline except `to_socket_addrs`, so a host label whose lookup hangs can overrun `OPEN_BUDGET`. Fix: resolve on a helper thread with a timeout. Deferred: a dead host, which the budget does cover, is the common failure.
 - **Two windows on one session.** Two windows holding the same tab key — or both opening the same unclaimed row — share one pane key, so two relays mirror one block: their size claims ping-pong, and ☠ in one ends the other's session. Fix: scope the pane key by window, or refuse a second open. Deferred until a project is wanted in two windows at once.
 - **Open feedback is thin.** No "connecting…" state while an open is in flight; a failed open shows ⚠ with no reason on hover (chrome-core renders `warn` as the icon only); a relay that exits 75 (server unreachable at start) leaves the tab cold with no reason, because the child-exit signal carries no exit code; ⌘D on an unclaimed row splits and then collapses with a banner, instead of being disabled with the reason. Unlock: a reason tooltip and a connecting state in chrome-core, and the exit code on `SHOW_CHILD_EXITED`'s path.
-- **`server` isn't normalised.** `"Local"` or `" local "` is read as a remote host label (`resolve.rs::LOCAL_SERVER` and `rex::server::LOCAL` compare exactly) and fails as "Rex server not found". Fix: trim and case-fold the local keyword in `resolve.rs`.
 
 ## Lower-priority / edge cases
 

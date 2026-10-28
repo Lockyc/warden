@@ -37,6 +37,18 @@ pub const LOCAL_SERVER: &str = "local";
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
 /// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
+/// The cascaded `server`, in its one canonical form: trimmed, and the local keyword in any case
+/// as [`LOCAL_SERVER`], so everything downstream compares against that exact value. A host label
+/// keeps its case (Rex matches labels ignoring case).
+fn cascade_server(tab: Option<&str>, window: Option<&str>, global: Option<&str>) -> Option<String> {
+    let s = cascade(tab, window, global)?.trim();
+    Some(if s.eq_ignore_ascii_case(LOCAL_SERVER) {
+        LOCAL_SERVER.to_owned()
+    } else {
+        s.to_owned()
+    })
+}
+
 fn cascade<'a>(
     tab: Option<&'a str>,
     window: Option<&'a str>,
@@ -406,8 +418,7 @@ fn resolve_tab(
         });
     }
     // A remote tab's `dir` is a path on the server: no tilde expansion, no existence check.
-    let server =
-        cascade(rt.server.as_deref(), rp.server.as_deref(), globals.server).map(String::from);
+    let server = cascade_server(rt.server.as_deref(), rp.server.as_deref(), globals.server);
     let remote = server.as_deref().is_some_and(|s| s != LOCAL_SERVER);
     let dir = if remote {
         PathBuf::from(dir_str)
@@ -564,8 +575,7 @@ fn resolve_root(
     // maps its error onto ResolveError with this window's context.
     let root_dir = config_core::resolve_root_dir(rr.name.as_deref(), &rr.dir, rr.depth)
         .map_err(|e| map_root_error(e, &rp.title))?;
-    let server =
-        cascade(rr.server.as_deref(), rp.server.as_deref(), globals.server).map(String::from);
+    let server = cascade_server(rr.server.as_deref(), rp.server.as_deref(), globals.server);
     if server.as_deref().is_some_and(|s| s != LOCAL_SERVER) {
         warnings.push(Warning {
             window: rp.title.clone(),
@@ -2306,6 +2316,43 @@ server = "local"
         )
         .unwrap();
         assert_eq!(cfg.windows[0].tabs[0].server, None);
+    }
+
+    #[test]
+    fn server_is_trimmed_and_local_is_case_insensitive() {
+        let (cfg, warnings) = resolve_str(
+            r#"
+[[window]]
+title = "a"
+  [[window.tab]]
+  title = "t"
+  dir = "~/warden-no-such-dir-xyz"
+  server = " Local "
+  [[window.tab]]
+  title = "u"
+  dir = "/x"
+  server = " remote-host "
+  [[window.root]]
+  name = "projects"
+  dir = "/srv/warden-no-such-root-xyz"
+  server = "LOCAL"
+"#,
+        )
+        .unwrap();
+        let tabs = &cfg.windows[0].tabs;
+        assert_eq!(tabs[0].server.as_deref(), Some(LOCAL_SERVER));
+        assert_ne!(
+            tabs[0].dir,
+            PathBuf::from("~/warden-no-such-dir-xyz"),
+            "a local tab's dir still expands"
+        );
+        assert_eq!(tabs[1].server.as_deref(), Some("remote-host"));
+        assert_eq!(cfg.windows[0].roots.len(), 1, "a LOCAL root is discovered");
+        assert_eq!(
+            cfg.windows[0].roots[0].server.as_deref(),
+            Some(LOCAL_SERVER)
+        );
+        assert!(!warnings.iter().any(|w| w.message.contains("remote roots")));
     }
 
     #[test]

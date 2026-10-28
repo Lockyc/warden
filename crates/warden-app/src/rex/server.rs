@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use rex_client::{ControlClient, Endpoint, RexError};
 use serde_json::{json, Value};
 
-/// The config `server` value naming this Mac's Rex server.
-pub const LOCAL: &str = "local";
+/// The config `server` value naming this Mac's Rex server, as resolution canonicalises it.
+pub const LOCAL: &str = warden_config::resolve::LOCAL_SERVER;
 
 /// Rex.app's bundle identifier, which Launch Services finds wherever the app is installed.
 const REX_BUNDLE_ID: &str = "com.superlogical.rex";
