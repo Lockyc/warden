@@ -388,7 +388,14 @@ fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
 /// Tab `tab_id`'s second pane's id (see [`secondary_spec`]), for a reader holding only the tab's
 /// key, such as the unclaimed-session list counting a tab's Rex panes.
 pub(crate) fn secondary_id(tab_id: &str) -> String {
-    format!("{tab_id}::2")
+    format!("{tab_id}::{SECONDARY_SUFFIX}")
+}
+
+const SECONDARY_SUFFIX: &str = "2";
+
+/// The tab whose second pane `id` is ([`secondary_id`]), or `None` for any other id.
+pub(crate) fn tab_of_secondary(id: &str) -> Option<&str> {
+    id.strip_suffix(SECONDARY_SUFFIX)?.strip_suffix("::")
 }
 
 /// The Rex pane key of pane `which` of the tab whose primary runs `primary` — that pane's spec

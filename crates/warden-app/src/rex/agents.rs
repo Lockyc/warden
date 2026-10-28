@@ -236,6 +236,14 @@ impl AgentStore {
             .map(|r| r.project.clone())
     }
 
+    /// The project record `id` belongs to.
+    pub fn project_of_record(&self, id: &str) -> Option<String> {
+        self.records
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.project.clone())
+    }
+
     /// `project`'s records in position order.
     pub fn records(&self, project: &str) -> Vec<AgentRecord> {
         let mut v: Vec<AgentRecord> = self

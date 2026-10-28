@@ -209,7 +209,8 @@ pub fn hub_changed(app: &AppHandle, server: Option<&str>) {
 /// change the hub reports to a server's session list, and every return of its connection,
 /// refreshes both ([`hub_changed`]); a drop repaints the dots alone, since the sessions it last
 /// listed still exist. It never waits on `Reconnected` alone — a caller can restore a connection
-/// first, and then none is sent — which is why each open, ☠ and exit also refreshes.
+/// first, and then none is sent — which is why each open, ☠ and exit also refreshes. Each of the
+/// three also re-syncs Tab ▸ Sleep Server, which follows the connections.
 pub fn watch_presence(app: AppHandle) {
     let Some(hub) = app.try_state::<RexHub>().map(|h| h.inner().clone()) else {
         return;
@@ -226,8 +227,10 @@ pub fn watch_presence(app: AppHandle) {
                     HubEvent::Disconnected { server } => refresh_presence(&app, Some(&server)),
                     HubEvent::OwnerChanged { .. }
                     | HubEvent::WindowsChanged { .. }
-                    | HubEvent::StatusChanged { .. } => {}
+                    | HubEvent::StatusChanged { .. } => continue,
                 }
+                let main = app.clone();
+                let _ = app.run_on_main_thread(move || crate::sync_server_menu(&main));
             }
         });
     if let Err(e) = spawned {

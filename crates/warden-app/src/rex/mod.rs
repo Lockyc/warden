@@ -18,7 +18,7 @@
 //! opens of a pane never make two sessions. Each connection has one watcher thread that applies its events to the state; when the
 //! connection ends, that thread removes it, reports `Disconnected`, and reconnects with the
 //! reconnect token (backing off), rereading the session list and attaching the claimed sessions
-//! again. A reconnect attempt holds nothing a caller waits on: callers connect alongside it, and
+//! again — unless warden stopped that server ([`RexHub::sleep_server`]). A reconnect attempt holds nothing a caller waits on: callers connect alongside it, and
 //! whichever connection is installed first wins. Watchers hold the hub weakly: dropping the last
 //! `RexHub` closes every connection and ends them.
 
@@ -177,6 +177,9 @@ struct State {
     /// Main panes opened as agent panes with a session, whose windows are followed as agent tabs
     /// ([`RexHub::agent_panes`]).
     agent_panes: HashSet<String>,
+    /// Servers warden is stopping or has stopped ([`RexHub::sleep_server`]): a connection to one
+    /// that ends isn't reopened, until a caller connects again.
+    stopping: HashSet<String>,
     next_gen: u64,
 }
 
@@ -929,6 +932,7 @@ impl Inner {
                 return Ok((c.client.clone(), false));
             }
             st.heard.remove(server);
+            st.stopping.remove(server);
             st.next_gen += 1;
             let gen = st.next_gen;
             st.conns.insert(
@@ -1106,6 +1110,36 @@ impl Inner {
         }
     }
 
+    /// `server` stopped at warden's word: drop its connection and everything it reported, and
+    /// list it as heard with no sessions, so its tabs read as gone and no unclaimed rows remain.
+    /// It stays `stopping` — not reconnected — until a caller connects again.
+    fn forget_server(&self, server: &str) {
+        {
+            let mut st = self.lock();
+            st.conns.remove(server);
+            st.heard.insert(server.to_owned(), Vec::new());
+            st.attached.remove(server);
+            st.windows.retain(|(s, _), _| s != server);
+            let gone: Vec<String> = st
+                .agent_panes
+                .iter()
+                .filter(|p| st.record(p).is_some_and(|r| r.server == server))
+                .cloned()
+                .collect();
+            for p in gone {
+                st.agent_panes.remove(&p);
+            }
+        }
+        self.emit([
+            HubEvent::Disconnected {
+                server: server.to_owned(),
+            },
+            HubEvent::SessionsChanged {
+                server: server.to_owned(),
+            },
+        ]);
+    }
+
     /// Reopen `server`'s connection after a drop, resuming its client when `token` is still
     /// good. `Ok(false)` when a caller connected it first. Holds nothing a caller waits on: the
     /// attempt runs alongside any caller's, and `install` keeps whichever lands first.
@@ -1146,15 +1180,18 @@ fn watch(
         let Some(inner) = hub.upgrade() else {
             return;
         };
-        let removed = {
+        let (removed, stopping) = {
             let mut st = inner.lock();
             let ours = st.conns.get(&server).is_some_and(|c| c.gen == gen);
+            let stopping = st.stopping.contains(&server);
             if ours {
                 if let Some(c) = st.conns.remove(&server) {
-                    st.heard.insert(server.clone(), c.live);
+                    if !stopping {
+                        st.heard.insert(server.clone(), c.live);
+                    }
                 }
             }
-            ours
+            (ours, stopping)
         };
         if !removed {
             return;
@@ -1162,6 +1199,9 @@ fn watch(
         inner.emit([HubEvent::Disconnected {
             server: server.clone(),
         }]);
+        if stopping {
+            return;
+        }
     }
     let mut delay = Duration::ZERO;
     loop {
@@ -1169,6 +1209,9 @@ fn watch(
         let Some(inner) = hub.upgrade() else {
             return;
         };
+        if inner.lock().stopping.contains(&server) {
+            return;
+        }
         match inner.reconnect(&server, &endpoint, token.as_deref()) {
             Ok(true) => {
                 inner.emit([

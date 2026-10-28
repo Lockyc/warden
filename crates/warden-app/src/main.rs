@@ -69,6 +69,59 @@ const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 #[derive(Default)]
 struct AgentMenu(std::sync::Mutex<Option<[tauri::menu::MenuItem<tauri::Wry>; 3]>>);
 
+/// Tab ▸ Sleep Server ▸ `<server>` — one item per Rex server; the id is this prefix plus the
+/// server.
+const MENU_SLEEP_SERVER: &str = "warden:sleep-server:";
+
+/// The Sleep Server items by server, kept from the last menu build so their enabled state and
+/// reason follow the hub's connections without a rebuild ([`sync_server_menu`]).
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct ServerMenu(std::sync::Mutex<Vec<(String, tauri::menu::MenuItem<tauri::Wry>)>>);
+
+/// Every Rex server warden knows: named by a tab in an open window, the store, or the hub — sorted.
+#[cfg(target_os = "macos")]
+fn rex_servers(app: &tauri::AppHandle) -> Vec<String> {
+    use tauri::Manager;
+    let mut servers: Vec<String> = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.windows
+            .values()
+            .flat_map(|ws| ws.registry.rex_tabs().into_iter().map(|(_, s)| s))
+            .collect()
+    };
+    if let Some(hub) = app.try_state::<rex::RexHub>() {
+        servers.extend(hub.servers());
+        servers.extend(hub.store_servers());
+    }
+    servers.sort();
+    servers.dedup();
+    servers
+}
+
+/// Enable each Sleep Server item while its server can sleep, else disable it with the reason
+/// beside its name ([`rex::RexHub::stoppable`]). Main thread: off it `set_enabled` waits on it.
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_server_menu(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let (Some(menu), Some(hub)) = (
+        app.try_state::<ServerMenu>(),
+        app.try_state::<rex::RexHub>(),
+    ) else {
+        return;
+    };
+    let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for (server, item) in items {
+        let why = hub.stoppable(&server).err();
+        let _ = item.set_enabled(why.is_none());
+        let _ = item.set_text(match why {
+            None => format!("{server}…"),
+            Some(why) => format!("{server} — {why}"),
+        });
+    }
+}
+
 /// What the focused window's active tab offers the agent menu items: `(label, tab, sleep,
 /// reopen)` when it holds agent tabs — its selected agent tab can sleep, it has a closed one to
 /// reopen — else `None`.
@@ -172,6 +225,7 @@ fn build_app_menu(
     app: &tauri::AppHandle,
     mode: warden_config::TabDigitKeys,
     entries: Vec<crate::plan::WindowMenuEntry>,
+    servers: Vec<String>,
 ) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
@@ -233,8 +287,29 @@ fn build_app_menu(
         .item(&terminate_item)
         .separator()
         .item(&agent_new_item)
-        .item(&agent_sleep_item)
-        .separator();
+        .item(&agent_sleep_item);
+    // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
+    // disabled line says so.
+    let server_items = servers
+        .into_iter()
+        .map(|s| {
+            let item = MenuItemBuilder::with_id(format!("{MENU_SLEEP_SERVER}{s}"), s.as_str())
+                .enabled(false)
+                .build(app)?;
+            Ok((s, item))
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let mut server_menu = SubmenuBuilder::new(app, "Sleep Server");
+    for (_, item) in &server_items {
+        server_menu = server_menu.item(item);
+    }
+    if server_items.is_empty() {
+        let none = MenuItemBuilder::new("No Rex servers")
+            .enabled(false)
+            .build(app)?;
+        server_menu = server_menu.item(&none);
+    }
+    tab_menu = tab_menu.item(&server_menu.build()?).separator();
     for it in &nav.jumps {
         tab_menu = tab_menu.item(it);
     }
@@ -266,6 +341,9 @@ fn build_app_menu(
         *keep.0.lock().unwrap_or_else(|e| e.into_inner()) =
             Some([agent_new_item, agent_sleep_item, reopen_last]);
     }
+    if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
+        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = server_items;
+    }
     Ok(())
 }
 
@@ -281,8 +359,9 @@ fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         let m = st.lock();
         (m.last_good.tab_digit_keys, m.window_menu_entries())
     };
-    build_app_menu(app, mode, entries)?;
+    build_app_menu(app, mode, entries, rex_servers(app))?;
     sync_agent_menu(app);
+    sync_server_menu(app);
     Ok(())
 }
 
@@ -1222,6 +1301,19 @@ fn agent_clear_closed(
     })
 }
 
+/// Sleep Rex server `server`, the user having confirmed losing `accepted` (by name). A loss not
+/// among them asks again; Tab ▸ Sleep Server starts here with none.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn server_sleep(
+    window: tauri::WebviewWindow,
+    server: String,
+    accepted: Vec<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::sleep_server(window.app_handle(), window.label(), &server, &accepted)
+}
+
 /// Re-scan every project-tree root of the focused window's config and reconcile:
 /// projects that appeared/vanished on disk surface as tab add/remove, without a
 /// config-file edit. Diffs the freshly-expanded config against what's on screen
@@ -1662,6 +1754,17 @@ fn main() {
                 return;
             };
             let label = win.label().to_string();
+            // Sleep Server ▸ <server>: the focused window confirms any loss.
+            if let Some(server) = id.strip_prefix(MENU_SLEEP_SERVER) {
+                if let Err(message) = rex::lifecycle::sleep_server(app, &label, server, &[]) {
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        "warden:error",
+                        serde_json::json!({ "label": label, "message": message }),
+                    );
+                }
+                return;
+            }
             // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases) — shell-core routes the
             // id, so this handler is mode-blind: the aliases arrive as plain Next/Prev.
             if let Some(action) = shell_core::menu::tab_nav_action(id) {
@@ -1767,7 +1870,8 @@ fn main() {
             agent_rename,
             agent_group,
             agent_fold,
-            agent_clear_closed
+            agent_clear_closed,
+            server_sleep
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -1831,6 +1935,7 @@ fn main() {
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
                 app.manage(AgentMenu::default());
+                app.manage(ServerMenu::default());
 
                 // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
                 // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;
