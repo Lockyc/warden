@@ -1,0 +1,13 @@
+{"type":"user","message":{"content":"lets refactor the auth module for soft deletes"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"sounds good, starting on the model layer"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/repo/auth.py"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"applied"}]}}
+{"type":"user","message":{"content":"```\ndef foo():\n  pass\n```"}}
+{"type":"user","message":{"content":"❯ ls -la /repo"}}
+{"type":"user","message":{"content":"$ git status"}}
+{"type":"user","message":{"content":"hash 01HZQ4XJ5N8K3MFGRTVBPCY7ASAAAAAA appears in log"}}
+{"type":"user","message":{"content":"ok"}}
+{"type":"user","message":{"content":"x=1; y=2; z=3; q=4; m=5"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"old","name":"TodoWrite","input":{"todos":[{"content":"Stale early plan","status":"in_progress","activeForm":"Doing stale early plan"}]}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"new","name":"TodoWrite","input":{"todos":[{"content":"Build site config","status":"completed","activeForm":"Building site config"},{"content":"Implement layout","status":"in_progress","activeForm":"Implementing layout"},{"content":"Add pricing page","status":"pending","activeForm":"Adding pricing page"}]}}]}}
+{"type":"user","message":{"content":"now wire up the migration script"}}
