@@ -28,9 +28,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the welcome may take after the hello.
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(10);
 /// The server's own ping schedule, mirrored so a vanished server is noticed from this side too.
-const PING_INTERVAL: Duration = Duration::from_secs(120);
-/// Three unanswered pings plus the server's 60 s grace: silence this long means the server is gone.
-const DEAD_AFTER: Duration = Duration::from_secs(3 * 120 + 60);
+const PING_INTERVAL: Duration = crate::SERVER_PING_INTERVAL;
+/// Three unanswered pings plus the server's grace: silence this long means the server is gone.
+const DEAD_AFTER: Duration =
+    Duration::from_secs(3 * PING_INTERVAL.as_secs() + crate::SERVER_PING_WAIT.as_secs());
 /// How long a close handshake this side started may take before the socket is dropped.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
 /// The smallest `max_message_bytes` any server allows, used if a welcome omits it.
