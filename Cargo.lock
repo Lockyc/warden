@@ -3479,7 +3479,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.3.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=01989b90ea8380c980c939c9e333f28229611bde#01989b90ea8380c980c939c9e333f28229611bde"
+source = "git+https://github.com/Lockyc/shell-core?rev=d8f3329739b012dc0cce8384cc08e6d80fb1bcf4#d8f3329739b012dc0cce8384cc08e6d80fb1bcf4"
 dependencies = [
  "block2 0.6.2",
  "notify",
