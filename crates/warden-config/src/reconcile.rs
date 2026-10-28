@@ -931,7 +931,7 @@ colour = "#0f8a8a"
 "##
             ))
         };
-        let r = reconcile(&mk("local"), &mk("nucleus"));
+        let r = reconcile(&mk("local"), &mk("remote-host"));
         assert_eq!(r.update.len(), 1);
         assert_eq!(r.update[0].respawn_tabs.len(), 1);
         assert!(reconcile(&mk("local"), &mk("local")).update.is_empty());
