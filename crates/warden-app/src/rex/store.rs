@@ -52,6 +52,15 @@ impl RexStore {
         servers
     }
 
+    /// Every pane mapped to a session on `server`, as `(pane key, session id)`.
+    pub fn panes_on(&self, server: &str) -> Vec<(String, String)> {
+        self.records
+            .iter()
+            .filter(|(_, r)| r.server == server)
+            .map(|(k, r)| (k.clone(), r.session_id.clone()))
+            .collect()
+    }
+
     /// Set `pane_key`'s record (`None` forgets it) and persist, writing only on a change.
     pub fn set(&mut self, pane_key: &str, record: Option<PaneRecord>) {
         let changed = match record {
