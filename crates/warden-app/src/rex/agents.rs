@@ -62,13 +62,14 @@ pub fn new_id() -> String {
 const RESUME_SHAPES: &[&[&str]] = &[&["claude", "--resume"], &["codex", "resume"]];
 
 /// Whether a reported resume command is safe to store: exactly a row of `RESUME_SHAPES`, then
-/// one non-empty id of `[A-Za-z0-9-]`, joined by single spaces, nothing else.
+/// one id of `[A-Za-z0-9][A-Za-z0-9-]*` (never a leading `-`, which the CLI would read as a
+/// flag), joined by single spaces, nothing else.
 fn resume_is_safe(s: &str) -> bool {
     let words: Vec<&str> = s.split(' ').collect();
     let Some((id, fixed)) = words.split_last() else {
         return false;
     };
-    !id.is_empty()
+    id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         && RESUME_SHAPES.contains(&fixed)
 }
@@ -374,6 +375,10 @@ mod tests {
             "codex -c k=v resume x",
             "claude --resume x/y",
             "codex --resume x",
+            "claude --resume --dangerously-skip-permissions",
+            "claude --resume -p",
+            "codex resume --dangerously-bypass-approvals-and-sandbox",
+            "codex resume --yolo",
         ] {
             assert!(!s.report_resume("b-w1", bad), "{bad:?}");
         }
