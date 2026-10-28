@@ -30,7 +30,7 @@ cursor around an unfocused window.
 repo and in [`PROVENANCE.md`](../crates/warden-app/vendor/PROVENANCE.md)), pulled
 in by **`just revendor-ghostty`** (downloads the latest release, verifies its sha256, swaps
 `vendor/`). The universal `libghostty.a` is committed, debug-stripped. The same release carries
-`vendor/resources/`, which warden ships (terminfo, below). To move versions: bump `GHOSTTY_REF`
+`vendor/resources/`, which warden ships (terminfo, below). It also carries `libghostty-vt-macos.zip`, vendored to `crates/warden-relay/vendor/libghostty-vt/` (static library + headers for `warden-relay`). To move versions: bump `GHOSTTY_REF`
 in libghostty-build → its CI republishes → `just revendor-ghostty` → update
 [`vendor/PROVENANCE.md`](../crates/warden-app/vendor/PROVENANCE.md).
 
