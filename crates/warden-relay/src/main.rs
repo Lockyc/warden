@@ -8,16 +8,18 @@ mod term;
 mod vt;
 
 use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rex_client::wire::{strip_terminal_replies, RexMessage, StreamDemux};
+use rex_client::wire::{strip_terminal_replies, RexMessage, StreamDemux, WardenMessage};
 use rex_client::{ClientInfo, ControlClient, DataStream, Endpoint, RexError, DATA_PROTOCOL};
 use serde_json::json;
 
 const USAGE: &str =
-    "usage: warden-relay --endpoint <unix:PATH|https://HOST:PORT> --session <id> --block <id>";
+    "usage: warden-relay --endpoint <unix:PATH|https://HOST:PORT> --session <id> --block <id> [--report <socket>]";
 /// Bad command line (sysexits `EX_USAGE`).
 const EX_USAGE: i32 = 64;
 /// The server couldn't be reached at start (sysexits `EX_TEMPFAIL`).
@@ -38,10 +40,15 @@ const BLOCK_CLOSED: u16 = 4000;
 /// A data connection's close status for "start a new stream with a new ticket".
 const RECONNECT_REQUIRED: u16 = 1013;
 
+/// The longest a report may block the stream.
+const REPORT_TIMEOUT: Duration = Duration::from_millis(500);
+
 struct Args {
     endpoint: Endpoint,
     session: String,
     block: String,
+    /// The Unix socket warden-app listens on for what the block's program reports.
+    report: Option<PathBuf>,
 }
 
 fn main() {
@@ -59,12 +66,13 @@ fn main() {
 }
 
 fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
-    let (mut endpoint, mut session, mut block) = (None, None, None);
+    let (mut endpoint, mut session, mut block, mut report) = (None, None, None, None);
     while let Some(flag) = it.next() {
         let slot = match flag.as_str() {
             "--endpoint" => &mut endpoint,
             "--session" => &mut session,
             "--block" => &mut block,
+            "--report" => &mut report,
             _ => return Err(format!("unexpected argument {flag:?}")),
         };
         *slot = Some(it.next().ok_or(format!("{flag} needs a value"))?);
@@ -76,6 +84,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             .map_err(|e| format!("bad --endpoint {endpoint:?}: {e}"))?,
         session: session.ok_or("--session is required")?,
         block: block.ok_or("--block is required")?,
+        report: report.map(PathBuf::from),
     })
 }
 
@@ -204,6 +213,7 @@ fn relay_stream(
     out: &mut impl Write,
 ) -> Result<std::convert::Infallible, Stop> {
     let mut backoff = Backoff::default();
+    let mut reporter = Reporter::new(args);
     let mut restart = false;
     loop {
         let mut stream = match open_stream(args, link) {
@@ -226,7 +236,7 @@ fn relay_stream(
             let code = loop {
                 match stream.read() {
                     Ok(Some(chunk)) => {
-                        if feed.push(&chunk, out)? {
+                        if feed.push(&chunk, out, &mut reporter)? {
                             return Err(Stop(0));
                         }
                     }
@@ -299,7 +309,12 @@ impl Feed {
     }
 
     /// Writes what `chunk` completes; true once the block's program has exited.
-    fn push(&mut self, chunk: &[u8], out: &mut impl Write) -> Result<bool, Stop> {
+    fn push(
+        &mut self,
+        chunk: &[u8],
+        out: &mut impl Write,
+        reporter: &mut Reporter,
+    ) -> Result<bool, Stop> {
         let rest = match self.snapshot.as_mut() {
             None => chunk.to_vec(),
             Some(buf) => {
@@ -323,12 +338,60 @@ impl Feed {
                 }
             }
         };
-        let (bytes, msgs) = self.demux.push(&rest);
+        let (bytes, msgs, reports) = self.demux.push(&rest);
         out.write_all(&bytes)?;
         out.flush()?;
+        for WardenMessage::Resume(command) in reports {
+            reporter.resume(&command);
+        }
         Ok(msgs
             .iter()
             .any(|m| matches!(m, RexMessage::ChildExited { .. })))
+    }
+}
+
+/// Forwards what the block's program reports to warden-app, one JSON line each. It connects on
+/// the first report and again after a failure; a report that can't be delivered is dropped, since
+/// streaming matters more than any one report.
+struct Reporter {
+    path: Option<PathBuf>,
+    session: String,
+    block: String,
+    conn: Option<UnixStream>,
+}
+
+impl Reporter {
+    fn new(args: &Args) -> Reporter {
+        Reporter {
+            path: args.report.clone(),
+            session: args.session.clone(),
+            block: args.block.clone(),
+            conn: None,
+        }
+    }
+
+    fn resume(&mut self, command: &str) {
+        let mut line =
+            json!({"session": self.session, "block": self.block, "resume": command}).to_string();
+        line.push('\n');
+        // A held connection may have gone stale (warden-app restarted): one fresh attempt.
+        for _ in 0..2 {
+            let Some(conn) = self.conn() else { return };
+            if conn.write_all(line.as_bytes()).is_ok() {
+                return;
+            }
+            self.conn = None;
+        }
+    }
+
+    fn conn(&mut self) -> Option<&mut UnixStream> {
+        if self.conn.is_none() {
+            let stream = UnixStream::connect(self.path.as_ref()?).ok()?;
+            // A listener that stops reading must not stall the pane's output.
+            stream.set_write_timeout(Some(REPORT_TIMEOUT)).ok()?;
+            self.conn = Some(stream);
+        }
+        self.conn.as_mut()
     }
 }
 

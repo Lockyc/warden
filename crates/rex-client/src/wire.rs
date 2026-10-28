@@ -127,8 +127,32 @@ impl RexMessage {
     }
 }
 
-/// Splits a terminal stream into program bytes and Rex messages. Rex's APCs carry the channel
-/// nonce; one with another nonce was printed by a program and passes through as program bytes.
+/// A warden message carried in the terminal stream (`ESC _ warden1;<key>=<value> ESC \`), written
+/// by a program's hook rather than by Rex.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WardenMessage {
+    /// `resume=<base64>`: the command that resumes the program, decoded.
+    Resume(String),
+}
+
+impl WardenMessage {
+    /// `None` for anything but a `resume` whose value is base64 of non-empty UTF-8.
+    fn parse(body: &[u8]) -> Option<WardenMessage> {
+        let value = body.strip_prefix(b"resume=")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .ok()?;
+        let command = String::from_utf8(bytes).ok()?;
+        (!command.is_empty()).then_some(WardenMessage::Resume(command))
+    }
+}
+
+/// Opens a [`WardenMessage`] APC.
+const WARDEN_MARKER: &[u8] = b"\x1b_warden1;";
+
+/// Splits a terminal stream into program bytes, Rex messages and warden messages. Rex's APCs
+/// carry the channel nonce; one with another nonce was printed by a program and passes through as
+/// program bytes. A `warden1` APC is always consumed, and dropped when it isn't a valid message.
 /// An APC (or a possible start of one) cut off at the end of a chunk is held for the next push.
 pub struct StreamDemux {
     marker: Vec<u8>,
@@ -143,12 +167,13 @@ impl StreamDemux {
         }
     }
 
-    pub fn push(&mut self, chunk: &[u8]) -> (Vec<u8>, Vec<RexMessage>) {
+    pub fn push(&mut self, chunk: &[u8]) -> (Vec<u8>, Vec<RexMessage>, Vec<WardenMessage>) {
         self.held.extend_from_slice(chunk);
         let buf = &self.held;
         let marker = &self.marker;
         let mut out = Vec::with_capacity(buf.len());
         let mut msgs = Vec::new();
+        let mut warden = Vec::new();
         let mut i = 0;
         while i < buf.len() {
             if buf[i..].starts_with(marker) {
@@ -162,7 +187,21 @@ impl StreamDemux {
                     }
                     None => break, // APC split across chunks: wait for its terminator.
                 }
-            } else if buf[i] == 0x1b && marker.starts_with(&buf[i..]) {
+            } else if buf[i..].starts_with(WARDEN_MARKER) {
+                match find(&buf[i..], b"\x1b\\") {
+                    Some(end) => {
+                        if let Some(m) =
+                            WardenMessage::parse(&buf[i + WARDEN_MARKER.len()..i + end])
+                        {
+                            warden.push(m);
+                        }
+                        i += end + 2;
+                    }
+                    None => break,
+                }
+            } else if buf[i] == 0x1b
+                && (marker.starts_with(&buf[i..]) || WARDEN_MARKER.starts_with(&buf[i..]))
+            {
                 break; // a possible marker prefix at the end of the buffer
             } else {
                 out.push(buf[i]);
@@ -170,7 +209,7 @@ impl StreamDemux {
             }
         }
         self.held.drain(..i);
-        (out, msgs)
+        (out, msgs, warden)
     }
 }
 
@@ -275,7 +314,7 @@ mod tests {
     #[test]
     fn demux_strips_matching_apc_and_keeps_program_bytes() {
         let mut d = StreamDemux::new(7);
-        let (bytes, msgs) = d.push(
+        let (bytes, msgs, _) = d.push(
             b"one\x1b_rex1;7;{\"type\":\"child_exited\",\"exit_code\":3}\x1b\\two\x1b_rex1;7;{\"type\":\"theme\",\"background\":\"000000\"}\x1b\\three\x1b_rex1;7;{\"type\":\"novel\"}\x1b\\",
         );
         assert_eq!(bytes, b"onetwothree");
@@ -293,7 +332,7 @@ mod tests {
     fn demux_passes_through_apc_with_wrong_nonce() {
         let mut d = StreamDemux::new(7);
         let input = b"a\x1b_rex1;99;{\"type\":\"resize\",\"cols\":1,\"rows\":1}\x1b\\b";
-        let (bytes, msgs) = d.push(input);
+        let (bytes, msgs, _) = d.push(input);
         assert_eq!(bytes, input.to_vec());
         assert!(msgs.is_empty());
     }
@@ -301,10 +340,10 @@ mod tests {
     #[test]
     fn demux_holds_apc_split_across_chunks() {
         let mut d = StreamDemux::new(7);
-        let (b1, m1) = d.push(b"ab\x1b_rex1;7;{\"type\":");
+        let (b1, m1, _) = d.push(b"ab\x1b_rex1;7;{\"type\":");
         assert_eq!(b1, b"ab");
         assert!(m1.is_empty());
-        let (b2, m2) = d.push(b"\"resize\",\"cols\":80,\"rows\":24,\"owner\":null}\x1b\\cd");
+        let (b2, m2, _) = d.push(b"\"resize\",\"cols\":80,\"rows\":24,\"owner\":null}\x1b\\cd");
         assert_eq!(b2, b"cd");
         assert_eq!(
             m2,
@@ -319,9 +358,9 @@ mod tests {
     #[test]
     fn demux_holds_marker_prefix_at_chunk_end() {
         let mut d = StreamDemux::new(7);
-        let (b1, _) = d.push(b"x\x1b_re");
+        let (b1, _, _) = d.push(b"x\x1b_re");
         assert_eq!(b1, b"x");
-        let (b2, m2) = d.push(
+        let (b2, m2, _) = d.push(
             b"x1;7;{\"type\":\"resize\",\"cols\":2,\"rows\":3,\"owner\":\"client:a\"}\x1b\\y",
         );
         assert_eq!(b2, b"y");
@@ -334,10 +373,69 @@ mod tests {
             }]
         );
         // A lone ESC that turns out not to start the marker is released on the next push.
-        let (b3, _) = d.push(b"\x1b");
+        let (b3, _, _) = d.push(b"\x1b");
         assert!(b3.is_empty());
-        let (b4, _) = d.push(b"[A");
+        let (b4, _, _) = d.push(b"[A");
         assert_eq!(b4, b"\x1b[A");
+    }
+
+    #[test]
+    fn apc_split_across_chunks_is_caught() {
+        let mut d = StreamDemux::new(7);
+        let (b1, _, w1) = d.push(b"a\x1b_warden1;resu");
+        assert_eq!(b1, b"a");
+        assert!(w1.is_empty());
+        let (b2, _, w2) = d.push(b"me=Y2xhdWRlIC0tcmVzdW1lIFg=\x1b\\b");
+        assert_eq!(b2, b"b");
+        assert_eq!(w2, vec![WardenMessage::Resume("claude --resume X".into())]);
+    }
+
+    #[test]
+    fn warden_marker_prefix_at_chunk_end_is_held() {
+        let mut d = StreamDemux::new(7);
+        let (b1, _, _) = d.push(b"x\x1b_ward");
+        assert_eq!(b1, b"x");
+        let (b2, _, w2) = d.push(b"en1;resume=Y2xhdWRlIC0tcmVzdW1lIFg=\x1b\\y");
+        assert_eq!(b2, b"y");
+        assert_eq!(w2.len(), 1);
+    }
+
+    #[test]
+    fn warden_apc_interleaves_with_rex_apcs_and_output() {
+        let mut d = StreamDemux::new(7);
+        let (bytes, msgs, warden) = d.push(
+            b"a\x1b_warden1;resume=Y2xhdWRlIC0tcmVzdW1lIFg=\x1b\\b\x1b_rex1;7;{\"type\":\"novel\"}\x1b\\c",
+        );
+        assert_eq!(bytes, b"abc");
+        assert_eq!(msgs, vec![RexMessage::Other]);
+        assert_eq!(warden.len(), 1);
+    }
+
+    #[test]
+    fn bad_base64_is_dropped_silently() {
+        let mut d = StreamDemux::new(7);
+        let (bytes, msgs, warden) = d.push(b"a\x1b_warden1;resume=!!!\x1b\\b");
+        assert_eq!(bytes, b"ab");
+        assert!(msgs.is_empty() && warden.is_empty());
+    }
+
+    #[test]
+    fn non_resume_or_non_utf8_warden_apc_is_dropped_silently() {
+        let mut d = StreamDemux::new(7);
+        // "/w==" decodes to the lone byte 0xFF.
+        let (bytes, _, warden) =
+            d.push(b"a\x1b_warden1;other=1\x1b\\b\x1b_warden1;resume=/w==\x1b\\c");
+        assert_eq!(bytes, b"abc");
+        assert!(warden.is_empty());
+    }
+
+    #[test]
+    fn other_apcs_pass_through_untouched() {
+        let mut d = StreamDemux::new(7);
+        let input = b"a\x1b_warden2;resume=Y2xhdWRlIC0tcmVzdW1lIFg=\x1b\\b";
+        let (bytes, msgs, warden) = d.push(input);
+        assert_eq!(bytes, input.to_vec());
+        assert!(msgs.is_empty() && warden.is_empty());
     }
 
     #[test]
