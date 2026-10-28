@@ -40,6 +40,7 @@ macOS only.
 - **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles, folder paths and group names (folders open to show matches). **⌘⇧F** jumps into it from a terminal; **↑**/**↓** pick a match, **Enter** opens it, **Esc** clears the search and returns you to the terminal. Clicking a match opens it and keeps the search focused, so you can keep narrowing.
 - **Keyboard navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**). **⌘W** unloads the active tab, **⌘⇧W** closes the window, and **⌘⇧O** pops the active tab into its own window (session-preserving; see above). **⌘⇧S** suspends the active tab's session and **⌘⇧K** terminates it — the first ⌘⇧K arms the tab's confirm row, a second one within 4s confirms.
 - **Rex sessions** — set `server = "local"` (or a host label from Rex's host list — remote servers are untested so far, see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)) and a tab's terminals live in sessions on a Rex server — Superlogical's server-side terminal multiplexer, currently an invite-only beta you need installed. ⌘W, closing the window and quitting warden only detach: reopening the tab shows the same live screen, and the session is reachable from Rex's other clients too. The terminal takes the size of whichever device you last typed in. ☠ ends the sessions; the dot shows whether they exist, and opening the tab starts them; warden starts the local Rex server when a tab needs it. Sessions no tab claims, on every Rex server warden is connected to (at launch, those your tabs name and any a past session was made on), are listed under `Rex · <server>` in each window with a Rex tab, so none is hidden. A Rex tab's dot and ☠ come from Rex, so its `probe` and `kill` aren't run. Tabs without `server` stay plain terminals.
+- **Agent tabs** — a Rex tab's main pane holds its agents as tabs, listed in a column down its right edge: one per Rex window, so a window opened in Rex.app or on the phone shows up here too. **+ New tab** (**⌘T**) starts another agent with the tab's `cmd`; each row shows its agent's status and title, renames on double-click, and drags into named groups that fold. From a row's **⋯** (or right-click), **Sleep** (**⌥⌘S**) closes an agent's window and keeps it in the list asleep; selecting it wakes it by typing its resume command (`claude --resume <id>`, with `resume` swapping the program). **Close** moves it to the **Closed** fold, and **⌘⇧T** reopens the last one closed. Quitting warden or Rex loses nothing that can resume: the tab comes back all asleep, and only opening it yourself wakes one — the one you had selected. An agent needing you while its tab is hidden badges the project's row and raises a banner. **Tab ▸ Sleep Server** sleeps every agent on a Rex server on this Mac and stops it, naming first anything that can't come back. An agent can sleep once it has reported how to resume: Claude Code does through a `SessionStart` hook that `/warden:install` wires.
 - **CLI** — `warden validate` prints the resolved window/tab tree and warnings; `warden fmt` formats a config in warden's house TOML style.
 
 To wire the session-presence dot — pairing with [agentmux](https://github.com/lockyc/agentmux) — set a tab's `probe` to a session check:
@@ -169,7 +170,8 @@ so they open without a Gatekeeper block. macOS only.
 
 **Guided (Claude Code):** run `/warden:install` — it checks prerequisites
 (Xcode Command Line Tools, Rust, the Tauri CLI), builds warden from source, installs
-it to `/Applications`, and seeds your config.
+it to `/Applications`, seeds your config, and wires the agent-tab hook into each Claude Code
+profile's `settings.json`.
 
 **One-liner:**
 
@@ -179,8 +181,9 @@ curl -fsSL https://raw.githubusercontent.com/lockyc/warden/main/install.sh | bas
 
 This clones warden to `~/.warden`, builds the release bundle (`cargo tauri build`),
 installs `warden.app` to `/Applications`, and seeds `~/.config/warden/config.toml`
-from the starter config if you don't already have one. Re-run it any time to update
-(it git-pulls and rebuilds). macOS only.
+from the starter config if you don't already have one, and copies the agent-tab hook to
+`~/.local/share/warden/agent-hooks/` (wiring it into Claude Code is `/warden:install`'s step). Re-run
+it any time to update (it git-pulls and rebuilds). macOS only.
 
 Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
 ([rustup](https://rustup.rs)). The installer installs the Tauri CLI itself if missing.
@@ -239,6 +242,7 @@ cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # ch
 - `crates/warden-config/` — the config crate (library + `warden` CLI).
 - `crates/warden-app/` — the macOS Tauri app (windows, sidebar, libghostty terminals, hot-reload).
 - `crates/rex-client/` — the Rex protocol client; `crates/warden-relay/` — the helper a Rex-backed pane runs.
+- `scripts/agent-hooks/` — the hook an agent runs to tell warden how to resume it.
 - `assets/` — icon masters (`icon.svg`, `icon-app.svg`), rendered PNGs, the macOS `warden.icns`, and `build-icons.sh` to regenerate the rasters from the SVGs.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 

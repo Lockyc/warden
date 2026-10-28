@@ -60,11 +60,13 @@ pane surface ── warden-relay ── its own control connection ─┤  (loca
 
 The relay mints its own tickets, so the stream belongs to the relay's client and lives as long as
 the relay does. The one channel between warden-app and a relay is the report socket
-(`--report`, `rex/reports.rs`): a program in the block can write `ESC _ warden1;resume=<base64>
-ESC \`, which `StreamDemux` strips from the output and the relay forwards as a JSON line
-`{"session","block","resume"}`, which warden-app stores on the block's agent record
-(`AgentStore::report_resume`, which accepts only the known resume shapes). A missing or unreachable
-socket drops the report; streaming continues. The path must fit macOS's 104-byte `sun_path`.
+(`--report`, `rex/reports.rs`). An agent's hook (`scripts/agent-hooks/claude-session-start.sh`,
+wired by `/warden:install`) writes `ESC _ warden1;resume=<base64> ESC \` to the agent's terminal;
+`StreamDemux` strips it from the output and the relay forwards it as a JSON line
+`{"session","block","resume"}`. Any program in the pane can write that sequence, and a woken agent's
+window types the stored command into a shell, so a report is untrusted: `AgentStore::report_resume`
+keeps only a command matching `agents::RESUME_SHAPES`, and loading checks it again. A missing or
+unreachable socket drops the report; streaming continues.
 
 The protocol's reference is the one each server serves at `GET /llms.txt` on its socket; Rex's docs
 site omits it.
@@ -76,9 +78,14 @@ site omits it.
   (`unclaimed::is_unclaimed`); an agent's is `registry::agent_key`, bound to its block by the
   open. A runtime ⌘D split therefore reattaches the same session a config split would. Two
   windows holding the same tab key share one session.
-- **warden keeps no shadow of Rex's state.** Beyond the store's pane → session mapping and the
-  agent records Rex can't hold, everything — which sessions and windows exist, who owns a block,
-  whether a program exited — is read from Rex.
+- **Rex owns windows; warden owns records.** Which sessions and windows exist, who owns a block,
+  whether a program exited and each block's status are read from Rex. warden keeps only what Rex
+  can't: the store's pane → session mapping and the agent records (`rex/agents.rs` — group, order,
+  resume command, asleep or closed), reconciled against Rex's windows whenever they change
+  (`agents::reconcile`).
+- **Agent status comes from the hub, never a relay** (`program_status_changed`, `title_changed`;
+  `rex/windows.rs`), so an agent tab that isn't on screen still raises its project row's badge and
+  a banner, and ambers its group while folded (`rex/attention.rs` → `notify::raise`).
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane and an unclaimed row show
   one block: the first terminal block of their session's first window.
@@ -156,4 +163,5 @@ doesn't build it, and its Rex tabs then fail to open.
 -- --ignored` against a running local Rex server; each touches only the sessions it labels and
 destroys them.
 
-Deferred work — remote roots, remote HTTPS, the agent tab list — is in `docs/FOLLOWUPS.md`.
+Deferred work — remote roots, remote HTTPS, mirroring a window's splits, the closed set of resume
+shapes — is in `docs/FOLLOWUPS.md`.
