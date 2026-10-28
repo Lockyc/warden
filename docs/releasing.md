@@ -47,8 +47,8 @@ SVG edge-to-edge; the script wraps it).
 
 `install.sh` is self-sufficient: `bash install.sh` in a checkout builds the current tree; the
 `curl … | bash` form clones/updates `~/.warden`. Both install the Tauri CLI if missing, build,
-install to `/Applications` via `scripts/install-app.sh`, and seed `~/.config/warden/config.toml`
-if absent. `just install` delegates to it; the guided path is `/warden:install`
+install to `/Applications` via `scripts/install-app.sh`, seed `~/.config/warden/config.toml`
+if absent, and copy the agent hook to `~/.local/share/warden/agent-hooks/`. `just install` delegates to it; the guided path is `/warden:install`
 (`.claude/commands/warden/install.md`).
 
 ## Releases
