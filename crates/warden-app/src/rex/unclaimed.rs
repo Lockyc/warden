@@ -1,7 +1,7 @@
 //! Rex sessions no tab claims, listed in the sidebar so none is ever hidden.
 //!
-//! Each window lists, under a `Rex · <server>` group, the sessions on the servers its own Rex
-//! tabs use that no configured pane maps to: made in Rex.app or on the phone, left behind when a
+//! Each window with a Rex tab lists, under a `Rex · <server>` group, the sessions on every server
+//! warden has heard from that no configured pane maps to: made in Rex.app or on the phone, left behind when a
 //! tab moved server or left the config, or orphaned by an open that timed out. Each is an
 //! ordinary [`Tab`] keyed `rex:<session id>`, with no `dir`: opening it seeds the hub in memory
 //! (`RexHub::adopt`) so its pane attaches that session and never creates one, and nothing is
@@ -61,11 +61,14 @@ pub fn session_of(pane_key: &str) -> Option<&str> {
     pane_key.strip_prefix(KEY_PREFIX)
 }
 
-/// Replace `config`'s unclaimed-session tabs with the current ones: in each window, for each
-/// server its own tabs use (in tab order), [`synthesize`] over `live(server)`, skipping a key
-/// the window already has.
+/// Replace `config`'s unclaimed-session tabs with the current ones: in each window with a Rex
+/// tab, for each server its own tabs use (in tab order) and then each other of `connected`,
+/// [`synthesize`] over `live(server)`, skipping a key the window already has. Every connected
+/// server, not only the window's own, so a session left on a server no tab uses any more still
+/// shows.
 pub fn add_unclaimed(
     config: &mut Config,
+    connected: &[String],
     live: impl Fn(&str) -> Vec<SessionInfo>,
     claimed: &HashSet<String>,
 ) {
@@ -75,6 +78,14 @@ pub fn add_unclaimed(
             .retain(|t| !is_unclaimed(&t.key, &t.dir, t.server.as_deref()));
         let mut servers: Vec<String> = Vec::new();
         for s in window.tabs.iter().filter_map(|t| t.server.as_ref()) {
+            if !servers.contains(s) {
+                servers.push(s.clone());
+            }
+        }
+        if servers.is_empty() {
+            continue;
+        }
+        for s in connected {
             if !servers.contains(s) {
                 servers.push(s.clone());
             }
@@ -102,7 +113,12 @@ pub fn append(config: &mut Config, hub: &RexHub) {
         .flat_map(|t| [t.key.clone(), crate::registry::secondary_id(&t.key)])
         .collect();
     let claimed = hub.claimed_session_ids(pane_keys.iter().map(String::as_str));
-    add_unclaimed(config, |server| hub.live_sessions(server), &claimed);
+    add_unclaimed(
+        config,
+        &hub.servers(),
+        |server| hub.live_sessions(server),
+        &claimed,
+    );
 }
 
 /// Bring every window's unclaimed sessions up to date with the hub, from any thread but the main
@@ -259,18 +275,52 @@ mod tests {
             _ => vec![session("session:elsewhere", "e")],
         };
         let claimed = HashSet::from(["session:mine".to_string()]);
-        add_unclaimed(&mut cfg, live, &claimed);
+        add_unclaimed(&mut cfg, &["local".into()], live, &claimed);
         let keys = |w: &Window| w.tabs.iter().map(|t| t.key.clone()).collect::<Vec<_>>();
         assert_eq!(
             keys(&cfg.windows[0]),
-            ["plain", "agent", "rex:session:orphan"],
-            "only the servers this window's tabs use"
+            ["plain", "agent", "rex:session:orphan"]
         );
         assert_eq!(keys(&cfg.windows[1]), ["other"], "no Rex tabs, no section");
 
         // Run again (a refresh over the result): the old rows go, the current ones come back once.
-        add_unclaimed(&mut cfg, |_| vec![session("session:new", "n")], &claimed);
+        add_unclaimed(
+            &mut cfg,
+            &["local".into()],
+            |_| vec![session("session:new", "n")],
+            &claimed,
+        );
         assert_eq!(keys(&cfg.windows[0]), ["plain", "agent", "rex:session:new"]);
+    }
+
+    #[test]
+    fn a_window_with_rex_tabs_lists_every_connected_server() {
+        // The window's only local tab moved to a remote: its old local session must still show.
+        let mut cfg = config(vec![window("rex", vec![tab("agent", Some("remote"))])]);
+        let live = |server: &str| match server {
+            "local" => vec![session("session:left-behind", "l")],
+            _ => vec![session("session:remote-orphan", "r")],
+        };
+        add_unclaimed(
+            &mut cfg,
+            &["local".into(), "remote".into()],
+            live,
+            &HashSet::new(),
+        );
+        let rows: Vec<_> = cfg.windows[0]
+            .tabs
+            .iter()
+            .map(|t| (t.key.as_str(), t.group.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("agent", None),
+                ("rex:session:remote-orphan", Some("Rex · remote")),
+                ("rex:session:left-behind", Some("Rex · local")),
+            ],
+            "the window's own servers first, then every other connected one"
+        );
     }
 
     #[test]
