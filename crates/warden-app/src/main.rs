@@ -265,12 +265,17 @@ struct ActivateResult {
 /// the leak the placeholder exists to stop. Report liveness so the chrome paints it. A Rex tab
 /// still opening its session is cold too: `live` is false until the `warden:refresh` its landing
 /// sends (`rex::spawn`).
+///
+/// `user` is false when the chrome selected the tab on warden's behalf (window init, the
+/// component's fallback after a snapshot): an agent pane then opens as warden's own and wakes
+/// nothing (`Registry::activate`). Absent, it is the user's.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn activate_tab(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
     id: String,
+    user: Option<bool>,
 ) -> ActivateResult {
     use tauri::Emitter;
     // Capture both the spawn outcome AND whether this call spawned a FRESH cold surface (whose
@@ -283,7 +288,12 @@ fn activate_tab(
         let out = match m.windows.get_mut(window.label()) {
             Some(ws) => {
                 let has_probe = ws.registry.tab_has_probe(&id);
-                let (fresh, err) = match ws.registry.activate_user(&id) {
+                let activated = if user.unwrap_or(true) {
+                    ws.registry.activate_user(&id)
+                } else {
+                    ws.registry.activate(&id)
+                };
+                let (fresh, err) = match activated {
                     Ok(fresh) => (fresh, None),
                     Err(e) => (false, Some(e)),
                 };
