@@ -717,7 +717,8 @@ impl WindowManager {
     /// surfaces closed, the origin's `Detached` placeholders retired to `Cold`
     /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told
     /// `warden:tab-exited` exactly as if the exit had happened docked — never a "Process exited"
-    /// overlay left sitting in the detached window.
+    /// overlay left sitting in the detached window. A travelling agent whose pane still holds a
+    /// running sibling ends only itself: the origin tab stays, showing that sibling if on screen.
     ///
     /// **A Rex pane** exits the same way (its relay is the child), and additionally has its Rex
     /// session ended when the program in it finished (`rex::spawn::end_if_exited`, on a worker),
@@ -829,10 +830,24 @@ impl WindowManager {
                 // The whole tab ends, scratch pane included — the same one-dead-tab semantic the
                 // docked primary path applies via `unload`.
                 close_both(surface, secondary);
-                let new_active = lock
-                    .windows
-                    .get_mut(&origin_label)
-                    .and_then(|ws| ws.registry.clear_detached(&tab_id));
+                // A travelling agent that ended leaves its pane's running siblings: the tab stays,
+                // showing one if it is the tab on screen.
+                let ended = lock.windows.get_mut(&origin_label).map(|ws| {
+                    let ended = ws.registry.clear_detached(&tab_id);
+                    if ended == crate::registry::DetachedEnded::SiblingShown
+                        && ws.registry.active_tab() == Some(tab_id.as_str())
+                    {
+                        if let Err(e) = ws.registry.activate(&tab_id) {
+                            eprintln!("warden: couldn't show an agent of tab {tab_id:?}: {e}");
+                        }
+                    }
+                    ended
+                });
+                let new_active = match ended {
+                    Some(crate::registry::DetachedEnded::Cold(next)) => Some(next),
+                    Some(crate::registry::DetachedEnded::SiblingShown) => None,
+                    None => Some(None),
+                };
                 lock.record_session(&origin_label);
                 // The entry is gone from `detached`, so `is_empty` may now be true (origin closed
                 // while the tab was out): the home surface must appear, exactly as it would after
@@ -848,11 +863,13 @@ impl WindowManager {
                 if let Some(dto) = dto {
                     let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
                 }
-                let _ = app.emit_to(
-                    origin_label.as_str(),
-                    "warden:tab-exited",
-                    serde_json::json!({ "label": origin_label, "id": tab_id, "newActive": new_active }),
-                );
+                if let Some(new_active) = new_active {
+                    let _ = app.emit_to(
+                        origin_label.as_str(),
+                        "warden:tab-exited",
+                        serde_json::json!({ "label": origin_label, "id": tab_id, "newActive": new_active }),
+                    );
+                }
             }
         }
     }

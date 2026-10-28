@@ -83,6 +83,15 @@ pub enum AgentClosed {
     PaneCold(Option<String>),
 }
 
+/// What became of a tab whose popped-out surfaces ended ([`Registry::clear_detached`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum DetachedEnded {
+    /// The tab went cold; the sidebar leans to this tab (as `unload`).
+    Cold(Option<String>),
+    /// Its main pane still holds a running agent, now selected: the tab stays.
+    SiblingShown,
+}
+
 /// Where a Rex pane stands on its way to a session. Lives beside the slot, which stays `Cold`
 /// until a surface exists.
 #[derive(Debug, Clone, PartialEq)]
@@ -1574,42 +1583,57 @@ impl Registry {
     /// Retire tab `id`'s `Detached` placeholders to `Cold`: its popped-out surfaces ended (the
     /// primary's child exited inside the detached window — `WindowManager::handle_child_exited`)
     /// and are never coming back through `attach`. A `Cold` secondary never left and is
-    /// untouched. Returns what `unload` would: the live neighbour the sidebar leans to when this
-    /// was the active tab, else `None` — the same "this tab's terminal is gone" outcome, reached
-    /// from another window.
-    pub fn clear_detached(&mut self, id: &str) -> Option<String> {
-        let idx = self.tabs.iter().position(|t| t.id == id)?;
+    /// untouched. Returns what `unload` would (`Cold`): the live neighbour the sidebar leans to
+    /// when this was the active tab, else `None` — the same "this tab's terminal is gone" outcome,
+    /// reached from another window. A main pane whose travelling agent ended but which still holds
+    /// a running sibling is not gone (`SiblingShown`): it stays where it is, selecting that
+    /// sibling, for the caller to activate when it is the tab on screen.
+    pub fn clear_detached(&mut self, id: &str) -> DetachedEnded {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return DetachedEnded::Cold(None);
+        };
         let mut any = false;
+        let mut sibling = false;
         for pane in self.tabs[idx].panes_mut() {
             if matches!(pane.slot, TabSlot::Detached) {
                 pane.slot = TabSlot::Cold;
                 any = true;
             }
-            // The agent that went out with the pane ended there; the pane's selection leans to its
-            // nearest running sibling, which the tab's next activate shows.
+            // The agent that went out with the pane ended there. A selection naming it leans to
+            // the nearest running sibling; one the user made here since stays.
             if let Some(at) = pane
                 .agents
                 .iter()
                 .position(|a| matches!(a.slot, TabSlot::Detached))
             {
-                let running: Vec<bool> = pane
-                    .agents
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| i != at && matches!(a.rex, RexState::Ready(_)))
-                    .collect();
-                let next = shell_core::pick_live_neighbour(at, &running);
-                pane.selected = next.map(|n| pane.agents[n].record_id.clone());
+                let gone = pane.agents[at].record_id.clone();
+                if pane.selected.as_deref() == Some(gone.as_str()) {
+                    let running: Vec<bool> = pane
+                        .agents
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| i != at && matches!(a.rex, RexState::Ready(_)))
+                        .collect();
+                    let next = shell_core::pick_live_neighbour(at, &running);
+                    pane.selected = next.map(|n| pane.agents[n].record_id.clone());
+                }
                 pane.agents.remove(at);
+                sibling |= pane.selected.as_deref().is_some_and(|s| {
+                    pane.agent(s)
+                        .is_some_and(|a| matches!(a.rex, RexState::Ready(_)))
+                });
             }
         }
         if !any {
-            return None;
+            return DetachedEnded::Cold(None);
+        }
+        if sibling {
+            return DetachedEnded::SiblingShown;
         }
         if self.active.as_deref() == Some(id) {
-            return self.lean_to_live_neighbour(idx);
+            return DetachedEnded::Cold(self.lean_to_live_neighbour(idx));
         }
-        None
+        DetachedEnded::Cold(None)
     }
 
     /// Detach tab `id`'s live surfaces for a move to another window's `Registry`
@@ -2975,7 +2999,7 @@ mod tests {
         r.force_detached_pane("t0", PaneIdx::Secondary);
         assert!(r.is_detached("t0"));
         // Not the active tab, nothing live elsewhere → no neighbour to lean to.
-        assert_eq!(r.clear_detached("t0"), None);
+        assert_eq!(r.clear_detached("t0"), DetachedEnded::Cold(None));
         assert!(!r.is_detached("t0"));
         assert!(!r.is_pane_detached("t0", PaneIdx::Secondary));
         assert!(
@@ -2991,15 +3015,15 @@ mod tests {
         let _ = r.add(&spec("t0", "/tmp"), false);
         r.split("t0");
         r.force_detached_pane("t0", PaneIdx::Primary); // secondary stayed Cold (never carried)
-        assert_eq!(r.clear_detached("t0"), None);
+        assert_eq!(r.clear_detached("t0"), DetachedEnded::Cold(None));
         assert!(!r.is_detached("t0"));
         assert!(r.is_split("t0"));
         assert_eq!(
             r.clear_detached("t0"),
-            None,
+            DetachedEnded::Cold(None),
             "nothing detached any more → no-op"
         );
-        assert_eq!(r.clear_detached("nope"), None);
+        assert_eq!(r.clear_detached("nope"), DetachedEnded::Cold(None));
     }
 
     #[test]
@@ -3544,9 +3568,37 @@ mod tests {
         r.add(&rex_spec("t", "local"), false).unwrap();
         r.force_ready_agents("t", &["r1", "r2", "r3"], Some("r2"));
         r.force_detached_agent("t", "r2");
-        r.clear_detached("t");
+        r.add(&spec("p", "/tmp"), false).unwrap();
+        // The origin shows the tab (its pane is out, so nothing spawns here).
+        let _ = r.activate("t");
+        assert_eq!(r.clear_detached("t"), DetachedEnded::SiblingShown);
+        assert_eq!(r.active_tab(), Some("t"), "the tab stays on screen");
         assert_eq!(r.agent_keys("t"), ["t::agent:r1", "t::agent:r3"]);
         assert_eq!(r.selected_agent("t"), Some("r1"), "not a removed record");
+        assert!(!r.is_detached("t"));
+    }
+
+    #[test]
+    fn a_selection_made_in_the_origin_survives_the_popped_out_agent_ending() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_ready_agents("t", &["r1", "r2", "r3"], Some("r2"));
+        r.force_detached_agent("t", "r2");
+        r.select_agent("t", "r3").unwrap();
+        assert_eq!(r.clear_detached("t"), DetachedEnded::SiblingShown);
+        assert_eq!(r.selected_agent("t"), Some("r3"));
+    }
+
+    #[test]
+    fn a_popped_out_last_agent_ending_takes_the_tab_cold() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_ready_agents("t", &["r1"], Some("r1"));
+        r.force_detached_agent("t", "r1");
+        let _ = r.activate("t");
+        assert_eq!(r.clear_detached("t"), DetachedEnded::Cold(None));
+        assert_eq!(r.active_tab(), None);
+        assert!(r.agent_keys("t").is_empty());
     }
 
     #[test]
