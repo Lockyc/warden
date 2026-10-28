@@ -17,8 +17,7 @@ const REX_BUNDLE_ID: &str = "com.superlogical.rex";
 /// The `rex` CLI inside Rex.app.
 const REX_CLI: &str = "Contents/Helpers/Rex Server.rex/Contents/MacOS/rex";
 
-/// How long autostart may take. It runs inside the hub's connect budget, leaving the rest of
-/// that budget for the retried connect.
+/// The longest autostart waits for the CLI, however much time its caller has.
 const AUTOSTART_DEADLINE: Duration = Duration::from_millis(2000);
 
 /// `"local"` is this Mac's socket; anything else is a host label from the local server's
@@ -79,6 +78,12 @@ fn host_endpoint(s: &str) -> Option<Endpoint> {
 /// Start this Mac's Rex server by running `rex server status` from Rex.app's bundle: the CLI
 /// starts a missing local server by default. Bounded by [`AUTOSTART_DEADLINE`].
 pub fn autostart_local() -> Result<(), RexError> {
+    autostart_local_within(AUTOSTART_DEADLINE)
+}
+
+/// [`autostart_local`] waiting at most `limit` (and never more than [`AUTOSTART_DEADLINE`]) for
+/// the CLI, so a caller with a budget passes what it has left.
+pub fn autostart_local_within(limit: Duration) -> Result<(), RexError> {
     let cli = rex_app()?.join(REX_CLI);
     if !cli.is_file() {
         return Err(not_installed());
@@ -90,7 +95,7 @@ pub fn autostart_local() -> Result<(), RexError> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| RexError::Protocol(format!("couldn't run {}: {e}", cli.display())))?;
-    wait_bounded(child, AUTOSTART_DEADLINE);
+    wait_bounded(child, limit.min(AUTOSTART_DEADLINE));
     Ok(())
 }
 
