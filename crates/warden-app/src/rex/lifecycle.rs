@@ -17,7 +17,7 @@ use super::agents::{self, AgentRecord, AgentStore, RecordState};
 use super::attention::Attention;
 use super::spawn::unix_now;
 use super::windows::{AgentState, BlockStatus};
-use super::{budgeted, lock, HubEvent, RexHub, OPEN_BUDGET};
+use super::{budget_error, lock, HubEvent, RexHub, OPEN_BUDGET};
 use crate::registry::{AgentsOpened, RexOpen};
 use crate::ManagerState;
 
@@ -99,10 +99,10 @@ impl RexHub {
         match done {
             Ok(opened) => Ok(opened),
             Err(Failed::Refused(why)) => Err(why.to_owned()),
-            Err(Failed::Rex(e)) => match budgeted::<()>(deadline, Err(e)) {
-                Err(e) => Err(super::spawn::open_error(&req.server, &e)),
-                Ok(()) => Err(NO_AGENT.to_owned()),
-            },
+            Err(Failed::Rex(e)) => Err(super::spawn::open_error(
+                &req.server,
+                &budget_error(deadline, e),
+            )),
         }
     }
 
@@ -783,9 +783,14 @@ fn worker(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
         .map_err(|e| format!("couldn't start {name}: {e}"))
 }
 
-/// Show `message` in window `label`'s error banner (main thread).
+/// Log `message` and show it in window `label`'s error banner (main thread).
 fn fail(app: &AppHandle, label: &str, message: &str) {
     eprintln!("warden: {label}: {message}");
+    banner(app, label, message);
+}
+
+/// Show `message` in window `label`'s error banner (`warden:error`).
+pub(super) fn banner(app: &AppHandle, label: &str, message: &str) {
     let _ = app.emit_to(
         label,
         "warden:error",
@@ -1024,11 +1029,7 @@ fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<Agent
     }
     if let (Err(message), Some(label)) = (&result, label) {
         eprintln!("warden: {label}: {tab_id}: {message}");
-        let _ = app.emit_to(
-            label,
-            "warden:error",
-            serde_json::json!({ "label": label, "message": message }),
-        );
+        banner(app, label, message);
     }
     emit_agents(app, tab_id);
 }
@@ -1239,7 +1240,7 @@ pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
 
 /// Listen for the resume commands relays report ([`super::reports`]) for the app's life, storing
 /// each on its record ([`AgentStore::report_resume`]) and re-sending that project's list. A
-/// socket that can't be bound (a path past macOS's `sun_path`) leaves reports dropped; the app
+/// socket that can't be bound ([`super::reports::socket_path`]) leaves reports dropped; the app
 /// runs on.
 pub fn watch_reports(app: AppHandle) {
     let Some(path) = super::reports::socket_path(&app) else {
