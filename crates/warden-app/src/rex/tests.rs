@@ -1027,3 +1027,49 @@ fn real_server_unclaimed_session_attaches() {
     hub.destroy(&tab.key).expect("☠ ends it");
     assert_eq!(count(), 0, "the test session is gone");
 }
+
+static AUTOSTARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn counting_autostart(_: Duration) -> Result<(), RexError> {
+    AUTOSTARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+#[test]
+fn the_launch_connect_never_starts_rex() {
+    use std::sync::atomic::Ordering;
+    let dir = tempfile::tempdir().unwrap();
+    let missing = Endpoint::Unix(dir.path().join("no-server.sock"));
+    let hub = RexHub::for_test_autostart(
+        dir.path().join("rex-sessions.json"),
+        info(),
+        missing,
+        counting_autostart,
+    );
+    assert_eq!(hub.connect("local"), Err(RexError::Unreachable));
+    assert_eq!(
+        AUTOSTARTS.load(Ordering::SeqCst),
+        0,
+        "a Rex the user quit stays quit"
+    );
+    // Opening a Rex tab still starts it.
+    let _ = hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main");
+    assert_eq!(AUTOSTARTS.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_unopened_unclaimed_row_reads_alive_while_listed() {
+    let fake = scripted(json!([{"session_id": "session:orphan", "label": "o"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.connect("local").expect("connect");
+    assert!(
+        hub.session_alive("rex:session:orphan"),
+        "never opened, still a live session"
+    );
+    assert!(!hub.session_alive("rex:session:other"));
+    let rx = hub.subscribe();
+    fake.push_event("session_destroyed", json!({"session_id": "session:orphan"}));
+    next_event(&rx, |e| matches!(e, HubEvent::SessionsChanged { .. }));
+    assert!(!hub.session_alive("rex:session:orphan"));
+}
