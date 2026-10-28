@@ -1260,13 +1260,18 @@ fn str_field(v: &Value, what: &str) -> Result<String, RexError> {
         .ok_or_else(|| RexError::Protocol(format!("{what} missing")))
 }
 
-/// The answer of a call bounded by `deadline`, as a tab open reports it: a timeout, or any
-/// failure past the deadline, is `Unreachable`.
+/// The answer of a call bounded by `deadline`, as a tab open reports it ([`budget_error`]).
 fn budgeted<T>(deadline: Instant, r: Result<T, RexError>) -> Result<T, RexError> {
-    match r {
-        Err(RexError::Timeout) => Err(RexError::Unreachable),
-        Err(_) if Instant::now() >= deadline => Err(RexError::Unreachable),
-        r => r,
+    r.map_err(|e| budget_error(deadline, e))
+}
+
+/// A failure of a call bounded by `deadline`, as a tab open reports it: a timeout, or any
+/// failure past the deadline, is `Unreachable`.
+fn budget_error(deadline: Instant, e: RexError) -> RexError {
+    match e {
+        RexError::Timeout => RexError::Unreachable,
+        _ if Instant::now() >= deadline => RexError::Unreachable,
+        e => e,
     }
 }
 

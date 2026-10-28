@@ -32,9 +32,8 @@ pub fn relay_path() -> PathBuf {
 }
 
 /// The command line that runs `relay` on `t`, each argument quoted for the shell libghostty
-/// hands it to. With `report`, the relay forwards its program's reports to that socket. A
-/// socket path past macOS's 104-byte `sun_path` can't be connected to, so the relay just
-/// never reports.
+/// hands it to. With `report`, the relay forwards its program's reports to that socket
+/// ([`super::reports::socket_path`]).
 pub fn relay_command(relay: &Path, t: &PaneTarget, report: Option<&Path>) -> String {
     let endpoint = t.endpoint.to_string();
     let relay = relay.to_string_lossy();
@@ -160,11 +159,7 @@ fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer,
     }
     if let Some(message) = message {
         eprintln!("warden: {label}: {}: {message}", req.pane_key);
-        let _ = app.emit_to(
-            label,
-            "warden:error",
-            serde_json::json!({ "label": label, "message": message }),
-        );
+        super::lifecycle::banner(app, label, &message);
     }
 }
 
@@ -286,11 +281,7 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
                 }
             }
             if let Some(store) = app.try_state::<Mutex<AgentStore>>() {
-                let removed = store
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove_project(&id);
-                if removed {
+                if super::lock(&store).remove_project(&id) {
                     super::lifecycle::emit_agents(&app, &id);
                 }
             }
