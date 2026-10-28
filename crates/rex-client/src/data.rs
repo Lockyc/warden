@@ -12,6 +12,12 @@ use crate::{Endpoint, RexError, DATA_PROTOCOL};
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(10);
 /// Status for a connection that ended without a close frame.
 const ABNORMAL: u16 = 1006;
+/// The longest a read waits with nothing arriving. The server pings data connections every
+/// [`crate::SERVER_PING_INTERVAL`], so two missed pings plus a ping's grace means the connection
+/// is dead — a half-open TCP stream after a sleep never errors on its own.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(
+    2 * crate::SERVER_PING_INTERVAL.as_secs() + crate::SERVER_PING_WAIT.as_secs(),
+);
 
 /// One terminal block's stream. Dropping it leaves the stream waiting on the server for a
 /// RESUME (within the welcome's resume window); the server ends it only on a 1000 close.
@@ -53,7 +59,7 @@ impl DataStream {
                 Err(e) => return Err(ws_err(e)),
             }
         };
-        ws.set_read_timeout(None).map_err(io_err)?;
+        ws.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(io_err)?;
         Ok(DataStream {
             ws,
             welcome,
@@ -64,7 +70,7 @@ impl DataStream {
 
     /// The next piece of the stream, blocking until one arrives. `None` once the connection has
     /// closed; [`DataStream::close_code`] then says how (1006 for a drop without a close frame,
-    /// which a RESUME can continue).
+    /// or for [`IDLE_TIMEOUT`] of silence, which a RESUME can continue).
     pub fn read(&mut self) -> Result<Option<Vec<u8>>, RexError> {
         if self.close_code.is_some() {
             return Ok(None);
@@ -95,6 +101,12 @@ impl DataStream {
                 Err(e) => return Err(RexError::Protocol(e.to_string())),
             }
         }
+    }
+
+    /// Shortens the idle timeout so a test needn't wait minutes for it.
+    #[cfg(test)]
+    fn set_idle_timeout(&mut self, d: Duration) -> Result<(), RexError> {
+        self.ws.set_read_timeout(Some(d)).map_err(io_err)
     }
 
     /// The close status once [`DataStream::read`] has returned `None`.
@@ -271,6 +283,26 @@ mod tests {
             }
             Ok((resized, String::from_utf8_lossy(&out).into_owned()))
         }
+    }
+
+    #[test]
+    fn a_silent_stream_drops_as_resumable() {
+        // A half-open TCP stream after a laptop sleep: nothing arrives, not even the server's
+        // pings. The read must end as a drop a RESUME continues, not block forever.
+        let fake = FakeServer::start();
+        let mut s = DataStream::open(&fake.endpoint(), &fake.mint_ticket()).expect("open");
+        s.set_idle_timeout(Duration::from_millis(200))
+            .expect("knob");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let r = s.read();
+            let _ = tx.send((r, s.close_code()));
+        });
+        let (r, code) = rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("the read gave up on a silent stream");
+        assert_eq!(r, Ok(None));
+        assert_eq!(code, Some(ABNORMAL));
     }
 
     #[test]

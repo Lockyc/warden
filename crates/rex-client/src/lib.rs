@@ -21,6 +21,11 @@ pub const DATA_PROTOCOL: &str = "rex.data.terminal.v1";
 /// The control API revision this client speaks.
 pub const API_REVISION: u64 = 7;
 
+/// How often the server pings every connection, control and data alike.
+const SERVER_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long the server waits for each ping's answer.
+const SERVER_PING_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Everything that can go wrong talking to a Rex server.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RexError {
