@@ -63,7 +63,7 @@ pub fn effective_spec(spec: &TabSpec, t: &PaneTarget) -> TabSpec {
 pub fn open_error(server: &str, e: &RexError) -> String {
     match e {
         RexError::Unreachable => format!("Rex server unreachable: {server}"),
-        RexError::Api { code, .. } if code == "not_found" => {
+        RexError::Api { code, .. } if code == super::server::HOST_NOT_FOUND => {
             format!("Rex server not found: {server}")
         }
         RexError::Api { message, .. } => message.clone(),
@@ -212,8 +212,8 @@ pub fn watch_presence(app: AppHandle) {
     }
 }
 
-/// A Rex pane's program exited (its relay did): end its session if its terminal really finished,
-/// on a worker, then refresh ([`hub_changed`]). A relay that left for any other reason (the server
+/// A Rex pane's program exited (its relay did): let go of its session if its terminal really
+/// finished ([`RexHub::destroy_if_exited`]), on a worker, then refresh ([`hub_changed`]). A relay that left for any other reason (the server
 /// unreachable, the pane closed) leaves the session for the next open to reattach.
 pub fn end_if_exited(app: &AppHandle, pane_key: String) {
     let app = app.clone();
@@ -365,14 +365,20 @@ mod tests {
             open_error(LOCAL, &not_installed),
             "Rex isn't installed on this Mac"
         );
-        let unknown = RexError::Api {
-            code: "not_found".into(),
-            message: "no host".into(),
-            status: 404,
-        };
+        let unknown = crate::rex::server::host_not_found("remote-host");
         assert_eq!(
             open_error("remote-host", &unknown),
             "Rex server not found: remote-host"
+        );
+        // `session.create` answers `not_found` for a missing creator: the server was found.
+        let no_creator = RexError::Api {
+            code: "not_found".into(),
+            message: "no creator for flavor".into(),
+            status: 404,
+        };
+        assert_eq!(
+            open_error("remote-host", &no_creator),
+            "no creator for flavor"
         );
     }
 

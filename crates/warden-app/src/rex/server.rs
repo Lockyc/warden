@@ -47,11 +47,7 @@ pub fn resolve_until(
                 .as_str()
                 .is_some_and(|l| l.eq_ignore_ascii_case(server))
         })
-        .ok_or_else(|| RexError::Api {
-            code: "not_found".into(),
-            message: format!("no host labelled {server:?} in Rex's host list"),
-            status: 404,
-        })?;
+        .ok_or_else(|| host_not_found(server))?;
     host["endpoints"]
         .as_array()
         .into_iter()
@@ -114,6 +110,19 @@ fn rex_app() -> Result<PathBuf, RexError> {
     };
     path.map(|p| PathBuf::from(p.to_string()))
         .ok_or_else(not_installed)
+}
+
+/// The error code for a `server` label missing from the host list — warden's own, so it can't be
+/// mistaken for Rex's `not_found`, which methods such as `session.create` also answer.
+pub const HOST_NOT_FOUND: &str = "host_not_found";
+
+/// `server` isn't in the local server's host list.
+pub fn host_not_found(server: &str) -> RexError {
+    RexError::Api {
+        code: HOST_NOT_FOUND.into(),
+        message: format!("no host labelled {server:?} in Rex's host list"),
+        status: 404,
+    }
 }
 
 fn not_installed() -> RexError {
