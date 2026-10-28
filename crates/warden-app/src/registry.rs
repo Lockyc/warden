@@ -88,13 +88,27 @@ pub enum AgentClosed {
 #[derive(Debug, Clone, PartialEq)]
 enum RexState {
     Idle,
-    /// An open is in flight; only the answer carrying this token lands.
-    Opening(u64),
+    /// An open is in flight; only the answer carrying `token` lands. `wake`: the user opened the
+    /// pane meanwhile, so an answer that finds nothing live is followed by a user open.
+    Opening {
+        token: u64,
+        wake: bool,
+    },
     /// The session answered; the next spawn runs the relay on it.
     Ready(PaneTarget),
     /// An agent pane's open found nothing live (every agent asleep, or none yet). Only a user open
     /// asks again, since only a user open wakes an agent.
     Asleep,
+}
+
+impl RexState {
+    /// The token of the open in flight, if one is.
+    fn opening(&self) -> Option<u64> {
+        match self {
+            RexState::Opening { token, .. } => Some(*token),
+            _ => None,
+        }
+    }
 }
 
 /// The chrome-facing shape of a declared split — the two layout facts the chrome seeds the
@@ -1162,8 +1176,11 @@ impl Registry {
                 &target,
                 self.report_socket.as_deref(),
             ),
-            (Some(_), held @ RexState::Opening(_)) => {
-                pane.rex = held;
+            (Some(_), RexState::Opening { token, wake }) => {
+                pane.rex = RexState::Opening {
+                    token,
+                    wake: wake || (agents && !auto),
+                };
                 return Ok(false);
             }
             (Some(_), RexState::Asleep) if auto => {
@@ -1189,7 +1206,7 @@ impl Registry {
                     resume: pane.spec.resume.clone(),
                 });
                 match started {
-                    Ok(()) => pane.rex = RexState::Opening(token),
+                    Ok(()) => pane.rex = RexState::Opening { token, wake: false },
                     Err(reason) => tab.rex_error = Some(reason),
                 }
                 return Ok(false);
@@ -1287,7 +1304,7 @@ impl Registry {
     ) -> RexLanded {
         let Some((idx, which)) = self.tabs.iter().enumerate().find_map(|(i, t)| {
             t.panes_indexed()
-                .find(|(_, p)| p.spec.id == pane_key && p.rex == RexState::Opening(token))
+                .find(|(_, p)| p.spec.id == pane_key && p.rex.opening() == Some(token))
                 .map(|(which, _)| (i, which))
         }) else {
             return RexLanded::Stale;
@@ -1296,6 +1313,7 @@ impl Registry {
         let Some(pane) = tab.pane_mut(which) else {
             return RexLanded::Stale;
         };
+        let wake = matches!(pane.rex, RexState::Opening { wake: true, .. });
         match result {
             Err(reason) => {
                 pane.rex = RexState::Idle;
@@ -1319,6 +1337,12 @@ impl Registry {
                         if pane.agents.is_empty() {
                             pane.rex = RexState::Asleep;
                             tab.rex_error = None;
+                            if wake {
+                                // The user opened it while warden's open was in flight.
+                                return RexLanded::Opened(
+                                    self.ensure_spawned(idx, which, false).map(|_| ()),
+                                );
+                            }
                             return RexLanded::Opened(Ok(()));
                         }
                         pane.rex = RexState::Idle;
@@ -1353,7 +1377,7 @@ impl Registry {
     pub fn is_connecting(&self, id: &str) -> bool {
         self.tabs
             .iter()
-            .any(|t| t.id == id && matches!(t.primary.rex, RexState::Opening(_)))
+            .any(|t| t.id == id && t.primary.rex.opening().is_some())
     }
 
     /// The Rex pane key of tab `id`'s pane `which` (its `TabSpec.id`), or `None` when that pane
@@ -3150,6 +3174,37 @@ mod tests {
         assert_eq!(asked.len(), 2, "one wake in flight");
         assert!(!asked[1].auto);
         assert_eq!(asked[1].resume.as_deref(), Some("agent-wrapper"));
+    }
+
+    #[test]
+    fn a_user_open_during_an_auto_open_wakes_when_it_lands_asleep() {
+        let (mut r, asked) = rex_registry();
+        r.add(&rex_spec("t", "local"), true).unwrap();
+        let first = asked.lock().unwrap()[0].clone();
+        assert!(first.auto);
+        // The user clicks while the automatic open is still in flight.
+        let _ = r.activate_user("t");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "one open in flight per pane"
+        );
+        nothing_live(&mut r, &first);
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 2, "the click's wake follows the asleep answer");
+        assert!(!asked[1].auto);
+        assert!(r.is_connecting("t"));
+    }
+
+    #[test]
+    fn an_auto_open_landing_asleep_with_no_click_stays_asleep() {
+        let (mut r, asked) = rex_registry();
+        r.add(&rex_spec("t", "local"), true).unwrap();
+        let first = asked.lock().unwrap()[0].clone();
+        let _ = r.activate("t");
+        nothing_live(&mut r, &first);
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        assert!(!r.is_connecting("t"));
     }
 
     #[test]
