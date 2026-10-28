@@ -255,6 +255,7 @@ impl RexHub {
                 }
                 if !name.is_empty() {
                     records[i].name = name.to_owned();
+                    records[i].user_named = true;
                 }
             }
         }

@@ -388,6 +388,8 @@ pub(super) mod tests {
             block_id: window.map(|w| w.replace("window", "block")),
             closed_at: None,
             selected: false,
+            forks_made: 0,
+            user_named: false,
         }
     }
 
