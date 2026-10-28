@@ -97,8 +97,9 @@ pub struct AgentStore {
 }
 
 impl AgentStore {
-    /// Load from `path`. A missing or unreadable file is an empty store. A `resume` that fails
-    /// the report check is cleared (the record stays), so a tampered file can't bypass the gate.
+    /// Load from `path`. A missing or unreadable file is an empty store. A `resume` must pass the
+    /// report check, so a tampered file can't bypass the gate: a live record failing it keeps
+    /// running without one, and an asleep or closed record, which only `resume` can wake, drops.
     pub fn load(path: PathBuf) -> Self {
         let Saved {
             mut records,
@@ -112,6 +113,7 @@ impl AgentStore {
                 r.resume = None;
             }
         }
+        records.retain(|r| r.state == RecordState::Live || r.resume.is_some());
         AgentStore {
             path: Some(path),
             records,
@@ -614,12 +616,15 @@ mod tests {
             None,
             Some("claude --resume x"),
         ));
+        s.upsert(rec("c", RecordState::Closed, None, Some("sh -c 'id'")));
+        s.upsert(rec("d", RecordState::Live, Some("w4"), Some("sh -c 'id'")));
         let loaded = AgentStore::load(path);
         let r = loaded.records("p");
-        assert_eq!(r.len(), 2, "records are kept");
-        let by = |id: &str| r.iter().find(|x| x.id == id).unwrap().resume.clone();
-        assert_eq!(by("a"), None);
-        assert_eq!(by("b").as_deref(), Some("claude --resume x"));
+        let by = |id: &str| r.iter().find(|x| x.id == id).map(|x| x.resume.clone());
+        assert_eq!(by("a"), None, "asleep with nothing to wake it: dropped");
+        assert_eq!(by("c"), None, "closed with nothing to reopen it: dropped");
+        assert_eq!(by("b"), Some(Some("claude --resume x".into())));
+        assert_eq!(by("d"), Some(None), "live: kept, without the command");
     }
 
     #[test]
