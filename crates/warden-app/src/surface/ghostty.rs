@@ -657,6 +657,7 @@ declare_class!(
                 surface: Cell::new(ptr::null_mut()),
                 mouse_shape: Cell::new(0),
                 tracking_area: RefCell::new(None),
+                rex: Cell::new(false),
             });
             unsafe { msg_send_id![super(this), initWithFrame: frame] }
         }
@@ -700,6 +701,11 @@ declare_class!(
                         emit_event_trampoline,
                     )
                 };
+                // Focus landing in the key window is a claim edge for a Rex pane; in a
+                // background window it isn't yet — `windowDidBecomeKey:` raises it then.
+                if self.window().is_some_and(|w| w.isKeyWindow()) {
+                    self.user_input();
+                }
             }
             true
         }
@@ -744,6 +750,7 @@ declare_class!(
             }
             FOCUSED_SURFACE.store(surface, Ordering::Release);
             unsafe { ffi::ghostty_surface_set_focus(surface, true) };
+            self.user_input();
         }
 
         #[method(windowDidResignKey:)]
@@ -773,6 +780,7 @@ declare_class!(
 
         #[method(keyDown:)]
         fn key_down(&self, event: &NSEvent) {
+            self.user_input();
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
         }
 
@@ -831,6 +839,8 @@ declare_class!(
                     ffi::ghostty_surface_set_focus(surface, true);
                 }
             }
+            // Arrows, F-keys and ⌘-chords the menu didn't take are typing too.
+            self.user_input();
             let consumed =
                 unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
             objc2::runtime::Bool::new(consumed)
@@ -921,6 +931,7 @@ declare_class!(
         #[method(mouseDown:)]
         fn mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            self.user_input();
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT) };
         }
         #[method(mouseUp:)]
@@ -935,6 +946,7 @@ declare_class!(
         #[method(rightMouseDown:)]
         fn right_mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            self.user_input();
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) };
         }
         #[method(rightMouseUp:)]
@@ -949,6 +961,7 @@ declare_class!(
         #[method(otherMouseDown:)]
         fn other_mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
+            self.user_input();
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE) };
         }
         #[method(otherMouseUp:)]
@@ -1021,11 +1034,36 @@ struct HostIvars {
     /// The view's live `NSTrackingArea`, held so `updateTrackingAreas` can remove the old one
     /// before installing a replacement (AppKit would otherwise stack duplicates on every resize).
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
+    /// Whether this surface shows a Rex pane (its spec has a `server`), so it raises
+    /// `SurfaceSignal::UserInput`. Set once in `new`; a plain pane leaves it false.
+    rex: Cell<bool>,
 }
 
 impl WardenHostView {
     fn set_surface(&self, surface: ffi::ghostty_surface_t) {
         self.ivars().surface.set(surface);
+    }
+
+    /// Raise `UserInput` for a Rex pane; nothing for a plain one. DEFERRED to the next main-queue
+    /// turn like `Focused`: it is called from inside AppKit event methods — and from
+    /// `becomeFirstResponder`, which `Registry::activate` reaches with `ManagerState` held — so a
+    /// handler that locked the manager here would re-enter it.
+    fn user_input(&self) {
+        let surface = self.ivars().surface.get();
+        if surface.is_null() || !self.ivars().rex.get() {
+            return;
+        }
+        let event = Box::new(SurfaceEvent {
+            surface_id: surface as usize,
+            signal: SurfaceSignal::UserInput,
+        });
+        unsafe {
+            dispatch_async_f(
+                main_queue(),
+                Box::into_raw(event) as *mut c_void,
+                emit_event_trampoline,
+            )
+        };
     }
 
     /// Is this the ONE host view in its window that window-scoped key traffic belongs to —
@@ -1287,6 +1325,21 @@ impl GhosttySurface {
         self.surface as usize
     }
 
+    /// The terminal grid this surface lays out, `(columns, rows)`, as of its last size push.
+    pub fn grid(&self) -> (u16, u16) {
+        let s = unsafe { ffi::ghostty_surface_size(self.surface) };
+        (s.columns, s.rows)
+    }
+
+    /// One cell's size in device pixels, `(width, height)`; `None` while libghostty doesn't know
+    /// it, or when it doesn't fit a `u16`.
+    pub fn cell_px(&self) -> Option<(u16, u16)> {
+        let s = unsafe { ffi::ghostty_surface_size(self.surface) };
+        let w = u16::try_from(s.cell_width_px).ok().filter(|&w| w > 0)?;
+        let h = u16::try_from(s.cell_height_px).ok().filter(|&h| h > 0)?;
+        Some((w, h))
+    }
+
     /// `ns_window` is the raw `NSWindow *` pointer returned by Tauri's
     /// `WebviewWindow::ns_window()`. The `contentView` is derived here, keeping
     /// all objc2/AppKit calls inside this module (the seam constraint).
@@ -1409,6 +1462,7 @@ impl GhosttySurface {
             // Per-view ownership => first-responder routing is correct across
             // windows by construction, no shared global to disambiguate.
             host_view.set_surface(surface);
+            host_view.ivars().rex.set(spec.server.is_some());
 
             // Seed the surface's focus from the REAL current state instead of libghostty's
             // "assume focused" default. A surface is created focused=1, which starts its 60fps

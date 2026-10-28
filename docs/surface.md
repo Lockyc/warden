@@ -111,6 +111,11 @@ surface-destroying or lock-taking action takes the same path.
   turn, since it also fires inside `activate`'s `focus()` under the `ManagerState` lock — and
   `manager.rs::handle_surface_focused` emits `warden:pane-focused`. The chrome's per-pane
   `mousedown` covers only a cold pane's backstop.
+- **A Rex pane's size claims come from AppKit, never from the PTY.** A Rex pane's host view raises
+  `SurfaceSignal::UserInput` (deferred, like `Focused`) on every key and mouse press, on
+  `becomeFirstResponder` in the key window, and on `windowDidBecomeKey:` for the pane that owns the
+  window's keys → `handle_user_input` → `rex::size`'s worker → `RexHub::claim`. Frame changes go
+  the same way as `resize_if_owner`. A plain pane raises nothing.
 - **The pointer leaving the sidebar is reported natively too.** The surface takes the pointer the
   instant it leaves the chrome, so the page's `:hover` freezes after a fast flick. The host view's
   `mouseEntered:` raises `SurfaceSignal::PointerEntered` → `handle_pointer_entered` →

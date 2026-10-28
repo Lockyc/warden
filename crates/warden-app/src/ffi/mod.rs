@@ -438,6 +438,20 @@ const _: () = assert!(std::mem::size_of::<ghostty_action_child_exited_s>() <= 24
 // keystroke, so guard its size too (3×enum + keycode = 16, ptr 16..24, u32+bool → 32).
 const _: () = assert!(std::mem::size_of::<ghostty_input_key_s>() == 32);
 
+/// The surface's grid and pixel sizes (`ghostty_surface_size_s`), returned by value.
+#[repr(C)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct ghostty_surface_size_s {
+    pub columns: u16,
+    pub rows: u16,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub cell_width_px: u32,
+    pub cell_height_px: u32,
+}
+// Returned by value: a layout drift would misread every field.
+const _: () = assert!(std::mem::size_of::<ghostty_surface_size_s>() == 20);
+
 // --- Published C API (minimal: init/app, surface new/free, set_size, set_content_scale, key, focus) ---
 extern "C" {
     // int ghostty_init(uintptr_t, char**);
@@ -481,6 +495,9 @@ extern "C" {
 
     // void ghostty_surface_set_size(ghostty_surface_t, uint32_t, uint32_t);
     pub fn ghostty_surface_set_size(surface: ghostty_surface_t, width: u32, height: u32);
+
+    // ghostty_surface_size_s ghostty_surface_size(ghostty_surface_t);
+    pub fn ghostty_surface_size(surface: ghostty_surface_t) -> ghostty_surface_size_s;
 
     // void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
     pub fn ghostty_surface_set_content_scale(surface: ghostty_surface_t, x: f64, y: f64);
