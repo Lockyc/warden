@@ -13,7 +13,7 @@ use rex_client::RexError;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::server::LOCAL;
-use super::{HubEvent, PaneTarget, RexHub};
+use super::{unclaimed, HubEvent, PaneTarget, RexHub};
 use crate::probe::Presence;
 use crate::registry::{RexLanded, RexOpen, RexOpener};
 use crate::surface::TabSpec;
@@ -46,12 +46,14 @@ pub fn relay_command(relay: &Path, t: &PaneTarget) -> String {
 
 /// `spec` as the surface runs it once its session is `t`: the relay instead of the shell, and
 /// nothing typed, since the session's terminal had its `cmd` typed when it was created. A remote
-/// tab's `dir` is a path on its server, so the relay starts at `/` here.
+/// tab's `dir` is a path on its server, and an unclaimed session's tab has none, so for those the
+/// relay starts at `/` here.
 pub fn effective_spec(spec: &TabSpec, t: &PaneTarget) -> TabSpec {
     let mut e = spec.clone();
     e.shell = relay_command(&relay_path(), t);
     e.startup = None;
-    if spec.server.as_deref().is_some_and(|s| s != LOCAL) {
+    let server = spec.server.as_deref();
+    if server.is_some_and(|s| s != LOCAL) || unclaimed::is_unclaimed(&spec.id, &spec.dir, server) {
         e.dir = PathBuf::from("/");
     }
     e
@@ -83,21 +85,28 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
                     // Without the relay the pane's command would fail at once, with no reason
                     // shown; say what's missing instead.
                     _ if !relay.is_file() => Err(format!("{} is missing", relay.display())),
-                    Some(hub) => hub
-                        .ensure_session(
+                    Some(hub) => {
+                        // An unclaimed session's pane attaches the session it lists.
+                        if unclaimed::is_unclaimed(&req.pane_key, &req.dir, Some(&req.server)) {
+                            if let Some(id) = unclaimed::session_of(&req.pane_key) {
+                                hub.adopt(&req.pane_key, &req.server, id);
+                            }
+                        }
+                        hub.ensure_session(
                             &req.pane_key,
                             &req.server,
                             &req.dir,
                             req.startup.as_deref(),
                             &req.label,
                         )
-                        .map_err(|e| open_error(&req.server, &e)),
+                        .map_err(|e| open_error(&req.server, &e))
+                    }
                     None => Err(format!("Rex server {}: no connection to Rex", req.server)),
                 };
                 let server = req.server.clone();
                 let main = app.clone();
                 let _ = app.run_on_main_thread(move || landed(&main, &label, &req, result));
-                refresh_presence(&app, Some(&server));
+                hub_changed(&app, Some(&server));
             })
             .map(|_| ())
             .map_err(|e| format!("Rex server: couldn't start opening the session: {e}"))
@@ -167,10 +176,19 @@ pub fn refresh_presence(app: &AppHandle, server: Option<&str>) {
     }
 }
 
-/// Keep Rex tabs' presence dots current for the app's life: every change the hub reports to a
-/// server's session list, and every drop and return of its connection, repaints that server's
-/// tabs. It never waits on `Reconnected` alone — a caller can restore a connection first, and then
-/// none is sent — which is why each open also refreshes ([`opener`]).
+/// A server's session list, or which sessions panes map to, may have changed: repaint its tabs'
+/// presence dots and every window's unclaimed sessions. Locks only; safe from any thread but the
+/// main one holding `ManagerState`.
+pub fn hub_changed(app: &AppHandle, server: Option<&str>) {
+    refresh_presence(app, server);
+    unclaimed::refresh(app);
+}
+
+/// Keep Rex tabs' presence dots and the unclaimed-session lists current for the app's life: every
+/// change the hub reports to a server's session list, and every return of its connection,
+/// refreshes both ([`hub_changed`]); a drop repaints the dots alone, since the sessions it last
+/// listed still exist. It never waits on `Reconnected` alone — a caller can restore a connection
+/// first, and then none is sent — which is why each open, ☠ and exit also refreshes.
 pub fn watch_presence(app: AppHandle) {
     let Some(hub) = app.try_state::<RexHub>().map(|h| h.inner().clone()) else {
         return;
@@ -181,9 +199,10 @@ pub fn watch_presence(app: AppHandle) {
         .spawn(move || {
             for ev in events {
                 match ev {
-                    HubEvent::SessionsChanged { server }
-                    | HubEvent::Disconnected { server }
-                    | HubEvent::Reconnected { server } => refresh_presence(&app, Some(&server)),
+                    HubEvent::SessionsChanged { server } | HubEvent::Reconnected { server } => {
+                        hub_changed(&app, Some(&server))
+                    }
+                    HubEvent::Disconnected { server } => refresh_presence(&app, Some(&server)),
                     HubEvent::OwnerChanged { .. } => {}
                 }
             }
@@ -194,7 +213,7 @@ pub fn watch_presence(app: AppHandle) {
 }
 
 /// A Rex pane's program exited (its relay did): end its session if its terminal really finished,
-/// on a worker, then repaint the dots. A relay that left for any other reason (the server
+/// on a worker, then refresh ([`hub_changed`]). A relay that left for any other reason (the server
 /// unreachable, the pane closed) leaves the session for the next open to reattach.
 pub fn end_if_exited(app: &AppHandle, pane_key: String) {
     let app = app.clone();
@@ -204,7 +223,7 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String) {
             if let Some(hub) = app.try_state::<RexHub>() {
                 hub.destroy_if_exited(&pane_key);
             }
-            refresh_presence(&app, None);
+            hub_changed(&app, None);
         });
     if let Err(e) = spawned {
         eprintln!("warden: couldn't start checking whether a Rex session ended: {e}");
@@ -212,7 +231,7 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String) {
 }
 
 /// Destroy the Rex sessions of `pane_keys` (☠ on tab `id` of window `label`) on a worker, then
-/// repaint the dots and burst the window's probes the way a `kill` command's end does.
+/// refresh ([`hub_changed`]) and burst the window's probes the way a `kill` command's end does.
 pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -225,7 +244,7 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
                     }
                 }
             }
-            refresh_presence(&app, None);
+            hub_changed(&app, None);
             crate::probe::bump_tab_await(&label, &id, false);
         });
     if let Err(e) = spawned {
@@ -316,6 +335,13 @@ mod tests {
         // A remote tab's dir is a path on that server; the relay itself needs none here.
         let e = effective_spec(&spec("remote-host", "~/proj"), &target());
         assert_eq!(e.dir, PathBuf::from("/"));
+    }
+
+    #[test]
+    fn effective_spec_runs_an_unclaimed_sessions_relay_from_root() {
+        let mut s = spec(LOCAL, "");
+        s.id = "rex:session:x".into();
+        assert_eq!(effective_spec(&s, &target()).dir, PathBuf::from("/"));
     }
 
     #[test]

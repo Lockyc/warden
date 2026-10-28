@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -118,7 +119,7 @@ fn ensure_session_creates_when_unmapped() {
             session_id: "session:new".into()
         })
     );
-    assert!(hub.claimed_session_ids().contains("session:new"));
+    assert!(hub.claimed_session_ids(["tab-a"]).contains("session:new"));
 }
 
 #[test]
@@ -210,7 +211,7 @@ fn destroy_removes_mapping_and_calls_session_destroy() {
     assert_eq!(destroys.len(), 1);
     assert_eq!(destroys[0].payload["session_id"], "session:new");
     assert!(RexStore::load(path).get("tab-a").is_none());
-    assert!(hub.claimed_session_ids().is_empty());
+    assert!(hub.claimed_session_ids(["tab-a"]).is_empty());
     hub.destroy("tab-a")
         .expect("destroying an unmapped pane is a no-op");
     assert_eq!(fake.requests_for("session.destroy").len(), 1);
@@ -382,7 +383,7 @@ fn real_server_ensure_reattach_destroy() {
     );
     assert!(!hub.block_exited("t"), "the shell is still running");
     hub.destroy("t").expect("destroy");
-    assert!(hub.block_exited("t") || hub.claimed_session_ids().is_empty());
+    assert!(hub.block_exited("t") || hub.claimed_session_ids(["t"]).is_empty());
 }
 
 #[test]
@@ -618,7 +619,7 @@ fn destroy_if_exited_ends_only_a_finished_block() {
     );
     assert!(hub.destroy_if_exited("tab-a"));
     assert_eq!(fake.requests_for("session.destroy").len(), 1);
-    assert!(hub.claimed_session_ids().is_empty());
+    assert!(hub.claimed_session_ids(["tab-a"]).is_empty());
 }
 
 #[test]
@@ -847,4 +848,182 @@ fn real_server_claim_takes_the_size() {
         (after["columns"].clone(), after["rows"].clone()),
         (json!(123), json!(37))
     );
+}
+
+#[test]
+fn synthesized_tab_attaches_existing_session() {
+    let fake = scripted(json!([{"session_id": "session:orphan", "label": "made elsewhere"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, path) = hub_on(fake.endpoint(), &dir);
+    hub.connect("local").expect("connect");
+
+    let claimed = hub.claimed_session_ids(["tab-a", "tab-a::2"]);
+    let tabs = super::unclaimed::synthesize("local", &hub.live_sessions("local"), &claimed);
+    assert_eq!(tabs.len(), 1);
+    let tab = &tabs[0];
+    hub.adopt(&tab.key, "local", "session:orphan");
+    let t = hub
+        .ensure_session(&tab.key, "local", &tab.dir, None, &tab.title)
+        .expect("attach the unclaimed session");
+    assert_eq!(t.session_id, "session:orphan");
+    assert_eq!(t.block_id, "block-of-session:orphan");
+    assert!(fake.requests_for("session.create").is_empty());
+    assert!(
+        RexStore::load(path).get(&tab.key).is_none(),
+        "an adoption is never persisted"
+    );
+    assert!(
+        hub.claimed_session_ids([tab.key.as_str()]).is_empty(),
+        "an open unclaimed session stays in the list it was opened from"
+    );
+    assert!(hub.session_alive(&tab.key));
+}
+
+#[test]
+fn an_adopted_session_that_ended_is_never_recreated() {
+    let fake = scripted(json!([]));
+    fake.on("session.attach", |_, _| {
+        Reply::error("session_not_found", "no such session", 404)
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.adopt("rex:session:gone", "local", "session:gone");
+    let r = hub.ensure_session("rex:session:gone", "local", Path::new(""), None, "gone");
+    assert!(
+        matches!(r, Err(RexError::Api { ref code, .. }) if code == "session_not_found"),
+        "{r:?}"
+    );
+    assert!(fake.requests_for("session.create").is_empty());
+}
+
+#[test]
+fn old_session_becomes_unclaimed() {
+    let remote = scripted(json!([]));
+    let local = scripted(json!([{"session_id": "session:old", "label": "proj · main"}]));
+    local.reply(
+        "hosts.list",
+        json!({"hash": "h", "hosts": [
+            {"label": "remote-host", "endpoints": [remote.endpoint().to_string()]}
+        ]}),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rex-sessions.json");
+    seed(&path, "t", "local", "session:old");
+    let (hub, _) = hub_on(local.endpoint(), &dir);
+    let unclaimed = |hub: &RexHub| -> Vec<String> {
+        let claimed = hub.claimed_session_ids(["t", "t::2"]);
+        super::unclaimed::synthesize("local", &hub.live_sessions("local"), &claimed)
+            .into_iter()
+            .map(|t| t.key)
+            .collect()
+    };
+
+    hub.ensure_session("t", "local", Path::new("/w"), None, "w · main")
+        .expect("open on local");
+    assert!(unclaimed(&hub).is_empty(), "the tab claims it");
+
+    // The tab's `server` changes: its pane now maps to a session on the remote.
+    hub.ensure_session("t", "remote-host", Path::new("/w"), None, "w · main")
+        .expect("open on the remote");
+    assert_eq!(unclaimed(&hub), ["rex:session:old"]);
+}
+
+#[test]
+fn a_session_whose_tab_left_the_config_is_unclaimed() {
+    let fake = scripted(json!([{"session_id": "session:old", "label": "proj · main"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rex-sessions.json");
+    seed(&path, "deleted-tab", "local", "session:old");
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    assert!(hub.claimed_session_ids(["kept-tab"]).is_empty());
+    assert_eq!(
+        hub.claimed_session_ids(["deleted-tab"]),
+        HashSet::from(["session:old".to_string()])
+    );
+}
+
+#[test]
+fn a_dropped_servers_sessions_stay_listed() {
+    let fake = scripted(json!([{"session_id": "session:a", "label": "a"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.connect("local").expect("connect");
+    drop(fake);
+    next_event(
+        &rx,
+        |e| matches!(e, HubEvent::Disconnected { server } if server == "local"),
+    );
+    let ids: Vec<String> = hub
+        .live_sessions("local")
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    assert_eq!(
+        ids,
+        ["session:a"],
+        "a session isn't gone because its server is"
+    );
+}
+
+/// Manual, against this Mac's running Rex server (`cargo test -p warden-app real_server_unclaimed
+/// -- --ignored`): a session made outside warden lists as unclaimed, and its tab's pane attaches
+/// it without making another. Touches only a session labelled `warden-unclaimed-test`, made and
+/// destroyed here; reads the others' list and nothing more.
+#[test]
+#[ignore = "needs a running Rex server"]
+fn real_server_unclaimed_session_attaches() {
+    use rex_client::ControlClient;
+    let label = "warden-unclaimed-test";
+    let other = ControlClient::connect(&Endpoint::local(), &info()).expect("connect");
+    let made = other
+        .call(
+            "session.create",
+            json!({"label": label, "initial_windows": [{"layout": {"block": {
+                "flavor": "com.superlogical.terminal.shell", "options": {"cwd": "/tmp"}}}}]}),
+        )
+        .expect("create the test session");
+    let id = made["session_id"].as_str().expect("session id").to_owned();
+    struct Cleanup<'a>(&'a ControlClient, String);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = self
+                .0
+                .call("session.destroy", json!({ "session_id": self.1 }));
+        }
+    }
+    let _cleanup = Cleanup(&other, id.clone());
+    let count = || -> usize {
+        let list = other.call("session.list", json!({})).expect("list");
+        list["sessions"]
+            .as_array()
+            .map(|a| a.iter().filter(|s| s["label"] == label).count())
+            .unwrap_or(0)
+    };
+    assert_eq!(count(), 1);
+
+    let dir = tempfile::tempdir().unwrap();
+    let hub = RexHub::new(dir.path().join("rex-sessions.json"), info());
+    hub.connect("local").expect("hub connects");
+    let tabs = super::unclaimed::synthesize(
+        "local",
+        &hub.live_sessions("local"),
+        &hub.claimed_session_ids(["t"]),
+    );
+    let tab = tabs
+        .iter()
+        .find(|t| super::unclaimed::session_of(&t.key) == Some(id.as_str()))
+        .expect("the test session lists as unclaimed");
+    assert_eq!(tab.title, label);
+    assert_eq!(tab.group.as_deref(), Some("Rex · local"));
+    hub.adopt(&tab.key, "local", &id);
+    let t = hub
+        .ensure_session(&tab.key, "local", &tab.dir, None, &tab.title)
+        .expect("attach");
+    assert_eq!(t.session_id, id);
+    assert_eq!(count(), 1, "attaching made no session");
+    assert!(hub.claimed_session_ids([tab.key.as_str()]).is_empty());
+
+    hub.destroy(&tab.key).expect("☠ ends it");
+    assert_eq!(count(), 0, "the test session is gone");
 }

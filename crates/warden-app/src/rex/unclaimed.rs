@@ -1,0 +1,286 @@
+//! Rex sessions no tab claims, listed in the sidebar so none is ever hidden.
+//!
+//! Each window lists, under a `Rex · <server>` group, the sessions on the servers its own Rex
+//! tabs use that no configured pane maps to: made in Rex.app or on the phone, left behind when a
+//! tab moved server or left the config, or orphaned by an open that timed out. Each is an
+//! ordinary [`Tab`] keyed `rex:<session id>`, with no `dir`: opening it seeds the hub in memory
+//! (`RexHub::adopt`) so its pane attaches that session and never creates one, and nothing is
+//! written to config. It stays listed while open, and leaves when the session ends.
+
+use std::collections::HashSet;
+use std::path::Path;
+
+use tauri::{AppHandle, Manager};
+use warden_config::{Config, Tab};
+
+use super::{RexHub, SessionInfo};
+use crate::ManagerState;
+
+/// What an unclaimed session's tab key starts with; the session id follows.
+const KEY_PREFIX: &str = "rex:";
+
+/// The sidebar group `server`'s unclaimed sessions are listed under.
+pub fn group(server: &str) -> String {
+    format!("Rex · {server}")
+}
+
+/// A tab for each session in `live` (on `server`) that `claimed` doesn't hold, in `live`'s order.
+pub fn synthesize(server: &str, live: &[SessionInfo], claimed: &HashSet<String>) -> Vec<Tab> {
+    live.iter()
+        .filter(|s| !claimed.contains(&s.id))
+        .map(|s| Tab {
+            id: None,
+            key: format!("{KEY_PREFIX}{}", s.id),
+            title: if s.label.is_empty() {
+                s.id.clone()
+            } else {
+                s.label.clone()
+            },
+            dir: Default::default(),
+            shell: String::new(),
+            startup: None,
+            load_on_open: false,
+            group: Some(group(server)),
+            probe: None,
+            kill: None,
+            suspend: None,
+            server: Some(server.to_owned()),
+            split: None,
+        })
+        .collect()
+}
+
+/// Whether a tab keyed `key` with `dir` on `server` is an unclaimed session's: a Rex tab with no
+/// `dir`, keyed by its session. Such a pane only ever attaches.
+pub fn is_unclaimed(key: &str, dir: &Path, server: Option<&str>) -> bool {
+    server.is_some() && dir.as_os_str().is_empty() && key.starts_with(KEY_PREFIX)
+}
+
+/// The session an unclaimed session's pane key names.
+pub fn session_of(pane_key: &str) -> Option<&str> {
+    pane_key.strip_prefix(KEY_PREFIX)
+}
+
+/// Replace `config`'s unclaimed-session tabs with the current ones: in each window, for each
+/// server its own tabs use (in tab order), [`synthesize`] over `live(server)`, skipping a key
+/// the window already has.
+pub fn add_unclaimed(
+    config: &mut Config,
+    live: impl Fn(&str) -> Vec<SessionInfo>,
+    claimed: &HashSet<String>,
+) {
+    for window in &mut config.windows {
+        window
+            .tabs
+            .retain(|t| !is_unclaimed(&t.key, &t.dir, t.server.as_deref()));
+        let mut servers: Vec<String> = Vec::new();
+        for s in window.tabs.iter().filter_map(|t| t.server.as_ref()) {
+            if !servers.contains(s) {
+                servers.push(s.clone());
+            }
+        }
+        let mut seen: HashSet<String> = window.tabs.iter().map(|t| t.key.clone()).collect();
+        for server in servers {
+            for t in synthesize(&server, &live(&server), claimed) {
+                if seen.insert(t.key.clone()) {
+                    window.tabs.push(t);
+                }
+            }
+        }
+    }
+}
+
+/// [`add_unclaimed`] from the hub's session lists, a session counting as claimed when a pane of
+/// one of `config`'s own Rex tabs (main or split) maps to it — so a session whose tab left the
+/// config, or moved server, is listed.
+pub fn append(config: &mut Config, hub: &RexHub) {
+    let pane_keys: Vec<String> = config
+        .windows
+        .iter()
+        .flat_map(|w| &w.tabs)
+        .filter(|t| t.server.is_some() && !is_unclaimed(&t.key, &t.dir, t.server.as_deref()))
+        .flat_map(|t| [t.key.clone(), crate::registry::secondary_id(&t.key)])
+        .collect();
+    let claimed = hub.claimed_session_ids(pane_keys.iter().map(String::as_str));
+    add_unclaimed(config, |server| hub.live_sessions(server), &claimed);
+}
+
+/// Bring every window's unclaimed sessions up to date with the hub, from any thread but the main
+/// one holding `ManagerState`: on the main thread, re-[`append`] `last_good` (what's on screen) and
+/// reconcile the difference, like `rescan_root` without the rescan. A row that opened keeps its
+/// terminal; a row whose session ended goes, with its terminal.
+pub fn refresh(app: &AppHandle) {
+    let main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let (Some(st), Some(hub)) = (main.try_state::<ManagerState>(), main.try_state::<RexHub>())
+        else {
+            return;
+        };
+        {
+            let mut m = st.lock();
+            let mut fresh = m.last_good.clone();
+            append(&mut fresh, &hub);
+            if fresh == m.last_good {
+                return;
+            }
+            let recon = warden_config::reconcile(&m.last_good, &fresh);
+            m.apply(&main, &recon, fresh);
+            m.record_all_sessions();
+        }
+        super::spawn::refresh_presence(&main, None);
+    });
+}
+
+/// Connect, on a worker, to every Rex server `config`'s tabs name, then refresh what they list —
+/// so a window shows its servers' unclaimed sessions (and its Rex tabs' dots) at launch and after
+/// a reload, without waiting for one of its tabs to open.
+pub fn connect(app: &AppHandle, config: &Config) {
+    let mut servers: Vec<String> = Vec::new();
+    for t in config.windows.iter().flat_map(|w| &w.tabs) {
+        if let Some(s) = t.server.as_ref().filter(|s| !servers.contains(s)) {
+            servers.push(s.clone());
+        }
+    }
+    if servers.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("warden-rex-connect".into())
+        .spawn(move || {
+            let Some(hub) = app.try_state::<RexHub>() else {
+                return;
+            };
+            for server in servers {
+                match hub.connect(&server) {
+                    Ok(()) => super::spawn::hub_changed(&app, Some(&server)),
+                    Err(e) => eprintln!("warden: Rex server {server}: {e}"),
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("warden: couldn't start connecting to Rex servers: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use warden_config::{Colour, Density, TabDigitKeys, Window};
+
+    fn session(id: &str, label: &str) -> SessionInfo {
+        SessionInfo {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+
+    fn tab(key: &str, server: Option<&str>) -> Tab {
+        Tab {
+            id: None,
+            key: key.into(),
+            title: key.into(),
+            dir: PathBuf::from("/w"),
+            shell: "sh".into(),
+            startup: None,
+            load_on_open: false,
+            group: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            server: server.map(Into::into),
+            split: None,
+        }
+    }
+
+    fn window(title: &str, tabs: Vec<Tab>) -> Window {
+        Window {
+            title: title.into(),
+            colour: Colour { r: 0, g: 0, b: 0 },
+            width: 1500,
+            height: 1000,
+            open_on_start: true,
+            open_tabs_section: false,
+            remember_tabs: false,
+            tabs,
+            roots: Vec::new(),
+        }
+    }
+
+    fn config(windows: Vec<Window>) -> Config {
+        Config {
+            windows,
+            format_on_save: false,
+            tab_digit_keys: TabDigitKeys::default(),
+            probe_interval: 5,
+            density: Density::default(),
+            sidebar_drag: true,
+            auto_update: true,
+            notify_debug: false,
+        }
+    }
+
+    #[test]
+    fn synthesize_lists_only_unclaimed() {
+        let live = [
+            session("session:mine", "proj · main"),
+            session("session:phone", "made on the phone"),
+            session("session:blank", ""),
+        ];
+        let claimed = HashSet::from(["session:mine".to_string()]);
+        let tabs = synthesize("local", &live, &claimed);
+        let keys: Vec<_> = tabs.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["rex:session:phone", "rex:session:blank"]);
+        let t = &tabs[0];
+        assert_eq!(t.title, "made on the phone");
+        assert_eq!(t.group.as_deref(), Some("Rex · local"));
+        assert_eq!(t.server.as_deref(), Some("local"));
+        assert_eq!(t.dir, PathBuf::new());
+        assert_eq!(t.startup, None);
+        assert_eq!(t.split, None);
+        assert!(!t.load_on_open);
+        assert_eq!(
+            tabs[1].title, "session:blank",
+            "an unlabelled session shows its id"
+        );
+        assert!(is_unclaimed(&t.key, &t.dir, t.server.as_deref()));
+        assert_eq!(session_of(&t.key), Some("session:phone"));
+    }
+
+    #[test]
+    fn window_without_rex_tabs_shows_no_unclaimed() {
+        let mut cfg = config(vec![
+            window("rex", vec![tab("plain", None), tab("agent", Some("local"))]),
+            window("plain", vec![tab("other", None)]),
+        ]);
+        let live = |server: &str| match server {
+            "local" => vec![session("session:mine", "m"), session("session:orphan", "o")],
+            _ => vec![session("session:elsewhere", "e")],
+        };
+        let claimed = HashSet::from(["session:mine".to_string()]);
+        add_unclaimed(&mut cfg, live, &claimed);
+        let keys = |w: &Window| w.tabs.iter().map(|t| t.key.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            keys(&cfg.windows[0]),
+            ["plain", "agent", "rex:session:orphan"],
+            "only the servers this window's tabs use"
+        );
+        assert_eq!(keys(&cfg.windows[1]), ["other"], "no Rex tabs, no section");
+
+        // Run again (a refresh over the result): the old rows go, the current ones come back once.
+        add_unclaimed(&mut cfg, |_| vec![session("session:new", "n")], &claimed);
+        assert_eq!(keys(&cfg.windows[0]), ["plain", "agent", "rex:session:new"]);
+    }
+
+    #[test]
+    fn a_curated_tab_is_never_taken_for_an_unclaimed_one() {
+        let curated = tab("rex:mine", Some("local"));
+        assert!(!is_unclaimed(
+            &curated.key,
+            &curated.dir,
+            curated.server.as_deref()
+        ));
+        assert!(!is_unclaimed("rex:s", Path::new(""), None), "not a Rex tab");
+    }
+}

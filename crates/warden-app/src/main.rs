@@ -382,7 +382,8 @@ fn unload_tab(
 /// pane — it just re-activates an already-live one.
 ///
 /// Once `split` has run the registry holds the split, so this returns `Ok` whatever `activate`
-/// reports; the chrome collapses its split only on `Err` (`window not found`). `activate`'s `Err`
+/// reports; the chrome collapses its split only on `Err` (`window not found`, or a tab that can't
+/// split, which the chrome's banner shows). `activate`'s `Err`
 /// is the *primary's* spawn failure (the secondary's is discarded), so it goes to this window's
 /// banner as a label-stamped `warden:error`, exactly as `activate_tab` reports it.
 #[cfg(target_os = "macos")]
@@ -399,7 +400,11 @@ fn split_pane(
             .windows
             .get_mut(window.label())
             .ok_or("window not found")?;
-        ws.registry.split(&id);
+        if !ws.registry.split(&id) {
+            return Err(
+                "this tab can't split: it shows a Rex session opened from the sidebar".into(),
+            );
+        }
         ws.registry.activate(&id)
     };
     if let Err(e) = primary {
@@ -967,7 +972,7 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
     // don't yield the main thread between the two locks, so no other writer can
     // interleave — `last_good`/`raw_config` are unchanged when we re-lock.
     let raw = state.lock().raw_config.clone();
-    let fresh = manager::effective_config(&raw);
+    let fresh = manager::effective_config(&raw, app.try_state::<rex::RexHub>().as_deref());
     {
         let mut m = state.lock();
         let recon = warden_config::reconcile(&m.last_good, &fresh);
@@ -1083,7 +1088,10 @@ fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
                 // the walk is slow and must never run under the ManagerState mutex, or it stalls
                 // the background probe thread for its whole duration (same discipline as
                 // `rescan_root` and the hot-reload watcher below).
-                let effective = manager::effective_config(&loaded.config);
+                let effective = manager::effective_config(
+                    &loaded.config,
+                    app.try_state::<rex::RexHub>().as_deref(),
+                );
                 let st = app.state::<ManagerState>();
                 let mut m = st.lock();
                 m.materialize_effective(&app, loaded.config, effective);
@@ -1591,7 +1599,10 @@ fn main() {
                                     // empty windows list simply open nothing / close everything,
                                     // and `sync_empty_surface` below shows the home surface's
                                     // (now-empty) window list — not an error state.
-                                    let new_eff = manager::effective_config(&loaded.config);
+                                    let new_eff = manager::effective_config(
+                                        &loaded.config,
+                                        wh.try_state::<rex::RexHub>().as_deref(),
+                                    );
                                     let st = wh.state::<ManagerState>();
                                     let mut m = st.lock();
                                     // A previous save may have left an error recorded (Broken);
@@ -1651,6 +1662,7 @@ fn main() {
                                         m.apply(&wh, &recon, new_eff);
                                         m.raw_config = loaded.config.clone();
                                         m.record_all_sessions();
+                                        rex::unclaimed::connect(&wh, &m.last_good);
                                         // A density/sidebar_drag flip alone produces no per-window
                                         // op, so apply() emitted nothing; re-push every window's
                                         // snapshot (now carrying the new globals) so each restyles.

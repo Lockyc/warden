@@ -101,7 +101,7 @@ mod tests {
             auto_update: true,
             notify_debug: false,
         };
-        let eff = crate::manager::effective_config(&cfg);
+        let eff = crate::manager::effective_config(&cfg, None);
         let tabs = &eff.windows[0].tabs;
         // The project appears exactly once, under the FIRST root's section.
         assert_eq!(tabs.len(), 1);
@@ -167,7 +167,7 @@ mod tests {
             auto_update: true,
             notify_debug: false,
         };
-        let eff = crate::manager::effective_config(&cfg);
+        let eff = crate::manager::effective_config(&cfg, None);
         let tabs = &eff.windows[0].tabs;
         assert_eq!(
             tabs.len(),
