@@ -152,6 +152,8 @@ pub struct RawRoot {
     pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
+    // Pins this root's discovered projects to one colour (no cascade: window/global reject it).
+    pub project_colour: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -172,6 +174,8 @@ pub struct RawTab {
     pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
+    // Pins this tab to one colour instead of an assigned pool colour.
+    pub project_colour: Option<String>,
     #[serde(default)]
     pub load_on_open: bool,
 }

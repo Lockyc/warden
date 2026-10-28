@@ -119,6 +119,12 @@ pub enum ResolveError {
         #[source]
         source: ColourError,
     },
+    #[error("window {window:?} has invalid project_colour")]
+    BadProjectColour {
+        window: String,
+        #[source]
+        source: ColourError,
+    },
     #[error("window at index {index} has an empty title")]
     EmptyWindowTitle { index: usize },
     #[error("window {window:?} has a tab with an empty explicit title")]
@@ -275,6 +281,17 @@ pub fn resolve_with(
         },
         warnings,
     ))
+}
+
+/// Parse a tab's or root's `project_colour`; any unparsable value (including `""`) is an error.
+fn resolve_project_colour(raw: Option<&str>, window: &str) -> Result<Option<Colour>, ResolveError> {
+    raw.map(|s| {
+        Colour::parse(s).map_err(|source| ResolveError::BadProjectColour {
+            window: window.to_string(),
+            source,
+        })
+    })
+    .transpose()
 }
 
 /// The global level of every tab-reaching cascade, resolved once and handed down to each
@@ -516,6 +533,7 @@ fn resolve_tab(
         resume,
         server,
         split,
+        project_colour: resolve_project_colour(rt.project_colour.as_deref(), &rp.title)?,
     })
 }
 
@@ -652,6 +670,7 @@ fn resolve_root(
         resume,
         server,
         split,
+        project_colour: resolve_project_colour(rr.project_colour.as_deref(), &rp.title)?,
     }))
 }
 
@@ -1192,6 +1211,65 @@ colour = "#000000"
                 window: "work".into()
             }
         );
+    }
+
+    #[test]
+    fn project_colour_cascades_root_to_tab() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  dir = "/tmp/a"
+  project_colour = "#ABC"
+  [[window.tab]]
+  dir = "/tmp/b"
+  [[window.root]]
+  dir = "/tmp/r"
+  project_colour = "#112233"
+  [[window.root]]
+  name = "plain"
+  dir = "/tmp/q"
+"##,
+        )
+        .unwrap();
+        let w = &cfg.windows[0];
+        assert_eq!(
+            w.tabs[0].project_colour,
+            Some(Colour::parse("#aabbcc").unwrap())
+        );
+        assert_eq!(w.tabs[1].project_colour, None);
+        assert_eq!(
+            w.roots[0].project_colour,
+            Some(Colour::parse("#112233").unwrap())
+        );
+        assert_eq!(w.roots[1].project_colour, None);
+    }
+
+    #[test]
+    fn project_colour_on_window_is_rejected() {
+        // Unknown keys are parse errors (`deny_unknown_fields`); a window or the global level
+        // has no `project_colour`, so it surfaces through the error banner like any stray key.
+        let window =
+            parse("[[window]]\ntitle = \"w\"\nproject_colour = \"#112233\"\n").unwrap_err();
+        assert!(window.to_string().contains("project_colour"));
+        let global = parse("project_colour = \"#112233\"\n").unwrap_err();
+        assert!(global.to_string().contains("project_colour"));
+    }
+
+    #[test]
+    fn malformed_project_colour_errors() {
+        for body in [
+            "[[window.tab]]\n  dir = \"/tmp/a\"\n  project_colour = \"teal\"",
+            "[[window.tab]]\n  dir = \"/tmp/a\"\n  project_colour = \"\"",
+            "[[window.root]]\n  dir = \"/tmp/r\"\n  project_colour = \"#12\"",
+        ] {
+            let err = resolve_str(&format!("[[window]]\ntitle = \"w\"\n  {body}\n")).unwrap_err();
+            assert!(
+                matches!(err, ResolveError::BadProjectColour { .. }),
+                "{err:?}"
+            );
+        }
     }
 
     #[test]

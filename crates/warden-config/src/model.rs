@@ -103,6 +103,8 @@ pub struct Root {
     pub server: Option<String>,
     /// Resolved second-pane split for discovered projects (`None` = no split).
     pub split: Option<Split>,
+    /// Colour pinned for discovered projects (`None` = assigned from the pool).
+    pub project_colour: Option<Colour>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,4 +149,6 @@ pub struct Tab {
     /// Resolved second pane for this tab (cascaded tab→window→global, whole-table). `None`
     /// = no split (a single pane).
     pub split: Option<Split>,
+    /// Colour pinned for this tab (`None` = assigned from the pool; see `assign_project_colours`).
+    pub project_colour: Option<Colour>,
 }

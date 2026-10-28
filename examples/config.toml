@@ -76,6 +76,7 @@ suspend = '"$HOME/.agentmux/bin/amux" --suspend'
   [[window.tab]]
     title = "dotfiles"
     dir   = "examples/projects/personal/dotfiles"
+    project_colour = "#6a1b9a"  # pin this project's colour; unset = one is assigned from a fixed pool
   [[window.tab]] # cmd = "" opts out of amux → plain shell; load_on_open runs it from launch;
     # split = false opts out of the global split so ⌘D's runtime split stays exercisable
     title        = "blog"
