@@ -82,6 +82,13 @@ else
   echo "→ ~/.config/warden/config.toml already exists — left untouched"
 fi
 
+# 7. Install the agent hook that lets a Rex agent tab sleep and wake (always overwritten, so an
+#    update ships its fix). Wiring it into Claude Code's settings is /warden:install's step.
+HOOK_DIR="$HOME/.local/share/warden/agent-hooks"
+mkdir -p "$HOOK_DIR"
+install -m 755 scripts/agent-hooks/claude-session-start.sh "$HOOK_DIR/claude-session-start.sh"
+echo "→ installed the Claude Code agent hook to $HOOK_DIR"
+
 echo ""
 echo "✓ warden installed to /Applications/warden.app"
 echo "  Edit ~/.config/warden/config.toml to define your windows + tabs (hot-reloads on save)."
