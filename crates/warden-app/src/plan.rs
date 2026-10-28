@@ -48,6 +48,7 @@ pub fn tab_to_plan(root_dirs: &HashMap<&str, &Path>, t: &Tab) -> TabPlan {
             tree,
             tree_path,
             split: t.split.clone(),
+            server: t.server.clone(),
         },
         load_on_open: t.load_on_open,
     }

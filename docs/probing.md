@@ -15,6 +15,10 @@ before touching `probe.rs`, the presence dot, or anything that bumps/reprobes. T
 user-facing `probe`/`kill` config and cascade are in [`docs/config.md`](config.md); the
 kill-dot-flicker and `emit_to`-leaks footguns stay in CLAUDE.md's *Conventions & footguns*.
 
+A Rex tab (config `server`) is never probed: `Registry::probe_targets` skips it, and its dot
+comes from the Rex hub's session lists (`rex::spawn::refresh_presence` → `probe::set_presence`),
+written into the same `PresenceCache` with the same record-then-emit-on-change rule.
+
 ## Probing runs off the main thread and must stamp the window label
 
 The scheduler (`probe::run_scheduler`, spawned once in `main.rs` setup — see *the scheduler

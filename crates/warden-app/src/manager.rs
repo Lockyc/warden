@@ -481,6 +481,7 @@ impl WindowManager {
         let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
 
         let mut registry = Registry::new(ns_window, INITIAL_RECT);
+        registry.set_rex_opener(crate::rex::spawn::opener(app.clone(), spec.label.clone()));
         // Surface-create failures (a null libghostty surface, an interior-NUL in a
         // config dir/shell) must NOT panic the whole app at launch — the failing
         // tab stays cold and its reason is collected for the init banner; every
@@ -701,6 +702,11 @@ impl WindowManager {
     /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told
     /// `warden:tab-exited` exactly as if the exit had happened docked — never a "Process exited"
     /// overlay left sitting in the detached window.
+    ///
+    /// **A Rex pane** exits the same way (its relay is the child), and additionally has its Rex
+    /// session ended when the program in it finished (`rex::spawn::end_if_exited`, on a worker),
+    /// so the next open makes a fresh one. A relay that left for any other reason leaves the
+    /// session to be reattached.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
@@ -716,6 +722,10 @@ impl WindowManager {
             let Some((tab_id, which)) = ws.registry.locate_surface(surface_id) else {
                 return;
             };
+            // A Rex pane's relay exited: its session ends too if its program did.
+            if let Some(key) = ws.registry.rex_pane_key(&tab_id, which) {
+                crate::rex::spawn::end_if_exited(app, key);
+            }
             let new_active = match which {
                 crate::registry::PaneIdx::Secondary => {
                     ws.registry.close_secondary(&tab_id);
@@ -750,6 +760,13 @@ impl WindowManager {
         let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
             return; // already gone (redocked or closed) — drop the signal
         };
+        if let Some(key) = lock
+            .detached
+            .get(&dlabel)
+            .and_then(|d| crate::registry::rex_pane_key(&d.spec, which))
+        {
+            crate::rex::spawn::end_if_exited(app, key);
+        }
         match which {
             crate::registry::PaneIdx::Secondary => {
                 let Some((origin_label, tab_id)) = lock.close_detached_secondary(&dlabel) else {
@@ -1371,7 +1388,7 @@ fn reconcile_returned_tab(
             &s.shell,
             s.startup.as_deref(),
             s.split.as_ref(),
-            None,
+            s.server.as_deref(),
         )
     }
     let n = &tp.spec;
@@ -1486,6 +1503,7 @@ mod tests {
             tree: false,
             tree_path: Vec::new(),
             split: None,
+            server: None,
         }
     }
 
@@ -1696,7 +1714,7 @@ mod tests {
         TabDto {
             id: id.to_string(),
             title: id.to_string(),
-            warn: false,
+            warn: None,
             spawned: false,
             group: None,
             has_probe: true,

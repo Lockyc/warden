@@ -528,6 +528,23 @@ fn emit_one(app: &AppHandle, label: &str, id: &str, on: Presence) {
     emit_states(app, label, states);
 }
 
+/// Set one tab's presence from a source other than its probe (a Rex tab's sessions): recorded in
+/// the `PresenceCache` and emitted only when it changed, exactly as [`observe`] does for a probe
+/// result.
+pub fn set_presence(app: &AppHandle, label: &str, tab_id: &str, p: Presence) {
+    let Some(state) = app.try_state::<ManagerState>() else {
+        return;
+    };
+    let prev = state.lock().presence_cache.snapshot(label);
+    observe(
+        &prev,
+        tab_id,
+        p,
+        |id, on| state.lock().presence_cache.record_one(label, id, on),
+        |id, on| emit_one(app, label, id, on),
+    );
+}
+
 /// Replay a window's last-known presence (`id → state`) to its chrome as one batched
 /// `warden:session-state`. Called by `probe_now` the moment the chrome's listener is ready, so
 /// state a pre-listener probe pass emitted-and-lost (with `prev` now populated, no live pass
