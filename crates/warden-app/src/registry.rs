@@ -870,7 +870,7 @@ impl Registry {
 
     /// The agent tab `id`'s main pane shows: its selected one, while the tab is the one on screen
     /// here. `activate` and `select_agent` show that agent's surface and hide the rest by it.
-    fn visible_agent(&self, id: &str) -> Option<&str> {
+    pub fn visible_agent(&self, id: &str) -> Option<&str> {
         if self.active.as_deref() != Some(id) {
             return None;
         }

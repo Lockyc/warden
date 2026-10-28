@@ -97,10 +97,12 @@ fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bo
 /// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
 /// holds agent tabs, Sleep Agent Tab while its selected one can sleep, and Reopen Last Closed
 /// while there is an agent tab or a window to reopen. Runs on every menu build, window focus,
-/// tab activation and agent list change; locks `ManagerState`, so callers must not hold it.
+/// tab activation and agent list change, so it also marks the agent tabs now on screen seen
+/// (`rex::lifecycle::mark_seen`); locks `ManagerState`, so callers must not hold it.
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     use tauri::Manager;
+    rex::lifecycle::mark_seen(app);
     let Some(menu) = app.try_state::<AgentMenu>() else {
         return;
     };
@@ -1803,6 +1805,7 @@ fn main() {
                     Some(path) => rex::agents::AgentStore::load(path),
                     None => rex::agents::AgentStore::default(),
                 }));
+                app.manage(std::sync::Mutex::new(rex::attention::Attention::default()));
                 // Load config; a config that parses (even with zero `[[window]]` entries) always
                 // materializes — `materialize` builds nothing for an empty window list and
                 // `sync_empty_surface` shows the home surface's window list (empty or not). A
