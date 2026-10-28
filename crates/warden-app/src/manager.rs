@@ -597,6 +597,7 @@ impl WindowManager {
                 // within a burst pass (covers `probe_interval = 0`, which never steady-polls).
                 tauri::WindowEvent::Focused(true) => {
                     crate::probe::bump(&label_for_event);
+                    crate::sync_agent_menu(&app_for_event);
                 }
                 _ => {}
             }
@@ -1314,13 +1315,6 @@ impl WindowManager {
     pub fn has_reopen_target(&self) -> bool {
         self.reopen_target().is_some()
     }
-
-    /// Whether an open window has a tab holding agent tabs, which enables the agent tab menu items
-    /// (and ⌘⇧T, which reopens a closed agent tab there).
-    pub fn has_agent_panes(&self) -> bool {
-        self.windows.values().any(|w| w.registry.has_agent_panes())
-    }
-
     /// The window `⌘⇧T` would reopen right now — the one computation behind both the action
     /// and its menu item's enabled state.
     fn reopen_target(&self) -> Option<String> {

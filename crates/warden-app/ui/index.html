@@ -313,8 +313,7 @@
       .a-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-sizing: border-box; }
       .a-dot.st-working { background: #56b4e9; animation: a-pulse 1s infinite alternate; }
       .a-dot.st-blocked { background: #f0883e; }
-      .a-dot.st-done { background: #3fb950; }
-      .a-dot.st-error { background: #e5534b; }
+      .a-dot.st-done, .a-dot.st-error { background: #3fb950; } /* the spec's dot: error = done */
       .a-dot.st-idle { border: 1.5px solid #6e7681; }
       .a-dot.st-asleep { border: 1.5px dashed #6e7681; }
       @keyframes a-pulse { to { opacity: 0.35; } }
@@ -952,6 +951,8 @@
       const NARROW_HOLE = 700;
       const railKey = () => `agents-rail:${myLabel}`;
       let drag = null; // a row being dragged between groups (see `rowMouseDown`)
+      let pendingWake = null; // an asleep row's click, held for `DBLCLICK_MS` (see `dragEnd`)
+      const DBLCLICK_MS = 250;
 
       // The tab whose list is on screen: the active tab, when its main pane holds agent tabs and
       // is docked here (a popped-out tab's panes are in its own window).
@@ -1161,7 +1162,12 @@
           e.preventDefault();
           toggleActions(r.id);
         });
-        row.addEventListener("dblclick", (e) => { if (!e.target.closest("button")) startRename(r.id); });
+        row.addEventListener("dblclick", (e) => {
+          if (e.target.closest("button")) return;
+          clearTimeout(pendingWake);
+          pendingWake = null;
+          startRename(r.id);
+        });
         row.addEventListener("mousedown", (e) => rowMouseDown(e, tab, r, row));
         return agentUi.open === r.id ? [row, agentActions(tab, dto, r)] : [row];
       }
@@ -1292,7 +1298,8 @@
       // button held ends the drag.
       function rowMouseDown(e, tab, r, row) {
         if (e.button !== 0 || e.target.closest("button, input, select")) return;
-        drag = { tab, id: r.id, row, startY: e.clientY, moved: false, drop: null, click: e.detail <= 1 };
+        drag = { tab, id: r.id, row, startY: e.clientY, moved: false, drop: null, click: e.detail <= 1,
+          asleep: r.state === "asleep" };
         window.addEventListener("mousemove", dragMove);
         window.addEventListener("mouseup", dragEnd);
         window.addEventListener("blur", dragEnd);
@@ -1319,7 +1326,11 @@
         window.removeEventListener("blur", dragEnd);
         if (!d) return;
         if (!d.moved) {
-          if (e.type === "mouseup" && d.click) agentSelect(d.tab, d.id);
+          if (e.type !== "mouseup" || !d.click) return;
+          // Selecting an asleep row wakes it, so its click waits out a double-click (a rename,
+          // which cancels it); an awake row selects at once.
+          if (d.asleep) pendingWake = setTimeout(() => { pendingWake = null; agentSelect(d.tab, d.id); }, DBLCLICK_MS);
+          else agentSelect(d.tab, d.id);
           return;
         }
         const t = d.drop;

@@ -207,7 +207,8 @@ pub fn init(app: AppHandle, debug: bool) {
     // manager rather than through the badge/banner path below.
     crate::surface::set_surface_event_sink(move |event| match event.signal {
         SurfaceSignal::ChildExited { .. } => {
-            crate::manager::WindowManager::handle_child_exited(&app, event.surface_id)
+            crate::manager::WindowManager::handle_child_exited(&app, event.surface_id);
+            crate::sync_agent_menu(&app); // the active tab may have changed
         }
         // Likewise a focus change is tab bookkeeping (which pane types), not attention.
         SurfaceSignal::Focused => {
