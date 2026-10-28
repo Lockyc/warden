@@ -147,16 +147,43 @@ pub fn refresh(app: &AppHandle) {
     });
 }
 
-/// Connect, on a worker, to every Rex server `config`'s tabs name, then refresh what they list —
-/// so a window shows its servers' unclaimed sessions (and its Rex tabs' dots) at launch and after
-/// a reload, without waiting for one of its tabs to open.
-pub fn connect(app: &AppHandle, config: &Config) {
+/// The servers a launch or reload connects to: those `config`'s tabs name, then those only the
+/// hub's persisted mappings name — a session warden made for a tab that has since moved or gone
+/// still lists as unclaimed after a restart.
+pub fn launch_servers(config: &Config, hub: &RexHub) -> Vec<String> {
     let mut servers: Vec<String> = Vec::new();
     for t in config.windows.iter().flat_map(|w| &w.tabs) {
         if let Some(s) = t.server.as_ref().filter(|s| !servers.contains(s)) {
             servers.push(s.clone());
         }
     }
+    for s in hub.store_servers() {
+        if !servers.contains(&s) {
+            servers.push(s);
+        }
+    }
+    servers
+}
+
+/// [`RexHub::connect`] to each of `servers` (never starting Rex), calling `connected` for each
+/// that answered; one that doesn't is logged and skipped.
+fn connect_all(hub: &RexHub, servers: &[String], mut connected: impl FnMut(&str)) {
+    for server in servers {
+        match hub.connect(server) {
+            Ok(()) => connected(server),
+            Err(e) => eprintln!("warden: Rex server {server}: {e}"),
+        }
+    }
+}
+
+/// Connect, on a worker, to every Rex server [`launch_servers`] names, then refresh what they
+/// list — so a window shows its servers' unclaimed sessions (and its Rex tabs' dots) at launch and
+/// after a reload, without waiting for one of its tabs to open.
+pub fn connect(app: &AppHandle, config: &Config) {
+    let Some(hub) = app.try_state::<RexHub>() else {
+        return;
+    };
+    let servers = launch_servers(config, &hub);
     if servers.is_empty() {
         return;
     }
@@ -167,12 +194,9 @@ pub fn connect(app: &AppHandle, config: &Config) {
             let Some(hub) = app.try_state::<RexHub>() else {
                 return;
             };
-            for server in servers {
-                match hub.connect(&server) {
-                    Ok(()) => super::spawn::hub_changed(&app, Some(&server)),
-                    Err(e) => eprintln!("warden: Rex server {server}: {e}"),
-                }
-            }
+            connect_all(&hub, &servers, |server| {
+                super::spawn::hub_changed(&app, Some(server))
+            });
         });
     if let Err(e) = spawned {
         eprintln!("warden: couldn't start connecting to Rex servers: {e}");
@@ -332,5 +356,96 @@ mod tests {
             curated.server.as_deref()
         ));
         assert!(!is_unclaimed("rex:s", Path::new(""), None), "not a Rex tab");
+    }
+
+    fn test_info() -> rex_client::ClientInfo {
+        rex_client::ClientInfo {
+            kind: "app",
+            name: "warden-test".into(),
+            version: "0.0.0".into(),
+        }
+    }
+
+    fn seed_store(path: &Path, pane: &str, server: &str, session_id: &str) {
+        super::super::store::RexStore::load(path.to_path_buf()).set(
+            pane,
+            Some(super::super::store::PaneRecord {
+                server: server.into(),
+                session_id: session_id.into(),
+            }),
+        );
+    }
+
+    fn lists(sessions: serde_json::Value) -> rex_client::fake::FakeServer {
+        let fake = rex_client::fake::FakeServer::start();
+        fake.reply(
+            "session.attach_all",
+            serde_json::json!({ "sessions": sessions }),
+        );
+        fake
+    }
+
+    #[test]
+    fn launch_connects_servers_only_the_store_names() {
+        let remote = lists(serde_json::json!([{"session_id": "session:far", "label": "far"}]));
+        let local = lists(serde_json::json!([]));
+        local.reply(
+            "hosts.list",
+            serde_json::json!({"hash": "h", "hosts": [
+                {"label": "remote-host", "endpoints": [remote.endpoint().to_string()]}
+            ]}),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rex-sessions.json");
+        seed_store(&path, "moved-tab", "remote-host", "session:far");
+        let hub = RexHub::for_test(path, test_info(), local.endpoint());
+
+        let cfg = config(vec![window("w", vec![tab("a", Some("local"))])]);
+        let servers = launch_servers(&cfg, &hub);
+        assert_eq!(servers, ["local", "remote-host"]);
+        connect_all(&hub, &servers, |_| {});
+
+        let mut shown = cfg.clone();
+        let claimed = hub.claimed_session_ids(["a"]);
+        add_unclaimed(
+            &mut shown,
+            &hub.servers(),
+            |s| hub.live_sessions(s),
+            &claimed,
+        );
+        let keys: Vec<&str> = shown.windows[0]
+            .tabs
+            .iter()
+            .map(|t| t.key.as_str())
+            .collect();
+        assert!(keys.contains(&"rex:session:far"), "{keys:?}");
+    }
+
+    #[test]
+    fn launch_connect_with_store_servers_never_starts_rex() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static STARTS: AtomicUsize = AtomicUsize::new(0);
+        fn counting(_: std::time::Duration) -> Result<(), rex_client::RexError> {
+            STARTS.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rex-sessions.json");
+        seed_store(&path, "p", "remote-host", "session:far");
+        seed_store(&path, "q", "local", "session:x");
+        let hub = RexHub::for_test_autostart(
+            path,
+            test_info(),
+            rex_client::Endpoint::Unix(dir.path().join("no-server.sock")),
+            counting,
+        );
+        let servers = launch_servers(&config(vec![window("w", vec![])]), &hub);
+        assert_eq!(servers, ["local", "remote-host"]);
+        connect_all(&hub, &servers, |_| {});
+        assert_eq!(
+            STARTS.load(Ordering::SeqCst),
+            0,
+            "a Rex the user quit stays quit"
+        );
     }
 }

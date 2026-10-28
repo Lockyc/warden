@@ -84,7 +84,7 @@ site omits it.
   never holds its state lock across a network call.
 - **An open answers within `OPEN_BUDGET`**, every step on one deadline: a pane opens or reports its
   server unreachable. Starting a stopped local Rex fits inside that budget, and **only a tab open
-  starts Rex** — the launch/reload connect (`unclaimed::connect` → `RexHub::connect`) never does,
+  starts Rex** — the launch/reload connect (`unclaimed::connect` → `RexHub::connect`, to the servers `unclaimed::launch_servers` returns: config tabs' plus any server a persisted mapping names) never does,
   so a Rex the user quit stays quit.
 
 ## Lifecycle

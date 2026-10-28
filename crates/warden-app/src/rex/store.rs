@@ -44,6 +44,14 @@ impl RexStore {
         self.records.get(pane_key)
     }
 
+    /// Every server some pane maps to, sorted, once each.
+    pub fn servers(&self) -> Vec<String> {
+        let mut servers: Vec<String> = self.records.values().map(|r| r.server.clone()).collect();
+        servers.sort();
+        servers.dedup();
+        servers
+    }
+
     /// Set `pane_key`'s record (`None` forgets it) and persist, writing only on a change.
     pub fn set(&mut self, pane_key: &str, record: Option<PaneRecord>) {
         let changed = match record {
