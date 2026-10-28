@@ -55,6 +55,14 @@ const MENU_TAB_SPLIT: &str = "warden:split-pane";
 const MENU_TAB_SUSPEND: &str = "warden:suspend-tab";
 const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
+/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) — act on the agent tab list of the focused
+/// window's active tab, and do nothing on a tab without one. The id doubles as the event name,
+/// sent with the tab's id only when that tab holds agent tabs. ⌘⇧T reaches the same list as
+/// `warden:agent-reopen` (see `MENU_WINDOW_REOPEN_LAST`'s handler).
+const MENU_AGENT_NEW: &str = "warden:agent-new";
+const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
+const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
+
 #[derive(serde::Deserialize)]
 struct RectArg {
     x: f64,
@@ -110,6 +118,7 @@ fn build_app_menu(
     mode: warden_config::TabDigitKeys,
     entries: Vec<crate::plan::WindowMenuEntry>,
     reopen_available: bool,
+    agents_available: bool,
 ) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
@@ -149,6 +158,14 @@ fn build_app_menu(
     let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, "Terminate Session…")
         .accelerator("Shift+Cmd+KeyK")
         .build(app)?;
+    let agent_new_item = MenuItemBuilder::with_id(MENU_AGENT_NEW, "New Agent Tab")
+        .accelerator("CmdOrCtrl+KeyT")
+        .enabled(agents_available)
+        .build(app)?;
+    let agent_sleep_item = MenuItemBuilder::with_id(MENU_AGENT_SLEEP, "Sleep Agent Tab")
+        .accelerator("Alt+Cmd+KeyS")
+        .enabled(agents_available)
+        .build(app)?;
     // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
     // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
     tab_menu = tab_menu
@@ -160,6 +177,9 @@ fn build_app_menu(
         .separator()
         .item(&suspend_item)
         .item(&terminate_item)
+        .separator()
+        .item(&agent_new_item)
+        .item(&agent_sleep_item)
         .separator();
     for it in &nav.jumps {
         tab_menu = tab_menu.item(it);
@@ -169,10 +189,11 @@ fn build_app_menu(
     // Reopen Last Closed (⌘⇧T) is warden-only (curator/lector have no equivalent), so it's not
     // part of the spine (YAGNI — add it there only if a sibling app wants it too). Spliced into
     // the spine's already-built Window submenu, at the top, mirroring warden's original layout
-    // (reopen-last + separator, then the rest).
+    // (reopen-last + separator, then the rest). In an agent pane ⌘⇧T reopens its last closed agent
+    // tab instead, so the item stays enabled wherever a window has one.
     let reopen_last = MenuItemBuilder::with_id(MENU_WINDOW_REOPEN_LAST, "Reopen Last Closed")
         .accelerator("Shift+Cmd+KeyT")
-        .enabled(reopen_available)
+        .enabled(reopen_available || agents_available)
         .build(app)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let window_menu = &spine.submenus[2];
@@ -198,15 +219,16 @@ fn build_app_menu(
 fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::Manager;
     let st = app.state::<ManagerState>();
-    let (mode, entries, reopen_available) = {
+    let (mode, entries, reopen_available, agents_available) = {
         let m = st.lock();
         (
             m.last_good.tab_digit_keys,
             m.window_menu_entries(),
             m.has_reopen_target(),
+            m.has_agent_panes(),
         )
     };
-    build_app_menu(app, mode, entries, reopen_available)
+    build_app_menu(app, mode, entries, reopen_available, agents_available)
 }
 
 /// Return the calling window's banner + tab descriptors, resolved by label.
@@ -984,6 +1006,18 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
 // The agent tab list's commands (`rex::lifecycle`). Each answers a refusal at once; Rex work runs
 // on a worker, its failure goes to the window's error banner, and `warden:agents` follows.
 
+/// Tab `tab_id`'s agent tab list as it stands, for a chrome that has none for it yet; every change
+/// after this arrives as `warden:agents`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agents_init(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+) -> Option<rex::lifecycle::AgentListDto> {
+    use tauri::Manager;
+    rex::lifecycle::current_list(window.app_handle(), &tab_id)
+}
+
 /// A new agent tab in tab `tab_id`'s main pane, typing the tab's `cmd`, selected.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -1506,6 +1540,44 @@ fn main() {
                 return;
             }
 
+            // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
+            // chrome gets the active tab's id. ⌘T and ⌥⌘S elsewhere do nothing; ⌘⇧T falls through
+            // to reopening a window.
+            if id == MENU_AGENT_NEW || id == MENU_AGENT_SLEEP || id == MENU_WINDOW_REOPEN_LAST {
+                let target = app
+                    .webview_windows()
+                    .into_values()
+                    .find(|w| w.is_focused().unwrap_or(false))
+                    .and_then(|w| {
+                        let label = w.label().to_string();
+                        let st = app.state::<ManagerState>();
+                        let m = st.lock();
+                        let tab = m
+                            .windows
+                            .get(&label)?
+                            .registry
+                            .active_agent_tab()?
+                            .to_owned();
+                        Some((label, tab))
+                    });
+                if let Some((label, tab)) = target {
+                    let event = if id == MENU_WINDOW_REOPEN_LAST {
+                        EVENT_AGENT_REOPEN
+                    } else {
+                        id
+                    };
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        event,
+                        serde_json::json!({ "label": label, "tabId": tab }),
+                    );
+                    return;
+                }
+                if id != MENU_WINDOW_REOPEN_LAST {
+                    return;
+                }
+            }
+
             // Window menu acts on the manager/app, not the focused window — handle it
             // before the focused-window lookup (reopen-last needs no focused window).
             if id == MENU_WINDOW_REOPEN_LAST {
@@ -1635,6 +1707,7 @@ fn main() {
             shell_home_edit_config,
             shell_home_open_window,
             probe_now,
+            agents_init,
             agent_new,
             agent_select,
             agent_sleep,

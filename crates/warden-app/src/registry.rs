@@ -178,6 +178,8 @@ pub struct TabDto {
     /// "config split vs runtime split" behaviour (where the ratio is remembered, whether a
     /// closed pane stays closed) on this field's presence.
     pub split_layout: Option<SplitLayoutDto>,
+    /// The main pane holds agent tabs, so the chrome shows the agent tab list beside it.
+    pub agents: bool,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -938,6 +940,19 @@ impl Registry {
         })
     }
 
+    /// The active tab when its main pane holds agent tabs — where ⌘T, ⌘⇧T and Sleep Agent Tab act.
+    pub fn active_agent_tab(&self) -> Option<&str> {
+        let id = self.active.as_deref()?;
+        self.agent_request(id).map(|_| id)
+    }
+
+    /// Whether any tab's main pane holds agent tabs, which enables the agent tab menu items.
+    pub fn has_agent_panes(&self) -> bool {
+        self.tabs
+            .iter()
+            .any(|t| hosts_agents(&t.primary.spec, PaneIdx::Primary))
+    }
+
     /// Follow a lifecycle op's answer in tab `id`'s main pane: one slot per live agent `found`
     /// lists, keeping each surface still on its terminal and closing the rest (one out in a pop-out
     /// stays), and `found.selected` selected. On the visible tab the selected agent spawns and
@@ -1073,6 +1088,7 @@ impl Registry {
                     },
                     size: s.size,
                 }),
+                agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
@@ -3560,6 +3576,29 @@ mod tests {
         assert!(req.agents && !req.auto);
         assert_eq!(r.agent_request("p"), None);
         assert_eq!(r.agent_request("rex:session:x"), None);
+    }
+
+    #[test]
+    fn the_agent_list_and_its_keys_follow_the_main_pane() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("p", "/tmp"), false).unwrap();
+        r.add(&unclaimed_spec("session:x"), false).unwrap();
+        assert!(!r.has_agent_panes());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        assert!(r.has_agent_panes());
+        let agents: Vec<_> = r.tab_dtos().into_iter().map(|d| (d.id, d.agents)).collect();
+        assert_eq!(
+            agents,
+            vec![
+                ("p".to_string(), false),
+                ("rex:session:x".to_string(), false),
+                ("t".to_string(), true)
+            ]
+        );
+        r.active = Some("p".into());
+        assert_eq!(r.active_agent_tab(), None);
+        r.active = Some("t".into());
+        assert_eq!(r.active_agent_tab(), Some("t"));
     }
 
     #[test]
