@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tungstenite::client::ClientRequestBuilder;
 use tungstenite::http::Uri;
@@ -145,22 +145,45 @@ fn tcp(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> io::Result<&TcpStream> {
     }
 }
 
+/// How long the next handshake step may take: [`HANDSHAKE_TIMEOUT`], cut to what is left before
+/// `deadline`. `Timeout` once the deadline has passed.
+pub(crate) fn step(deadline: Option<Instant>) -> Result<Duration, RexError> {
+    let Some(d) = deadline else {
+        return Ok(HANDSHAKE_TIMEOUT);
+    };
+    match d.saturating_duration_since(Instant::now()) {
+        left if left.is_zero() => Err(RexError::Timeout),
+        left => Ok(left.min(HANDSHAKE_TIMEOUT)),
+    }
+}
+
 /// Opens a WebSocket at `path` with `subprotocol`. The socket is left blocking, with no timeouts.
 pub(crate) fn open(endpoint: &Endpoint, path: &str, subprotocol: &str) -> Result<Ws, RexError> {
+    open_until(endpoint, path, subprotocol, None)
+}
+
+/// [`open`], giving up at `deadline` (when set) however many steps or addresses remain.
+pub(crate) fn open_until(
+    endpoint: &Endpoint,
+    path: &str,
+    subprotocol: &str,
+    deadline: Option<Instant>,
+) -> Result<Ws, RexError> {
     let ws = match endpoint {
         Endpoint::Unix(sock) => {
             let stream = UnixStream::connect(sock).map_err(|_| RexError::Unreachable)?;
-            set_timeouts(&stream, Some(HANDSHAKE_TIMEOUT))?;
+            set_timeouts(&stream, Some(step(deadline)?))?;
             let req = request(&format!("ws://localhost{path}"), subprotocol)?;
             let (ws, _) = tungstenite::client(req, stream).map_err(handshake_err)?;
             set_timeouts(ws.get_ref(), None)?;
             Ws::Unix(Box::new(ws))
         }
         Endpoint::Https { host, port } => {
-            let stream = connect_tcp(host, *port)?;
+            let stream = connect_tcp(host, *port, deadline)?;
+            let limit = step(deadline)?;
             stream
-                .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
-                .and_then(|_| stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)))
+                .set_read_timeout(Some(limit))
+                .and_then(|_| stream.set_write_timeout(Some(limit)))
                 .map_err(io_err)?;
             let req = request(&format!("wss://{host}:{port}{path}"), subprotocol)?;
             let connector = Connector::Rustls(tls_config()?);
@@ -192,12 +215,14 @@ fn set_timeouts(s: &UnixStream, t: Option<Duration>) -> Result<(), RexError> {
         .map_err(io_err)
 }
 
-fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, RexError> {
+/// The first of `host`'s addresses that accepts. Name lookup itself isn't bounded by `deadline`.
+fn connect_tcp(host: &str, port: u16, deadline: Option<Instant>) -> Result<TcpStream, RexError> {
     let addrs = (host, port)
         .to_socket_addrs()
         .map_err(|_| RexError::Unreachable)?;
     for addr in addrs {
-        if let Ok(s) = TcpStream::connect_timeout(&addr, HANDSHAKE_TIMEOUT) {
+        let limit = step(deadline).map_err(|_| RexError::Unreachable)?;
+        if let Ok(s) = TcpStream::connect_timeout(&addr, limit) {
             return Ok(s);
         }
     }
