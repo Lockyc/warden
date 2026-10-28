@@ -107,14 +107,11 @@ impl PresenceCache {
     }
 }
 
-/// Fill every `TabDto.accent` with its project's assigned colour. Assignment runs over every
-/// window's tabs of `config` (the effective config, so discovered tabs count), so a project keeps
-/// one colour across windows and a pin anywhere leaves the pool for all.
+/// Fill every `TabDto.accent` with its project's assigned colour (`plan::project_colours`).
 pub fn patch_accents(config: &Config, tabs: &mut [TabDto]) {
-    let all: Vec<warden_config::Tab> = config.windows.iter().flat_map(|w| w.tabs.clone()).collect();
-    let colours = warden_config::assign_project_colours(&all);
+    let colours = crate::plan::project_colours(config);
     for t in tabs {
-        t.accent = colours.get(&t.id).map(|c| c.hex());
+        t.accent = colours.get(&t.id).cloned();
     }
 }
 
@@ -1498,6 +1495,7 @@ impl WindowManager {
                 let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
             }
         }
+        crate::strip::emit_all(app, &self.last_good);
     }
 }
 
