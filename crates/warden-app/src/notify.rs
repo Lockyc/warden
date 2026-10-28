@@ -141,18 +141,95 @@ declare_class!(
             if &*response.actionIdentifier() == UNNotificationDefaultActionIdentifier {
                 let content = response.notification().request().content();
                 let user_info = content.userInfo();
-                if let Some(label) = dict_str(&user_info, "label") {
-                    focus_window_tab(
-                        label,
-                        dict_str(&user_info, "id"),
-                        dict_str(&user_info, "agent"),
-                    );
+                if let Some(route) = click_route(|k| unsafe { dict_str(&user_info, k) }) {
+                    focus_window_tab(route.label, route.tab, route.agent);
                 }
             }
             completion_handler.call(());
         }
     }
 );
+
+/// Where a banner click goes: the window, its project tab and, for an agent banner, the agent
+/// record. Built from the `userInfo` pairs ([`banner_info`]) the banner was stamped with.
+#[derive(Debug, PartialEq, Eq)]
+struct ClickRoute {
+    label: String,
+    tab: Option<String>,
+    agent: Option<String>,
+}
+
+/// The `userInfo` pairs a banner carries so a click can route back ([`click_route`]).
+fn banner_info<'a>(
+    label: &'a str,
+    tab: &'a str,
+    agent: Option<&'a str>,
+) -> Vec<(&'static str, &'a str)> {
+    let mut pairs = vec![("label", label), ("id", tab)];
+    pairs.extend(agent.map(|a| ("agent", a)));
+    pairs
+}
+
+/// Read a click's destination back out of a banner's `userInfo` through `get`. `None` without a
+/// window label (not one of our banners).
+fn click_route(get: impl Fn(&str) -> Option<String>) -> Option<ClickRoute> {
+    Some(ClickRoute {
+        label: get("label")?,
+        tab: get("id"),
+        agent: get("agent"),
+    })
+}
+
+/// The banner an OSC 9/777 desktop notification raises: its title (`warden` when blank) and body.
+/// None from an agent tab's surface: a Rex agent's attention is its reported status
+/// (`rex::lifecycle::attend`), so an escape it also prints must not raise a second one. Bells
+/// and every non-notification signal give none.
+fn osc_banner(signal: SurfaceSignal, agent_surface: bool) -> Option<(String, String)> {
+    if agent_surface {
+        return None;
+    }
+    match signal {
+        SurfaceSignal::Notification { title, body } if title.trim().is_empty() => {
+            Some(("warden".to_string(), body))
+        }
+        SurfaceSignal::Notification { title, body } => Some((title, body)),
+        _ => None,
+    }
+}
+
+/// The banner for agent tab `name` of project `project` reaching `state`: the program's own `msg`
+/// when it sent one, else `<name> needs you` (blocked) or `<name> finished` (done, error alike).
+pub fn agent_banner(
+    project: &str,
+    name: &str,
+    state: crate::rex::windows::AgentState,
+    msg: Option<String>,
+) -> (String, String) {
+    use crate::rex::windows::AgentState;
+    let body = msg
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| match state {
+            AgentState::Blocked => format!("{name} needs you"),
+            _ => format!("{name} finished"),
+        });
+    (format!("{project} · {name}"), body)
+}
+
+/// Whether surface `surface_id` is a Rex agent tab's, docked (its pane key is an agent key) or
+/// popped out (the detached window carries the agent record).
+fn is_agent_surface(app: &AppHandle, surface_id: usize) -> bool {
+    let state = app.state::<ManagerState>();
+    let m = state.lock();
+    let docked = m.windows.values().any(|ws| {
+        ws.registry
+            .surface_key(surface_id)
+            .is_some_and(|k| crate::registry::is_agent_key(&k))
+    });
+    docked
+        || m.locate_detached_surface(surface_id)
+            .and_then(|(dlabel, _)| m.detached.get(&dlabel))
+            .is_some_and(|ds| ds.agent.is_some())
+}
 
 /// Read a string value out of a notification's `userInfo`. The dictionary is untyped
 /// (`NSDictionary<AnyObject, AnyObject>`); we stamped only `NSString → NSString` pairs into it
@@ -306,13 +383,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
     };
     // A desktop notification (OSC 9/777) additionally raises a macOS banner; a bare bell only
     // badges (no text to show, and bells are frequent enough that banners would be noise).
-    let banner = match event.signal {
-        SurfaceSignal::Notification { title, body } if title.trim().is_empty() => {
-            Some(("warden".to_string(), body))
-        }
-        SurfaceSignal::Notification { title, body } => Some((title, body)),
-        _ => None,
-    };
+    let banner = osc_banner(event.signal, is_agent_surface(app, event.surface_id));
     raise(app, &label, &tab, visible, banner, None);
 }
 
@@ -387,8 +458,7 @@ fn show_banner(title: &str, body: &str, label: &str, tab: &str, agent: Option<&s
     unsafe {
         content.setTitle(&NSString::from_str(title));
         content.setBody(&NSString::from_str(body));
-        let mut pairs = vec![("label", label), ("id", tab)];
-        pairs.extend(agent.map(|a| ("agent", a)));
+        let pairs = banner_info(label, tab, agent);
         let keys: Vec<Retained<NSString>> =
             pairs.iter().map(|(k, _)| NSString::from_str(k)).collect();
         let vals = pairs.iter().map(|(_, v)| NSString::from_str(v)).collect();
@@ -419,5 +489,100 @@ fn show_banner(title: &str, body: &str, label: &str, tab: &str, agent: Option<&s
         unsafe { center.addNotificationRequest_withCompletionHandler(&request, Some(&cb)) };
     } else {
         unsafe { center.addNotificationRequest_withCompletionHandler(&request, None) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rex::windows::AgentState;
+
+    fn notification(title: &str, body: &str) -> SurfaceSignal {
+        SurfaceSignal::Notification {
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn blocked_banner_uses_msg_else_default() {
+        let (title, body) = agent_banner(
+            "proj",
+            "fix-bug",
+            AgentState::Blocked,
+            Some("approve Write: /tmp/x.txt".into()),
+        );
+        assert_eq!(title, "proj · fix-bug");
+        assert_eq!(body, "approve Write: /tmp/x.txt");
+        let (_, body) = agent_banner("proj", "fix-bug", AgentState::Blocked, None);
+        assert_eq!(body, "fix-bug needs you");
+        let (_, body) = agent_banner("proj", "fix-bug", AgentState::Blocked, Some("  ".into()));
+        assert_eq!(body, "fix-bug needs you", "a blank msg is no msg");
+    }
+
+    #[test]
+    fn done_banner_default_text() {
+        let (_, body) = agent_banner("proj", "fix-bug", AgentState::Done, None);
+        assert_eq!(body, "fix-bug finished");
+        let (_, body) = agent_banner("proj", "fix-bug", AgentState::Error, None);
+        assert_eq!(body, "fix-bug finished", "error reads as done");
+        let (_, body) = agent_banner(
+            "proj",
+            "fix-bug",
+            AgentState::Done,
+            Some("all green".into()),
+        );
+        assert_eq!(body, "all green");
+    }
+
+    #[test]
+    fn osc777_from_rex_agent_surface_ignored() {
+        assert_eq!(osc_banner(notification("t", "b"), true), None);
+        assert_eq!(osc_banner(SurfaceSignal::Bell, true), None);
+        assert!(crate::registry::is_agent_key(&crate::registry::agent_key(
+            "t", "r1"
+        )));
+        assert!(!crate::registry::is_agent_key("t"));
+        assert!(!crate::registry::is_agent_key("t::2"));
+    }
+
+    #[test]
+    fn osc777_from_plain_tab_still_banners() {
+        assert_eq!(
+            osc_banner(notification("t", "b"), false),
+            Some(("t".into(), "b".into()))
+        );
+        assert_eq!(
+            osc_banner(notification(" ", "b"), false),
+            Some(("warden".into(), "b".into()))
+        );
+        assert_eq!(osc_banner(SurfaceSignal::Bell, false), None);
+    }
+
+    #[test]
+    fn banner_click_selects_agent_record() {
+        let info = banner_info("win", "proj", Some("r1"));
+        let get = |k: &str| {
+            info.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        };
+        assert_eq!(
+            click_route(get),
+            Some(ClickRoute {
+                label: "win".into(),
+                tab: Some("proj".into()),
+                agent: Some("r1".into()),
+            })
+        );
+        let plain = banner_info("win", "proj", None);
+        let get = |k: &str| {
+            plain
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        };
+        assert_eq!(click_route(get).and_then(|r| r.agent), None);
+        assert_eq!(click_route(|_| None), None);
     }
 }
