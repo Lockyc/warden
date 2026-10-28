@@ -441,6 +441,21 @@ pub fn emit_agents(app: &AppHandle, tab_id: &str) {
     if let Some(dto) = current_list(app, tab_id) {
         let _ = app.emit("warden:agents", dto);
     }
+    crate::sync_agent_menu(app);
+}
+
+/// What the agent tab menu items can do for tab `tab_id`: `(sleep, reopen)` — its selected agent
+/// tab is live and can sleep; it has a closed agent tab to reopen.
+pub fn menu_actions(app: &AppHandle, tab_id: &str) -> (bool, bool) {
+    let Some(store) = app.try_state::<Mutex<AgentStore>>() else {
+        return (false, false);
+    };
+    let records = lock(&store).records(tab_id);
+    let sleep = records
+        .iter()
+        .any(|r| r.selected && r.state == RecordState::Live && r.resume.is_some());
+    let reopen = records.iter().any(|r| r.state == RecordState::Closed);
+    (sleep, reopen)
 }
 
 /// Project `tab_id`'s list as it stands: what `warden:agents` carries, and what the chrome pulls

@@ -56,12 +56,65 @@ const MENU_TAB_SUSPEND: &str = "warden:suspend-tab";
 const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
 /// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) — act on the agent tab list of the focused
-/// window's active tab, and do nothing on a tab without one. The id doubles as the event name,
-/// sent with the tab's id only when that tab holds agent tabs. ⌘⇧T reaches the same list as
-/// `warden:agent-reopen` (see `MENU_WINDOW_REOPEN_LAST`'s handler).
+/// window's active tab, enabled only while there is one ([`sync_agent_menu`]). The id doubles as
+/// the event name, sent with the tab's id. ⌘⇧T reaches the same list as `warden:agent-reopen`
+/// when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
 const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
+
+/// New Agent Tab, Sleep Agent Tab and Reopen Last Closed, kept from the last menu build so their
+/// enabled state follows the focused window's active tab without a rebuild ([`sync_agent_menu`]).
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct AgentMenu(std::sync::Mutex<Option<[tauri::menu::MenuItem<tauri::Wry>; 3]>>);
+
+/// What the focused window's active tab offers the agent menu items: `(label, tab, sleep,
+/// reopen)` when it holds agent tabs — its selected agent tab can sleep, it has a closed one to
+/// reopen — else `None`.
+#[cfg(target_os = "macos")]
+fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bool)> {
+    use tauri::Manager;
+    let label = app
+        .webview_windows()
+        .into_values()
+        .find(|w| w.is_focused().unwrap_or(false))?
+        .label()
+        .to_string();
+    let tab = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.windows
+            .get(&label)?
+            .registry
+            .active_agent_tab()?
+            .to_owned()
+    };
+    let (sleep, reopen) = rex::lifecycle::menu_actions(app, &tab);
+    Some((label, tab, sleep, reopen))
+}
+
+/// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
+/// holds agent tabs, Sleep Agent Tab while its selected one can sleep, and Reopen Last Closed
+/// while there is an agent tab or a window to reopen. Runs on every menu build, window focus,
+/// tab activation and agent list change; locks `ManagerState`, so callers must not hold it.
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(menu) = app.try_state::<AgentMenu>() else {
+        return;
+    };
+    let agent = focused_agent_tab(app);
+    let reopen_window = app.state::<ManagerState>().lock().has_reopen_target();
+    // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
+    // waiting on this lock.
+    let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some([new, sleep, reopen]) = items {
+        let _ = new.set_enabled(agent.is_some());
+        let _ = sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
+        let _ = reopen.set_enabled(agent.as_ref().is_some_and(|a| a.3) || reopen_window);
+    }
+}
 
 #[derive(serde::Deserialize)]
 struct RectArg {
@@ -117,8 +170,6 @@ fn build_app_menu(
     app: &tauri::AppHandle,
     mode: warden_config::TabDigitKeys,
     entries: Vec<crate::plan::WindowMenuEntry>,
-    reopen_available: bool,
-    agents_available: bool,
 ) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
@@ -158,13 +209,14 @@ fn build_app_menu(
     let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, "Terminate Session…")
         .accelerator("Shift+Cmd+KeyK")
         .build(app)?;
+    // Enabled by `sync_agent_menu`, which `rebuild_menu` runs right after this build.
     let agent_new_item = MenuItemBuilder::with_id(MENU_AGENT_NEW, "New Agent Tab")
         .accelerator("CmdOrCtrl+KeyT")
-        .enabled(agents_available)
+        .enabled(false)
         .build(app)?;
     let agent_sleep_item = MenuItemBuilder::with_id(MENU_AGENT_SLEEP, "Sleep Agent Tab")
         .accelerator("Alt+Cmd+KeyS")
-        .enabled(agents_available)
+        .enabled(false)
         .build(app)?;
     // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
     // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
@@ -189,11 +241,11 @@ fn build_app_menu(
     // Reopen Last Closed (⌘⇧T) is warden-only (curator/lector have no equivalent), so it's not
     // part of the spine (YAGNI — add it there only if a sibling app wants it too). Spliced into
     // the spine's already-built Window submenu, at the top, mirroring warden's original layout
-    // (reopen-last + separator, then the rest). In an agent pane ⌘⇧T reopens its last closed agent
-    // tab instead, so the item stays enabled wherever a window has one.
+    // (reopen-last + separator, then the rest). In an agent pane with a closed agent tab ⌘⇧T
+    // reopens that instead; `sync_agent_menu` enables it for either.
     let reopen_last = MenuItemBuilder::with_id(MENU_WINDOW_REOPEN_LAST, "Reopen Last Closed")
         .accelerator("Shift+Cmd+KeyT")
-        .enabled(reopen_available || agents_available)
+        .enabled(false)
         .build(app)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let window_menu = &spine.submenus[2];
@@ -208,6 +260,10 @@ fn build_app_menu(
         ])
         .build()?;
     app.set_menu(menu)?;
+    if let Some(keep) = tauri::Manager::try_state::<AgentMenu>(app) {
+        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some([agent_new_item, agent_sleep_item, reopen_last]);
+    }
     Ok(())
 }
 
@@ -219,16 +275,13 @@ fn build_app_menu(
 fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::Manager;
     let st = app.state::<ManagerState>();
-    let (mode, entries, reopen_available, agents_available) = {
+    let (mode, entries) = {
         let m = st.lock();
-        (
-            m.last_good.tab_digit_keys,
-            m.window_menu_entries(),
-            m.has_reopen_target(),
-            m.has_agent_panes(),
-        )
+        (m.last_good.tab_digit_keys, m.window_menu_entries())
     };
-    build_app_menu(app, mode, entries, reopen_available, agents_available)
+    build_app_menu(app, mode, entries)?;
+    sync_agent_menu(app);
+    Ok(())
 }
 
 /// Return the calling window's banner + tab descriptors, resolved by label.
@@ -380,6 +433,7 @@ fn activate_tab(
             let _ = window.emit("warden:refresh", dto);
         }
     }
+    sync_agent_menu(tauri::Manager::app_handle(&window));
     ActivateResult {
         live,
         split,
@@ -397,12 +451,16 @@ fn unload_tab(
     state: tauri::State<ManagerState>,
     id: String,
 ) -> Option<String> {
-    let mut m = state.lock();
-    let new_active = m
-        .windows
-        .get_mut(window.label())
-        .and_then(|ws| ws.registry.unload(&id));
-    m.record_session(window.label());
+    let new_active = {
+        let mut m = state.lock();
+        let new_active = m
+            .windows
+            .get_mut(window.label())
+            .and_then(|ws| ws.registry.unload(&id));
+        m.record_session(window.label());
+        new_active
+    };
+    sync_agent_menu(tauri::Manager::app_handle(&window));
     new_active
 }
 
@@ -835,6 +893,7 @@ fn pop_out_tab(
                     "warden:tab-seen",
                     serde_json::json!({ "label": origin, "id": tab }),
                 );
+                sync_agent_menu(&app2);
             }
         });
     }
@@ -1541,25 +1600,14 @@ fn main() {
             }
 
             // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
-            // chrome gets the active tab's id. ⌘T and ⌥⌘S elsewhere do nothing; ⌘⇧T falls through
-            // to reopening a window.
+            // chrome gets the active tab's id. ⌘T and ⌥⌘S are disabled elsewhere (`sync_agent_menu`);
+            // ⌘⇧T falls through to reopening a window.
             if id == MENU_AGENT_NEW || id == MENU_AGENT_SLEEP || id == MENU_WINDOW_REOPEN_LAST {
-                let target = app
-                    .webview_windows()
-                    .into_values()
-                    .find(|w| w.is_focused().unwrap_or(false))
-                    .and_then(|w| {
-                        let label = w.label().to_string();
-                        let st = app.state::<ManagerState>();
-                        let m = st.lock();
-                        let tab = m
-                            .windows
-                            .get(&label)?
-                            .registry
-                            .active_agent_tab()?
-                            .to_owned();
-                        Some((label, tab))
-                    });
+                // ⌘⇧T reaches the list only when it has a closed agent tab; otherwise it reopens
+                // a window, as everywhere else.
+                let target = focused_agent_tab(app)
+                    .filter(|a| id != MENU_WINDOW_REOPEN_LAST || a.3)
+                    .map(|(label, tab, ..)| (label, tab));
                 if let Some((label, tab)) = target {
                     let event = if id == MENU_WINDOW_REOPEN_LAST {
                         EVENT_AGENT_REOPEN
@@ -1779,6 +1827,7 @@ fn main() {
                     }
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
+                app.manage(AgentMenu::default());
 
                 // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
                 // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;

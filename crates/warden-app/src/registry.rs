@@ -945,14 +945,6 @@ impl Registry {
         let id = self.active.as_deref()?;
         self.agent_request(id).map(|_| id)
     }
-
-    /// Whether any tab's main pane holds agent tabs, which enables the agent tab menu items.
-    pub fn has_agent_panes(&self) -> bool {
-        self.tabs
-            .iter()
-            .any(|t| hosts_agents(&t.primary.spec, PaneIdx::Primary))
-    }
-
     /// Follow a lifecycle op's answer in tab `id`'s main pane: one slot per live agent `found`
     /// lists, keeping each surface still on its terminal and closing the rest (one out in a pop-out
     /// stays), and `found.selected` selected. On the visible tab the selected agent spawns and
@@ -3583,9 +3575,7 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("p", "/tmp"), false).unwrap();
         r.add(&unclaimed_spec("session:x"), false).unwrap();
-        assert!(!r.has_agent_panes());
         r.add(&rex_spec("t", "local"), false).unwrap();
-        assert!(r.has_agent_panes());
         let agents: Vec<_> = r.tab_dtos().into_iter().map(|d| (d.id, d.agents)).collect();
         assert_eq!(
             agents,
