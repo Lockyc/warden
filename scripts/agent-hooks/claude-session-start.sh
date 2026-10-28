@@ -38,6 +38,15 @@ done
 
 b64=$(printf 'claude --resume %s' "$id" | base64 | tr -d '\n')
 esc=$(printf '\033')
+apc="${esc}_warden1;resume=${b64}${esc}\\"
 # One printf of the whole sequence: one write, so the agent's own output can't split it.
-{ printf '%s' "${esc}_warden1;resume=${b64}${esc}\\" >"/dev/$tty"; } 2>/dev/null
+{ printf '%s' "$apc" >"/dev/$tty"; } 2>/dev/null
+# Again ~2s later: warden types the agent when it creates the window and attaches the relay
+# after, so a first write that lands before the relay streams reaches only Rex's screen state,
+# which the relay's snapshot doesn't carry. A repeat is a no-op for warden. Detached from every
+# pipe Claude Code holds, so the hook returns now.
+(
+	sleep 2
+	printf '%s' "$apc" >"/dev/$tty"
+) </dev/null >/dev/null 2>&1 &
 exit 0
