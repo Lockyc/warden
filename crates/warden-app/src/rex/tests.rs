@@ -533,3 +533,105 @@ fn autostart_stays_within_each_callers_budget() {
         }
     });
 }
+
+#[test]
+fn ensure_session_calls_share_the_open_budget() {
+    // A remote whose connection comes up but which never answers `session.attach`: the open
+    // must give up inside the tab-open budget, not wait out the 10 s call default.
+    let remote = scripted(json!([]));
+    let local = scripted(json!([]));
+    local.reply(
+        "hosts.list",
+        json!({"hash": "h", "hosts": [
+            {"label": "remote-host", "endpoints": [remote.endpoint().to_string()]}
+        ]}),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(local.endpoint(), &dir);
+    hub.ensure_session("p", "remote-host", Path::new("/w"), None, "w · main")
+        .expect("first open");
+    remote.on("session.attach", |_, _| {
+        Reply::ok(json!({})).after(Duration::from_secs(10))
+    });
+
+    let started = Instant::now();
+    let r = hub.ensure_session("p", "remote-host", Path::new("/w"), None, "w · main");
+    assert_eq!(r.err(), Some(RexError::Unreachable));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn concurrent_opens_of_one_pane_make_one_session() {
+    let fake = scripted(json!([]));
+    fake.on("session.create", |_, _| {
+        Reply::ok(json!({"session_id": "session:new", "initial_windows": [
+            {"window_id": "window:1", "block_ids": ["block:new"], "revision": 1}
+        ]}))
+        .after(Duration::from_millis(300))
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let barrier = std::sync::Barrier::new(2);
+    let targets: Vec<_> = std::thread::scope(|s| {
+        let callers: Vec<_> = (0..2)
+            .map(|_| {
+                let (hub, barrier) = (&hub, &barrier);
+                s.spawn(move || {
+                    barrier.wait();
+                    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+                })
+            })
+            .collect();
+        callers.into_iter().map(|c| c.join().unwrap()).collect()
+    });
+    assert_eq!(fake.requests_for("session.create").len(), 1);
+    let sessions: Vec<_> = targets
+        .into_iter()
+        .map(|t| t.expect("both opens answer").session_id)
+        .collect();
+    assert_eq!(sessions, ["session:new", "session:new"]);
+}
+
+#[test]
+fn destroy_if_exited_ends_only_a_finished_block() {
+    let fake = scripted(json!([]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    fake.reply(
+        "com.superlogical.terminal.process",
+        json!({"last_exit": null}),
+    );
+    assert!(!hub.destroy_if_exited("tab-a"));
+    assert!(fake.requests_for("session.destroy").is_empty());
+    assert!(hub.session_alive("tab-a") || hub.live_sessions("local").is_empty());
+
+    fake.reply(
+        "com.superlogical.terminal.process",
+        json!({"last_exit": {"exit_code": 0}}),
+    );
+    assert!(hub.destroy_if_exited("tab-a"));
+    assert_eq!(fake.requests_for("session.destroy").len(), 1);
+    assert!(hub.claimed_session_ids().is_empty());
+}
+
+#[test]
+fn session_alive_reads_the_live_list() {
+    let fake = scripted(json!([{"session_id": "session:new", "label": "w · main"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    assert!(!hub.session_alive("tab-a"), "unmapped");
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert!(hub.session_alive("tab-a"));
+    let rx = hub.subscribe();
+    fake.push_event("session_destroyed", json!({"session_id": "session:new"}));
+    next_event(&rx, |e| matches!(e, HubEvent::SessionsChanged { .. }));
+    assert!(!hub.session_alive("tab-a"));
+}
