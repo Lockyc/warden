@@ -798,6 +798,33 @@ impl Registry {
         }
     }
 
+    /// Test-only: [`force_agents`](Self::force_agents) with each agent's terminal in hand, as an
+    /// open leaves the ones not yet shown. Only safe on a tab that never goes on screen here.
+    #[cfg(test)]
+    pub fn force_ready_agents(&mut self, id: &str, records: &[&str], selected: Option<&str>) {
+        self.force_agents(id, records, selected);
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
+            for a in &mut t.primary.agents {
+                a.rex = RexState::Ready(PaneTarget {
+                    endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
+                    session_id: "session:s".into(),
+                    block_id: format!("block:{}", a.record_id),
+                });
+            }
+        }
+    }
+
+    /// Test-only: tab `id`'s main pane's selected agent, on screen or not.
+    #[cfg(test)]
+    pub fn selected_agent(&self, id: &str) -> Option<&str> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)?
+            .primary
+            .selected
+            .as_deref()
+    }
+
     /// The agent tab `id`'s main pane shows: its selected one, while the tab is the one on screen
     /// here. `activate` and `select_agent` show that agent's surface and hide the rest by it.
     fn visible_agent(&self, id: &str) -> Option<&str> {
@@ -1764,32 +1791,55 @@ impl Registry {
     }
 
     /// Agent `record_id`'s relay in tab `id`'s main pane exited: close its surface and drop its
-    /// slot (its window is let go on a worker, `rex::spawn::end_if_exited`). When it was the one
-    /// on screen the pane shows its nearest live agent instead; with none live left the pane goes
-    /// cold as [`unload`](Self::unload) leaves it. `None` for an unknown agent.
+    /// slot (its window is let go on a worker, `rex::spawn::end_if_exited`). When it was the
+    /// selected one the pane selects its nearest running agent — live, or with its terminal in
+    /// hand — and, on screen, spawns and shows it; with none running the pane goes cold as
+    /// [`unload`](Self::unload) leaves it. `None` for an unknown agent.
     pub fn close_agent(&mut self, id: &str, record_id: &str) -> Option<AgentClosed> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         let pane = &mut self.tabs[idx].primary;
         let at = pane.agents.iter().position(|a| a.record_id == record_id)?;
-        // Every live agent but this one, in list order.
-        let live: Vec<bool> = pane
+        // Every agent but this one that can be shown, in list order: live, or still running in
+        // Rex with its terminal in hand (only the selected agent ever has a surface).
+        let showable: Vec<bool> = pane
             .agents
             .iter()
             .enumerate()
-            .map(|(i, a)| i != at && matches!(a.slot, TabSlot::Spawned(_)))
+            .map(|(i, a)| {
+                i != at
+                    && matches!(
+                        (&a.slot, &a.rex),
+                        (TabSlot::Spawned(_), _) | (TabSlot::Cold, RexState::Ready(_))
+                    )
+            })
             .collect();
-        if !live.contains(&true) {
-            // The pane's last live terminal: it ends as the tab's does.
+        if !showable.contains(&true) {
+            // The pane's last running agent: it ends as the tab's does.
             return Some(AgentClosed::PaneCold(self.unload(id)));
         }
         if pane.selected.as_deref() == Some(record_id) {
-            pane.selected = shell_core::pick_live_neighbour(at, &live)
+            pane.selected = shell_core::pick_live_neighbour(at, &showable)
                 .map(|n| pane.agents[n].record_id.clone());
         }
         if let TabSlot::Spawned(s) = pane.agents.remove(at).slot {
             s.close();
         }
         if self.active.as_deref() == Some(id) {
+            if let Some(next) = self.tabs[idx].primary.selected.clone() {
+                if let Err(e) = self.spawn_agent(idx, &next) {
+                    eprintln!("warden: couldn't open agent {next:?} of tab {id:?}: {e}");
+                }
+            }
+            if !self.tabs[idx].primary.live() {
+                // Its surface is already closed, so `unload` finds nothing to close and leaves
+                // the sidebar where it is; lean from here, as it would have.
+                let next = self.unload(id);
+                let next = match next {
+                    None if self.active.as_deref() == Some(id) => self.lean_to_live_neighbour(idx),
+                    next => next,
+                };
+                return Some(AgentClosed::PaneCold(next));
+            }
             self.show_active();
         }
         Some(AgentClosed::PaneLive)
@@ -3205,6 +3255,23 @@ mod tests {
         nothing_live(&mut r, &first);
         assert_eq!(asked.lock().unwrap().len(), 1);
         assert!(!r.is_connecting("t"));
+    }
+
+    #[test]
+    fn an_exited_agent_leans_to_a_running_one_not_yet_shown() {
+        // Only the selected agent has a surface; the others are running in Rex with their
+        // terminal in hand. The shown one exiting must not take the pane cold.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_ready_agents("t", &["r1", "r2", "r3"], Some("r2"));
+        assert_eq!(r.close_agent("t", "r2"), Some(AgentClosed::PaneLive));
+        assert_eq!(r.agent_keys("t"), ["t::agent:r1", "t::agent:r3"]);
+        assert_eq!(r.selected_agent("t"), Some("r1"), "leans up the list");
+        // With nothing else running, the pane goes cold.
+        r.force_agents("t", &["r1", "r2"], Some("r1"));
+        assert_eq!(r.close_agent("t", "r1"), Some(AgentClosed::PaneCold(None)));
+        assert!(r.agent_keys("t").is_empty());
+        assert_eq!(r.close_agent("t", "gone"), None);
     }
 
     #[test]
