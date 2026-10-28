@@ -1,9 +1,59 @@
+use crate::rex::PaneTarget;
 use crate::surface::{ghostty::GhosttySurface, PixelRect, SurfaceError, TabSpec, TerminalSurface};
 use std::os::raw::c_void;
+use std::path::PathBuf;
 
 /// One probe-enabled tab's work item: `(id, dir, title, probe_cmd)`. The probe
 /// runner substitutes `{dir}`/`{title}` into `probe_cmd` and runs it with cwd = dir.
 pub type ProbeTarget = (String, std::path::PathBuf, String, String);
+
+/// How a tab's session ends: a configured command to run (`dir`, `title`, `cmd` — the caller
+/// substitutes `{dir}`/`{title}` and runs it with cwd = dir), or the Rex sessions of these pane
+/// keys to destroy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndTarget {
+    Command(PathBuf, String, String),
+    Rex(Vec<String>),
+}
+
+/// A Rex pane's session to find or create — `RexHub::ensure_session`'s arguments — and the token
+/// its answer carries back to [`Registry::rex_opened`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RexOpen {
+    pub pane_key: String,
+    pub server: String,
+    pub dir: PathBuf,
+    pub startup: Option<String>,
+    pub label: String,
+    pub token: u64,
+}
+
+/// Starts a [`RexOpen`] somewhere that may block, and answers later through
+/// [`Registry::rex_opened`] on the main thread. Must not block its caller, nor answer from
+/// inside the call. `Err` (the reason) when it couldn't start, so nothing will answer.
+pub type RexOpener = Box<dyn Fn(RexOpen) -> Result<(), String> + Send>;
+
+/// What became of a Rex open's answer.
+#[derive(Debug)]
+pub enum RexLanded {
+    /// The pane stopped waiting for it (unloaded, closed, removed, or opened again since).
+    Stale,
+    /// The session couldn't be opened; the tab's `warn` says why.
+    Failed,
+    /// The pane went live, or stayed cold because its surface failed to spawn.
+    Opened(Result<(), SurfaceError>),
+}
+
+/// Where a Rex pane stands on its way to a session. Lives beside the slot, which stays `Cold`
+/// until a surface exists.
+#[derive(Debug, Clone, PartialEq)]
+enum RexState {
+    Idle,
+    /// An open is in flight; only the answer carrying this token lands.
+    Opening(u64),
+    /// The session answered; the next spawn runs the relay on it.
+    Ready(PaneTarget),
+}
 
 /// The chrome-facing shape of a declared split — the two layout facts the chrome seeds the
 /// divider from. `side` is the wire string the chrome's `.secondary-left` class keys on.
@@ -27,14 +77,16 @@ pub enum EndSession {
 pub struct TabDto {
     pub id: String,
     pub title: String,
-    pub warn: bool,            // dir missing NOW — derived per render (see `tab_dtos`)
-    pub spawned: bool,         // surface is live (load_on_open or already focused) vs cold/declared
+    /// Why the tab can't open as configured, or `None`: its dir is missing NOW (derived per render,
+    /// see `tab_dtos`), or its Rex session couldn't be opened.
+    pub warn: Option<String>,
+    pub spawned: bool, // surface is live (load_on_open or already focused) vs cold/declared
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
-    pub has_probe: bool,       // a session-probe command is configured for this tab
-    pub has_kill: bool,        // a session-kill (destroy) command is configured for this tab
-    pub has_suspend: bool,     // a session-suspend command is configured for this tab
-    pub has_cmd: bool,         // a startup command is configured (→ presence dot can offer restart)
-    pub tree: bool,            // row belongs to a project-tree (root) section
+    pub has_probe: bool, // a session-probe command is configured for this tab
+    pub has_kill: bool, // a session-kill (destroy) command is configured for this tab
+    pub has_suspend: bool, // a session-suspend command is configured for this tab
+    pub has_cmd: bool, // a startup command is configured (→ presence dot can offer restart)
+    pub tree: bool,    // row belongs to a project-tree (root) section
     #[serde(rename = "treePath")]
     pub tree_path: Vec<String>, // folder segments between root and project
     /// The tab's live surface has been moved to a popped-out window's registry
@@ -153,22 +205,36 @@ impl PaneIdx {
     }
 }
 
-/// One terminal within a tab: its spawn recipe plus its live/cold/detached slot.
+/// One terminal within a tab: its spawn recipe plus its live/cold/detached slot, and — for a pane
+/// whose spec names a `server` — how far its Rex session has got.
 struct Pane {
     spec: TabSpec,
     slot: TabSlot,
+    rex: RexState,
+}
+
+impl Pane {
+    fn new(spec: TabSpec, slot: TabSlot) -> Pane {
+        Pane {
+            spec,
+            slot,
+            rex: RexState::Idle,
+        }
+    }
 }
 
 /// The spec a tab's SECOND pane runs: the tab's own shell, in the tab's own dir, with the
 /// config split's `cmd` as its startup (a runtime split has none — the frame's scratch
 /// terminal), under the distinct surface id `"<tab>::2"` that surface→tab routing
-/// (`locate_surface`) and the surface event sink key on.
+/// (`locate_surface`) and the surface event sink key on — and, for a Rex tab, its Rex pane key,
+/// so a runtime (⌘D) split reattaches the same session a config split would. The tab's `server`
+/// carries over: a whole project lives on one server.
 ///
-/// A free function with two callers — `split` (the ⌘D path) and `attach` (which recreates the
-/// slot when a popped-out split returns to an origin window that was closed and rebuilt from
-/// config, and so has no secondary pane any more). Neither may re-derive it: two spellings of
-/// one spec would drift the second pane's surface id, and a mismatched id routes its bell,
-/// notification and child-exit to nothing.
+/// Every site that names the second pane goes through here — `split` (the ⌘D path), `attach`
+/// and `mark_detached` (which recreate the slot for a popped-out split whose origin was rebuilt
+/// from config), `end_target` and `rex_pane_key`. None may re-derive it: two spellings of one spec would drift
+/// the second pane's surface id, and a mismatched id routes its bell, notification and
+/// child-exit to nothing.
 fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
     spec.id = format!("{tab_id}::2");
@@ -176,6 +242,28 @@ fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     spec.startup = primary.split.as_ref().and_then(|s| s.startup.clone());
     spec.split = None;
     spec
+}
+
+/// The Rex pane key of pane `which` of the tab whose primary runs `primary` — that pane's spec
+/// id — or `None` for a plain tab. Also reads a popped-out tab, whose origin registry may be gone.
+pub(crate) fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> {
+    primary.server.as_ref()?;
+    Some(match which {
+        PaneIdx::Primary => primary.id.clone(),
+        PaneIdx::Secondary => secondary_spec(primary, &primary.id).id,
+    })
+}
+
+/// Whether `spec`'s presence comes from its `probe` command: it has one, and isn't a Rex tab.
+fn runs_probe(spec: &TabSpec) -> bool {
+    spec.probe.is_some() && spec.server.is_none()
+}
+
+/// Whether `spec` runs on a Rex server other than this Mac's, so its `dir` is a path there.
+fn is_remote(spec: &TabSpec) -> bool {
+    spec.server
+        .as_deref()
+        .is_some_and(|s| s != crate::rex::server::LOCAL)
 }
 
 /// A tab owns a `primary` pane and, when split, a `secondary`.
@@ -192,6 +280,8 @@ struct TabEntry {
     secondary: Option<Pane>,
     /// Which pane has keyboard focus. Always `Primary` when `secondary` is `None`.
     focused: PaneIdx,
+    /// Why the last Rex open for one of this tab's panes failed; cleared when one succeeds.
+    rex_error: Option<String>,
 }
 
 impl TabEntry {
@@ -234,6 +324,11 @@ pub struct Registry {
     /// secondary render at the primary's width for one frame.
     last_rect: PixelRect,
     last_rect_secondary: PixelRect,
+    /// Opens Rex panes' sessions off this thread; `None` until the window installs one, and then
+    /// a Rex pane can't open (its tab says so).
+    rex_opener: Option<RexOpener>,
+    /// The token the next Rex open carries.
+    next_rex_token: u64,
 }
 
 // SAFETY: `ns_window` is a raw `NSWindow *` that is only ever read on the main
@@ -249,7 +344,14 @@ impl Registry {
             active: None,
             last_rect: initial_rect,
             last_rect_secondary: initial_rect,
+            rex_opener: None,
+            next_rex_token: 0,
         }
+    }
+
+    /// Install what opens this window's Rex panes ([`RexOpener`]).
+    pub fn set_rex_opener(&mut self, opener: RexOpener) {
+        self.rex_opener = Some(opener);
     }
 
     /// Add a tab. `load_on_open=true` spawns now (eager); `false` declares it
@@ -259,33 +361,29 @@ impl Registry {
     /// entry (it shows in the sidebar and retries on next `activate`/focus) and
     /// the `SurfaceError` is returned for the caller to surface — never a panic,
     /// since one bad surface must not take down the window. A declared tab can't
-    /// fail here (no spawn attempted) → always `Ok`.
+    /// fail here (no spawn attempted) → always `Ok`. An eager Rex tab asks for its session here
+    /// and spawns when the answer lands (`rex_opened`).
     pub fn add(&mut self, spec: &TabSpec, load_on_open: bool) -> Result<(), SurfaceError> {
-        let mut err = None;
-        let slot = if load_on_open {
-            match GhosttySurface::new(self.ns_window, self.last_rect, spec) {
-                Ok(s) => {
-                    s.hide();
-                    TabSlot::Spawned(s)
-                }
-                Err(e) => {
-                    err = Some(e);
-                    TabSlot::Cold
-                }
-            }
-        } else {
-            TabSlot::Cold
-        };
         self.tabs.push(TabEntry {
             id: spec.id.clone(),
             title: spec.title.clone(),
-            primary: Pane {
-                spec: spec.clone(),
-                slot,
-            },
+            primary: Pane::new(spec.clone(), TabSlot::Cold),
             secondary: None,
             focused: PaneIdx::Primary,
+            rex_error: None,
         });
+        let mut err = None;
+        if load_on_open {
+            let idx = self.tabs.len() - 1;
+            match self.ensure_spawned(idx, PaneIdx::Primary) {
+                Ok(_) => {
+                    if let TabSlot::Spawned(s) = &self.tabs[idx].primary.slot {
+                        s.hide();
+                    }
+                }
+                Err(e) => err = Some(e),
+            }
+        }
         // A config split is STRUCTURAL: declare the pane now so the tab reads as split from its
         // first snapshot, and spawn it alongside an eager primary so `load_on_open` brings both
         // panes up together (a lazy tab's `activate` already spawns every cold pane). This eager
@@ -356,10 +454,7 @@ impl Registry {
             return;
         }
         let spec = secondary_spec(&t.primary.spec, id);
-        t.secondary = Some(Pane {
-            spec,
-            slot: TabSlot::Cold,
-        });
+        t.secondary = Some(Pane::new(spec, TabSlot::Cold));
     }
 
     /// Drop tab `id`'s second pane, freeing its surface. Returns whether there was one.
@@ -446,11 +541,12 @@ impl Registry {
     /// Does tab `id` have a `probe` command (⇒ a presence dot the scheduler tracks)? `activate_tab`
     /// consults this so it only arms a session-start await when cold-spawning a tab that actually
     /// has a session to come up — a probe-less tab has no dot, so awaiting one would just burst to
-    /// CAP for nothing. Unknown id ⇒ `false`.
+    /// CAP for nothing. A Rex tab's dot comes from Rex, not the scheduler, so it never has one.
+    /// Unknown id ⇒ `false`.
     pub fn tab_has_probe(&self, id: &str) -> bool {
         self.tabs
             .iter()
-            .any(|t| t.id == id && t.primary.spec.probe.is_some())
+            .any(|t| t.id == id && runs_probe(&t.primary.spec))
     }
 
     /// Stand tab `id` up as popped out without extracting anything: its live surfaces are
@@ -474,10 +570,7 @@ impl Registry {
         if has_secondary {
             let spec = secondary_spec(&t.primary.spec, id);
             t.secondary
-                .get_or_insert(Pane {
-                    spec,
-                    slot: TabSlot::Cold,
-                })
+                .get_or_insert(Pane::new(spec, TabSlot::Cold))
                 .slot = TabSlot::Detached;
         }
     }
@@ -523,18 +616,26 @@ impl Registry {
     /// would outlive the directory arriving. The filesystem is the one
     /// source of truth for "does this dir exist"; don't reintroduce a copy. The cost is
     /// one `stat` per tab, and this runs per sidebar render (window init / reconcile /
-    /// activate), not per frame.
+    /// activate), not per frame. A remote Rex tab's dir is a path on its server, so it isn't
+    /// checked here. A failed Rex open's reason outranks the dir check.
+    ///
+    /// A Rex tab always offers ☠ (it destroys the tab's Rex sessions) and a presence dot (from
+    /// Rex, not its `probe`).
     pub fn tab_dtos(&self) -> Vec<TabDto> {
         self.tabs
             .iter()
             .map(|t| TabDto {
                 id: t.id.clone(),
                 title: t.title.clone(),
-                warn: !t.primary.spec.dir.exists(),
+                warn: t.rex_error.clone().or_else(|| {
+                    let spec = &t.primary.spec;
+                    (!is_remote(spec) && !spec.dir.exists())
+                        .then(|| format!("directory not found: {}", spec.dir.display()))
+                }),
                 spawned: matches!(t.primary.slot, TabSlot::Spawned(_)),
                 group: t.primary.spec.group.clone(),
-                has_probe: t.primary.spec.probe.is_some(),
-                has_kill: t.primary.spec.kill.is_some(),
+                has_probe: t.primary.spec.probe.is_some() || t.primary.spec.server.is_some(),
+                has_kill: t.primary.spec.kill.is_some() || t.primary.spec.server.is_some(),
                 has_suspend: t.primary.spec.suspend.is_some(),
                 has_cmd: t.primary.spec.startup.is_some(),
                 tree: t.primary.spec.tree,
@@ -561,10 +662,12 @@ impl Registry {
 
     /// `(id, dir, title, probe_cmd)` for every tab with a configured probe — the
     /// work-list the probe runner snapshots. Includes cold tabs (a session can
-    /// exist while warden's own surface is unloaded — that's the point).
+    /// exist while warden's own surface is unloaded — that's the point). Excludes Rex tabs:
+    /// Rex reports their sessions (`rex_tabs`).
     pub fn probe_targets(&self) -> Vec<ProbeTarget> {
         self.tabs
             .iter()
+            .filter(|t| runs_probe(&t.primary.spec))
             .filter_map(|t| {
                 t.primary.spec.probe.as_ref().map(|p| {
                     (
@@ -578,22 +681,24 @@ impl Registry {
             .collect()
     }
 
-    /// `(dir, title, cmd)` for ending tab `id`'s session the `how` way — its `suspend` or `kill`
-    /// command — else `None` (unknown tab, or that command isn't set). The caller substitutes
-    /// `{dir}`/`{title}` into `cmd` and runs it with cwd = dir. Independent of the surface being
-    /// live — a session can exist while warden's surface is cold.
-    pub fn end_target(
-        &self,
-        id: &str,
-        how: EndSession,
-    ) -> Option<(std::path::PathBuf, String, String)> {
+    /// How to end tab `id`'s session the `how` way — its `suspend` or `kill` command — else `None`
+    /// (unknown tab, or that command isn't set). A Rex tab's destroy is its panes' Rex sessions —
+    /// both pane keys, mapped or not, since a split's session outlives the split. Independent of
+    /// the surface being live — a session can exist while warden's surface is cold.
+    pub fn end_target(&self, id: &str, how: EndSession) -> Option<EndTarget> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         let spec = &t.primary.spec;
         let cmd = match how {
+            EndSession::Destroy if spec.server.is_some() => {
+                return Some(EndTarget::Rex(vec![
+                    spec.id.clone(),
+                    secondary_spec(spec, id).id,
+                ]));
+            }
             EndSession::Suspend => spec.suspend.as_ref(),
             EndSession::Destroy => spec.kill.as_ref(),
         };
-        cmd.map(|c| (spec.dir.clone(), t.title.clone(), c.clone()))
+        cmd.map(|c| EndTarget::Command(spec.dir.clone(), t.title.clone(), c.clone()))
     }
 
     /// Restart tab `id`'s session by typing its startup command into the **live** shell and
@@ -739,14 +844,62 @@ impl Registry {
     /// session-start await only when a fresh surface actually ran its `initial_input` (an
     /// already-live pane starts nothing). `Ok(false)`, never a panic, if the pane doesn't exist
     /// (e.g. `Secondary` on an unsplit tab).
+    ///
+    /// A Rex pane (its spec names a `server`) needs its session first, and finding that is
+    /// network work this (main) thread never waits on: a cold Rex pane with no session in hand
+    /// asks the window's [`RexOpener`] for one and stays cold (`Ok(false)`) until
+    /// [`rex_opened`](Self::rex_opened) lands the answer and spawns it. One open per pane is in
+    /// flight at a time. With a session in hand it spawns `warden-relay` on it
+    /// (`rex::spawn::effective_spec`), using the session up — the next spawn asks again, so an
+    /// unload/relaunch reattaches whatever the session is by then.
     fn ensure_spawned(&mut self, idx: usize, which: PaneIdx) -> Result<bool, SurfaceError> {
-        let Some(pane) = self.tabs[idx].pane(which) else {
+        let tab = &mut self.tabs[idx];
+        let label = format!(
+            "{} · {}",
+            tab.title,
+            match which {
+                PaneIdx::Primary => "main",
+                PaneIdx::Secondary => "split",
+            }
+        );
+        let Some(pane) = tab.pane_mut(which) else {
             return Ok(false);
         };
         if !matches!(pane.slot, TabSlot::Cold) {
             return Ok(false);
         }
-        let spec = pane.spec.clone();
+        let rex = std::mem::replace(&mut pane.rex, RexState::Idle);
+        let spec = match (pane.spec.server.clone(), rex) {
+            (None, _) => pane.spec.clone(),
+            (Some(_), RexState::Ready(target)) => {
+                crate::rex::spawn::effective_spec(&pane.spec, &target)
+            }
+            (Some(_), opening @ RexState::Opening(_)) => {
+                pane.rex = opening;
+                return Ok(false);
+            }
+            (Some(server), RexState::Idle) => {
+                let Some(open) = &self.rex_opener else {
+                    tab.rex_error = Some(format!("Rex server {server}: no connection to Rex"));
+                    return Ok(false);
+                };
+                let token = self.next_rex_token;
+                self.next_rex_token += 1;
+                let started = open(RexOpen {
+                    pane_key: pane.spec.id.clone(),
+                    server,
+                    dir: pane.spec.dir.clone(),
+                    startup: pane.spec.startup.clone(),
+                    label,
+                    token,
+                });
+                match started {
+                    Ok(()) => pane.rex = RexState::Opening(token),
+                    Err(reason) => tab.rex_error = Some(reason),
+                }
+                return Ok(false);
+            }
+        };
         // Born at ITS OWN hole's rect, not the primary's — see the doc comment on
         // `last_rect_secondary`. A freshly-spawned secondary that started at the primary's
         // rect would render at the wrong width for one frame.
@@ -772,6 +925,8 @@ impl Registry {
         // stays present and only its slot moves to `Cold` alongside the primary's.
         let mut any_closed = false;
         for pane in self.tabs[idx].panes_mut() {
+            // An open still in flight is no longer wanted: its answer lands stale.
+            pane.rex = RexState::Idle;
             match std::mem::replace(&mut pane.slot, TabSlot::Cold) {
                 TabSlot::Spawned(s) => {
                     s.close();
@@ -799,6 +954,88 @@ impl Registry {
             return self.lean_to_live_neighbour(idx);
         }
         None
+    }
+
+    /// Land the answer to the Rex open `token` for pane `pane_key` (main thread). Stale unless
+    /// that pane is still waiting on exactly that open. A failure leaves the pane cold with the
+    /// reason on its tab's `warn`; the next activate asks again. A session brings the pane live:
+    /// the visible tab is re-activated (shown and focused, as a click would have), any other is
+    /// spawned hidden, and either way a Rex primary that just went live brings its declared
+    /// split up after it, as `activate` would.
+    pub fn rex_opened(
+        &mut self,
+        pane_key: &str,
+        token: u64,
+        result: Result<PaneTarget, String>,
+    ) -> RexLanded {
+        let Some((idx, which)) = self.tabs.iter().enumerate().find_map(|(i, t)| {
+            t.panes_indexed()
+                .find(|(_, p)| p.spec.id == pane_key && p.rex == RexState::Opening(token))
+                .map(|(which, _)| (i, which))
+        }) else {
+            return RexLanded::Stale;
+        };
+        let tab = &mut self.tabs[idx];
+        let Some(pane) = tab.pane_mut(which) else {
+            return RexLanded::Stale;
+        };
+        match result {
+            Err(reason) => {
+                pane.rex = RexState::Idle;
+                tab.rex_error = Some(reason);
+                RexLanded::Failed
+            }
+            Ok(target) => {
+                pane.rex = RexState::Ready(target);
+                tab.rex_error = None;
+                let id = tab.id.clone();
+                if self.active.as_deref() == Some(id.as_str()) {
+                    return RexLanded::Opened(self.activate(&id).map(|_| ()));
+                }
+                // A secondary spawns only beside a primary live in this registry — the gate
+                // `activate` and `ensure_spawned_by_id` share. Without it, it waits `Ready`.
+                let primary_live =
+                    |r: &Self| matches!(r.tabs[idx].primary.slot, TabSlot::Spawned(_));
+                let spawned = if which == PaneIdx::Primary || primary_live(self) {
+                    self.ensure_spawned(idx, which).map(|_| ())
+                } else {
+                    Ok(())
+                };
+                if primary_live(self) {
+                    let _ = self.ensure_spawned(idx, PaneIdx::Secondary);
+                }
+                for p in self.tabs[idx].panes() {
+                    if let TabSlot::Spawned(s) = &p.slot {
+                        s.hide();
+                    }
+                }
+                RexLanded::Opened(spawned)
+            }
+        }
+    }
+
+    /// Whether tab `id` is waiting on a Rex open for its primary pane — cold, with nothing on
+    /// screen yet, though activated.
+    pub fn is_connecting(&self, id: &str) -> bool {
+        self.tabs
+            .iter()
+            .any(|t| t.id == id && matches!(t.primary.rex, RexState::Opening(_)))
+    }
+
+    /// The Rex pane key of tab `id`'s pane `which` (its `TabSpec.id`), or `None` when that pane
+    /// doesn't exist or isn't a Rex pane.
+    pub fn rex_pane_key(&self, id: &str, which: PaneIdx) -> Option<String> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        t.pane(which)?;
+        rex_pane_key(&t.primary.spec, which)
+    }
+
+    /// `(tab id, server)` for every Rex tab, in sidebar order — whose presence Rex reports.
+    pub fn rex_tabs(&self) -> Vec<(String, String)> {
+        self.tabs
+            .iter()
+            .filter_map(|t| Some((t.id.clone(), t.primary.spec.server.clone()?)))
+            .collect()
     }
 
     /// The active tab at `idx` just lost its terminal: move `active` to an already-**live**
@@ -984,10 +1221,7 @@ impl Registry {
                 Some(p) => p.slot = TabSlot::Spawned(s),
                 None => {
                     let spec = secondary_spec(&t.primary.spec, id);
-                    t.secondary = Some(Pane {
-                        spec,
-                        slot: TabSlot::Spawned(s),
-                    });
+                    t.secondary = Some(Pane::new(spec, TabSlot::Spawned(s)));
                 }
             },
             None => {
@@ -1152,6 +1386,7 @@ mod tests {
             tree: false,
             tree_path: Vec::new(),
             split: None,
+            server: None,
         }
     }
     fn spec_with_probe(id: &str, dir: &str, probe: Option<&str>) -> TabSpec {
@@ -1168,6 +1403,7 @@ mod tests {
             tree: false,
             tree_path: Vec::new(),
             split: None,
+            server: None,
         }
     }
 
@@ -1202,7 +1438,7 @@ mod tests {
     fn missing_dir_sets_warn_flag() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/no/such/dir/xyz"), false);
-        assert!(r.tab_dtos()[0].warn, "missing dir must set warn");
+        assert!(r.tab_dtos()[0].warn.is_some(), "missing dir must set warn");
     }
 
     #[test]
@@ -1215,17 +1451,17 @@ mod tests {
         let dir = tmp.path().join("repo");
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", dir.to_str().unwrap()), false);
-        assert!(r.tab_dtos()[0].warn, "absent at add time → warn");
+        assert!(r.tab_dtos()[0].warn.is_some(), "absent at add time → warn");
 
         std::fs::create_dir(&dir).unwrap();
         assert!(
-            !r.tab_dtos()[0].warn,
+            r.tab_dtos()[0].warn.is_none(),
             "dir appeared after add → warn must clear without re-adding the tab"
         );
 
         std::fs::remove_dir(&dir).unwrap();
         assert!(
-            r.tab_dtos()[0].warn,
+            r.tab_dtos()[0].warn.is_some(),
             "dir removed after add → warn must return"
         );
     }
@@ -1674,7 +1910,7 @@ mod tests {
         only_kill.kill = Some("kill".into());
         let _ = r.add(&only_kill, false);
         let at = |cmd: &str| {
-            Some((
+            Some(EndTarget::Command(
                 std::path::PathBuf::from("/tmp/a"),
                 "t0".to_string(),
                 cmd.to_string(),
@@ -2088,5 +2324,180 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         assert_eq!(r.locate_surface(999_999), None);
+    }
+
+    fn rex_spec(id: &str, server: &str) -> TabSpec {
+        let mut s = spec(id, "/tmp");
+        s.server = Some(server.into());
+        s.startup = Some("amux".into());
+        s
+    }
+
+    /// A registry whose Rex opener records each request instead of opening anything.
+    fn rex_registry() -> (Registry, std::sync::Arc<std::sync::Mutex<Vec<RexOpen>>>) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let log = asked.clone();
+        r.set_rex_opener(Box::new(move |req| {
+            log.lock().unwrap().push(req);
+            Ok(())
+        }));
+        (r, asked)
+    }
+
+    #[test]
+    fn probe_targets_excludes_server_tabs() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_probe("plain", "/tmp", Some("p")), false)
+            .unwrap();
+        let mut rex = spec_with_probe("rex", "/tmp", Some("p"));
+        rex.server = Some("local".into());
+        r.add(&rex, false).unwrap();
+        let ids: Vec<String> = r.probe_targets().into_iter().map(|t| t.0).collect();
+        assert_eq!(ids, ["plain"]);
+        assert!(
+            !r.tab_has_probe("rex"),
+            "no probe runs, so no probe burst awaits it"
+        );
+    }
+
+    #[test]
+    fn end_target_destroy_on_server_tab_is_rex_destroy() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut rex = rex_spec("rex", "local");
+        rex.kill = Some("k".into());
+        rex.suspend = Some("s".into());
+        r.add(&rex, false).unwrap();
+        let mut plain = spec("plain", "/tmp");
+        plain.kill = Some("k".into());
+        r.add(&plain, false).unwrap();
+
+        assert_eq!(
+            r.end_target("rex", EndSession::Destroy),
+            Some(EndTarget::Rex(vec!["rex".into(), "rex::2".into()]))
+        );
+        assert_eq!(
+            r.end_target("rex", EndSession::Suspend),
+            Some(EndTarget::Command("/tmp".into(), "rex".into(), "s".into())),
+            "suspend stays the configured command"
+        );
+        assert_eq!(
+            r.end_target("plain", EndSession::Destroy),
+            Some(EndTarget::Command(
+                "/tmp".into(),
+                "plain".into(),
+                "k".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_server_tab_offers_destroy_and_a_presence_dot() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("rex", "local"), false).unwrap();
+        let dto = &r.tab_dtos()[0];
+        assert!(dto.has_kill, "☠ destroys its Rex sessions");
+        assert!(dto.has_probe, "its dot comes from Rex");
+    }
+
+    #[test]
+    fn activating_a_server_tab_asks_for_its_session_and_stays_cold() {
+        let (mut r, asked) = rex_registry();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        assert!(!r.activate("t").unwrap(), "nothing spawned yet");
+        assert!(r.is_connecting("t"));
+        assert!(!r.tab_dtos()[0].spawned);
+        {
+            let asked = asked.lock().unwrap();
+            assert_eq!(asked.len(), 1);
+            let req = &asked[0];
+            assert_eq!(req.pane_key, "t");
+            assert_eq!(req.server, "local");
+            assert_eq!(req.dir, PathBuf::from("/tmp"));
+            assert_eq!(req.startup.as_deref(), Some("amux"));
+            assert_eq!(req.label, "t · main");
+        }
+        let _ = r.activate("t");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "one open in flight per pane"
+        );
+    }
+
+    #[test]
+    fn an_eager_server_tab_asks_at_add() {
+        let (mut r, asked) = rex_registry();
+        r.add(&rex_spec("t", "local"), true).unwrap();
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        assert!(r.is_connecting("t"));
+    }
+
+    #[test]
+    fn a_failed_open_warns_with_its_reason_and_retries_on_activate() {
+        let (mut r, asked) = rex_registry();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        let _ = r.activate("t");
+        let req = asked.lock().unwrap()[0].clone();
+        let landed = r.rex_opened(
+            &req.pane_key,
+            req.token,
+            Err("Rex server unreachable: local".into()),
+        );
+        assert!(matches!(landed, RexLanded::Failed));
+        assert!(!r.is_connecting("t"));
+        assert_eq!(
+            r.tab_dtos()[0].warn.as_deref(),
+            Some("Rex server unreachable: local")
+        );
+        let _ = r.activate("t");
+        assert_eq!(asked.lock().unwrap().len(), 2, "activating again retries");
+    }
+
+    #[test]
+    fn an_open_answering_after_unload_is_ignored() {
+        let (mut r, asked) = rex_registry();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        let _ = r.activate("t");
+        let req = asked.lock().unwrap()[0].clone();
+        r.unload("t");
+        assert!(!r.is_connecting("t"));
+        let target = crate::rex::PaneTarget {
+            endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
+            session_id: "session:s".into(),
+            block_id: "block:b".into(),
+        };
+        let landed = r.rex_opened(&req.pane_key, req.token, Ok(target));
+        assert!(matches!(landed, RexLanded::Stale));
+        assert!(!r.tab_dtos()[0].spawned);
+    }
+
+    #[test]
+    fn a_remote_tabs_dir_is_not_checked_here() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut remote = rex_spec("remote", "remote-host");
+        remote.dir = PathBuf::from("/no/such/dir/xyz");
+        r.add(&remote, false).unwrap();
+        let mut local = rex_spec("local", "local");
+        local.dir = PathBuf::from("/no/such/dir/xyz");
+        r.add(&local, false).unwrap();
+        let dtos = r.tab_dtos();
+        assert_eq!(dtos[0].warn, None, "a remote dir lives on its server");
+        assert!(dtos[1].warn.is_some(), "a local server's dir is this Mac's");
+    }
+
+    #[test]
+    fn rex_pane_keys_are_the_pane_spec_ids() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.add(&spec("plain", "/tmp"), false).unwrap();
+        r.split("t");
+        assert_eq!(r.rex_pane_key("t", PaneIdx::Primary).as_deref(), Some("t"));
+        assert_eq!(
+            r.rex_pane_key("t", PaneIdx::Secondary).as_deref(),
+            Some("t::2")
+        );
+        assert_eq!(r.rex_pane_key("plain", PaneIdx::Primary), None);
+        assert_eq!(r.rex_tabs(), [("t".to_string(), "local".to_string())]);
     }
 }

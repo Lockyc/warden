@@ -44,6 +44,7 @@ impl RexStore {
         self.records.get(pane_key)
     }
 
+    #[cfg(test)]
     pub fn records(&self) -> impl Iterator<Item = (&String, &PaneRecord)> {
         self.records.iter()
     }

@@ -19,6 +19,7 @@
 //! `RexHub` closes every connection and ends them.
 
 pub mod server;
+pub mod spawn;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -428,6 +429,7 @@ impl RexHub {
     }
 
     /// The sessions on `server`, as last heard; empty when it isn't connected.
+    #[cfg(test)]
     pub fn live_sessions(&self, server: &str) -> Vec<SessionInfo> {
         self.inner
             .lock()
@@ -438,6 +440,7 @@ impl RexHub {
     }
 
     /// Every session some pane is mapped to, on any server.
+    #[cfg(test)]
     pub fn claimed_session_ids(&self) -> HashSet<String> {
         self.inner
             .lock()
@@ -455,6 +458,7 @@ impl RexHub {
     }
 
     /// The client that owns `block_id`, as last heard on a connection attached to its session.
+    #[cfg(test)]
     pub fn owner(&self, session_id: &str, block_id: &str) -> Option<String> {
         let key = (session_id.to_owned(), block_id.to_owned());
         self.inner

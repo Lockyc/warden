@@ -21,6 +21,7 @@ seed-examples:
 # Run the app against the repo's demo config (never touches your real ~/.config/warden config)
 [group("dev")]
 run: seed-examples
+    cargo build -p warden-relay
     WARDEN_CONFIG="{{justfile_directory()}}/examples/config.toml" cargo run -p warden-app
 
 # Validate a config and print the resolved window/tab tree + warnings (defaults to the demo).

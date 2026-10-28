@@ -23,6 +23,7 @@ const AUTOSTART_DEADLINE: Duration = Duration::from_millis(2000);
 /// `"local"` is this Mac's socket; anything else is a host label from the local server's
 /// `hosts.list` (matched ignoring case, as Rex does), resolved to its first endpoint warden can
 /// connect to.
+#[cfg(test)]
 pub fn resolve(server: &str, local: &ControlClient) -> Result<Endpoint, RexError> {
     resolve_until(server, local, Instant::now() + Duration::from_secs(10))
 }
@@ -77,6 +78,7 @@ fn host_endpoint(s: &str) -> Option<Endpoint> {
 
 /// Start this Mac's Rex server by running `rex server status` from Rex.app's bundle: the CLI
 /// starts a missing local server by default. Bounded by [`AUTOSTART_DEADLINE`].
+#[cfg(test)]
 pub fn autostart_local() -> Result<(), RexError> {
     autostart_local_within(AUTOSTART_DEADLINE)
 }

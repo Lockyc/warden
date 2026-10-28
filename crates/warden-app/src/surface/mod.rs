@@ -101,6 +101,10 @@ pub struct TabSpec {
     /// pane's startup from it (`secondary_spec`), and reports its layout to the chrome
     /// (`TabDto.split_layout`); the surface layer itself never reads it.
     pub split: Option<warden_config::Split>,
+    /// The Rex server this tab's panes run on (config `server`), or `None` for a plain tab whose
+    /// shell runs here. The registry opens a Rex pane's session and spawns `warden-relay` in its
+    /// place (`rex::spawn::effective_spec`); the surface layer itself never reads it.
+    pub server: Option<String>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

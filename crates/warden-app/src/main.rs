@@ -24,9 +24,7 @@ mod registry;
 #[cfg(target_os = "macos")]
 mod session;
 
-// Managed as Tauri state; no tab spawns through it yet, so outside tests most of it is unused.
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
 mod rex;
 
 #[cfg(target_os = "macos")]
@@ -264,7 +262,9 @@ struct ActivateResult {
 /// spawn leaves the tab cold **but still selected**, and the chrome cannot see that from the
 /// `warden:error` banner alone — so if this returned nothing, the chrome would keep the placeholder
 /// hidden (it keys on "a tab is selected") and the uncovered hole would leak the wallpaper: exactly
-/// the leak the placeholder exists to stop. Report liveness so the chrome paints it.
+/// the leak the placeholder exists to stop. Report liveness so the chrome paints it. A Rex tab
+/// still opening its session is cold too: `live` is false until the `warden:refresh` its landing
+/// sends (`rex::spawn`).
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn activate_tab(
@@ -278,7 +278,7 @@ fn activate_tab(
     // decide whether to arm a session-start await below. `split`/`focused` are this tab's OWN
     // layout, read under the SAME lock so they can't race a concurrent split/close. Both read
     // under the one lock.
-    let (spawned_fresh, has_probe, err, split, focused) = {
+    let (spawned_fresh, has_probe, err, connecting, split, focused) = {
         let mut m = state.lock();
         let out = match m.windows.get_mut(window.label()) {
             Some(ws) => {
@@ -287,6 +287,7 @@ fn activate_tab(
                     Ok(fresh) => (fresh, None),
                     Err(e) => (false, Some(e)),
                 };
+                let connecting = ws.registry.is_connecting(&id);
                 let split = ws.registry.is_split(&id);
                 // Trivially always the primary when unsplit — no need to ask `focused_pane` at all.
                 let focused = if split {
@@ -296,9 +297,9 @@ fn activate_tab(
                 } else {
                     0
                 };
-                (fresh, has_probe, err, split, focused)
+                (fresh, has_probe, err, connecting, split, focused)
             }
-            None => (false, false, None, false, 0),
+            None => (false, false, None, false, false, 0),
         };
         m.record_session(window.label());
         out
@@ -306,7 +307,7 @@ fn activate_tab(
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
     // empty-state placeholder over the uncovered hole) instead of panicking. The chrome is
     // listening now, so push the reason to the banner.
-    let live = err.is_none();
+    let live = err.is_none() && !connecting;
     if let Some(e) = err {
         eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
         // A per-tab spawn error belongs to THIS window only. `emit` broadcasts to every
@@ -550,10 +551,18 @@ fn pop_out_tab(
         // sidebar shows on EVERY row, not just loaded ones — works from any tab rather than
         // erroring on a cold one. Spawning happens in the origin window; `detach` then extracts
         // the now-live surface and phase 2 reparents it out (all synchronous, so the brief
-        // in-origin overlap never renders). Already-Detached / unknown tabs stay a clean error.
+        // in-origin overlap never renders). Already-Detached / unknown tabs stay a clean error. A
+        // cold Rex tab can't come live synchronously — its session opens off this thread — so it
+        // starts opening here and the pop-out says to try again once it has.
         ws.registry
             .ensure_spawned_by_id(&id)
             .map_err(|e| format!("could not open the tab to pop it out: {e}"))?;
+        if ws.registry.is_connecting(&id) {
+            return Err(
+                "the tab is still connecting to its Rex server — pop it out once it opens"
+                    .to_string(),
+            );
+        }
         let (surface, secondary) = ws
             .registry
             .detach(&id)
@@ -871,7 +880,8 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
 }
 
 /// End the *session* tab `id` represents (the thing its `probe` checks for) by running its
-/// configured `suspend` or `kill` command (per `how`) via `sh -c`, cwd = the tab's dir,
+/// configured `suspend` or `kill` command (per `how`) via `sh -c`, cwd = the tab's dir — or, for a
+/// Rex tab's destroy, by destroying its panes' Rex sessions (`rex::spawn::destroy`) —
 /// fire-and-forget on a detached thread (exit code ignored — warden has no response to a failed
 /// end, and must not block the UI thread). Touches no surface: the chrome unloads the tab itself.
 /// No-op if the tab has no command for `how`. After the command completes, bump this window so
@@ -891,10 +901,16 @@ fn end_session(
             .get(window.label())
             .and_then(|ws| ws.registry.end_target(&id, how))
     };
-    let Some((dir, title, cmd)) = target else {
-        return; // unknown tab or no command configured for `how`
-    };
     let label = window.label().to_string();
+    let (dir, title, cmd) = match target {
+        None => return, // unknown tab or no command configured for `how`
+        Some(registry::EndTarget::Rex(pane_keys)) => {
+            use tauri::Manager;
+            rex::spawn::destroy(window.app_handle(), label, id, pane_keys);
+            return;
+        }
+        Some(registry::EndTarget::Command(dir, title, cmd)) => (dir, title, cmd),
+    };
     // Run the kill fire-and-forget off the UI thread, then bump this window so the scheduler's fast
     // burst catches the leave-Present transition the moment teardown lands. `bump_tab_await(false)`
     // arms a directional await (session should go DOWN) so the burst holds Fast until it does rather
@@ -1492,6 +1508,10 @@ fn main() {
                 // needs ManagerState already managed (above) since the handler resolves surfaces
                 // through it. `notify_debug` (config, default false) gates the diagnostic trace.
                 notify::init(handle.clone(), notify_debug);
+
+                // Rex tabs' presence dots follow the hub's session lists (not the probe
+                // scheduler, which skips them).
+                rex::spawn::watch_presence(handle.clone());
 
                 // Background presence-probe scheduler — the single probe driver. Per-window
                 // fast-until-stable bursts on key moments (tab activate, window focus/open, session
