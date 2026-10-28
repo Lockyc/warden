@@ -39,6 +39,7 @@ macOS only.
 - **Session-presence probes** — a per-tab `probe` command drives a three-state dot from its exit code: cyan on exit 0 (live), a ghost on exit 3 (crashed but restorable), hollow otherwise — independent of whether warden's own terminal surface is loaded (details below).
 - **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles, folder paths and group names (folders open to show matches). **⌘⇧F** jumps into it from a terminal; **↑**/**↓** pick a match, **Enter** opens it, **Esc** clears the search and returns you to the terminal. Clicking a match opens it and keeps the search focused, so you can keep narrowing.
 - **Keyboard navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**). **⌘W** unloads the active tab, **⌘⇧W** closes the window, and **⌘⇧O** pops the active tab into its own window (session-preserving; see above). **⌘⇧S** suspends the active tab's session and **⌘⇧K** terminates it — the first ⌘⇧K arms the tab's confirm row, a second one within 4s confirms.
+- **Rex sessions** — set `server = "local"` (or a host label from Rex's host list) and a tab's terminals live in sessions on a Rex server — Superlogical's server-side terminal multiplexer, currently an invite-only beta you need installed. ⌘W, closing the window and quitting warden only detach: reopening the tab shows the same live screen, and the session is reachable from Rex's other clients too. The terminal takes the size of whichever device you last typed in. ☠ ends the sessions; the dot shows whether they're running; warden starts the local Rex server when a tab needs it. Sessions on that server no tab claims are listed under `Rex · <server>`, so none is hidden. A Rex tab's dot and ☠ come from Rex, so its `probe` and `kill` aren't run. Tabs without `server` stay plain terminals.
 - **CLI** — `warden validate` prints the resolved window/tab tree and warnings; `warden fmt` formats a config in warden's house TOML style.
 
 To wire the session-presence dot — pairing with [agentmux](https://github.com/lockyc/agentmux) — set a tab's `probe` to a session check:
@@ -131,7 +132,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `dir` | *required* | Working directory the terminal opens in (`~` expanded). A dir that doesn't exist is a warning, not an error. |
+| `dir` | *required* | Working directory the terminal opens in (`~` expanded). A dir that doesn't exist is a warning, not an error. On a remote `server` it's a path on that host, taken as written. |
 | `title` | basename of `dir` | Display label. Purely cosmetic — may repeat within a window. |
 | `id` | unset | Stable identity, needed only to disambiguate two tabs that share a `dir`. Otherwise the `dir` *is* the identity. |
 | `load_on_open` | `false` | Spawn at launch and keep running in the background. Otherwise a tab spawns lazily on first focus. |
@@ -236,6 +237,7 @@ cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # ch
 
 - `crates/warden-config/` — the config crate (library + `warden` CLI).
 - `crates/warden-app/` — the macOS Tauri app (windows, sidebar, libghostty terminals, hot-reload).
+- `crates/rex-client/` — the Rex protocol client; `crates/warden-relay/` — the helper a Rex-backed pane runs.
 - `assets/` — icon masters (`icon.svg`, `icon-app.svg`), rendered PNGs, the macOS `warden.icns`, and `build-icons.sh` to regenerate the rasters from the SVGs.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 
@@ -264,8 +266,8 @@ and a `.githooks/pre-commit` guard both refuse while one is live.
 
 MIT — see [`LICENSE`](LICENSE).
 
-The vendored libghostty binary (`crates/warden-app/vendor/`) is
-[Ghostty](https://github.com/ghostty-org/ghostty) compiled from an unmodified, pinned
+The vendored libghostty binaries (`crates/warden-app/vendor/`, and libghostty-vt in
+`crates/warden-relay/vendor/`) are [Ghostty](https://github.com/ghostty-org/ghostty) compiled from an unmodified, pinned
 upstream commit by [`lockyc/libghostty-build`](https://github.com/lockyc/libghostty-build)
 and distributed under Ghostty's MIT license; see
 [`crates/warden-app/vendor/LICENSE-ghostty`](crates/warden-app/vendor/LICENSE-ghostty)

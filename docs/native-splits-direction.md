@@ -31,7 +31,7 @@ need to become a multiplexer, it needs to stop delegating to one.
 An `amux --frame` tab is two (frame + agent); an unframed one is one. Native splits — a
 second surface beside a tab's primary, a shell beside the agent — remove the frame layer
 for local use and take that count to one. The destination is zero: warden as the client of
-Rex sessions, with tmux and agentmux retired (agentmux's `docs/multiplexer-direction.md`
+Rex sessions (`docs/rex.md`), with tmux and agentmux retired (agentmux's `docs/multiplexer-direction.md`
 maps where each agentmux capability goes).
 
 What that buys beyond one less parse: native scrollback and selection in the second
@@ -221,9 +221,9 @@ warden's own rather than a tmux popup.
 **Agent state as warden chrome, from Rex.** agentmux paints agent state into tmux's grid today;
 in a client-owned-viewport model it belongs to warden's sidebar and tab-row dots. The source is
 Rex's event stream (`program_status_changed`, `child_exited`, `session_created`/`destroyed`),
-not agentmux, which gets no new architecture. Blocked on warden being able to host a Rex
-session at all: Rex's client protocol is unpublished. Revisit when it is, or when libghostty
-gains a way to attach a surface to a Rex block.
+not agentmux, which gets no new architecture. warden hosts Rex sessions and its hub receives that
+stream (`docs/rex.md`); the chrome lands with the agent tab list
+(`docs/FOLLOWUPS.md`).
 
 **A popped-out left-side split's focus ring starts on the wrong hole.** shell-core's detach
 page focuses its FIRST hole on every layout, which for a mirrored (`side = "left"`) pop-out

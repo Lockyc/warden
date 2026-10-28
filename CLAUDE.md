@@ -21,6 +21,7 @@ Target platform: **macOS**. Linux is a possible future consideration, not a guar
 | config parsing, resolution, cascade, validation | [`docs/config.md`](docs/config.md) |
 | the libghostty embed — surfaces, FFI, focus/keys, links, rendering, revendoring | [`docs/surface.md`](docs/surface.md) |
 | splits, pop-out, the pane chrome | [`docs/native-splits-direction.md`](docs/native-splits-direction.md) |
+| Rex-backed tabs — the hub, `warden-relay`, `rex-client`, size ownership, the session lifecycle | [`docs/rex.md`](docs/rex.md) |
 | the presence dot / probe scheduler | [`docs/probing.md`](docs/probing.md) |
 | notifications, badges, banners | [`docs/notifications.md`](docs/notifications.md) |
 | packaging, signing, releases, the updater, `install.sh` | [`docs/releasing.md`](docs/releasing.md) |
@@ -30,9 +31,11 @@ The README is the user-facing feature tour; this file doesn't repeat it.
 
 ## Current state
 
-Two crates, both built:
+Four crates, all built:
 
 - **`warden-config`** — pure logic, no GUI: parse/validate/resolve the TOML, diff two configs for hot-reload, load, watch, and the `warden validate` + `warden fmt` CLI.
+- **`rex-client`** — a blocking Rex protocol client (control + data connections) and, behind its `fake` feature, the fake server the gate tests run against.
+- **`warden-relay`** — the helper binary a Rex pane runs: one Rex block streamed to its PTY, input sent back. Links libghostty-vt, never GhosttyKit; bundled into `Contents/MacOS/`.
 - **`warden-app`** — the macOS-only Tauri app. Implementation anchors, not a feature list:
   - **Windows**: one native window per `[[window]]` (`open_on_start`-gated), curator-style transparent chrome. Bounds persist per Tauri label via shell-core's geometry plugin; sidebar width in `localStorage`.
   - **Tabs**: libghostty surfaces behind `TerminalSurface`, lazy-spawned on first focus except `load_on_open` and, with `remember_tabs`, the window's last-loaded tabs (`session.rs`). `[[window.group]]` sections; `[[window.root]]` trees discovered by `scanner.rs::synthesize_tabs` over config-core's `discover_projects` (rescan on open / hot-reload / manual refresh — no fs watcher). `open_tabs_section` opts into chrome-core's pinned Open section.
@@ -40,6 +43,7 @@ Two crates, both built:
   - **Empty states**: warden is persistent (closing the last window doesn't quit; ⌘Q does). `manager.rs::sync_empty_surface` is the single authority for shell-core's home surface (`NoConfig` / `Broken` / `Windows`), reading the persisted `WindowManager::load_error` because it runs from places with no load context (a window's `Destroyed` handler). It re-installs warden's quit-when-last-surface-closes `Destroyed` handler on the home window the first time it's built. A mid-edit parse error with windows open shows an error banner instead.
   - **Menu**: App/Config/Window are shell-core's spine (`menu::build_spine`); the Tab submenu's navigation comes from `menu::build_tab_nav`/`tab_nav_action` (`tab_digit_keys`). warden's own: ⌘W unloads the tab (⌘⇧W closes the window), ⌘⇧O pops out, ⌘⇧F focuses the sidebar search (webview made key first — a terminal holds first responder), ⌘⇧S / ⌘⇧K suspend / terminate via chrome-core's `requestEnd`, and Reopen Last Closed (⌘⇧T) spliced into the Window submenu. Composition: `main.rs::build_app_menu`.
   - **Splits and pop-out**: a primary + optional secondary pane per tab (config `split` or ⌘D), and whole-tab, session-preserving pop-out (`GhosttySurface::reparent`, `Registry::detach`/`attach`). Mechanism and traps: [`docs/native-splits-direction.md`](docs/native-splits-direction.md).
+  - **Rex tabs**: a tab with a `server` keeps each pane in a Rex session; its surface runs `warden-relay`. `rex/`: `RexHub` (one control connection per server), `store.rs` (pane key → session), `spawn.rs` (off-main-thread open), `size.rs` (size claims), `unclaimed.rs` (`Rex · <server>` rows). Unload detaches, ☠ and program exit destroy; the dot comes from Rex, not `probe`. [`docs/rex.md`](docs/rex.md).
 
 Deferred: ad-hoc `⌘T`/`⌘N` tabs, seam/FFI/IPC hardening, watcher debounce, argv passthrough — see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
 
@@ -68,7 +72,9 @@ bin/warden.rs  `warden validate` (warden's schema) + `warden fmt` (delegates to 
 
 Formatting and colour live in config-core, re-exported at the crate root (`format_str`/`format_file`, `Colour`).
 
-`crates/warden-app` — `plan.rs` (config → `WindowSpec`/`TabPlan`, reconcile → `WindowOp`; `derive_tree_meta`), `manager.rs` (`WindowManager`: materialize, apply reconciliations, `sync_empty_surface`, `effective_config` expanding roots), `scanner.rs`, `registry.rs` (per-window tab registry over surfaces), `surface/` + `ffi/` (the libghostty embed), `geometry.rs` (web-rect ↔ NSView-rect), `probe.rs`, `notify.rs`, `session.rs`. `ui/index.html` is the page shell + controller; the home surface is shell-core's `home.html`.
+`crates/warden-app` — `plan.rs` (config → `WindowSpec`/`TabPlan`, reconcile → `WindowOp`; `derive_tree_meta`), `manager.rs` (`WindowManager`: materialize, apply reconciliations, `sync_empty_surface`, `effective_config` expanding roots), `scanner.rs`, `registry.rs` (per-window tab registry over surfaces), `surface/` + `ffi/` (the libghostty embed), `geometry.rs` (web-rect ↔ NSView-rect), `probe.rs`, `notify.rs`, `session.rs`, `rex/` (Rex tabs). `ui/index.html` is the page shell + controller; the home surface is shell-core's `home.html`.
+
+`crates/rex-client` — `control.rs` (`ControlClient`), `data.rs` (`DataStream`), `wire.rs` (codecs, `StreamDemux`, `strip_terminal_replies`), `endpoint.rs`, `fake.rs`. `crates/warden-relay` — `main.rs` (stream + stdin loops, resume/restart), `vt.rs` (libghostty-vt FFI: snapshot → VT), `term.rs` (raw mode); vendored libghostty-vt in its `vendor/`.
 
 ## Config schema (`~/.config/warden/config.toml`; override with `WARDEN_CONFIG`)
 
