@@ -2,6 +2,7 @@ mod ffi;
 mod geometry;
 mod plan;
 mod scanner;
+mod strip;
 mod surface;
 
 #[cfg(not(target_os = "macos"))]
@@ -1158,6 +1159,14 @@ fn agents_init(
     rex::lifecycle::current_list(window.app_handle(), &tab_id)
 }
 
+/// Tab `tab_id`'s bottom strip as it stands, for a chrome that has none for it yet; every change
+/// after this arrives as `warden:strip`. `None` for a tab without one.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn strip_init(state: tauri::State<ManagerState>, tab_id: String) -> Option<strip::StripDto> {
+    strip::strip_dto(&state.lock().last_good, &tab_id)
+}
+
 /// A new agent tab in tab `tab_id`'s main pane, typing the tab's `cmd`, selected.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -1861,6 +1870,7 @@ fn main() {
             shell_home_open_window,
             probe_now,
             agents_init,
+            strip_init,
             agent_new,
             agent_select,
             agent_sleep,

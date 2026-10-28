@@ -20,6 +20,8 @@ fn main() {
     // watching `ui` broadly would self-trigger a rerun every build, since build.rs writes the
     // generated chrome-core.{css,js} into ui/.
     println!("cargo:rerun-if-changed=ui/index.html");
+    println!("cargo:rerun-if-changed=ui/strip.css");
+    println!("cargo:rerun-if-changed=ui/strip.js");
 
     // Derive the libghostty action-tag discriminants from the vendored header instead of
     // hand-transcribing them. `ghostty_action_tag_e` is a plain C enum with no explicit values, so

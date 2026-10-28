@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <title>warden</title>
     <link rel="stylesheet" href="chrome-core.css" />
+    <link rel="stylesheet" href="strip.css" />
     <style>
       /* Page shell only — the sidebar interior (banner, rows, dots, kill-confirm, error bar, resize)
          lives in chrome-core. This keeps warden's window topology: a native libghostty surface
@@ -401,6 +402,9 @@
               <rect x="296" y="210" width="34" height="40" rx="7" fill="#5c676c"/>
             </svg>
           </div>
+          <!-- The bottom strip (a Rex tab's project name on its colour); strip.css / strip.js.
+               Inside the pane, outside the reported hole — see `reportRect`. -->
+          <div id="agent-strip"></div>
         </div>
         <!-- The agent tab list (a Rex tab's main pane only): rows, groups, and the foot's `+` and
              Closed fold. Rendered by `renderAgents`; shown by `syncAgentsColumn`. -->
@@ -436,6 +440,7 @@
       </div>
     </div>
     <script src="chrome-core.js"></script>
+    <script src="strip.js"></script>
     <script>
       // warden's chrome controller: binds chrome-core's ChromeSidebar (the view) to warden's Tauri
       // backend + libghostty native surface. The sidebar rendering lives in chrome-core; this maps
@@ -615,12 +620,19 @@
       // pane the chrome isn't showing.
       function reportRect() {
         const p = contentRect(document.getElementById("pane-primary"));
+        p.height = Math.max(0, p.height - stripHeight()); // the strip's rows are not terminal
         invokeSafe("set_hole_rect", { rect: { x: p.x, y: p.y, width: p.width, height: p.height }, pane: 0 });
         const secEl = document.getElementById("pane-secondary");
         if (!secEl.hidden) {
           const s = contentRect(secEl);
           invokeSafe("set_hole_rect", { rect: { x: s.x, y: s.y, width: s.width, height: s.height }, pane: 1 });
         }
+      }
+
+      // The bottom strip's height inside the primary pane (0 while it isn't shown).
+      function stripHeight() {
+        const el = document.getElementById("agent-strip");
+        return el.classList.contains("on") ? el.getBoundingClientRect().height : 0;
       }
 
       // The empty-state elements' GROUND (opaque background) is always on now — see the CSS
@@ -767,6 +779,7 @@
         agentsById.clear();
         dto.tabs.forEach((t) => { if (t.agents) agentsById.set(t.id, true); });
         agentLists.forEach((_, id) => { if (!agentsById.has(id)) agentLists.delete(id); });
+        strips.forEach((_, id) => { if (!agentsById.has(id)) strips.delete(id); });
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
         detached.clear();
@@ -998,6 +1011,7 @@
       // narrower one. A tab with no list yet pulls it.
       function syncAgentsColumn() {
         const tab = agentsTab();
+        syncStrip(tab);
         if (pendingWake && pendingWake.tab !== tab) cancelWake(); // a held wake ends with its tab
         document.getElementById("terminal-hole").classList.toggle("agents", tab !== null);
         if (tab === null) return;
@@ -1011,6 +1025,25 @@
               if (agentsTab() === tab) refreshAgents();
             })
             .catch((err) => console.error("warden: IPC agents_init failed", err));
+        }
+      }
+
+      // The bottom strip. tab id → its latest `StripDto` (`strip_init`, then every `warden:strip`,
+      // sent to every window like `warden:agents`); shown for the tab whose agent list is on screen.
+      const strips = new Map();
+      function syncStrip(tab) {
+        const el = document.getElementById("agent-strip");
+        const dto = tab !== null ? strips.get(tab) : null;
+        window.WardenStrip.render(el, dto || null);
+        reportRect(); // the strip's height is left out of the primary hole
+        if (tab !== null && !strips.has(tab)) {
+          invoke("strip_init", { tabId: tab })
+            .then((d) => {
+              if (!d || strips.has(tab)) return; // a `warden:strip` landed first — it's newer
+              strips.set(tab, d);
+              if (agentsTab() === tab) syncStrip(tab);
+            })
+            .catch((err) => console.error("warden: IPC strip_init failed", err));
         }
       }
 
@@ -1818,6 +1851,12 @@
         if (!p || !p.tabId || !agentsById.has(p.tabId)) return;
         agentLists.set(p.tabId, p);
         if (agentsTab() === p.tabId) refreshAgents();
+      });
+      listen("warden:strip", (e) => {
+        const p = e.payload;
+        if (!p || !p.tabId) return;
+        strips.set(p.tabId, p);
+        if (agentsTab() === p.tabId) syncStrip(p.tabId);
       });
       // Tab ▸ Sleep Server with something it can't bring back: confirm, listing every loss by
       // name. Confirming sends those names back (`server_sleep`); a loss the backend finds that

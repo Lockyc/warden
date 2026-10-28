@@ -6,6 +6,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use warden_config::{tree_path, Config, Reconciliation, Tab, Window};
 
+/// Every tab's assigned project colour (`#rrggbb`, by tab key). Assignment runs over every
+/// window's tabs of `config` (the effective config, so discovered tabs count), so a project keeps
+/// one colour across windows and a pin anywhere leaves the pool for all. The sidebar mark
+/// (`TabDto.accent`) and the bottom strip both read this.
+pub fn project_colours(config: &Config) -> HashMap<String, String> {
+    let all: Vec<Tab> = config.windows.iter().flat_map(|w| w.tabs.clone()).collect();
+    warden_config::assign_project_colours(&all)
+        .into_iter()
+        .map(|(k, c)| (k, c.hex()))
+        .collect()
+}
+
 /// Derive (tree, tree_path) for a tab from its window's roots (root name → dir).
 /// A tab whose `group` names a root is a tree row; tree_path = folder segments
 /// between that root's dir and the tab's dir (empty for a project directly under

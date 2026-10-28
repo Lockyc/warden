@@ -977,6 +977,7 @@ pub fn select(app: &AppHandle, label: &str, tab_id: &str, record_id: &str) -> Re
     };
     m.record_session(label);
     let dto = m.init_dto(label);
+    crate::strip::emit(app, &m.last_good, tab_id);
     drop(m);
     if let Some(dto) = dto {
         let _ = app.emit_to(label, "warden:refresh", dto);
