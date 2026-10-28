@@ -17,18 +17,27 @@ const REX_BUNDLE_ID: &str = "com.superlogical.rex";
 /// The `rex` CLI inside Rex.app.
 const REX_CLI: &str = "Contents/Helpers/Rex Server.rex/Contents/MacOS/rex";
 
-/// How long autostart may take. It runs on the path that opens a tab, which must answer within
-/// 3 s even when Rex can't be started.
-const AUTOSTART_DEADLINE: Duration = Duration::from_millis(2500);
+/// How long autostart may take. It runs inside the hub's connect budget, leaving the rest of
+/// that budget for the retried connect.
+const AUTOSTART_DEADLINE: Duration = Duration::from_millis(2000);
 
 /// `"local"` is this Mac's socket; anything else is a host label from the local server's
 /// `hosts.list` (matched ignoring case, as Rex does), resolved to its first endpoint warden can
 /// connect to.
 pub fn resolve(server: &str, local: &ControlClient) -> Result<Endpoint, RexError> {
+    resolve_until(server, local, Instant::now() + Duration::from_secs(10))
+}
+
+/// [`resolve`], waiting for `hosts.list` only until `deadline`.
+pub fn resolve_until(
+    server: &str,
+    local: &ControlClient,
+    deadline: Instant,
+) -> Result<Endpoint, RexError> {
     if server == LOCAL {
         return Ok(Endpoint::local());
     }
-    let list = local.call("hosts.list", json!({}))?;
+    let (_, list) = local.call_seq_until("hosts.list", json!({}), deadline)?;
     let host = list["hosts"]
         .as_array()
         .into_iter()

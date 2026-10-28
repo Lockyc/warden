@@ -6,12 +6,16 @@
 //! persists pane → session ids ([`store`]), tracks block owners, and reports changes to
 //! [`RexHub::subscribe`]rs.
 //!
-//! Threads: the hub's methods block their caller on the network (each call is bounded by
-//! rex-client's timeouts) and never hold the state lock across a call. Each connection has one
-//! watcher thread that applies its events to the state; when the connection ends, that thread
-//! removes it, reports `Disconnected`, and reconnects with the reconnect token (backing off),
-//! rereading the session list and attaching the claimed sessions again. Watchers hold the hub
-//! weakly: dropping the last `RexHub` closes every connection and ends them.
+//! Threads: the hub's methods block their caller on the network and never hold the state lock
+//! across a call. Getting a usable connection — waiting for another caller's connect, then
+//! connecting, resolving a host label and reading the session list — is bounded by
+//! [`CONNECT_BUDGET`] and reports `Unreachable` past it, because it runs on the path that opens a
+//! tab. Each connection has one watcher thread that applies its events to the state; when the
+//! connection ends, that thread removes it, reports `Disconnected`, and reconnects with the
+//! reconnect token (backing off), rereading the session list and attaching the claimed sessions
+//! again. A reconnect attempt holds nothing a caller waits on: callers connect alongside it, and
+//! whichever connection is installed first wins. Watchers hold the hub weakly: dropping the last
+//! `RexHub` closes every connection and ends them.
 
 pub mod server;
 pub mod store;
@@ -20,9 +24,9 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard, Weak};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rex_client::{ClientInfo, ControlClient, Endpoint, Event, RexError};
 use serde_json::{json, Value};
@@ -37,6 +41,9 @@ const TERMINAL_FLAVOR: &str = "com.superlogical.terminal.shell";
 /// Reconnect backoff: the first retry is immediate, then this, doubling up to the cap.
 const RECONNECT_FIRST: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// The longest a caller waits for a usable connection. Opening a tab calls the hub, and an
+/// unreachable server must answer within 3 s; the margin covers the work after the deadline.
+const CONNECT_BUDGET: Duration = Duration::from_millis(2700);
 
 /// Where a pane's terminal lives: what the relay connects to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,8 +96,8 @@ struct Inner {
     /// Starts the local server when it's unreachable; `None` in tests.
     autostart: Option<Autostart>,
     state: Mutex<State>,
-    /// One gate per server, so two callers needing a connection open it once.
-    gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Signalled when a caller's connect attempt for some server ends.
+    connected: Condvar,
     subscribers: Mutex<Vec<mpsc::Sender<HubEvent>>>,
 }
 
@@ -98,6 +105,9 @@ struct Inner {
 struct State {
     store: RexStore,
     conns: HashMap<String, Conn>,
+    /// Servers a caller is connecting to right now, so a second caller waits for that attempt
+    /// (within its own budget) instead of opening another connection.
+    connecting: HashSet<String>,
     /// Sessions `session.attach`ed per server. Outlives a connection so its replacement attaches
     /// them again.
     attached: HashMap<String, HashSet<String>>,
@@ -183,7 +193,7 @@ impl RexHub {
                     store,
                     ..State::default()
                 }),
-                gates: Mutex::default(),
+                connected: Condvar::new(),
                 subscribers: Mutex::default(),
             }),
         }
@@ -204,7 +214,7 @@ impl RexHub {
         let (client, endpoint) = inner.conn(server)?;
         let previous = inner.lock().store.get(pane_key).cloned();
         if let Some(rec) = previous.as_ref().filter(|r| r.server == server) {
-            match inner.attach(server, &client, &rec.session_id) {
+            match inner.attach(server, &client, &rec.session_id, None) {
                 Ok(view) => {
                     if let Some(block_id) = terminal_block(&view) {
                         inner
@@ -258,7 +268,7 @@ impl RexHub {
             );
             st.blocks.insert(pane_key.to_owned(), block_id.clone());
         }
-        inner.attach(server, &client, &session_id)?;
+        inner.attach(server, &client, &session_id, None)?;
         Ok(PaneTarget {
             endpoint,
             session_id,
@@ -369,13 +379,6 @@ impl Inner {
         }
     }
 
-    fn gate(&self, server: &str) -> Arc<Mutex<()>> {
-        lock(&self.gates)
-            .entry(server.to_owned())
-            .or_default()
-            .clone()
-    }
-
     fn current(&self, server: &str) -> Option<(Arc<ControlClient>, Endpoint)> {
         self.lock()
             .conns
@@ -383,58 +386,102 @@ impl Inner {
             .map(|c| (c.client.clone(), c.endpoint.clone()))
     }
 
-    /// `server`'s connection, opening it if there is none. A label resolves through the local
-    /// server's host list; an unreachable local server is started once and retried.
+    /// `server`'s connection, opening it if there is none, within [`CONNECT_BUDGET`].
     fn conn(self: &Arc<Self>, server: &str) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
-        if let Some(c) = self.current(server) {
-            return Ok(c);
+        self.conn_until(server, Instant::now() + CONNECT_BUDGET)
+    }
+
+    /// `server`'s connection, or `Unreachable` if none is usable by `deadline`. While another
+    /// caller is connecting to `server` this waits for that attempt rather than opening a second
+    /// connection, then tries itself if it failed.
+    fn conn_until(
+        self: &Arc<Self>,
+        server: &str,
+        deadline: Instant,
+    ) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
+        {
+            let mut st = self.lock();
+            loop {
+                if let Some(c) = st.conns.get(server) {
+                    return Ok((c.client.clone(), c.endpoint.clone()));
+                }
+                if !st.connecting.contains(server) {
+                    break;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(RexError::Unreachable);
+                }
+                st = self
+                    .connected
+                    .wait_timeout(st, left)
+                    .map(|(g, _)| g)
+                    .unwrap_or_else(|e| e.into_inner().0);
+            }
+            st.connecting.insert(server.to_owned());
         }
-        let gate = self.gate(server);
-        let _held = lock(&gate);
-        if let Some(c) = self.current(server) {
-            return Ok(c);
+        let opened = self.open(server, deadline);
+        self.lock().connecting.remove(server);
+        self.connected.notify_all();
+        match opened {
+            Ok(c) => Ok(c),
+            Err(RexError::Timeout) => Err(RexError::Unreachable),
+            Err(_) if Instant::now() >= deadline => Err(RexError::Unreachable),
+            Err(e) => Err(e),
         }
+    }
+
+    /// Open and install `server`'s connection by `deadline`. A label resolves through the local
+    /// server's host list; an unreachable local server is started once and retried.
+    fn open(
+        self: &Arc<Self>,
+        server: &str,
+        deadline: Instant,
+    ) -> Result<(Arc<ControlClient>, Endpoint), RexError> {
         let endpoint = if server == LOCAL {
             self.local.clone()
         } else {
-            let (local, _) = self.conn(LOCAL)?;
-            server::resolve(server, &local)?
+            let (local, _) = self.conn_until(LOCAL, deadline)?;
+            server::resolve_until(server, &local, deadline)?
         };
-        let client = match (
-            ControlClient::connect(&endpoint, &self.client),
-            self.autostart,
-        ) {
+        let connect = || ControlClient::connect_until(&endpoint, &self.client, deadline);
+        let client = match (connect(), self.autostart) {
             (Err(RexError::Unreachable), Some(start)) if server == LOCAL => {
                 start()?;
-                ControlClient::connect(&endpoint, &self.client)?
+                connect()?
             }
             (r, _) => r?,
         };
-        let client = self.install(server, endpoint.clone(), client)?;
+        let (client, _) = self.install(server, endpoint.clone(), client, Some(deadline))?;
         Ok((client, endpoint))
     }
 
     /// Read the session list on a fresh connection (`session.attach_all`, or `session.list` when
-    /// it resumed a client that still has it), attach the sessions this server had attached, make
-    /// it `server`'s connection and start its watcher.
+    /// it resumed a client that still has it) and make it `server`'s connection — unless one is
+    /// already installed, which stays while this one closes, so a late attempt never replaces a
+    /// newer connection. Then attach the sessions this server had attached and start the
+    /// watcher. Calls wait until `deadline` when one is set. Returns the server's connection and
+    /// whether it is this one.
     fn install(
         self: &Arc<Self>,
         server: &str,
         endpoint: Endpoint,
         client: ControlClient,
-    ) -> Result<Arc<ControlClient>, RexError> {
+        deadline: Option<Instant>,
+    ) -> Result<(Arc<ControlClient>, bool), RexError> {
         let events = client.events();
         let (seq, list) = if client.resumed() {
-            client.call_seq("session.list", json!({}))?
+            call_seq(&client, "session.list", json!({}), deadline)?
         } else {
-            client.call_seq("session.attach_all", json!({ "event_scope": "session" }))?
+            let scope = json!({ "event_scope": "session" });
+            call_seq(&client, "session.attach_all", scope, deadline)?
         };
         let client = Arc::new(client);
         let token = client.reconnect_token().map(str::to_owned);
         let gen = {
             let mut st = self.lock();
             if let Some(c) = st.conns.get(server) {
-                return Ok(c.client.clone());
+                return Ok((c.client.clone(), false));
             }
             st.next_gen += 1;
             let gen = st.next_gen;
@@ -458,7 +505,7 @@ impl Inner {
             .map(|a| a.iter().cloned().collect())
             .unwrap_or_default();
         for id in attached {
-            if let Err(RexError::Api { code, .. }) = self.attach(server, &client, &id) {
+            if let Err(RexError::Api { code, .. }) = self.attach(server, &client, &id, deadline) {
                 if code == "session_not_found" {
                     if let Some(a) = self.lock().attached.get_mut(server) {
                         a.remove(&id);
@@ -469,7 +516,7 @@ impl Inner {
         let weak = Arc::downgrade(self);
         let server = server.to_owned();
         thread::spawn(move || watch(weak, server, gen, events, endpoint, token));
-        Ok(client)
+        Ok((client, true))
     }
 
     /// `session.attach` `session_id` on `client`, recording its blocks' owners; returns the view.
@@ -478,9 +525,10 @@ impl Inner {
         server: &str,
         client: &Arc<ControlClient>,
         session_id: &str,
+        deadline: Option<Instant>,
     ) -> Result<Value, RexError> {
-        let (seq, result) =
-            client.call_seq("session.attach", json!({ "session_id": session_id }))?;
+        let args = json!({ "session_id": session_id });
+        let (seq, result) = call_seq(client, "session.attach", args, deadline)?;
         let view = result["view"].clone();
         let mut changed = Vec::new();
         {
@@ -566,15 +614,14 @@ impl Inner {
     }
 
     /// Reopen `server`'s connection after a drop, resuming its client when `token` is still
-    /// good. `Ok(false)` when another caller already reconnected it.
+    /// good. `Ok(false)` when a caller connected it first. Holds nothing a caller waits on: the
+    /// attempt runs alongside any caller's, and `install` keeps whichever lands first.
     fn reconnect(
         self: &Arc<Self>,
         server: &str,
         endpoint: &Endpoint,
         token: Option<&str>,
     ) -> Result<bool, RexError> {
-        let gate = self.gate(server);
-        let _held = lock(&gate);
         if self.current(server).is_some() {
             return Ok(false);
         }
@@ -582,8 +629,8 @@ impl Inner {
             Some(t) => ControlClient::resume(endpoint, &self.client, t)?,
             None => ControlClient::connect(endpoint, &self.client)?,
         };
-        self.install(server, endpoint.clone(), client)?;
-        Ok(true)
+        let (_, installed) = self.install(server, endpoint.clone(), client, None)?;
+        Ok(installed)
     }
 }
 
@@ -641,6 +688,19 @@ fn watch(
             Err(_) => {}
         }
         delay = (delay * 2).clamp(RECONNECT_FIRST, RECONNECT_MAX);
+    }
+}
+
+/// `call_seq`, waiting until `deadline` when one is set, else rex-client's default.
+fn call_seq(
+    client: &ControlClient,
+    method: &str,
+    payload: Value,
+    deadline: Option<Instant>,
+) -> Result<(u64, Value), RexError> {
+    match deadline {
+        Some(d) => client.call_seq_until(method, payload, d),
+        None => client.call_seq(method, payload),
     }
 }
 

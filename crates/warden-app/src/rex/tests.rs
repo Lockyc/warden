@@ -417,3 +417,80 @@ fn resolve_reads_host_endpoints_from_hosts_list() {
         Err(RexError::Api { .. })
     ));
 }
+
+/// A listener that accepts and never answers, holding each connection open; every accept is
+/// reported on the returned receiver.
+fn silent<L: Send + 'static, S: Send + 'static>(
+    listener: L,
+    accept: fn(&L) -> std::io::Result<S>,
+) -> Receiver<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        while let Ok(s) = accept(&listener) {
+            held.push(s);
+            let _ = tx.send(());
+        }
+    });
+    rx
+}
+
+#[test]
+fn unreachable_remote_answers_within_budget() {
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = tcp.local_addr().unwrap().port();
+    let _accepts = silent(tcp, |l| l.accept().map(|(s, _)| s));
+    let fake = scripted(json!([]));
+    fake.reply(
+        "hosts.list",
+        json!({"hash": "h", "hosts": [
+            {"label": "remote-host", "endpoints": [format!("127.0.0.1:{port}")]}
+        ]}),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+
+    let started = Instant::now();
+    let r = hub.ensure_session("p", "remote-host", Path::new("/w"), None, "w · main");
+    assert_eq!(r.err(), Some(RexError::Unreachable));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn reconnect_in_flight_never_holds_up_a_caller() {
+    let fake = scripted(json!([]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    // The server goes silent: the socket accepts but never answers, so the watcher's resume
+    // hangs in its handshake.
+    let sock = fake.socket_path().to_path_buf();
+    drop(fake);
+    next_event(&rx, |e| matches!(e, HubEvent::Disconnected { .. }));
+    let _ = std::fs::create_dir_all(sock.parent().unwrap());
+    let _ = std::fs::remove_file(&sock);
+    let accepts = silent(
+        std::os::unix::net::UnixListener::bind(&sock).unwrap(),
+        |l| l.accept().map(|(s, _)| s),
+    );
+    accepts
+        .recv_timeout(WAIT)
+        .expect("the watcher's reconnect reached the server");
+
+    let started = Instant::now();
+    let r = hub.ensure_session("tab-b", "local", Path::new("/w"), None, "w · main");
+    assert_eq!(r.err(), Some(RexError::Unreachable));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "took {:?}",
+        started.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+}
