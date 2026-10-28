@@ -303,6 +303,17 @@
       // set from every snapshot before anything can lay a split out.
       let splitBand;
       const detached = new Set(); // tab ids popped out into their own window (onSelect → raise it)
+      // True while warden itself drives the component (`wardenSelect`): an onSelect fired
+      // synchronously inside it is warden's own open, not the user's, so it wakes no agent.
+      let wardenSelecting = false;
+      function wardenSelect(f) {
+        wardenSelecting = true;
+        try {
+          f();
+        } finally {
+          wardenSelecting = false;
+        }
+      }
       // tab id → whether its secondary pane is live, mirrored from TabDto.secondary_spawned on
       // every snapshot (init_tabs / warden:refresh) — the same tab-liveness payload `spawned`
       // (primary) already rides in. setActiveId reads this by id so secondaryLive tracks the
@@ -656,7 +667,8 @@
 
       function applyDto(dto) {
         splitBand = dto.split_band;
-        sb.update(toComponentDto(dto));
+        // chrome-core's first-tab fallback fires onSelect inside `update` — warden's own open.
+        wardenSelect(() => sb.update(toComponentDto(dto)));
         // The window colour on the ROOT, for the pane focus ring (`.pane.focused` reads it —
         // the panes sit outside chrome-core's sidebar root, so its own tokens never reach them).
         // Hot-reload re-runs this, so a `colour` edit re-tints the ring with the banner.
@@ -807,6 +819,8 @@
           document.getElementById("sidebar"),
           {
             async onSelect(id) {
+              // Read before any await: warden's own selects are synchronous calls into the component.
+              const user = !wardenSelecting;
               // A popped-out tab has no local surface to activate — "select" means "raise its
               // window". Don't change local selection (leave activeId on whatever's in this hole).
               if (detached.has(id)) {
@@ -822,7 +836,7 @@
               // tab's own split/focused layout — the authoritative answer `setActiveId`'s third
               // arg exists for (see its own doc comment): this is the ONE place a tab switch's
               // preserved focus (Registry::activate's untestable branch) is ever confirmed.
-              const res = await invoke("activate_tab", { id }).catch((err) => {
+              const res = await invoke("activate_tab", { id, user }).catch((err) => {
                 console.error("warden: IPC activate_tab failed", err);
                 return { live: false, split: false, focused: 0 };
               });
@@ -932,10 +946,11 @@
         // Open on the tab the backend activated (a `remember_tabs` restore), not chrome-core's
         // first-tab fallback — that fallback fires onSelect, which would spawn the first tab too.
         // Only on init: after this the component owns selection. `select` runs the normal
-        // onSelect path (the tab is already live, so activate_tab is a warm switch).
+        // onSelect path as warden's own open: the backend already activated this tab, and an
+        // agent pane of it that found nothing live must stay asleep.
         if (dto.active) sb.setActive(dto.active);
         applyDto(dto);
-        if (dto.active) sb.select(dto.active);
+        if (dto.active) wardenSelect(() => sb.select(dto.active));
         if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
 
         // (The launch + 6h update checks are armed by chrome-core from the `autoUpdate` mount config.)
