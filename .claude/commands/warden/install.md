@@ -88,7 +88,8 @@ up rustup's profile changes yet.)
 
 IN_REPO builds the current checkout; NOT_IN_REPO clones/updates `~/.warden` and builds from it.
 Both back the Tauri CLI install if absent, run `cargo tauri build`, install the app to
-`/Applications/warden.app`, and seed `~/.config/warden/config.toml` if absent. The build takes
+`/Applications/warden.app`, seed `~/.config/warden/config.toml` if absent, and install the agent
+hook to `~/.local/share/warden/agent-hooks/` (wired in step 6). The build takes
 a few minutes. **If it fails, show the full output and stop** — do not run later steps.
 
 ### 5. Configure
@@ -106,14 +107,63 @@ shell), `load_on_open`, and `probe`. Tabs may be grouped under `[[window.group]]
 `shell`/`cmd`/`tab_digit_keys` sit at the top. The file **hot-reloads on save** — no restart
 needed. (warden has no in-app config menu; edit the file directly.)
 
-### 6. Offer to launch
+### 6. Wire the agent-tab hook
+
+An agent tab on a Rex server (a tab with `server = "local"`) can sleep and wake only once its
+agent has reported how to resume it. Claude Code reports through a `SessionStart` hook,
+`~/.local/share/warden/agent-hooks/claude-session-start.sh` (installed in step 4); it does nothing
+outside a Rex terminal. Use AskUserQuestion: **"Wire warden's agent hook into Claude Code?"**
+(Recommended; **Skip** leaves agent tabs unable to sleep).
+
+On confirmation, check `command -v jq` (offer `brew install jq` if missing), then run this. It
+wires every Claude Code profile in `$HOME` — `~/.claude` and each `~/.claude-*` dir — and:
+
+- **is idempotent**: an entry whose command contains `warden/agent-hooks/` (the marker) is never
+  added twice, and other tools' `SessionStart` hooks are kept;
+- **skips a `~/.claude-*` dir with no `settings.json`** — it may not be a profile — but seeds
+  `~/.claude/settings.json`, the default profile's, when absent;
+- **edits each real file once**: profiles whose `settings.json` resolves (`realpath`) to the same
+  file are wired through the first;
+- **writes with `cat >`, never `mv`**, so a symlinked `settings.json` stays a symlink.
+
+```bash
+HOOK='~/.local/share/warden/agent-hooks/claude-session-start.sh'
+seen=
+for dir in "$HOME/.claude" "$HOME"/.claude-*; do
+  [ -d "$dir" ] || continue
+  f="$dir/settings.json"
+  if [ ! -e "$f" ]; then
+    if [ "$dir" != "$HOME/.claude" ]; then echo "skipped (no settings.json): $dir"; continue; fi
+    echo '{}' > "$f"
+  fi
+  real=$(realpath "$f") || continue
+  case "$seen" in *"|$real|"*) echo "same file as an earlier profile: $f"; continue ;; esac
+  seen="$seen|$real|"
+  if jq -e 'any(.hooks.SessionStart[]?.hooks[]?; (.command // "") | contains("warden/agent-hooks/"))' \
+    "$f" > /dev/null; then echo "already wired: $f"; continue; fi
+  tmp=$(mktemp) && jq --arg cmd "$HOOK" \
+    '.hooks.SessionStart += [{"hooks": [{"type": "command", "command": $cmd}]}]' "$f" > "$tmp" \
+    && cat "$tmp" > "$f" && echo "wired: $f"
+  rm -f "$tmp"
+done
+```
+
+Report each line it printed. The hook takes effect at the next Claude Code session start. To
+remove it from a file, write it back (again via `cat >`) through
+`jq '.hooks.SessionStart |= map(select(any(.hooks[]?; (.command // "") | contains("warden/agent-hooks/")) | not))'`.
+
+Agents on a Rex server on another machine run that machine's Claude Code: the hook has to be
+installed there by hand (copy `scripts/agent-hooks/claude-session-start.sh` over and wire it the
+same way).
+
+### 7. Offer to launch
 
 Use AskUserQuestion: **"Launch warden now?"**
 
 - **Launch** → `open /Applications/warden.app`
 - **Not now** — skip.
 
-### 7. Self-install this command
+### 8. Self-install this command
 
 So `/warden:install` is available in future Claude Code sessions:
 
@@ -125,10 +175,10 @@ Copy `install.md` verbatim to `~/.claude/commands/warden/install.md`. Source it 
 cwd checkout if IN_REPO (`.claude/commands/warden/install.md`), otherwise from
 `~/.warden/.claude/commands/warden/install.md` (present after step 4 cloned it).
 
-### 8. Summary
+### 9. Summary
 
-Read the version from `crates/warden-app/tauri.conf.json` (the `version` field) — use the cwd
-checkout if IN_REPO, else `~/.warden/crates/warden-app/tauri.conf.json`.
+Read the version from `crates/warden-app/Cargo.toml` (the `[package]` `version`) — use the cwd
+checkout if IN_REPO, else `~/.warden/crates/warden-app/Cargo.toml`.
 
 Print:
 
@@ -136,6 +186,7 @@ Print:
 - warden vX.Y.Z → `/Applications/warden.app` ✓
 - Source clone → `~/.warden` (NOT_IN_REPO) or "built from checkout" (IN_REPO)
 - Config → `~/.config/warden/config.toml` (seeded from the starter config / already existed)
+- Agent hook → each Claude Code `settings.json` wired / already wired / skipped
 
 **Next steps**
 - Edit `~/.config/warden/config.toml` to define your windows + tabs (hot-reloads on save).
