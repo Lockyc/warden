@@ -1989,6 +1989,10 @@ impl Registry {
     /// selected one the pane selects its nearest running agent — live, or with its terminal in
     /// hand — and, on screen, spawns and shows it; with none running the pane goes cold as
     /// [`unload`](Self::unload) leaves it. `None` for an unknown agent.
+    ///
+    /// This pick stays apart from `rex::lifecycle::settle`, the records' decider: it chooses among
+    /// slots by whether each has a terminal in hand, which no record carries, and the pane must
+    /// show something now, before the worker's pass settles the records and `sync_agents` lands.
     pub fn close_agent(&mut self, id: &str, record_id: &str) -> Option<AgentClosed> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         let pane = &mut self.tabs[idx].primary;
