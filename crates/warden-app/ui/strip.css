@@ -1,16 +1,22 @@
-/* The bottom strip: a Rex tab's project name on its project colour, under the agent pane, with the
-   selected agent's done / now / next rows in a darker band below (rows land with the agent
-   summaries; an absent row is omitted, not blanked). It sits inside #pane-primary, along its
+/* The bottom strip: a Rex tab's project name on its project colour, under the agent pane, then the
+   selected agent's subject, dimmed, on the same line, and its done / now / next rows in a darker
+   band below (an absent row is omitted, not blanked). It sits inside #pane-primary, along its
    bottom edge, and `reportRect` leaves its height out of the reported hole so the terminal
-   shrinks rather than being covered. Every line is a single line: the name and the rows ellipsise
-   rather than wrap, so the height depends only on how many rows there are. */
+   shrinks rather than being covered. Every line is a single line: the name, subject and rows
+   ellipsise rather than wrap, the subject first, so the height depends only on how many rows
+   there are. */
 #agent-strip { display: none; position: absolute; left: 0; right: 0; bottom: 0; z-index: 1;
   flex-direction: column; font-size: 12px; line-height: 20px; color: #fff;
   user-select: none; -webkit-user-select: none; background: #15191e; }
 #agent-strip.on { display: flex; }
-#agent-strip .strip-name { padding: 3px 12px; font-weight: 600; font-size: 13px; line-height: 20px;
-  background: var(--strip-colour, #6b7280); white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; min-width: 0; }
+#agent-strip .strip-name { display: flex; padding: 3px 12px; font-weight: 600; font-size: 13px;
+  line-height: 20px; background: var(--strip-colour, #6b7280); white-space: nowrap; min-width: 0; }
+#agent-strip .strip-project { flex: 0 0 auto; max-width: 75%; overflow: hidden;
+  text-overflow: ellipsis; }
+#agent-strip .strip-project:only-child { max-width: 100%; }
+#agent-strip .strip-subject { flex: 1 1 0; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; font-weight: 400; color: rgba(255, 255, 255, 0.62); }
+#agent-strip .strip-subject::before { content: "·"; padding: 0 6px; }
 #agent-strip .strip-rows { background: rgba(0, 0, 0, 0.45); padding: 3px 0; min-width: 0; }
 #agent-strip .strip-rows:empty { display: none; }
 #agent-strip .strip-row { display: flex; gap: 8px; padding: 0 12px; min-width: 0;
