@@ -1445,6 +1445,7 @@ fn reconcile_returned_tab(
         probe: n.probe.clone(),
         kill: n.kill.clone(),
         suspend: n.suspend.clone(),
+        resume: n.resume.clone(),
         title: n.title.clone(),
         split: n.split.clone(),
     };
@@ -1548,6 +1549,7 @@ mod tests {
             tree_path: Vec::new(),
             split: None,
             server: None,
+            resume: None,
         }
     }
 

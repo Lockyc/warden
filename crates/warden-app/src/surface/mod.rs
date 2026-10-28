@@ -111,6 +111,9 @@ pub struct TabSpec {
     /// place (`rex::spawn::effective_spec`). The surface layer reads only whether it is set: a
     /// Rex pane's surface raises `SurfaceSignal::UserInput`.
     pub server: Option<String>,
+    /// The program a woken agent's resume command runs (config `resume`, `apply_resume`), read
+    /// when the tab's main pane opens; `None` types the reported command as-is.
+    pub resume: Option<String>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

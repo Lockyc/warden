@@ -307,6 +307,7 @@ mod tests {
             tree_path: Vec::new(),
             split: None,
             server: Some(server.into()),
+            resume: None,
         }
     }
 

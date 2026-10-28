@@ -11,6 +11,8 @@ pub struct TabMeta {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    /// The program a woken agent's resume command runs (`Tab::resume`).
+    pub resume: Option<String>,
     /// New display title for the kept tab. Applied as a live relabel — the chrome
     /// re-renders the row without respawning its terminal. Always carried (it's the
     /// tab's current title), so a metadata update always relabels to the current title.
@@ -123,7 +125,7 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 ///     changed with no explicit `id` changes key, so it is a remove + add.
 ///   - `tab_order`: when kept tabs reorder; an emitted update always carries the full new key list.
 ///   - `set_meta` — a live update, no respawn: a kept tab's display `title`, `group`, `probe`,
-///     `kill`, `suspend`, split `side`/`size` (a live re-layout), or the dir of the
+///     `kill`, `suspend`, `resume`, split `side`/`size` (a live re-layout), or the dir of the
 ///     `[[window.root]]` it was discovered under (its sidebar nesting derives from it).
 ///   - `respawn_tabs` — torn down and respawned in place, since a terminal can't migrate its
 ///     cwd/session: a kept tab's [`TerminalSpec`].
@@ -206,6 +208,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                             || ot.probe != nt.probe
                             || ot.kill != nt.kill
                             || ot.suspend != nt.suspend
+                            || ot.resume != nt.resume
                             || (ot.split.is_some()
                                 && nt.split.is_some()
                                 && layout(ot) != layout(nt))
@@ -218,6 +221,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                                     probe: nt.probe.clone(),
                                     kill: nt.kill.clone(),
                                     suspend: nt.suspend.clone(),
+                                    resume: nt.resume.clone(),
                                     title: nt.title.clone(),
                                     split: nt.split.clone(),
                                 },
@@ -515,6 +519,7 @@ colour = "#0f8a8a"
                     probe: None,
                     kill: None,
                     suspend: None,
+                    resume: None,
                     title: "api".to_string(),
                     split: None,
                 }
@@ -555,6 +560,7 @@ colour = "#0f8a8a"
                     probe: None,
                     kill: None,
                     suspend: None,
+                    resume: None,
                     title: "api".to_string(),
                     split: None,
                 }
@@ -597,6 +603,7 @@ colour = "#0f8a8a"
                     probe: Some("probe-new".to_string()),
                     kill: None,
                     suspend: None,
+                    resume: None,
                     title: "api".to_string(),
                     split: None,
                 }
@@ -625,6 +632,30 @@ title = "work"
         assert_eq!(
             r.update[0].set_meta[0].1.suspend.as_deref(),
             Some("suspend-new")
+        );
+        assert!(r.update[0].respawn_tabs.is_empty());
+    }
+
+    #[test]
+    fn resume_change_on_kept_tab_emits_set_meta_not_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp/api"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp/api"
+  resume = "agent-wrapper"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(
+            r.update[0].set_meta[0].1.resume.as_deref(),
+            Some("agent-wrapper")
         );
         assert!(r.update[0].respawn_tabs.is_empty());
     }
@@ -664,6 +695,7 @@ colour = "#0f8a8a"
                     probe: None,
                     kill: Some("kill-new".to_string()),
                     suspend: None,
+                    resume: None,
                     title: "api".to_string(),
                     split: None,
                 }
