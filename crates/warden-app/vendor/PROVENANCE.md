@@ -16,12 +16,12 @@ directory). The library and the resources come from the **same release** — kee
 
 ## This build
 
-- **Source:** `lockyc/libghostty-build` release [`ghostty-8ef0ec1`](https://github.com/lockyc/libghostty-build/releases/tag/ghostty-8ef0ec1).
-- **Ghostty commit (unmodified upstream):** `8ef0ec1238220a5a714be452ed2844f0691fcf83` (`main`,
-  2026-10-24; milestone 1.4.0).
-- **Release asset `GhosttyKit.xcframework.zip` sha256:** `1ce0168206c94c2a37611926e27631829ba92a1784d2635d04e646f8b3d21a71`.
-- **Release asset `GhosttyResources.zip` sha256:** `6edc943a28ed5e1e3fe66431c9551004843cabebd678263347569ded099cdf41`.
-- **Committed `macos-arm64_x86_64/libghostty.a` sha256:** `5251743c273f6c2778189ea44f8ef9f297c44c270034c5a804c2c250f8645de7`.
+- **Source:** `lockyc/libghostty-build` release [`ghostty-83fb956`](https://github.com/lockyc/libghostty-build/releases/tag/ghostty-83fb956).
+- **Ghostty commit (unmodified upstream):** `83fb95624b0439ee660c2679b43b38c8b63769cd` (tag
+  `v1.4.0`, 2026-10-27).
+- **Release asset `GhosttyKit.xcframework.zip` sha256:** `63ba2c8dc9d211817d7d8a48375f0edd57712001d9a74212e22dd9ed197aed25`.
+- **Release asset `GhosttyResources.zip` sha256:** `fe41fcf256b63610019cf39d363556ec5621ad4c158c96272156c2dcb5943379`.
+- **Committed `macos-arm64_x86_64/libghostty.a` sha256:** `11b7e4ceb850698a0009338b706403e836bb887a75402e6a664d44e91e5f6cdb`.
 - **Toolchain:** Zig 0.17.0 (Ghostty's `minimum_zig_version` at that commit) on a GitHub `macos-15`
   runner (Sequoia SDK — the SDK the build is verified against). Built via Ghostty's own
   `-Demit-xcframework` target.
