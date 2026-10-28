@@ -255,7 +255,7 @@ mod tests {
         for e in [
             Endpoint::Unix("/Users/x/Library/Application Support/rex/server.sock".into()),
             Endpoint::Https {
-                host: "nucleus.tail1234.ts.net".into(),
+                host: "rex.example.ts.net".into(),
                 port: 8443,
             },
         ] {
