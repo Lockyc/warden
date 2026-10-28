@@ -28,29 +28,38 @@ pub fn relay_path() -> PathBuf {
 }
 
 /// The command line that runs `relay` on `t`, each argument quoted for the shell libghostty
-/// hands it to.
-pub fn relay_command(relay: &Path, t: &PaneTarget) -> String {
+/// hands it to. With `report`, the relay forwards its program's reports to that socket. A
+/// socket path past macOS's 104-byte `sun_path` can't be connected to, so the relay just
+/// never reports.
+pub fn relay_command(relay: &Path, t: &PaneTarget, report: Option<&Path>) -> String {
     let endpoint = t.endpoint.to_string();
-    [
-        &*relay.to_string_lossy(),
+    let relay = relay.to_string_lossy();
+    let report = report.map(|p| p.to_string_lossy());
+    let mut args = vec![
+        &*relay,
         "--endpoint",
         &endpoint,
         "--session",
         &t.session_id,
         "--block",
         &t.block_id,
-    ]
-    .map(shell_quote)
-    .join(" ")
+    ];
+    if let Some(report) = &report {
+        args.extend(["--report", report]);
+    }
+    args.into_iter()
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `spec` as the surface runs it once its session is `t`: the relay instead of the shell, and
 /// nothing typed, since the session's terminal had its `cmd` typed when it was created. A remote
 /// tab's `dir` is a path on its server, and an unclaimed session's tab has none, so for those the
 /// relay starts at `/` here.
-pub fn effective_spec(spec: &TabSpec, t: &PaneTarget) -> TabSpec {
+pub fn effective_spec(spec: &TabSpec, t: &PaneTarget, report: Option<&Path>) -> TabSpec {
     let mut e = spec.clone();
-    e.shell = relay_command(&relay_path(), t);
+    e.shell = relay_command(&relay_path(), t, report);
     e.startup = None;
     let server = spec.server.as_deref();
     if server.is_some_and(|s| s != LOCAL) || unclaimed::is_unclaimed(&spec.id, &spec.dir, server) {
@@ -303,7 +312,7 @@ mod tests {
     fn relay_command_quotes_paths_with_spaces() {
         let relay = Path::new("/Applications/warden.app/Contents/MacOS/warden-relay");
         assert_eq!(
-            relay_command(relay, &target()),
+            relay_command(relay, &target(), None),
             "/Applications/warden.app/Contents/MacOS/warden-relay \
              --endpoint 'unix:/Users/x/Library/Application Support/rex/server.sock' \
              --session session:abc --block block:1"
@@ -311,16 +320,29 @@ mod tests {
     }
 
     #[test]
+    fn relay_command_passes_the_report_socket() {
+        let relay = Path::new("/r/warden-relay");
+        let sock =
+            Path::new("/Users/x/Library/Application Support/au.lsjc.warden/agent-reports.sock");
+        assert!(relay_command(relay, &target(), Some(sock)).ends_with(
+            " --report '/Users/x/Library/Application Support/au.lsjc.warden/agent-reports.sock'"
+        ));
+        assert!(!relay_command(relay, &target(), None).contains("--report"));
+    }
+
+    #[test]
     fn relay_command_escapes_single_quotes() {
         let relay = Path::new("/tmp/it's here/warden-relay");
-        assert!(relay_command(relay, &target()).starts_with(r"'/tmp/it'\''s here/warden-relay' "));
+        assert!(
+            relay_command(relay, &target(), None).starts_with(r"'/tmp/it'\''s here/warden-relay' ")
+        );
     }
 
     #[test]
     fn effective_spec_replaces_shell_and_clears_startup() {
         let s = spec("local", "/work/proj");
-        let e = effective_spec(&s, &target());
-        assert_eq!(e.shell, relay_command(&relay_path(), &target()));
+        let e = effective_spec(&s, &target(), None);
+        assert_eq!(e.shell, relay_command(&relay_path(), &target(), None));
         assert_eq!(e.startup, None);
         assert_eq!(
             e.dir,
@@ -333,7 +355,7 @@ mod tests {
     #[test]
     fn effective_spec_runs_a_remote_relay_from_root() {
         // A remote tab's dir is a path on that server; the relay itself needs none here.
-        let e = effective_spec(&spec("remote-host", "~/proj"), &target());
+        let e = effective_spec(&spec("remote-host", "~/proj"), &target(), None);
         assert_eq!(e.dir, PathBuf::from("/"));
     }
 
@@ -341,7 +363,7 @@ mod tests {
     fn effective_spec_runs_an_unclaimed_sessions_relay_from_root() {
         let mut s = spec(LOCAL, "");
         s.id = "rex:session:x".into();
-        assert_eq!(effective_spec(&s, &target()).dir, PathBuf::from("/"));
+        assert_eq!(effective_spec(&s, &target(), None).dir, PathBuf::from("/"));
     }
 
     #[test]
@@ -421,7 +443,7 @@ mod tests {
         assert!(relay.is_file(), "build it first: {}", relay.display());
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg(relay_command(&relay, &t))
+            .arg(relay_command(&relay, &t, None))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

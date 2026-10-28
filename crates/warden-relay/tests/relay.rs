@@ -4,7 +4,9 @@
 #[path = "../src/vt.rs"]
 mod vt;
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixListener;
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,15 +28,23 @@ struct Relay {
 
 impl Relay {
     fn start(endpoint: &str) -> Relay {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_warden-relay"))
-            .args([
-                "--endpoint",
-                endpoint,
-                "--session",
-                SESSION,
-                "--block",
-                BLOCK,
-            ])
+        Relay::start_reporting(endpoint, None)
+    }
+
+    fn start_reporting(endpoint: &str, report: Option<&Path>) -> Relay {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_warden-relay"));
+        cmd.args([
+            "--endpoint",
+            endpoint,
+            "--session",
+            SESSION,
+            "--block",
+            BLOCK,
+        ]);
+        if let Some(path) = report {
+            cmd.arg("--report").arg(path);
+        }
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -265,4 +275,46 @@ fn relay_exits_75_when_unreachable() {
     let endpoint = format!("unix:{}", dir.join("nothing.sock").display());
     let mut relay = Relay::start(&endpoint);
     assert_eq!(relay.wait_exit().code(), Some(75));
+}
+
+const RESUME_APC: &[u8] = b"\x1b_warden1;resume=Y2xhdWRlIC0tcmVzdW1lIFg=\x1b\\";
+
+#[test]
+fn relay_forwards_resume_report() {
+    let dir = std::env::temp_dir().join(format!("wr-rep-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let sock = dir.join("r.sock");
+    let listener = UnixListener::bind(&sock).expect("bind");
+    let fake = fake_with(|_| "");
+    let relay = Relay::start_reporting(&fake.endpoint().to_string(), Some(&sock));
+    relay.wait_output(CLEAR);
+    let mut live = b"before".to_vec();
+    live.extend_from_slice(RESUME_APC);
+    live.extend_from_slice(b"after");
+    fake.push_data(&live);
+
+    let (conn, _) = listener.accept().expect("accept");
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line).expect("line");
+    let got: serde_json::Value = serde_json::from_str(&line).expect("json");
+    assert_eq!(
+        got,
+        serde_json::json!({"session": SESSION, "block": BLOCK, "resume": "claude --resume X"})
+    );
+    let out = relay.wait_output(b"beforeafter");
+    assert!(find(&out, b"warden1").is_none(), "{out:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn relay_keeps_streaming_when_the_report_socket_is_unreachable() {
+    let dir = std::env::temp_dir().join(format!("wr-none-{}", std::process::id()));
+    let fake = fake_with(|_| "");
+    let relay = Relay::start_reporting(&fake.endpoint().to_string(), Some(&dir.join("no.sock")));
+    relay.wait_output(CLEAR);
+    let mut live = RESUME_APC.to_vec();
+    live.extend_from_slice(b"still here");
+    fake.push_data(&live);
+    let out = relay.wait_output(b"still here");
+    assert!(find(&out, b"warden1").is_none(), "{out:?}");
 }

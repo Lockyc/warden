@@ -346,6 +346,8 @@ pub struct Registry {
     /// Opens Rex panes' sessions off this thread; `None` until the window installs one, and then
     /// a Rex pane can't open (its tab says so).
     rex_opener: Option<RexOpener>,
+    /// The socket Rex panes' relays report to (`rex::reports`); none, they report nowhere.
+    report_socket: Option<PathBuf>,
     /// The token the next Rex open carries.
     next_rex_token: u64,
 }
@@ -364,6 +366,7 @@ impl Registry {
             last_rect: initial_rect,
             last_rect_secondary: initial_rect,
             rex_opener: None,
+            report_socket: None,
             next_rex_token: 0,
         }
     }
@@ -371,6 +374,11 @@ impl Registry {
     /// Install what opens this window's Rex panes ([`RexOpener`]).
     pub fn set_rex_opener(&mut self, opener: RexOpener) {
         self.rex_opener = Some(opener);
+    }
+
+    /// Install the socket this window's Rex panes' relays report to ([`crate::rex::reports`]).
+    pub fn set_report_socket(&mut self, path: Option<PathBuf>) {
+        self.report_socket = path;
     }
 
     /// Add a tab. `load_on_open=true` spawns now (eager); `false` declares it
@@ -903,9 +911,11 @@ impl Registry {
         let rex = std::mem::replace(&mut pane.rex, RexState::Idle);
         let spec = match (pane.spec.server.clone(), rex) {
             (None, _) => pane.spec.clone(),
-            (Some(_), RexState::Ready(target)) => {
-                crate::rex::spawn::effective_spec(&pane.spec, &target)
-            }
+            (Some(_), RexState::Ready(target)) => crate::rex::spawn::effective_spec(
+                &pane.spec,
+                &target,
+                self.report_socket.as_deref(),
+            ),
             (Some(_), opening @ RexState::Opening(_)) => {
                 pane.rex = opening;
                 return Ok(false);

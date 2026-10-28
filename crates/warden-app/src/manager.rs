@@ -487,6 +487,7 @@ impl WindowManager {
 
         let mut registry = Registry::new(ns_window, INITIAL_RECT);
         registry.set_rex_opener(crate::rex::spawn::opener(app.clone(), spec.label.clone()));
+        registry.set_report_socket(crate::rex::reports::socket_path(app));
         // Surface-create failures (a null libghostty surface, an interior-NUL in a
         // config dir/shell) must NOT panic the whole app at launch — the failing
         // tab stays cold and its reason is collected for the init banner; every

@@ -21,6 +21,7 @@
 //! whichever connection is installed first wins. Watchers hold the hub weakly: dropping the last
 //! `RexHub` closes every connection and ends them.
 
+pub mod reports;
 pub mod server;
 pub mod size;
 pub mod spawn;

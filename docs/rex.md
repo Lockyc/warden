@@ -37,6 +37,7 @@ public. Rex is chosen per tab.
 | `rex/mod.rs` — `RexHub` | warden-app's one owner of Rex control connections: one per server, the live session lists, find-or-create per pane, block owners, claim/resize, destroy, `HubEvent`s. |
 | `rex/store.rs` | The only Rex state warden keeps: pane key → {server, session id}, persisted per config file. |
 | `rex/server.rs` | `server` value → `Endpoint` (host labels via the local server's `hosts.list`); starting a stopped local server. |
+| `rex/reports.rs` | The Unix socket relays report to: one JSON line per report from the block's program, delivered as `AgentReport`s. |
 | `rex/spawn.rs` | The relay command line, and carrying a pane's open off the main thread and back. |
 | `rex/size.rs` | The size worker (`Sizer`) behind every claim and resize. |
 | `rex/unclaimed.rs` | Sessions no tab claims, as sidebar rows under `Rex · <server>`. |
@@ -53,8 +54,12 @@ pane surface ── warden-relay ── its own control connection ─┤  (loca
                                └─ data stream ──────────────┘
 ```
 
-There is no IPC between warden-app and a relay. The relay mints its own tickets, so the stream
-belongs to the relay's client and lives as long as the relay does.
+The relay mints its own tickets, so the stream belongs to the relay's client and lives as long as
+the relay does. The one channel between warden-app and a relay is the report socket
+(`--report`, `rex/reports.rs`): a program in the block can write `ESC _ warden1;resume=<base64>
+ESC \`, which `StreamDemux` strips from the output and the relay forwards as a JSON line
+`{"session","block","resume"}`. A missing or unreachable socket drops the report; streaming
+continues. The path must fit macOS's 104-byte `sun_path`.
 
 The protocol's reference is the one each server serves at `GET /llms.txt` on its socket; Rex's docs
 site omits it.
