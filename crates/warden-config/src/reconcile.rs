@@ -32,6 +32,8 @@ pub struct TerminalSpec<'a> {
     pub shell: &'a str,
     pub startup: Option<&'a str>,
     pub split_startup: Option<Option<&'a str>>,
+    /// The Rex server hosting the tab (`None` = plain tab); a change moves the panes to another server.
+    pub server: Option<&'a str>,
 }
 
 impl<'a> TerminalSpec<'a> {
@@ -40,12 +42,14 @@ impl<'a> TerminalSpec<'a> {
         shell: &'a str,
         startup: Option<&'a str>,
         split: Option<&'a Split>,
+        server: Option<&'a str>,
     ) -> Self {
         Self {
             dir,
             shell,
             startup,
             split_startup: split.map(|s| s.startup.as_deref()),
+            server,
         }
     }
 }
@@ -57,6 +61,7 @@ impl Tab {
             &self.shell,
             self.startup.as_deref(),
             self.split.as_ref(),
+            self.server.as_deref(),
         )
     }
 }
@@ -909,5 +914,26 @@ colour = "#0f8a8a"
         assert!(reconcile(&with_root("/tmp/a"), &with_root("/tmp/a"))
             .update
             .is_empty());
+    }
+
+    #[test]
+    fn server_change_respawns() {
+        let mk = |server: &str| {
+            cfg(&format!(
+                r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/alpha"
+  server = "{server}"
+"##
+            ))
+        };
+        let r = reconcile(&mk("local"), &mk("nucleus"));
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].respawn_tabs.len(), 1);
+        assert!(reconcile(&mk("local"), &mk("local")).update.is_empty());
     }
 }

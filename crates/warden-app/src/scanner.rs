@@ -39,6 +39,7 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 probe: root.probe.clone(),
                 kill: root.kill.clone(),
                 suspend: root.suspend.clone(),
+                server: root.server.clone(),
                 split: root.split.clone(),
             }
         })
@@ -76,6 +77,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         // Two roots pointing at the SAME dir → the same project discovered twice.
@@ -122,6 +124,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         // A curated tab with no explicit `id`, whose `dir` is the SAME project the root
@@ -141,6 +144,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let cfg = Config {
@@ -195,6 +199,7 @@ mod tests {
             probe: Some("p".into()),
             kill: None,
             suspend: None,
+            server: None,
             split: None,
         };
         let mut tabs = synthesize_tabs(&root);

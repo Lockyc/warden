@@ -57,6 +57,7 @@ pub struct RawConfig {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub server: Option<String>,
     pub split: Option<RawSplit>,
     /// Seconds between background session-probe passes (global only). `None` →
     /// default 5; `Some(0)` → focus/refresh-only (no timer). See resolve.rs.
@@ -109,6 +110,7 @@ pub struct RawWindow {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub server: Option<String>,
     pub split: Option<RawSplit>,
     // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,
     // rendered in a headerless section before any named groups.
@@ -145,6 +147,7 @@ pub struct RawRoot {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub server: Option<String>,
     pub split: Option<RawSplit>,
 }
 
@@ -163,6 +166,7 @@ pub struct RawTab {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub server: Option<String>,
     pub split: Option<RawSplit>,
     #[serde(default)]
     pub load_on_open: bool,
