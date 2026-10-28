@@ -150,9 +150,14 @@ impl WardenMessage {
 /// Opens a [`WardenMessage`] APC.
 const WARDEN_MARKER: &[u8] = b"\x1b_warden1;";
 
+/// The longest `warden1` body held while waiting for its terminator; a resume command is far
+/// shorter.
+const WARDEN_MAX: usize = 4096;
+
 /// Splits a terminal stream into program bytes, Rex messages and warden messages. Rex's APCs
 /// carry the channel nonce; one with another nonce was printed by a program and passes through as
-/// program bytes. A `warden1` APC is always consumed, and dropped when it isn't a valid message.
+/// program bytes. A `warden1` APC is always consumed, and dropped when it isn't a valid message or isn't
+/// terminated within [`WARDEN_MAX`] bytes (or by an ESC, CAN or SUB).
 /// An APC (or a possible start of one) cut off at the end of a chunk is held for the next push.
 pub struct StreamDemux {
     marker: Vec<u8>,
@@ -188,16 +193,27 @@ impl StreamDemux {
                     None => break, // APC split across chunks: wait for its terminator.
                 }
             } else if buf[i..].starts_with(WARDEN_MARKER) {
-                match find(&buf[i..], b"\x1b\\") {
-                    Some(end) => {
-                        if let Some(m) =
-                            WardenMessage::parse(&buf[i + WARDEN_MARKER.len()..i + end])
-                        {
+                let body = &buf[i + WARDEN_MARKER.len()..];
+                // Like a terminal, any ESC, CAN or SUB ends the string.
+                match body.iter().position(|b| matches!(b, 0x1b | 0x18 | 0x1a)) {
+                    Some(end) if body[end] == 0x1b && body.get(end + 1) == Some(&b'\\') => {
+                        if let Some(m) = WardenMessage::parse(&body[..end]) {
                             warden.push(m);
                         }
-                        i += end + 2;
+                        i += WARDEN_MARKER.len() + end + 2;
                     }
-                    None => break,
+                    // Waiting for the byte after the ESC, unless the string is already too long.
+                    Some(end)
+                        if body[end] == 0x1b && end + 1 == body.len() && end <= WARDEN_MAX =>
+                    {
+                        break;
+                    }
+                    // Aborted: the ESC starts the next sequence, so it is not consumed; CAN and
+                    // SUB are.
+                    Some(end) => i += WARDEN_MARKER.len() + end + usize::from(body[end] != 0x1b),
+                    None if body.len() <= WARDEN_MAX => break, // split across chunks
+                    // Longer than any message: a program's stray marker, not a hook's write.
+                    None => i += WARDEN_MARKER.len() + body.len(),
                 }
             } else if buf[i] == 0x1b
                 && (marker.starts_with(&buf[i..]) || WARDEN_MARKER.starts_with(&buf[i..]))
@@ -427,6 +443,39 @@ mod tests {
             d.push(b"a\x1b_warden1;other=1\x1b\\b\x1b_warden1;resume=/w==\x1b\\c");
         assert_eq!(bytes, b"abc");
         assert!(warden.is_empty());
+    }
+
+    #[test]
+    fn unterminated_warden_apc_is_dropped_past_the_cap_and_output_resumes() {
+        let mut d = StreamDemux::new(7);
+        let (b, _, w) = d.push(b"\x1b_warden1;");
+        assert!(b.is_empty() && w.is_empty());
+        let (b, _, _) = d.push(&vec![b'z'; WARDEN_MAX + 1]);
+        assert!(b.is_empty());
+        let (b, _, w) = d.push(b"x");
+        assert_eq!(b, b"x");
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn esc_not_followed_by_backslash_aborts_the_apc_and_is_kept() {
+        let mut d = StreamDemux::new(7);
+        let (b, _, w) = d.push(b"\x1b_warden1;abc\x1b[A");
+        assert_eq!(b, b"\x1b[A");
+        assert!(w.is_empty());
+        // An ESC at the chunk end waits for its next byte.
+        let (b, _, _) = d.push(b"\x1b_warden1;abc\x1b");
+        assert!(b.is_empty());
+        let (b, _, _) = d.push(b"[B");
+        assert_eq!(b, b"\x1b[B");
+    }
+
+    #[test]
+    fn can_and_sub_abort_the_apc_and_are_consumed() {
+        let mut d = StreamDemux::new(7);
+        let (b, _, w) = d.push(b"\x1b_warden1;ab\x18c\x1b_warden1;ab\x1ad");
+        assert_eq!(b, b"cd");
+        assert!(w.is_empty());
     }
 
     #[test]
