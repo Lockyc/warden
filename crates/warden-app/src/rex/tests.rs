@@ -635,3 +635,216 @@ fn session_alive_reads_the_live_list() {
     next_event(&rx, |e| matches!(e, HubEvent::SessionsChanged { .. }));
     assert!(!hub.session_alive("tab-a"));
 }
+
+/// [`scripted`] whose `session.attach` shows each block owned by `owner(fake)` (read when the
+/// attach arrives, so a test can name the hub's own client id), and whose `session.own_block`
+/// hands every asked-for block to the caller.
+fn owned_by(owner: fn(&rex_client::fake::FakeHandle) -> Option<String>) -> FakeServer {
+    let fake = scripted(json!([]));
+    fake.on("session.attach", move |p, h| {
+        let id = p["session_id"].as_str().unwrap_or_default();
+        Reply::ok(view(id, "block:new", owner(h).as_deref()))
+    });
+    fake.on("session.own_block", |p, h| {
+        let me = h.client_ids().last().cloned().unwrap_or_default();
+        let blocks: Vec<Value> = p["block_ids"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|b| json!({"block_id": b, "owner": me}))
+            .collect();
+        Reply::ok(json!({ "blocks": blocks }))
+    });
+    fake
+}
+
+fn me(h: &rex_client::fake::FakeHandle) -> Option<String> {
+    h.client_ids().last().cloned()
+}
+
+fn nobody(_: &rex_client::fake::FakeHandle) -> Option<String> {
+    None
+}
+
+fn phone(_: &rex_client::fake::FakeHandle) -> Option<String> {
+    Some("client:phone".into())
+}
+
+const RESIZE: &str = "com.superlogical.terminal.resize";
+
+#[test]
+fn claim_takes_and_resizes_when_not_owner() {
+    let fake = owned_by(nobody);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    assert_eq!(hub.claim("tab-a", 120, 40, Some((16, 32))), Ok(true));
+    let methods: Vec<String> = fake
+        .requests()
+        .into_iter()
+        .map(|r| r.method)
+        .filter(|m| m == "session.own_block" || m == RESIZE)
+        .collect();
+    assert_eq!(methods, ["session.own_block", RESIZE], "take, then resize");
+    let own = &fake.requests_for("session.own_block")[0].payload;
+    assert_eq!(own["session_id"], "session:new");
+    assert_eq!(own["block_ids"], json!(["block:new"]));
+    assert_eq!(own["mode"], "take");
+    let resize = &fake.requests_for(RESIZE)[0].payload;
+    assert_eq!(resize["session_id"], "session:new");
+    assert_eq!(resize["block_id"], "block:new");
+    assert_eq!(
+        resize["args"],
+        json!({"columns": 120, "rows": 40, "cell_width_px": 16, "cell_height_px": 32})
+    );
+
+    // Without a cell size the resize leaves both cell fields out.
+    let fake = owned_by(phone);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert_eq!(hub.claim("tab-a", 80, 24, None), Ok(true));
+    assert_eq!(fake.requests_for("session.own_block").len(), 1);
+    assert_eq!(
+        fake.requests_for(RESIZE)[0].payload["args"],
+        json!({"columns": 80, "rows": 24})
+    );
+}
+
+#[test]
+fn claim_is_noop_when_already_owner() {
+    // The attach shows warden's own client owning the block (it created it).
+    let fake = owned_by(me);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    // Owning it already, warden still sends the size it has never asked for — but no take.
+    assert_eq!(hub.claim("tab-a", 120, 40, None), Ok(true));
+    assert!(fake.requests_for("session.own_block").is_empty());
+    assert_eq!(fake.requests_for(RESIZE).len(), 1);
+
+    // Owner, at this size: every later claim costs no request at all.
+    let before = fake.requests().len();
+    for _ in 0..5 {
+        assert_eq!(hub.claim("tab-a", 120, 40, None), Ok(false));
+    }
+    assert_eq!(fake.requests().len(), before, "no requests");
+
+    // An unmapped pane has nothing to claim.
+    assert_eq!(hub.claim("never-opened", 120, 40, None), Ok(false));
+    assert_eq!(fake.requests().len(), before);
+}
+
+#[test]
+fn owner_changed_event_rearms_claim() {
+    let fake = owned_by(nobody);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert_eq!(hub.claim("tab-a", 120, 40, None), Ok(true));
+    assert_eq!(hub.claim("tab-a", 120, 40, None), Ok(false));
+
+    fake.push_session_event(
+        "session:new",
+        "block_owner_changed",
+        json!({"block_id": "block:new", "owner": "client:phone", "reason": "take"}),
+    );
+    next_event(
+        &rx,
+        |e| matches!(e, HubEvent::OwnerChanged { owner: Some(o), .. } if o == "client:phone"),
+    );
+
+    assert_eq!(hub.claim("tab-a", 120, 40, None), Ok(true));
+    assert_eq!(fake.requests_for("session.own_block").len(), 2);
+    assert_eq!(fake.requests_for(RESIZE).len(), 2);
+}
+
+#[test]
+fn resize_if_owner_skips_when_other_client_owns() {
+    let fake = owned_by(phone);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    assert_eq!(hub.resize_if_owner("tab-a", 100, 30, None), Ok(false));
+    assert!(fake.requests_for(RESIZE).is_empty());
+    assert!(fake.requests_for("session.own_block").is_empty());
+
+    // Once warden owns it, a new size goes out, and the same size again doesn't.
+    assert_eq!(hub.claim("tab-a", 120, 40, None), Ok(true));
+    assert_eq!(hub.resize_if_owner("tab-a", 100, 30, None), Ok(true));
+    let last = fake
+        .requests_for(RESIZE)
+        .last()
+        .map(|r| r.payload["args"].clone());
+    assert_eq!(last, Some(json!({"columns": 100, "rows": 30})));
+    assert_eq!(hub.resize_if_owner("tab-a", 100, 30, None), Ok(false));
+    assert_eq!(fake.requests_for(RESIZE).len(), 2);
+}
+
+/// Manual, against this Mac's running Rex server (`cargo test -p warden-app real_server_claim --
+/// --ignored`): a second client takes the block, warden claims it back at its own size, and the
+/// terminal reports that size and warden as owner. Touches only sessions labelled
+/// `warden-size-test`.
+#[test]
+#[ignore = "needs a running Rex server"]
+fn real_server_claim_takes_the_size() {
+    use rex_client::ControlClient;
+    let dir = tempfile::tempdir().unwrap();
+    let hub = RexHub::new(dir.path().join("rex-sessions.json"), info());
+    let t = hub
+        .ensure_session("t", "local", dir.path(), None, "warden-size-test")
+        .expect("create");
+    let other = ControlClient::connect(&Endpoint::local(), &info()).expect("second client");
+    other
+        .call("session.attach", json!({ "session_id": t.session_id }))
+        .expect("attach");
+    let size = |c: &ControlClient| {
+        c.block_call(&t.session_id, &t.block_id, "size", Value::Null)
+            .expect("terminal.size")
+    };
+    let result = (|| {
+        other.call(
+            "session.own_block",
+            json!({"session_id": t.session_id, "block_ids": [t.block_id], "mode": "take"}),
+        )?;
+        other.block_call(
+            &t.session_id,
+            &t.block_id,
+            "resize",
+            json!({"columns": 50, "rows": 10}),
+        )?;
+        std::thread::sleep(Duration::from_millis(300));
+        let before = size(&other);
+        let claimed = hub.claim("t", 123, 37, Some((14, 28)))?;
+        std::thread::sleep(Duration::from_millis(300));
+        let again = hub.claim("t", 123, 37, Some((14, 28)))?;
+        Ok::<_, RexError>((before, claimed, again, size(&other)))
+    })();
+    hub.destroy("t").expect("destroy");
+    let list = other.call("session.list", json!({})).expect("session.list");
+    assert!(
+        !list.to_string().contains(&t.session_id),
+        "the test session is gone"
+    );
+    let (before, claimed, again, after) = result.expect("claim round trip");
+    eprintln!("before: {before}\nafter: {after}");
+    assert_eq!(
+        (before["columns"].clone(), before["rows"].clone()),
+        (json!(50), json!(10))
+    );
+    assert!(claimed, "the claim sent");
+    assert!(!again, "a second claim at the same size sends nothing");
+    assert_eq!(
+        (after["columns"].clone(), after["rows"].clone()),
+        (json!(123), json!(37))
+    );
+}

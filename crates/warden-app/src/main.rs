@@ -1032,18 +1032,27 @@ fn set_hole_rect(
     let hole = pane.unwrap_or(0);
 
     let mut m = state.lock();
-    if let Some(ws) = m.windows.get_mut(window.label()) {
+    let rex_size = if let Some(ws) = m.windows.get_mut(window.label()) {
         // The docked chrome's index IS the pane (`reportRect`'s 0 = primary, 1 = secondary,
         // whichever side the CSS draws them on).
         ws.registry
-            .set_pane_frame(crate::registry::PaneIdx::from_index(hole), view_rect);
+            .set_pane_frame(crate::registry::PaneIdx::from_index(hole), view_rect)
     } else {
         // A detached (popped-out) window lives outside `windows`; its banner-shell page
         // (`detach.html`) reports its own hole rect via this same command, so route it to
         // the detached surface — by HOLE, which that window resolves to a pane itself (a
         // left-side split's first hole is the secondary). No-op if the label is neither a
         // real nor a detached window.
-        m.set_detached_frame(window.label(), hole, view_rect);
+        m.set_detached_frame(window.label(), hole, view_rect)
+    };
+    drop(m);
+    // A Rex pane's block takes the new grid only while warden owns it.
+    if let Some(size) = rex_size {
+        rex::size::request(
+            tauri::Manager::app_handle(&window),
+            rex::size::SizeAsk::IfOwner,
+            size,
+        );
     }
 }
 
@@ -1474,10 +1483,12 @@ fn main() {
                     name: "warden".into(),
                     version: env!("CARGO_PKG_VERSION").into(),
                 };
-                app.manage(match scoped(rex::store::STEM) {
+                let hub = match scoped(rex::store::STEM) {
                     Some(path) => rex::RexHub::new(path, rex_info),
                     None => rex::RexHub::in_memory(rex_info),
-                });
+                };
+                app.manage(rex::size::Sizer::start(hub.clone()));
+                app.manage(hub);
                 // Load config; a config that parses (even with zero `[[window]]` entries) always
                 // materializes — `materialize` builds nothing for an empty window list and
                 // `sync_empty_surface` shows the home surface's window list (empty or not). A

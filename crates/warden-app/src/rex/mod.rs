@@ -3,7 +3,8 @@
 //! One `ControlClient` per server, connected the first time a pane needs that server and attached
 //! with `session.attach_all` (scope `session`) for the server-wide session list, plus
 //! `session.attach` for each session a pane shows. It finds or creates each pane's session,
-//! persists pane → session ids ([`store`]), tracks block owners, and reports changes to
+//! persists pane → session ids ([`store`]), tracks block owners, claims and sizes a pane's block
+//! for warden ([`RexHub::claim`], driven by [`size`]), and reports changes to
 //! [`RexHub::subscribe`]rs.
 //!
 //! Threads: the hub's methods block their caller on the network and never hold the state lock
@@ -19,6 +20,7 @@
 //! `RexHub` closes every connection and ends them.
 
 pub mod server;
+pub mod size;
 pub mod spawn;
 pub mod store;
 #[cfg(test)]
@@ -136,7 +138,26 @@ struct State {
     attached: HashMap<String, HashSet<String>>,
     /// Pane key → the block it shows, learned when its session was found or created.
     blocks: HashMap<String, String>,
+    /// Pane key → the last size warden asked for: by which client, for which block.
+    requested: HashMap<String, Requested>,
     next_gen: u64,
+}
+
+/// A terminal size warden asks a block for: its grid, and a cell's device-pixel size when known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TermSize {
+    cols: u16,
+    rows: u16,
+    cell_px: Option<(u16, u16)>,
+}
+
+/// A size warden asked for. The server remembers each client's last request per block, so the
+/// same size from the same client to the same block needs no second request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Requested {
+    client_id: String,
+    block_id: String,
+    size: TermSize,
 }
 
 /// One open connection and what it has told us. Seqs are this connection's.
@@ -385,6 +406,7 @@ impl Inner {
             if let Some(r) = &rec {
                 st.store.set(pane_key, None);
                 st.blocks.remove(pane_key);
+                st.requested.remove(pane_key);
                 if let Some(a) = st.attached.get_mut(&r.server) {
                     a.remove(&r.session_id);
                 }
@@ -400,6 +422,72 @@ impl Inner {
             Err(RexError::Api { code, .. }) if code == "session_not_found" => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// [`RexHub::claim`] (`take`) and [`RexHub::resize_if_owner`] (not `take`), within
+    /// [`OPEN_BUDGET`]. Uses only the server's current connection, never opens one: a pane with
+    /// no connection has no session showing to size, and its reconnect restores ownership.
+    fn size(&self, pane_key: &str, size: TermSize, take: bool) -> Result<bool, RexError> {
+        let deadline = Instant::now() + OPEN_BUDGET;
+        let _held = self.hold_pane(pane_key, Some(deadline))?;
+        let (server, client, session_id, block_id, owns, asked) = {
+            let st = self.lock();
+            let (Some(rec), Some(block_id)) = (st.store.get(pane_key), st.blocks.get(pane_key))
+            else {
+                return Ok(false);
+            };
+            let Some(conn) = st.conns.get(&rec.server) else {
+                return Ok(false);
+            };
+            let me = conn.client.id();
+            let key = (rec.session_id.clone(), block_id.clone());
+            let owns = conn.owners.get(&key).and_then(|(_, o)| o.as_deref()) == Some(me);
+            let asked = st
+                .requested
+                .get(pane_key)
+                .is_some_and(|r| r.client_id == me && r.block_id == *block_id && r.size == size);
+            (
+                rec.server.clone(),
+                conn.client.clone(),
+                rec.session_id.clone(),
+                block_id.clone(),
+                owns,
+                asked,
+            )
+        };
+        if !owns {
+            if !take {
+                return Ok(false);
+            }
+            let (seq, result) = client.call_seq_until(
+                "session.own_block",
+                json!({ "session_id": session_id, "block_ids": [block_id], "mode": "take" }),
+                deadline,
+            )?;
+            let blocks = result["blocks"].as_array().into_iter().flatten();
+            self.record_owners(&server, &client, &session_id, seq, blocks);
+        } else if asked {
+            return Ok(false);
+        }
+        let mut args = json!({ "columns": size.cols, "rows": size.rows });
+        if let Some((w, h)) = size.cell_px {
+            args["cell_width_px"] = json!(w);
+            args["cell_height_px"] = json!(h);
+        }
+        client.call_seq_until(
+            &format!("{TERMINAL_CREATOR}.resize"),
+            json!({ "session_id": session_id, "block_id": block_id, "args": args }),
+            deadline,
+        )?;
+        self.lock().requested.insert(
+            pane_key.to_owned(),
+            Requested {
+                client_id: client.id().to_owned(),
+                block_id,
+                size,
+            },
+        );
+        Ok(true)
     }
 }
 
@@ -426,6 +514,47 @@ impl RexHub {
             Err(RexError::Api { code, .. }) => code == "session_not_found" || code == "not_found",
             Err(_) => false,
         }
+    }
+
+    /// Make warden the owner of `pane_key`'s block at `cols`×`rows` (and a cell of `cell_px`
+    /// device pixels, when known): `session.own_block` `take` unless this connection's client
+    /// already owns it, then `terminal.resize` unless this client already asked for this size.
+    /// Owning it at this size costs no request, so a caller may claim on every keystroke. Returns
+    /// whether anything was sent; `Ok(false)` for an unmapped pane or an unconnected server.
+    ///
+    /// The owner compared against is the one last heard on the *current* connection, as this
+    /// connection's client: a connection that replaced the one warden claimed on (a new client id)
+    /// reads as not owning, so the next claim takes the block again.
+    pub fn claim(
+        &self,
+        pane_key: &str,
+        cols: u16,
+        rows: u16,
+        cell_px: Option<(u16, u16)>,
+    ) -> Result<bool, RexError> {
+        let size = TermSize {
+            cols,
+            rows,
+            cell_px,
+        };
+        self.inner.size(pane_key, size, true)
+    }
+
+    /// Send `pane_key`'s new size, only while warden's client owns its block and hasn't already
+    /// asked for this size. Returns whether it sent one.
+    pub fn resize_if_owner(
+        &self,
+        pane_key: &str,
+        cols: u16,
+        rows: u16,
+        cell_px: Option<(u16, u16)>,
+    ) -> Result<bool, RexError> {
+        let size = TermSize {
+            cols,
+            rows,
+            cell_px,
+        };
+        self.inner.size(pane_key, size, false)
     }
 
     /// The sessions on `server`, as last heard; empty when it isn't connected.
@@ -670,20 +799,34 @@ impl Inner {
         let args = json!({ "session_id": session_id });
         let (seq, result) = call_seq(client, "session.attach", args, deadline)?;
         let view = result["view"].clone();
+        self.lock()
+            .attached
+            .entry(server.to_owned())
+            .or_default()
+            .insert(session_id.to_owned());
+        self.record_owners(server, client, session_id, seq, view_blocks(&view, None));
+        Ok(view)
+    }
+
+    /// Record the owners `blocks` (`{block_id, owner}` objects, as a view or `own_block` lists
+    /// them) report as of `seq`, if `client` is still `server`'s connection, and report changes.
+    fn record_owners<'v>(
+        &self,
+        server: &str,
+        client: &Arc<ControlClient>,
+        session_id: &str,
+        seq: u64,
+        blocks: impl Iterator<Item = &'v Value>,
+    ) {
         let mut changed = Vec::new();
         {
-            let mut guard = self.lock();
-            let st = &mut *guard;
-            st.attached
-                .entry(server.to_owned())
-                .or_default()
-                .insert(session_id.to_owned());
+            let mut st = self.lock();
             if let Some(conn) = st
                 .conns
                 .get_mut(server)
                 .filter(|c| Arc::ptr_eq(&c.client, client))
             {
-                for block in view_blocks(&view, None) {
+                for block in blocks {
                     let Some(block_id) = block["block_id"].as_str() else {
                         continue;
                     };
@@ -699,7 +842,6 @@ impl Inner {
             }
         }
         self.emit(changed);
-        Ok(view)
     }
 
     /// Apply one event from connection `gen` of `server`; a replaced connection's are ignored.

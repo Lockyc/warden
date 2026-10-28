@@ -33,6 +33,11 @@ pub enum SurfaceSignal {
     /// on live terminal content moved keyboard focus natively while that record — and the
     /// chrome's focused-pane marker — stayed on whichever pane the chrome last saw a click on.
     Focused,
+    /// The user turned to a Rex pane's surface: a key or mouse press in it, focus landing on it
+    /// in the key window, or its window becoming key with it as the typing pane. The app layer
+    /// claims the pane's Rex block for warden's size (`rex::size`). Raised on every press, and
+    /// only by surfaces whose spec has a `server`; a plain pane never raises it.
+    UserInput,
     /// The pointer moved onto the surface — i.e. it has just LEFT the window's chrome. The surface
     /// is a native `NSView` composited above the webview, so it takes the pointer the instant it
     /// crosses out of the sidebar and the page receives no further event: the chrome's CSS `:hover`
@@ -103,7 +108,8 @@ pub struct TabSpec {
     pub split: Option<warden_config::Split>,
     /// The Rex server this tab's panes run on (config `server`), or `None` for a plain tab whose
     /// shell runs here. The registry opens a Rex pane's session and spawns `warden-relay` in its
-    /// place (`rex::spawn::effective_spec`); the surface layer itself never reads it.
+    /// place (`rex::spawn::effective_spec`). The surface layer reads only whether it is set: a
+    /// Rex pane's surface raises `SurfaceSignal::UserInput`.
     pub server: Option<String>,
 }
 

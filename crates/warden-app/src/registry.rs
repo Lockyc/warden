@@ -1,3 +1,4 @@
+use crate::rex::size::PaneSize;
 use crate::rex::PaneTarget;
 use crate::surface::{ghostty::GhosttySurface, PixelRect, SurfaceError, TabSpec, TerminalSurface};
 use std::os::raw::c_void;
@@ -1308,21 +1309,31 @@ impl Registry {
     }
 
     /// Apply a hole's rect to the pane that occupies it, and remember it for later spawns.
-    pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) {
+    /// Returns the pane's new size when it is a live Rex pane, for `rex::size` to send while
+    /// warden owns its block.
+    pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) -> Option<PaneSize> {
         match which {
             PaneIdx::Primary => self.last_rect = rect,
             PaneIdx::Secondary => self.last_rect_secondary = rect,
         }
-        let Some(active) = self.active.clone() else {
-            return;
+        let active = self.active.clone()?;
+        let t = self.tabs.iter().find(|t| t.id == active)?;
+        let TabSlot::Spawned(s) = &t.pane(which)?.slot else {
+            return None;
         };
-        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == active) {
-            if let Some(p) = t.pane_mut(which) {
-                if let TabSlot::Spawned(s) = &p.slot {
-                    s.set_frame(rect);
-                }
-            }
-        }
+        s.set_frame(rect);
+        PaneSize::of(rex_pane_key(&t.primary.spec, which)?, s)
+    }
+
+    /// The size of the live Rex pane surface `surface_id` shows, or `None` when it shows a plain
+    /// pane or isn't in this registry.
+    pub fn rex_size_of_surface(&self, surface_id: usize) -> Option<PaneSize> {
+        let (id, which) = self.locate_surface(surface_id)?;
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let TabSlot::Spawned(s) = &t.pane(which)?.slot else {
+            return None;
+        };
+        PaneSize::of(rex_pane_key(&t.primary.spec, which)?, s)
     }
 
     #[cfg(test)]

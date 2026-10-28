@@ -219,6 +219,10 @@ pub fn init(app: AppHandle, debug: bool) {
         SurfaceSignal::PointerEntered => {
             crate::manager::WindowManager::handle_pointer_entered(&app, event.surface_id)
         }
+        // A Rex pane's size claim, raised on every press: never attention.
+        SurfaceSignal::UserInput => {
+            crate::manager::WindowManager::handle_user_input(&app, event.surface_id)
+        }
         _ => handle(&app, event),
     });
     setup_banners();
@@ -277,6 +281,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
             SurfaceSignal::ChildExited { exit_code } => format!("ChildExited({exit_code:?})"),
             SurfaceSignal::Focused => "Focused (routed to the manager)".to_string(),
             SurfaceSignal::PointerEntered => "PointerEntered (routed to the manager)".to_string(),
+            SurfaceSignal::UserInput => "UserInput (routed to the manager)".to_string(),
         };
         dbglog(&format!(
             "handle: signal={kind} surface={}",

@@ -979,18 +979,55 @@ impl WindowManager {
     /// `close_detached_secondary` taking the secondary and the page's `set_panes` relayout, a
     /// mirrored window's in-flight hole-0 report resolves to the primary for one frame — the
     /// relayout's own report corrects it, same as a docked collapse.)
-    pub fn set_detached_frame(&mut self, label: &str, hole: usize, rect: PixelRect) {
-        let Some(ds) = self.detached.get_mut(label) else {
-            return;
-        };
+    ///
+    /// Returns the pane's new size when it is a Rex pane, like `Registry::set_pane_frame`.
+    pub fn set_detached_frame(
+        &mut self,
+        label: &str,
+        hole: usize,
+        rect: PixelRect,
+    ) -> Option<crate::rex::size::PaneSize> {
+        let ds = self.detached.get(label)?;
         let which = crate::registry::PaneIdx::from_hole(hole, ds.mirrored());
-        match which {
-            crate::registry::PaneIdx::Primary => ds.surface.set_frame(rect),
-            crate::registry::PaneIdx::Secondary => {
-                if let Some(s) = ds.secondary.as_ref() {
-                    s.set_frame(rect);
-                }
-            }
+        let s = match which {
+            crate::registry::PaneIdx::Primary => &ds.surface,
+            crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
+        };
+        s.set_frame(rect);
+        crate::rex::size::PaneSize::of(crate::registry::rex_pane_key(&ds.spec, which)?, s)
+    }
+
+    /// The size of the live Rex pane surface `surface_id` shows, docked or popped out; `None`
+    /// for a plain pane.
+    fn rex_size_of_surface(&self, surface_id: usize) -> Option<crate::rex::size::PaneSize> {
+        if let Some(size) = self
+            .windows
+            .values()
+            .find_map(|ws| ws.registry.rex_size_of_surface(surface_id))
+        {
+            return Some(size);
+        }
+        let (label, which) = self.locate_detached_surface(surface_id)?;
+        let ds = self.detached.get(&label)?;
+        let s = match which {
+            crate::registry::PaneIdx::Primary => &ds.surface,
+            crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
+        };
+        crate::rex::size::PaneSize::of(crate::registry::rex_pane_key(&ds.spec, which)?, s)
+    }
+
+    /// The user turned to a Rex pane ([`SurfaceSignal::UserInput`]): claim its block for
+    /// warden's size, on the size worker. A press while warden already owns the block at this
+    /// size ends in the hub without a request.
+    ///
+    /// [`SurfaceSignal::UserInput`]: crate::surface::SurfaceSignal::UserInput
+    pub fn handle_user_input(app: &AppHandle, surface_id: usize) {
+        let size = app
+            .state::<ManagerState>()
+            .lock()
+            .rex_size_of_surface(surface_id);
+        if let Some(size) = size {
+            crate::rex::size::request(app, crate::rex::size::SizeAsk::Claim, size);
         }
     }
 
