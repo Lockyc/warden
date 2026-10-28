@@ -1,7 +1,7 @@
 //! The Rex hub: warden-app's one owner of Rex control connections.
 //!
 //! One `ControlClient` per server, connected the first time a pane needs that server (or at
-//! launch, for the servers config names: [`unclaimed::connect`]) and attached
+//! launch, for the servers config or the store names: [`unclaimed::connect`]) and attached
 //! with `session.attach_all` (scope `session`) for the server-wide session list, plus
 //! `session.attach` for each session a pane shows. It finds or creates each pane's session —
 //! or, for an unclaimed session's pane ([`unclaimed`]), attaches the one it was pointed at —
@@ -657,6 +657,11 @@ impl RexHub {
         servers.sort();
         servers.dedup();
         servers
+    }
+
+    /// Every server a stored pane mapping names.
+    pub fn store_servers(&self) -> Vec<String> {
+        self.inner.lock().store.servers()
     }
 
     /// The sessions `pane_keys` map to in the store, on any server. An adopted pane claims
