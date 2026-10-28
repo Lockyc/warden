@@ -142,7 +142,11 @@ declare_class!(
                 let content = response.notification().request().content();
                 let user_info = content.userInfo();
                 if let Some(label) = dict_str(&user_info, "label") {
-                    focus_window_tab(label, dict_str(&user_info, "id"));
+                    focus_window_tab(
+                        label,
+                        dict_str(&user_info, "id"),
+                        dict_str(&user_info, "agent"),
+                    );
                 }
             }
             completion_handler.call(());
@@ -168,8 +172,9 @@ unsafe fn dict_str(user_info: &NSDictionary, key: &str) -> Option<String> {
 /// alone (selecting a popped-out row only raises that same window). `set_focus` brings the window forward
 /// and activates warden, so this surfaces the terminal even from the background. `emit_to` leaks to
 /// sibling webviews (see CLAUDE.md), so the payload carries the target `label` and the chrome drops
-/// events meant for another window — same guard as every other per-window event.
-fn focus_window_tab(label: String, id: Option<String>) {
+/// events meant for another window — same guard as every other per-window event. A banner naming
+/// an `agent` tab selects it first, as the user's own pick, so the tab opens on it.
+fn focus_window_tab(label: String, id: Option<String>, agent: Option<String>) {
     let Some(app) = APP_HANDLE.get() else {
         return;
     };
@@ -188,6 +193,11 @@ fn focus_window_tab(label: String, id: Option<String>) {
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.unminimize();
         let _ = win.set_focus();
+    }
+    if let (Some(id), Some(agent)) = (id.as_deref(), agent.as_deref()) {
+        if let Err(e) = crate::rex::lifecycle::select(app, &label, id, agent) {
+            eprintln!("warden: {label}: {id}: {e}");
+        }
     }
     let _ = app.emit_to(
         label.as_str(),
@@ -294,9 +304,33 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         dbglog("handle: surface not located (unloaded?) -> dropped");
         return; // surface not found (e.g. just unloaded) — drop the signal
     };
+    // A desktop notification (OSC 9/777) additionally raises a macOS banner; a bare bell only
+    // badges (no text to show, and bells are frequent enough that banners would be noise).
+    let banner = match event.signal {
+        SurfaceSignal::Notification { title, body } if title.trim().is_empty() => {
+            Some(("warden".to_string(), body))
+        }
+        SurfaceSignal::Notification { title, body } => Some((title, body)),
+        _ => None,
+    };
+    raise(app, &label, &tab, visible, banner, None);
+}
+
+/// Raise attention on tab `tab` of window `label` unless it's `visible`: badge its sidebar row
+/// and, with a `banner` (title, body), post one. A banner for an `agent` tab stamps it, so a
+/// click selects that agent tab too. Main thread only. Both a surface's signals ([`handle`]) and
+/// a hidden agent tab needing you (`rex::lifecycle::attend`) land here.
+pub fn raise(
+    app: &AppHandle,
+    label: &str,
+    tab: &str,
+    visible: bool,
+    banner: Option<(String, String)>,
+    agent: Option<&str>,
+) {
     if visible {
         dbglog(&format!(
-            "handle: tab {label}/{tab} is visible -> no notify (correct)"
+            "raise: tab {label}/{tab} is visible -> no notify (correct)"
         ));
         return; // the user is already looking at this tab
     }
@@ -306,23 +340,16 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
     // payload and let the chrome drop events meant for a sibling — same guard as every other
     // per-window event. Without it, a hidden tab's bell badges a same-titled tab in another window.
     let _ = app.emit_to(
-        label.as_str(),
+        label,
         "warden:notify",
         serde_json::json!({ "label": label, "id": tab }),
     );
 
-    // A desktop notification (OSC 9/777) additionally raises a macOS banner; a bare bell only
-    // badges (no text to show, and bells are frequent enough that banners would be noise).
-    if let SurfaceSignal::Notification { title, body } = event.signal {
-        let title = if title.trim().is_empty() {
-            "warden".to_string()
-        } else {
-            title
-        };
+    if let Some((title, body)) = banner {
         dbglog(&format!(
-            "handle: posting banner for {label}/{tab} title={title:?}"
+            "raise: posting banner for {label}/{tab} title={title:?}"
         ));
-        show_banner(&title, &body, &label, &tab);
+        show_banner(&title, &body, label, tab, agent);
     }
 }
 
@@ -346,9 +373,10 @@ fn locate(app: &AppHandle, surface_id: usize) -> Option<(String, String, bool)> 
 }
 
 /// Post a native banner via `UNUserNotificationCenter`. No-op until `setup_banners` has run
-/// (dev, or before setup). Main thread only. `label`/`tab` are stamped into the request's
-/// `userInfo` so a click can route back to the originating window + tab (`did_receive`).
-fn show_banner(title: &str, body: &str, label: &str, tab: &str) {
+/// (dev, or before setup). Main thread only. `label`/`tab` (and `agent`, when set) are stamped
+/// into the request's `userInfo` so a click can route back to the originating window + tab
+/// (`did_receive`).
+fn show_banner(title: &str, body: &str, label: &str, tab: &str, agent: Option<&str>) {
     if !BANNER_READY.load(Ordering::Acquire) {
         dbglog("show_banner: BANNER_READY=false -> no-op (dev build, or before setup)");
         return;
@@ -359,10 +387,14 @@ fn show_banner(title: &str, body: &str, label: &str, tab: &str) {
     unsafe {
         content.setTitle(&NSString::from_str(title));
         content.setBody(&NSString::from_str(body));
-        let keys = [NSString::from_str("label"), NSString::from_str("id")];
-        let vals = vec![NSString::from_str(label), NSString::from_str(tab)];
+        let mut pairs = vec![("label", label), ("id", tab)];
+        pairs.extend(agent.map(|a| ("agent", a)));
+        let keys: Vec<Retained<NSString>> =
+            pairs.iter().map(|(k, _)| NSString::from_str(k)).collect();
+        let vals = pairs.iter().map(|(_, v)| NSString::from_str(v)).collect();
+        let key_refs: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
         let user_info: Retained<NSDictionary<NSString, NSString>> =
-            NSDictionary::from_vec(&[&*keys[0], &*keys[1]], vals);
+            NSDictionary::from_vec(&key_refs, vals);
         // setUserInfo wants the untyped NSDictionary<AnyObject, AnyObject>; our typed dict has the
         // same layout (phantom key/value types), so the cast is sound.
         let user_info: Retained<NSDictionary> = Retained::cast(user_info);

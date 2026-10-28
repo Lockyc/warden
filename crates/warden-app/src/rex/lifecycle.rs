@@ -14,6 +14,7 @@ use rex_client::{Endpoint, RexError};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::{self, AgentRecord, AgentStore, RecordState};
+use super::attention::Attention;
 use super::spawn::unix_now;
 use super::windows::{AgentState, BlockStatus};
 use super::{budgeted, lock, HubEvent, RexHub, OPEN_BUDGET};
@@ -374,10 +375,11 @@ pub struct ClosedAgentDto {
 }
 
 /// Project `tab_id`'s list from `store`, a live row's state and context from `status` (the hub's
-/// [`RexHub::block_status`]).
+/// [`RexHub::block_status`]), and a group amber when a row in it needs you ([`Attention`]).
 pub fn agent_list(
     tab_id: &str,
     store: &AgentStore,
+    attention: &Attention,
     status: impl Fn(&str) -> Option<BlockStatus>,
 ) -> AgentListDto {
     let records = agents::in_list_order(&store.records(tab_id));
@@ -395,13 +397,18 @@ pub fn agent_list(
             (RecordState::Live, _) => "idle",
             _ => "asleep",
         };
+        let needs_you = match (r.block_id.as_deref(), st.as_ref()) {
+            (Some(block), Some(s)) if live => attention.needs_you(block, s.state),
+            _ => false,
+        };
         if let Some(g) = &r.group {
-            if !groups.iter().any(|x| x.name == *g) {
-                groups.push(AgentGroupDto {
+            match groups.iter_mut().find(|x| x.name == *g) {
+                Some(group) => group.amber |= needs_you,
+                None => groups.push(AgentGroupDto {
                     name: g.clone(),
                     folded: folded.contains(g),
-                    amber: false,
-                });
+                    amber: needs_you,
+                }),
             }
         }
         rows.push(AgentRowDto {
@@ -463,7 +470,10 @@ pub fn menu_actions(app: &AppHandle, tab_id: &str) -> (bool, bool) {
 pub fn current_list(app: &AppHandle, tab_id: &str) -> Option<AgentListDto> {
     let store = app.try_state::<Mutex<AgentStore>>()?;
     let hub = app.try_state::<RexHub>()?;
-    let dto = agent_list(tab_id, &lock(&store), |b| hub.block_status(b));
+    let attention = app.try_state::<Mutex<Attention>>()?;
+    let dto = agent_list(tab_id, &lock(&store), &lock(&attention), |b| {
+        hub.block_status(b)
+    });
     Some(dto)
 }
 
@@ -604,7 +614,7 @@ fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<Agent
 
 /// Follow Rex for the app's life: a followed pane's windows changing ([`RexHub::agent_panes`])
 /// reconciles its list on a worker ([`AgentOp::Refresh`]) and lands it; a block's status
-/// changing re-sends its project's list.
+/// changing is [`attend`]ed on the main thread.
 pub fn watch_agents(app: AppHandle) {
     let Some(hub) = app.try_state::<RexHub>().map(|h| h.inner().clone()) else {
         return;
@@ -621,12 +631,8 @@ pub fn watch_agents(app: AppHandle) {
                         }
                     }
                     HubEvent::StatusChanged { block_id } => {
-                        let project = app
-                            .try_state::<Mutex<AgentStore>>()
-                            .and_then(|s| lock(&s).project_of_block(&block_id));
-                        if let Some(project) = project {
-                            emit_agents(&app, &project);
-                        }
+                        let main = app.clone();
+                        let _ = app.run_on_main_thread(move || attend(&main, &block_id));
                     }
                     _ => {}
                 }
@@ -634,6 +640,141 @@ pub fn watch_agents(app: AppHandle) {
         });
     if let Err(e) = spawned {
         eprintln!("warden: agent tabs won't follow Rex: {e}");
+    }
+}
+
+/// Block `block_id`'s status changed (main thread): track it ([`Attention::observe`]) and, for an
+/// agent tab, re-send its project's list. A hidden agent tab that now needs you raises attention
+/// on its project's row, with a banner naming the agent tab and saying why
+/// ([`crate::notify::raise`]); clicking the banner selects it.
+fn attend(app: &AppHandle, block_id: &str) {
+    let (Some(store), Some(hub), Some(attention)) = (
+        app.try_state::<Mutex<AgentStore>>(),
+        app.try_state::<RexHub>(),
+        app.try_state::<Mutex<Attention>>(),
+    ) else {
+        return;
+    };
+    let status = hub.block_status(block_id);
+    let state = status.as_ref().map_or(AgentState::Idle, |s| s.state);
+    let record = {
+        let s = lock(&store);
+        s.project_of_block(block_id).and_then(|p| {
+            s.records(&p)
+                .into_iter()
+                .find(|r| r.block_id.as_deref() == Some(block_id))
+        })
+    };
+    let Some(record) = record else {
+        let mut a = lock(&attention);
+        match status {
+            Some(_) => {
+                a.observe(block_id, state, false);
+            }
+            None => a.forget(block_id),
+        }
+        return;
+    };
+    let visible = visible_agents(app)
+        .iter()
+        .any(|(p, id)| *p == record.project && *id == record.id);
+    if lock(&attention).observe(block_id, state, visible) {
+        let tab = {
+            let st = app.state::<ManagerState>();
+            let m = st.lock();
+            m.windows.iter().find_map(|(label, ws)| {
+                Some((label.clone(), ws.registry.tab_title(&record.project)?))
+            })
+        };
+        if let Some((label, title)) = tab {
+            let why = match state {
+                AgentState::Blocked => "blocked",
+                AgentState::Error => "error",
+                _ => "done",
+            };
+            let body = status.and_then(|s| s.msg).unwrap_or_else(|| why.to_owned());
+            crate::notify::raise(
+                app,
+                &label,
+                &record.project,
+                false,
+                Some((format!("{title} · {}", record.name), body)),
+                Some(&record.id),
+            );
+        }
+    }
+    emit_agents(app, &record.project);
+}
+
+/// The agent tabs on screen, as `(project, record id)`: each focused window's active tab's
+/// selected agent tab, and each focused pop-out's travelling one.
+fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
+    let focused: Vec<String> = app
+        .windows()
+        .into_iter()
+        .filter(|(_, w)| w.is_focused().unwrap_or(false))
+        .map(|(label, _)| label)
+        .collect();
+    if focused.is_empty() {
+        return Vec::new();
+    }
+    let st = app.state::<ManagerState>();
+    let m = st.lock();
+    let docked = m
+        .windows
+        .iter()
+        .filter(|(label, _)| focused.contains(label))
+        .filter_map(|(_, ws)| {
+            let tab = ws.registry.active_tab()?;
+            Some((tab.to_owned(), ws.registry.visible_agent(tab)?.to_owned()))
+        });
+    let popped = m
+        .detached
+        .iter()
+        .filter(|(label, _)| focused.contains(label))
+        .filter_map(|(_, ds)| Some((ds.tab_id.clone(), ds.agent.clone()?)));
+    docked.chain(popped).collect()
+}
+
+/// Mark the agent tabs on screen seen ([`Attention::seen`]), re-sending the list of each project
+/// that clears for. Locks `ManagerState` and the stores, so callers must hold none.
+pub fn mark_seen(app: &AppHandle) {
+    let (Some(store), Some(attention)) = (
+        app.try_state::<Mutex<AgentStore>>(),
+        app.try_state::<Mutex<Attention>>(),
+    ) else {
+        return;
+    };
+    let visible = visible_agents(app);
+    if visible.is_empty() {
+        return;
+    }
+    let blocks: Vec<(String, String)> = {
+        let s = lock(&store);
+        visible
+            .into_iter()
+            .filter_map(|(project, id)| {
+                let block = s
+                    .records(&project)
+                    .into_iter()
+                    .find(|r| r.id == id)?
+                    .block_id?;
+                Some((project, block))
+            })
+            .collect()
+    };
+    let cleared: Vec<String> = {
+        let mut a = lock(&attention);
+        blocks
+            .into_iter()
+            .filter(|(_, block)| a.seen(block))
+            .map(|(project, _)| project)
+            .collect()
+    };
+    for project in cleared {
+        if let Some(dto) = current_list(app, &project) {
+            let _ = app.emit("warden:agents", dto);
+        }
     }
 }
 
@@ -724,6 +865,7 @@ mod tests {
     use super::{agent_list, AgentOp, NO_RESUME};
     use crate::rex::agent_open::tests::{fake, hub, map, open, record, state_of, store};
     use crate::rex::agents::RecordState;
+    use crate::rex::attention::Attention;
 
     fn eventually(what: &str, f: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -851,7 +993,7 @@ mod tests {
         let a = state_of(&s, "a").unwrap();
         assert_eq!(a.state, RecordState::Closed);
         assert_eq!(a.closed_at, Some(7));
-        let list = agent_list("t", &s.lock().unwrap(), |_| None);
+        let list = agent_list("t", &s.lock().unwrap(), &Attention::default(), |_| None);
         assert_eq!(list.closed.len(), 1);
         assert_eq!(list.closed[0].name, "alpha");
         assert_eq!(list.closed[0].closed_at, 7);
@@ -870,7 +1012,7 @@ mod tests {
         assert_eq!(a.state, RecordState::Live);
         assert_eq!(a.closed_at, None);
         assert_eq!((a.name.as_str(), a.group.as_deref()), ("alpha", Some("g")));
-        let list = agent_list("t", &s.lock().unwrap(), |_| None);
+        let list = agent_list("t", &s.lock().unwrap(), &Attention::default(), |_| None);
         let ids: Vec<&str> = list.rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["b", "a"], "back where it was");
         assert!(list.closed.is_empty());
@@ -978,7 +1120,7 @@ mod tests {
             made[0].payload.get("window_label").is_none(),
             "Rex names it"
         );
-        let list = agent_list("t", &s.lock().unwrap(), |_| None);
+        let list = agent_list("t", &s.lock().unwrap(), &Attention::default(), |_| None);
         assert_eq!(list.rows.len(), 3);
         let last = &list.rows[2];
         assert!(last.selected);
@@ -1044,7 +1186,7 @@ mod tests {
             }),
             _ => None,
         };
-        let list = agent_list("t", &s.lock().unwrap(), status);
+        let list = agent_list("t", &s.lock().unwrap(), &Attention::default(), status);
         assert_eq!(list.tab_id, "t");
         let rows: Vec<(&str, &str, Option<&str>)> = list
             .rows
@@ -1078,6 +1220,51 @@ mod tests {
         assert_eq!(v["rows"][0]["sleepReason"], NO_RESUME);
         assert_eq!(v["closed"][0]["closedAt"], 5);
         assert_eq!(v["groups"][0]["amber"], false);
+    }
+
+    #[test]
+    fn done_unseen_marks_group_amber() {
+        use crate::rex::windows::{AgentState, BlockStatus};
+        let mut a = record("a", RecordState::Live, Some("window:1"), None);
+        a.group = Some("g".into());
+        let mut b = record("b", RecordState::Live, Some("window:2"), None);
+        b.group = Some("g".into());
+        let mut c = record("c", RecordState::Live, Some("window:3"), None);
+        c.group = Some("h".into());
+        let s = store(vec![a, b, c]);
+        let state = std::cell::Cell::new(AgentState::Done);
+        let status = |block: &str| {
+            (block != "block:1").then(|| BlockStatus {
+                state: state.get(),
+                msg: None,
+                title: None,
+            })
+        };
+        let mut att = Attention::default();
+        att.observe("block:2", AgentState::Working, false);
+        att.observe("block:3", AgentState::Working, false);
+        att.observe("block:2", AgentState::Done, false);
+        att.observe("block:3", AgentState::Done, true);
+        let amber = |att: &Attention| -> Vec<(String, bool)> {
+            agent_list("t", &s.lock().unwrap(), att, status)
+                .groups
+                .into_iter()
+                .map(|g| (g.name, g.amber))
+                .collect()
+        };
+        assert_eq!(
+            amber(&att),
+            [("g".into(), true), ("h".into(), false)],
+            "b finished unseen; c finished on screen"
+        );
+        att.seen("block:2");
+        assert_eq!(amber(&att), [("g".into(), false), ("h".into(), false)]);
+        state.set(AgentState::Blocked);
+        assert_eq!(
+            amber(&att),
+            [("g".into(), true), ("h".into(), true)],
+            "blocked needs you, seen or not"
+        );
     }
 
     #[test]
