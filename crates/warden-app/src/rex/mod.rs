@@ -5,8 +5,9 @@
 //! with `session.attach_all` (scope `session`) for the server-wide session list, plus
 //! `session.attach` for each session a pane shows. It finds or creates each pane's session —
 //! or, for an unclaimed session's pane ([`unclaimed`]), attaches the one it was pointed at —
-//! persists pane → session ids ([`store`]), tracks block owners, claims and sizes a pane's block
-//! for warden ([`RexHub::claim`], driven by [`size`]), and reports changes to
+//! persists pane → session ids ([`store`]), tracks block owners and each attached session's
+//! windows and block status ([`windows`]), claims and sizes a pane's block for warden
+//! ([`RexHub::claim`], driven by [`size`]), and reports changes to
 //! [`RexHub::subscribe`]rs.
 //!
 //! Threads: the hub's methods block their caller on the network and never hold the state lock
@@ -17,10 +18,15 @@
 //! opens of a pane never make two sessions. Each connection has one watcher thread that applies its events to the state; when the
 //! connection ends, that thread removes it, reports `Disconnected`, and reconnects with the
 //! reconnect token (backing off), rereading the session list and attaching the claimed sessions
-//! again. A reconnect attempt holds nothing a caller waits on: callers connect alongside it, and
+//! again — unless warden stopped that server ([`RexHub::sleep_server`]). A reconnect attempt holds nothing a caller waits on: callers connect alongside it, and
 //! whichever connection is installed first wins. Watchers hold the hub weakly: dropping the last
 //! `RexHub` closes every connection and ends them.
 
+pub mod agent_open;
+pub mod agents;
+pub mod attention;
+pub mod lifecycle;
+pub mod reports;
 pub mod server;
 pub mod size;
 pub mod spawn;
@@ -28,6 +34,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 pub mod unclaimed;
+pub mod windows;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -84,6 +91,15 @@ pub enum HubEvent {
         session_id: String,
         block_id: String,
         owner: Option<String>,
+    },
+    /// A watched session's windows changed; read them with [`RexHub::windows`].
+    WindowsChanged {
+        server: String,
+        session_id: String,
+    },
+    /// A block's status changed; read it with [`RexHub::block_status`].
+    StatusChanged {
+        block_id: String,
     },
     Disconnected {
         server: String,
@@ -151,15 +167,35 @@ struct State {
     /// A server's session list as last heard on a connection that has since dropped, so its
     /// sessions stay listed until a new connection rereads it.
     heard: HashMap<String, Vec<SessionInfo>>,
+    /// (server, session) → the windows of each attached session ([`windows`]).
+    windows: HashMap<(String, String), windows::SessionWindows>,
+    /// Block → what its program last reported ([`windows`]).
+    statuses: HashMap<String, windows::Tracked>,
+    /// Agent key → the main pane whose session holds that agent's window, bound by
+    /// [`RexHub::open_agents`]; the agent's block is in `blocks` under the agent key.
+    agents: HashMap<String, String>,
+    /// Main panes opened as agent panes with a session, whose windows are followed as agent tabs
+    /// ([`RexHub::agent_panes`]).
+    agent_panes: HashSet<String>,
+    /// Servers warden is stopping or has stopped ([`RexHub::sleep_server`]): a connection to one
+    /// that ends isn't reopened, until a caller connects again.
+    stopping: HashSet<String>,
     next_gen: u64,
 }
 
 impl State {
-    /// Where `pane_key`'s session lives: its stored mapping, else its adoption.
+    /// Where `pane_key`'s session lives: its stored mapping, else its adoption; for an agent key,
+    /// its main pane's.
     fn record(&self, pane_key: &str) -> Option<&PaneRecord> {
-        self.store
-            .get(pane_key)
-            .or_else(|| self.adopted.get(pane_key))
+        let own = |k: &str| self.store.get(k).or_else(|| self.adopted.get(k));
+        own(pane_key).or_else(|| own(self.agents.get(pane_key)?))
+    }
+
+    /// Forget agent `agent_key`'s binding, block and size.
+    fn unbind_agent(&mut self, agent_key: &str) {
+        self.agents.remove(agent_key);
+        self.blocks.remove(agent_key);
+        self.requested.remove(agent_key);
     }
 
     /// `server`'s session list: its connection's, else the last heard while it's disconnected.
@@ -301,14 +337,10 @@ impl RexHub {
     ) -> Result<PaneTarget, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let _held = self.inner.hold_pane(pane_key, Some(deadline))?;
-        match self
+        let made = self
             .inner
-            .ensure_until(pane_key, server, dir, startup, label, deadline)
-        {
-            Err(RexError::Timeout) => Err(RexError::Unreachable),
-            Err(_) if Instant::now() >= deadline => Err(RexError::Unreachable),
-            r => r,
-        }
+            .ensure_until(pane_key, server, dir, startup, label, None, deadline);
+        budgeted(deadline, made)
     }
 
     /// Let `pane_key` go of its session if its terminal has finished ([`RexHub::block_exited`]),
@@ -359,7 +391,9 @@ impl RexHub {
 }
 
 impl Inner {
-    /// [`RexHub::ensure_session`]'s work, every call waiting until `deadline`.
+    /// [`RexHub::ensure_session`]'s work, every call waiting until `deadline`. A session it creates
+    /// names its window `window_label`, or leaves the name to Rex.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_until(
         self: &Arc<Self>,
         pane_key: &str,
@@ -367,6 +401,7 @@ impl Inner {
         dir: &Path,
         startup: Option<&str>,
         label: &str,
+        window_label: Option<&str>,
         deadline: Instant,
     ) -> Result<PaneTarget, RexError> {
         let inner = self;
@@ -410,18 +445,15 @@ impl Inner {
             });
         }
 
-        let mut options = json!({ "cwd": dir.to_string_lossy() });
-        if let Some(s) = startup.filter(|s| !s.is_empty()) {
-            options["initial_input"] = json!(format!("{s}\n"));
+        let options = terminal_options(dir, startup);
+        let mut window =
+            json!({"layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": options}}});
+        if let Some(w) = window_label {
+            window["window_label"] = json!(w);
         }
         let (_, created) = client.call_seq_until(
             "session.create",
-            json!({
-                "label": label,
-                "initial_windows": [
-                    {"layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": options}}}
-                ],
-            }),
+            json!({ "label": label, "initial_windows": [window] }),
             deadline,
         )?;
         let session_id = str_field(&created["session_id"], "session.create session_id")?;
@@ -435,6 +467,8 @@ impl Inner {
                 if let Some(a) = st.attached.get_mut(&prev.server) {
                     a.remove(&prev.session_id);
                 }
+                st.windows
+                    .remove(&(prev.server.clone(), prev.session_id.clone()));
             }
             st.store.set(
                 pane_key,
@@ -475,9 +509,21 @@ impl Inner {
         st.adopted.remove(pane_key);
         st.blocks.remove(pane_key);
         st.requested.remove(pane_key);
+        st.agent_panes.remove(pane_key);
+        let agents: Vec<String> = st
+            .agents
+            .iter()
+            .filter(|(_, pane)| *pane == pane_key)
+            .map(|(agent, _)| agent.clone())
+            .collect();
+        for agent in agents {
+            st.unbind_agent(&agent);
+        }
         if let Some(a) = st.attached.get_mut(&rec.server) {
             a.remove(&rec.session_id);
         }
+        st.windows
+            .remove(&(rec.server.clone(), rec.session_id.clone()));
         Some(rec)
     }
 
@@ -886,6 +932,7 @@ impl Inner {
                 return Ok((c.client.clone(), false));
             }
             st.heard.remove(server);
+            st.stopping.remove(server);
             st.next_gen += 1;
             let gen = st.next_gen;
             st.conns.insert(
@@ -922,16 +969,24 @@ impl Inner {
         Ok((client, true))
     }
 
-    /// `session.attach` `session_id` on `client`, recording its blocks' owners; returns the view.
+    /// `session.attach` `session_id` on `client`, recording its blocks' owners and its windows
+    /// and pulling its blocks' status ([`windows`]); returns the view.
     fn attach(
-        &self,
+        self: &Arc<Self>,
         server: &str,
         client: &Arc<ControlClient>,
         session_id: &str,
         deadline: Option<Instant>,
     ) -> Result<Value, RexError> {
         let args = json!({ "session_id": session_id });
-        let (seq, result) = call_seq(client, "session.attach", args, deadline)?;
+        self.watch_windows(server, session_id);
+        let (seq, result) = match call_seq(client, "session.attach", args, deadline) {
+            Ok(r) => r,
+            Err(e) => {
+                self.unwatch_unviewed(server, session_id);
+                return Err(e);
+            }
+        };
         let view = result["view"].clone();
         self.lock()
             .attached
@@ -939,6 +994,7 @@ impl Inner {
             .or_default()
             .insert(session_id.to_owned());
         self.record_owners(server, client, session_id, seq, view_blocks(&view, None));
+        self.learn_view(server, client, session_id, seq, &view, true);
         Ok(view)
     }
 
@@ -979,14 +1035,23 @@ impl Inner {
     }
 
     /// Apply one event from connection `gen` of `server`; a replaced connection's are ignored.
-    fn apply(&self, server: &str, gen: u64, ev: Event) {
+    fn apply(self: &Arc<Self>, server: &str, gen: u64, ev: Event) {
         let mut out = Vec::new();
-        {
+        let refresh = {
             let mut guard = self.lock();
             let st = &mut *guard;
             let Some(conn) = st.conns.get_mut(server).filter(|c| c.gen == gen) else {
                 return;
             };
+            let refresh = windows::apply_event(
+                &mut st.windows,
+                &mut st.statuses,
+                server,
+                gen,
+                &ev,
+                &mut out,
+            )
+            .map(|session| (conn.client.clone(), session));
             let sessions_changed = || HubEvent::SessionsChanged {
                 server: server.to_owned(),
             };
@@ -1009,6 +1074,16 @@ impl Inner {
                         }
                         st.adopted
                             .retain(|_, r| !(r.server == server && r.session_id == id));
+                        if st
+                            .windows
+                            .remove(&(server.to_owned(), id.clone()))
+                            .is_some()
+                        {
+                            out.push(HubEvent::WindowsChanged {
+                                server: server.to_owned(),
+                                session_id: id,
+                            });
+                        }
                         out.push(sessions_changed());
                     }
                 }
@@ -1027,8 +1102,42 @@ impl Inner {
                 }
                 _ => {}
             }
-        }
+            refresh
+        };
         self.emit(out);
+        if let Some((client, session)) = refresh {
+            self.spawn_refresh(server, &client, &session);
+        }
+    }
+
+    /// `server` stopped at warden's word: drop its connection and everything it reported, and
+    /// list it as heard with no sessions, so its tabs read as gone and no unclaimed rows remain.
+    /// It stays `stopping` — not reconnected — until a caller connects again.
+    fn forget_server(&self, server: &str) {
+        {
+            let mut st = self.lock();
+            st.conns.remove(server);
+            st.heard.insert(server.to_owned(), Vec::new());
+            st.attached.remove(server);
+            st.windows.retain(|(s, _), _| s != server);
+            let gone: Vec<String> = st
+                .agent_panes
+                .iter()
+                .filter(|p| st.record(p).is_some_and(|r| r.server == server))
+                .cloned()
+                .collect();
+            for p in gone {
+                st.agent_panes.remove(&p);
+            }
+        }
+        self.emit([
+            HubEvent::Disconnected {
+                server: server.to_owned(),
+            },
+            HubEvent::SessionsChanged {
+                server: server.to_owned(),
+            },
+        ]);
     }
 
     /// Reopen `server`'s connection after a drop, resuming its client when `token` is still
@@ -1071,15 +1180,18 @@ fn watch(
         let Some(inner) = hub.upgrade() else {
             return;
         };
-        let removed = {
+        let (removed, stopping) = {
             let mut st = inner.lock();
             let ours = st.conns.get(&server).is_some_and(|c| c.gen == gen);
+            let stopping = st.stopping.contains(&server);
             if ours {
                 if let Some(c) = st.conns.remove(&server) {
-                    st.heard.insert(server.clone(), c.live);
+                    if !stopping {
+                        st.heard.insert(server.clone(), c.live);
+                    }
                 }
             }
-            ours
+            (ours, stopping)
         };
         if !removed {
             return;
@@ -1087,6 +1199,9 @@ fn watch(
         inner.emit([HubEvent::Disconnected {
             server: server.clone(),
         }]);
+        if stopping {
+            return;
+        }
     }
     let mut delay = Duration::ZERO;
     loop {
@@ -1094,6 +1209,9 @@ fn watch(
         let Some(inner) = hub.upgrade() else {
             return;
         };
+        if inner.lock().stopping.contains(&server) {
+            return;
+        }
         match inner.reconnect(&server, &endpoint, token.as_deref()) {
             Ok(true) => {
                 inner.emit([
@@ -1140,6 +1258,30 @@ fn str_field(v: &Value, what: &str) -> Result<String, RexError> {
     v.as_str()
         .map(str::to_owned)
         .ok_or_else(|| RexError::Protocol(format!("{what} missing")))
+}
+
+/// The answer of a call bounded by `deadline`, as a tab open reports it ([`budget_error`]).
+fn budgeted<T>(deadline: Instant, r: Result<T, RexError>) -> Result<T, RexError> {
+    r.map_err(|e| budget_error(deadline, e))
+}
+
+/// A failure of a call bounded by `deadline`, as a tab open reports it: a timeout, or any
+/// failure past the deadline, is `Unreachable`.
+fn budget_error(deadline: Instant, e: RexError) -> RexError {
+    match e {
+        RexError::Timeout => RexError::Unreachable,
+        _ if Instant::now() >= deadline => RexError::Unreachable,
+        e => e,
+    }
+}
+
+/// A new terminal's options: started in `dir`, typing `startup` and a newline.
+fn terminal_options(dir: &Path, startup: Option<&str>) -> Value {
+    let mut options = json!({ "cwd": dir.to_string_lossy() });
+    if let Some(s) = startup.filter(|s| !s.is_empty()) {
+        options["initial_input"] = json!(format!("{s}\n"));
+    }
+    options
 }
 
 fn parse_session(v: &Value) -> Option<SessionInfo> {

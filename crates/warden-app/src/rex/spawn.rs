@@ -8,14 +8,18 @@
 //! main thread never waits on the network.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rex_client::RexError;
 use tauri::{AppHandle, Emitter, Manager};
 
+use super::agents::AgentStore;
+use super::lifecycle::AgentOp;
 use super::server::LOCAL;
 use super::{unclaimed, HubEvent, PaneTarget, RexHub};
 use crate::probe::Presence;
-use crate::registry::{RexLanded, RexOpen, RexOpener};
+use crate::registry::{RexAnswer, RexLanded, RexOpen, RexOpener};
 use crate::surface::TabSpec;
 use crate::ManagerState;
 
@@ -28,29 +32,37 @@ pub fn relay_path() -> PathBuf {
 }
 
 /// The command line that runs `relay` on `t`, each argument quoted for the shell libghostty
-/// hands it to.
-pub fn relay_command(relay: &Path, t: &PaneTarget) -> String {
+/// hands it to. With `report`, the relay forwards its program's reports to that socket
+/// ([`super::reports::socket_path`]).
+pub fn relay_command(relay: &Path, t: &PaneTarget, report: Option<&Path>) -> String {
     let endpoint = t.endpoint.to_string();
-    [
-        &*relay.to_string_lossy(),
+    let relay = relay.to_string_lossy();
+    let report = report.map(|p| p.to_string_lossy());
+    let mut args = vec![
+        &*relay,
         "--endpoint",
         &endpoint,
         "--session",
         &t.session_id,
         "--block",
         &t.block_id,
-    ]
-    .map(shell_quote)
-    .join(" ")
+    ];
+    if let Some(report) = &report {
+        args.extend(["--report", report]);
+    }
+    args.into_iter()
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `spec` as the surface runs it once its session is `t`: the relay instead of the shell, and
 /// nothing typed, since the session's terminal had its `cmd` typed when it was created. A remote
 /// tab's `dir` is a path on its server, and an unclaimed session's tab has none, so for those the
 /// relay starts at `/` here.
-pub fn effective_spec(spec: &TabSpec, t: &PaneTarget) -> TabSpec {
+pub fn effective_spec(spec: &TabSpec, t: &PaneTarget, report: Option<&Path>) -> TabSpec {
     let mut e = spec.clone();
-    e.shell = relay_command(&relay_path(), t);
+    e.shell = relay_command(&relay_path(), t, report);
     e.startup = None;
     let server = spec.server.as_deref();
     if server.is_some_and(|s| s != LOCAL) || unclaimed::is_unclaimed(&spec.id, &spec.dir, server) {
@@ -73,7 +85,8 @@ pub fn open_error(server: &str, e: &RexError) -> String {
 
 /// The [`RexOpener`] for window `label`: each open runs on its own worker thread and lands back
 /// on the main thread through [`landed`]. The answer's own presence refresh runs on the worker, so
-/// a connection a caller (not the hub's watcher) restored still repaints the dots.
+/// a connection a caller (not the hub's watcher) restored still repaints the dots. An agent
+/// pane's open is [`RexHub::open_agents`], over the app's [`AgentStore`].
 pub fn opener(app: AppHandle, label: String) -> RexOpener {
     Box::new(move |req: RexOpen| {
         let (app, label) = (app.clone(), label.clone());
@@ -85,6 +98,13 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
                     // Without the relay the pane's command would fail at once, with no reason
                     // shown; say what's missing instead.
                     _ if !relay.is_file() => Err(format!("{} is missing", relay.display())),
+                    Some(hub) if req.agents => match app.try_state::<Mutex<AgentStore>>() {
+                        Some(store) => hub
+                            .open_agents(&store, &req, unix_now())
+                            .map(RexAnswer::Agents)
+                            .map_err(|e| open_error(&req.server, &e)),
+                        None => Err(format!("Rex server {}: no agent tabs store", req.server)),
+                    },
                     Some(hub) => {
                         // An unclaimed session's pane attaches the session it lists.
                         if unclaimed::is_unclaimed(&req.pane_key, &req.dir, Some(&req.server)) {
@@ -99,6 +119,7 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
                             req.startup.as_deref(),
                             &req.label,
                         )
+                        .map(RexAnswer::Pane)
                         .map_err(|e| open_error(&req.server, &e))
                     }
                     None => Err(format!("Rex server {}: no connection to Rex", req.server)),
@@ -116,7 +137,7 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
 /// Give window `label`'s registry the answer to `req` (main thread), then repaint that window's
 /// chrome: a fresh snapshot (the row now live, or warning), and the reason on its error banner
 /// when the open or the spawn failed. An answer the pane stopped waiting for changes nothing.
-fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<PaneTarget, String>) {
+fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer, String>) {
     let Some(st) = app.try_state::<ManagerState>() else {
         return;
     };
@@ -138,11 +159,7 @@ fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<PaneTarget
     }
     if let Some(message) = message {
         eprintln!("warden: {label}: {}: {message}", req.pane_key);
-        let _ = app.emit_to(
-            label,
-            "warden:error",
-            serde_json::json!({ "label": label, "message": message }),
-        );
+        super::lifecycle::banner(app, label, &message);
     }
 }
 
@@ -188,7 +205,8 @@ pub fn hub_changed(app: &AppHandle, server: Option<&str>) {
 /// change the hub reports to a server's session list, and every return of its connection,
 /// refreshes both ([`hub_changed`]); a drop repaints the dots alone, since the sessions it last
 /// listed still exist. It never waits on `Reconnected` alone — a caller can restore a connection
-/// first, and then none is sent — which is why each open, ☠ and exit also refreshes.
+/// first, and then none is sent — which is why each open, ☠ and exit also refreshes. Each of the
+/// three also re-syncs Tab ▸ Sleep Server, which follows the connections.
 pub fn watch_presence(app: AppHandle) {
     let Some(hub) = app.try_state::<RexHub>().map(|h| h.inner().clone()) else {
         return;
@@ -203,8 +221,12 @@ pub fn watch_presence(app: AppHandle) {
                         hub_changed(&app, Some(&server))
                     }
                     HubEvent::Disconnected { server } => refresh_presence(&app, Some(&server)),
-                    HubEvent::OwnerChanged { .. } => {}
+                    HubEvent::OwnerChanged { .. }
+                    | HubEvent::WindowsChanged { .. }
+                    | HubEvent::StatusChanged { .. } => continue,
                 }
+                let main = app.clone();
+                let _ = app.run_on_main_thread(move || crate::sync_server_menu(&main));
             }
         });
     if let Err(e) = spawned {
@@ -215,13 +237,26 @@ pub fn watch_presence(app: AppHandle) {
 /// A Rex pane's program exited (its relay did): let go of its session if its terminal really
 /// finished ([`RexHub::destroy_if_exited`]), on a worker, then refresh ([`hub_changed`]). A relay that left for any other reason (the server
 /// unreachable, the pane closed) leaves the session for the next open to reattach.
-pub fn end_if_exited(app: &AppHandle, pane_key: String) {
+///
+/// For an agent's key (`agent` names its tab and record) only that agent's window is let go
+/// ([`RexHub::end_agent_if_exited`]), and its record closes, or drops when it can't resume, as an
+/// op on its pane ([`AgentOp::Exited`]).
+pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, String)>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("warden-rex-exit".into())
         .spawn(move || {
             if let Some(hub) = app.try_state::<RexHub>() {
-                hub.destroy_if_exited(&pane_key);
+                match agent {
+                    None => {
+                        hub.destroy_if_exited(&pane_key);
+                    }
+                    Some((project, record)) => {
+                        if hub.end_agent_if_exited(&pane_key) {
+                            super::lifecycle::follow(&app, &project, &AgentOp::Exited(record));
+                        }
+                    }
+                }
             }
             hub_changed(&app, None);
         });
@@ -230,8 +265,9 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String) {
     }
 }
 
-/// Destroy the Rex sessions of `pane_keys` (☠ on tab `id` of window `label`) on a worker, then
-/// refresh ([`hub_changed`]) and burst the window's probes the way a `kill` command's end does.
+/// Destroy the Rex sessions of `pane_keys` (☠ on tab `id` of window `label`) on a worker, drop
+/// the tab's agent records with them, then refresh ([`hub_changed`]) and burst the window's probes
+/// the way a `kill` command's end does.
 pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -244,12 +280,24 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
                     }
                 }
             }
+            if let Some(store) = app.try_state::<Mutex<AgentStore>>() {
+                if super::lock(&store).remove_project(&id) {
+                    super::lifecycle::emit_agents(&app, &id);
+                }
+            }
             hub_changed(&app, None);
             crate::probe::bump_tab_await(&label, &id, false);
         });
     if let Err(e) = spawned {
         eprintln!("warden: couldn't start ending a tab's Rex sessions: {e}");
     }
+}
+
+/// Now, in Unix seconds: the stamp on a record that closes.
+pub(super) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// `s` as one shell word: bare when it holds only characters no shell treats specially, else in
@@ -296,6 +344,7 @@ mod tests {
             tree_path: Vec::new(),
             split: None,
             server: Some(server.into()),
+            resume: None,
         }
     }
 
@@ -303,7 +352,7 @@ mod tests {
     fn relay_command_quotes_paths_with_spaces() {
         let relay = Path::new("/Applications/warden.app/Contents/MacOS/warden-relay");
         assert_eq!(
-            relay_command(relay, &target()),
+            relay_command(relay, &target(), None),
             "/Applications/warden.app/Contents/MacOS/warden-relay \
              --endpoint 'unix:/Users/x/Library/Application Support/rex/server.sock' \
              --session session:abc --block block:1"
@@ -311,16 +360,29 @@ mod tests {
     }
 
     #[test]
+    fn relay_command_passes_the_report_socket() {
+        let relay = Path::new("/r/warden-relay");
+        let sock =
+            Path::new("/Users/x/Library/Application Support/au.lsjc.warden/agent-reports.sock");
+        assert!(relay_command(relay, &target(), Some(sock)).ends_with(
+            " --report '/Users/x/Library/Application Support/au.lsjc.warden/agent-reports.sock'"
+        ));
+        assert!(!relay_command(relay, &target(), None).contains("--report"));
+    }
+
+    #[test]
     fn relay_command_escapes_single_quotes() {
         let relay = Path::new("/tmp/it's here/warden-relay");
-        assert!(relay_command(relay, &target()).starts_with(r"'/tmp/it'\''s here/warden-relay' "));
+        assert!(
+            relay_command(relay, &target(), None).starts_with(r"'/tmp/it'\''s here/warden-relay' ")
+        );
     }
 
     #[test]
     fn effective_spec_replaces_shell_and_clears_startup() {
         let s = spec("local", "/work/proj");
-        let e = effective_spec(&s, &target());
-        assert_eq!(e.shell, relay_command(&relay_path(), &target()));
+        let e = effective_spec(&s, &target(), None);
+        assert_eq!(e.shell, relay_command(&relay_path(), &target(), None));
         assert_eq!(e.startup, None);
         assert_eq!(
             e.dir,
@@ -333,7 +395,7 @@ mod tests {
     #[test]
     fn effective_spec_runs_a_remote_relay_from_root() {
         // A remote tab's dir is a path on that server; the relay itself needs none here.
-        let e = effective_spec(&spec("remote-host", "~/proj"), &target());
+        let e = effective_spec(&spec("remote-host", "~/proj"), &target(), None);
         assert_eq!(e.dir, PathBuf::from("/"));
     }
 
@@ -341,7 +403,7 @@ mod tests {
     fn effective_spec_runs_an_unclaimed_sessions_relay_from_root() {
         let mut s = spec(LOCAL, "");
         s.id = "rex:session:x".into();
-        assert_eq!(effective_spec(&s, &target()).dir, PathBuf::from("/"));
+        assert_eq!(effective_spec(&s, &target(), None).dir, PathBuf::from("/"));
     }
 
     #[test]
@@ -421,7 +483,7 @@ mod tests {
         assert!(relay.is_file(), "build it first: {}", relay.display());
         let mut child = Command::new("/bin/sh")
             .arg("-c")
-            .arg(relay_command(&relay, &t))
+            .arg(relay_command(&relay, &t, None))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

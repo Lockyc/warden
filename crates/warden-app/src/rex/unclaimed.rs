@@ -44,6 +44,7 @@ pub fn synthesize(server: &str, live: &[SessionInfo], claimed: &HashSet<String>)
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: Some(server.to_owned()),
             split: None,
         })
@@ -229,6 +230,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: server.map(Into::into),
             split: None,
         }

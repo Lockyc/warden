@@ -40,6 +40,8 @@ macOS only.
 - **Sidebar search** — the field above the tab list narrows it as you type, matching tab titles, folder paths and group names (folders open to show matches). **⌘⇧F** jumps into it from a terminal; **↑**/**↓** pick a match, **Enter** opens it, **Esc** clears the search and returns you to the terminal. Clicking a match opens it and keeps the search focused, so you can keep narrowing.
 - **Keyboard navigation** (the **Tab** menu) — **⌘⇧[** / **⌘⇧]** cycle the previous/next *loaded* tab (cold tabs are skipped) and **⌘1–⌘9** jump to a position; set `tab_digit_keys = "cycle"` to make **⌘1** / **⌘2** cycle instead (jumps shift to **⌘3–⌘9**). **⌘W** unloads the active tab, **⌘⇧W** closes the window, and **⌘⇧O** pops the active tab into its own window (session-preserving; see above). **⌘⇧S** suspends the active tab's session and **⌘⇧K** terminates it — the first ⌘⇧K arms the tab's confirm row, a second one within 4s confirms.
 - **Rex sessions** — set `server = "local"` (or a host label from Rex's host list — remote servers are untested so far, see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)) and a tab's terminals live in sessions on a Rex server — Superlogical's server-side terminal multiplexer, currently an invite-only beta you need installed. ⌘W, closing the window and quitting warden only detach: reopening the tab shows the same live screen, and the session is reachable from Rex's other clients too. The terminal takes the size of whichever device you last typed in. ☠ ends the sessions; the dot shows whether they exist, and opening the tab starts them; warden starts the local Rex server when a tab needs it. Sessions no tab claims, on every Rex server warden is connected to (at launch, those your tabs name and any a past session was made on), are listed under `Rex · <server>` in each window with a Rex tab, so none is hidden. A Rex tab's dot and ☠ come from Rex, so its `probe` and `kill` aren't run. Tabs without `server` stay plain terminals.
+- **Agent tabs** — a Rex tab's main pane lists its agents in a column down its right edge, one per Rex window, so a window opened in Rex.app or on the phone shows up too. **+ New tab** (**⌘T**) starts another agent with the tab's `cmd`; each row shows its agent's status and title, renames on double-click, and drags into named groups that fold. An agent needing you while its tab is hidden badges the project's row and raises a banner.
+- **Sleep and wake** — from a row's **⋯** (or right-click), **Sleep** (**⌥⌘S**) closes an agent and keeps it in the list; selecting it again resumes its conversation (set `resume` to resume through a wrapper — see *Every option*). **Close** moves it to the **Closed** fold, and **⌘⇧T** reopens the last one closed. After quitting warden or Rex, a project's agents come back asleep, and opening the project wakes the one you had selected. **Tab ▸ Sleep Server** sleeps every agent on a Rex server on this Mac and stops it, naming first anything that can't come back. Sleep needs the agent hook that `/warden:install` wires.
 - **CLI** — `warden validate` prints the resolved window/tab tree and warnings; `warden fmt` formats a config in warden's house TOML style.
 
 To wire the session-presence dot — pairing with [agentmux](https://github.com/lockyc/agentmux) — set a tab's `probe` to a session check:
@@ -105,6 +107,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `probe_interval` | `5` | Slow-poll floor in seconds once a burst settles. `0` = event-driven only (still bursts on triggers, no steady poll). |
 | `kill` | none | Session-destroy command (☠), run on the presence dot's confirm row; the tab then unloads; ⌘⇧K runs it even on a tab without `probe`. Cascades. |
 | `suspend` | none | Session-suspend command (⏻, restorable), run on the presence dot's confirm row; the tab then unloads; ⌘⇧S runs it even on a tab without `probe`. Cascades. |
+| `resume` | none | Program that replaces the first word of an agent tab's reported resume command, e.g. `"my-claude"` types `my-claude --resume X` instead of `claude --resume X`. Cascades; `""` opts a level out. |
 | `server` | none | Keep every tab's panes in sessions on a Rex server: `"local"` or a host label. Cascades; `""` opts a level out. On a remote server `dir` is a path on that host (no `~` expansion, no existence check). A window with a Rex tab also lists, under `Rex · <server>`, the sessions no tab of yours claims on every server warden is connected to; opening one attaches it until you close it, and nothing is written to config. |
 | `split` | none | Give every tab a second pane. A table: `side` (`"left"`/`"right"`, default right), `size` (the second pane's share, `0.1`–`0.9`, default `0.5`), `cmd` (typed into it; absent = bare shell). Cascades as a whole table; `false` opts a level out, `true` = the default split. |
 | `format_on_save` | `false` | Rewrite this file in house style on each clean save (same formatting as `warden fmt`). |
@@ -126,7 +129,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu, or script it with `open 'warden://open?window=<title>'`. |
 | `open_tabs_section` | inherited from global | Whether THIS window's sidebar pins the **Open** section. Set it per window to show the section in a busy window and not a quiet one. |
 | `remember_tabs` | inherited from global | Whether THIS window restores its loaded tabs and selection. |
-| `shell` / `cmd` / `probe` / `kill` / `suspend` / `server` / `split` | inherited from global | Per-window overrides for every tab in it. |
+| `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from global | Per-window overrides for every tab in it. |
 
 **`[[window.tab]]`** (and `[[window.group.tab]]`) — one project terminal each:
 
@@ -136,7 +139,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `title` | basename of `dir` | Display label. Purely cosmetic — may repeat within a window. |
 | `id` | unset | Stable identity, needed only to disambiguate two tabs that share a `dir`. Otherwise the `dir` *is* the identity. |
 | `load_on_open` | `false` | Spawn at launch and keep running in the background. Otherwise a tab spawns lazily on first focus. |
-| `shell` / `cmd` / `probe` / `kill` / `suspend` / `server` / `split` | inherited from the window | Per-tab overrides. |
+| `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Per-tab overrides. |
 
 **`[[window.group]]`** — a labelled sidebar section:
 
@@ -151,7 +154,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `dir` | *required* | Dir to scan. The walk stops at each `.git` (never descends into a repo) and skips hidden dirs and symlinks. |
 | `name` | basename of `dir` | Section header for the discovered tree. |
 | `depth` | `6` | How deep to scan; must be ≥ 1. |
-| `shell` / `cmd` / `probe` / `kill` / `suspend` / `server` / `split` | inherited from the window | Overrides applied to every project discovered under this root. |
+| `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Overrides applied to every project discovered under this root. |
 
 Three rules the tables can't carry. **`cmd` is typed *into* the shell, not exec'd** — so a shell function like [agentmux](https://github.com/lockyc/agentmux)'s `amux` resolves, and you drop back to a live prompt when it exits. **The cascading keys resolve nearest-level-wins** — a tab's value beats its window's, which beats the global one, with `""` opting a level out of an inherited value (`cmd = ""` gives you a bare shell under a global `cmd`); projects discovered under a `[[window.root]]` have no tab level, so the root takes the tab's place (root, then window, then global). `split` cascades the same way but as a **whole table** — the nearest table wins entirely, and `split = false` is its `""`. And **grouping is cosmetic** — `[[window.group]]` only sections the sidebar; loose `[[window.tab]]`s appear first in a headerless section.
 
@@ -164,11 +167,13 @@ Full schema, validation rules, and resolution semantics: [`docs/config.md`](docs
 **Download (no build):** grab `warden-<version>-macos.zip` from the
 [latest release](https://github.com/Lockyc/warden/releases/latest), unzip, and move
 `warden.app` to `/Applications`. Release builds are signed with Developer ID and notarized,
-so they open without a Gatekeeper block. macOS only.
+so they open without a Gatekeeper block. macOS only. Agent tabs' sleep and wake also need the
+agent hook, which only `/warden:install` wires.
 
 **Guided (Claude Code):** run `/warden:install` — it checks prerequisites
 (Xcode Command Line Tools, Rust, the Tauri CLI), builds warden from source, installs
-it to `/Applications`, and seeds your config.
+it to `/Applications`, seeds your config, and wires the agent-tab hook into each Claude Code
+profile's `settings.json`.
 
 **One-liner:**
 
@@ -178,8 +183,9 @@ curl -fsSL https://raw.githubusercontent.com/lockyc/warden/main/install.sh | bas
 
 This clones warden to `~/.warden`, builds the release bundle (`cargo tauri build`),
 installs `warden.app` to `/Applications`, and seeds `~/.config/warden/config.toml`
-from the starter config if you don't already have one. Re-run it any time to update
-(it git-pulls and rebuilds). macOS only.
+from the starter config if you don't already have one, and copies the agent-tab hook to
+`~/.local/share/warden/agent-hooks/` (wiring it into Claude Code is `/warden:install`'s step). Re-run
+it any time to update (it git-pulls and rebuilds). macOS only.
 
 Prerequisites: macOS, Xcode Command Line Tools, a Rust toolchain
 ([rustup](https://rustup.rs)). The installer installs the Tauri CLI itself if missing.
@@ -238,6 +244,7 @@ cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # ch
 - `crates/warden-config/` — the config crate (library + `warden` CLI).
 - `crates/warden-app/` — the macOS Tauri app (windows, sidebar, libghostty terminals, hot-reload).
 - `crates/rex-client/` — the Rex protocol client; `crates/warden-relay/` — the helper a Rex-backed pane runs.
+- `scripts/agent-hooks/` — the hook an agent runs to tell warden how to resume it.
 - `assets/` — icon masters (`icon.svg`, `icon-app.svg`), rendered PNGs, the macOS `warden.icns`, and `build-icons.sh` to regenerate the rasters from the SVGs.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 
