@@ -93,12 +93,14 @@ impl SessionStore {
     }
 }
 
-fn write_atomic(path: &Path, records: &BTreeMap<String, WindowRecord>) -> std::io::Result<()> {
+/// Write `value` to `path` as pretty JSON through a temp file + rename, so a crash mid-write can't
+/// leave a truncated file behind. Shared by every store warden-app keeps beside this one.
+pub(crate) fn write_atomic(path: &Path, value: &impl serde::Serialize) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(records)?)?;
+    std::fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
     std::fs::rename(&tmp, path)
 }
 

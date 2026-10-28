@@ -24,6 +24,11 @@ mod registry;
 #[cfg(target_os = "macos")]
 mod session;
 
+// Managed as Tauri state; no tab spawns through it yet, so outside tests most of it is unused.
+#[cfg(target_os = "macos")]
+#[cfg_attr(not(test), allow(dead_code))]
+mod rex;
+
 #[cfg(target_os = "macos")]
 use manager::{InitDto, WindowManager};
 
@@ -1435,13 +1440,28 @@ fn main() {
 
                 let handle = app.handle().clone();
                 let mut mgr = WindowManager::new();
-                if let Ok(dir) = handle.path().app_config_dir() {
-                    mgr.session =
-                        session::SessionStore::load(dir.join(shell_core::config_scoped_filename(
-                            session::STEM,
+                let config_dir = handle.path().app_config_dir().ok();
+                let scoped = |stem: &str| {
+                    config_dir.as_ref().map(|dir| {
+                        dir.join(shell_core::config_scoped_filename(
+                            stem,
                             &warden_config::config_path(),
-                        )));
+                        ))
+                    })
+                };
+                if let Some(path) = scoped(session::STEM) {
+                    mgr.session = session::SessionStore::load(path);
                 }
+                // The Rex hub connects nothing until a tab with `server` needs a session.
+                let rex_info = rex_client::ClientInfo {
+                    kind: "app",
+                    name: "warden".into(),
+                    version: env!("CARGO_PKG_VERSION").into(),
+                };
+                app.manage(match scoped(rex::store::STEM) {
+                    Some(path) => rex::RexHub::new(path, rex_info),
+                    None => rex::RexHub::in_memory(rex_info),
+                });
                 // Load config; a config that parses (even with zero `[[window]]` entries) always
                 // materializes — `materialize` builds nothing for an empty window list and
                 // `sync_empty_surface` shows the home surface's window list (empty or not). A
