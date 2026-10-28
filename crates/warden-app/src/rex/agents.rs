@@ -4,10 +4,8 @@
 //!
 //! One JSON file beside `store.rs`'s, scoped per config file by
 //! `shell_core::config_scoped_filename`, written atomically on every change. `reconcile` is the
-//! pure merge of a project's records with its session's current windows.
-
-// The agent tab list is the first caller of these; until then only the tests read them.
-#![cfg_attr(not(test), allow(dead_code))]
+//! pure merge of a project's records with its session's current windows. Folded groups persist
+//! beside the records.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -74,19 +72,38 @@ fn resume_is_safe(s: &str) -> bool {
         && RESUME_SHAPES.contains(&fixed)
 }
 
-/// Every record plus where they persist. `path: None` (the `Default`) keeps records in memory
-/// only.
+/// A folded group of a project's list.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Fold {
+    project: String,
+    group: String,
+}
+
+/// The file's shape.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Saved {
+    records: Vec<AgentRecord>,
+    #[serde(default)]
+    folded: Vec<Fold>,
+}
+
+/// Every record and folded group, plus where they persist. `path: None` (the `Default`) keeps
+/// them in memory only.
 #[derive(Debug, Default)]
 pub struct AgentStore {
     path: Option<PathBuf>,
     records: Vec<AgentRecord>,
+    folded: Vec<Fold>,
 }
 
 impl AgentStore {
     /// Load from `path`. A missing or unreadable file is an empty store. A `resume` that fails
     /// the report check is cleared (the record stays), so a tampered file can't bypass the gate.
     pub fn load(path: PathBuf) -> Self {
-        let mut records: Vec<AgentRecord> = std::fs::read(&path)
+        let Saved {
+            mut records,
+            folded,
+        } = std::fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
@@ -98,7 +115,125 @@ impl AgentStore {
         AgentStore {
             path: Some(path),
             records,
+            folded,
         }
+    }
+
+    /// Make `id` `project`'s one selected record. False (nothing changes) for a record that isn't
+    /// `project`'s or is closed.
+    pub fn select(&mut self, project: &str, id: &str) -> bool {
+        let ok = self
+            .records
+            .iter()
+            .any(|r| r.id == id && r.project == project && r.state != RecordState::Closed);
+        if ok {
+            for r in self.records.iter_mut().filter(|r| r.project == project) {
+                r.selected = r.id == id;
+            }
+            self.save();
+        }
+        ok
+    }
+
+    /// Move `project`'s record `id` into `group` (trimmed; blank or `None` is ungrouped) at
+    /// `index` among that group's other records, or last; a group no record holds yet goes after
+    /// the others. Positions are renumbered in list order ([`in_list_order`]). False for an
+    /// unknown record.
+    pub fn set_group(
+        &mut self,
+        project: &str,
+        id: &str,
+        group: Option<&str>,
+        index: Option<usize>,
+    ) -> bool {
+        let mut list = in_list_order(&self.records(project));
+        let Some(at) = list.iter().position(|r| r.id == id) else {
+            return false;
+        };
+        let mut moved = list.remove(at);
+        moved.group = group
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(Into::into);
+        let members: Vec<usize> = (0..list.len())
+            .filter(|&i| list[i].group == moved.group)
+            .collect();
+        let to = match (members.get(index.unwrap_or(usize::MAX)), members.last()) {
+            (Some(&i), _) => i,
+            (None, Some(&last)) => last + 1,
+            // The first ungrouped record tops the list; a new group follows every other.
+            (None, None) if moved.group.is_none() => 0,
+            (None, None) => list.len(),
+        };
+        list.insert(to, moved);
+        for (i, r) in list.iter_mut().enumerate() {
+            r.position = i as u32;
+        }
+        self.set_project(project, list);
+        true
+    }
+
+    /// Fold or unfold `project`'s `group`.
+    pub fn set_folded(&mut self, project: &str, group: &str, folded: bool) {
+        let fold = Fold {
+            project: project.into(),
+            group: group.into(),
+        };
+        let had = self.folded.contains(&fold);
+        if had == folded {
+            return;
+        }
+        if folded {
+            self.folded.push(fold);
+        } else {
+            self.folded.retain(|f| *f != fold);
+        }
+        self.save();
+    }
+
+    /// `project`'s folded groups.
+    pub fn folded(&self, project: &str) -> Vec<String> {
+        self.folded
+            .iter()
+            .filter(|f| f.project == project)
+            .map(|f| f.group.clone())
+            .collect()
+    }
+
+    /// Forget `project`'s closed record `id`, or every closed record of it when `None`. Returns
+    /// whether one went.
+    pub fn clear_closed(&mut self, project: &str, id: Option<&str>) -> bool {
+        let before = self.records.len();
+        self.records.retain(|r| {
+            !(r.project == project
+                && r.state == RecordState::Closed
+                && id.is_none_or(|id| r.id == id))
+        });
+        let cleared = self.records.len() != before;
+        if cleared {
+            self.save();
+        }
+        cleared
+    }
+
+    /// Forget every record and fold of `project`. Returns whether a record went.
+    pub fn remove_project(&mut self, project: &str) -> bool {
+        let before = self.records.len();
+        self.records.retain(|r| r.project != project);
+        self.folded.retain(|f| f.project != project);
+        let removed = self.records.len() != before;
+        if removed {
+            self.save();
+        }
+        removed
+    }
+
+    /// The project whose record shows `block_id`.
+    pub fn project_of_block(&self, block_id: &str) -> Option<String> {
+        self.records
+            .iter()
+            .find(|r| r.block_id.as_deref() == Some(block_id))
+            .map(|r| r.project.clone())
     }
 
     /// `project`'s records in position order.
@@ -114,6 +249,7 @@ impl AgentStore {
     }
 
     /// Insert `record`, or replace the one with its id, and persist.
+    #[cfg(test)]
     pub fn upsert(&mut self, record: AgentRecord) {
         match self.records.iter_mut().find(|r| r.id == record.id) {
             Some(slot) => *slot = record,
@@ -153,6 +289,7 @@ impl AgentStore {
     }
 
     /// Forget the record with `id` and persist.
+    #[cfg(test)]
     pub fn remove(&mut self, id: &str) {
         let before = self.records.len();
         self.records.retain(|r| r.id != id);
@@ -183,7 +320,11 @@ impl AgentStore {
 
     fn save(&self) {
         if let Some(path) = &self.path {
-            if let Err(e) = crate::session::write_atomic(path, &self.records) {
+            let saved = Saved {
+                records: self.records.clone(),
+                folded: self.folded.clone(),
+            };
+            if let Err(e) = crate::session::write_atomic(path, &saved) {
                 eprintln!("warden: couldn't save agent tabs to {path:?}: {e}");
             }
         }
@@ -202,6 +343,25 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
     changed!(
         project, name, group, position, resume, state, window_id, block_id, closed_at, selected
     );
+}
+
+/// `records` (one project's) in list order: ungrouped above the groups, groups ordered by their
+/// first record's position, each by position.
+pub fn in_list_order(records: &[AgentRecord]) -> Vec<AgentRecord> {
+    let first = |g: &str| {
+        records
+            .iter()
+            .filter(|r| r.group.as_deref() == Some(g))
+            .map(|r| r.position)
+            .min()
+    };
+    let key = |r: &AgentRecord| {
+        let group = r.group.clone().map(|g| (first(&g), g));
+        (group, r.position)
+    };
+    let mut v = records.to_vec();
+    v.sort_by_cached_key(key);
+    v
 }
 
 /// Merge `project`'s `records` with its session's current `windows`. Live records follow their
@@ -473,6 +633,83 @@ mod tests {
         assert_eq!(ids, ["a", "c"], "c changed meanwhile, so it stays");
         assert_eq!(r[0].name, "renamed");
         assert_eq!(r[0].resume.as_deref(), Some("claude --resume aaa"));
+    }
+
+    fn ids(s: &AgentStore) -> Vec<String> {
+        s.records("p").into_iter().map(|r| r.id).collect()
+    }
+
+    fn three() -> AgentStore {
+        let mut s = AgentStore::default();
+        for (i, id) in ["a", "b", "c"].into_iter().enumerate() {
+            let mut r = rec(id, RecordState::Live, Some(id), None);
+            r.position = i as u32;
+            s.upsert(r);
+        }
+        s
+    }
+
+    #[test]
+    fn grouping_keeps_ungrouped_above_groups_and_renumbers() {
+        let mut s = three();
+        assert!(s.set_group("p", "a", Some("work"), None));
+        assert_eq!(ids(&s), ["b", "c", "a"], "a new group goes last");
+        assert!(s.set_group("p", "c", Some(" work "), Some(0)));
+        assert_eq!(ids(&s), ["b", "c", "a"], "first in its group");
+        assert_eq!(s.records("p")[1].group.as_deref(), Some("work"));
+        assert!(s.set_group("p", "a", None, Some(0)));
+        assert_eq!(ids(&s), ["a", "b", "c"], "ungrouped, at the top");
+        assert!(s.set_group("p", "b", Some(""), None), "blank clears");
+        assert_eq!(ids(&s), ["a", "b", "c"]);
+        let positions: Vec<u32> = s.records("p").iter().map(|r| r.position).collect();
+        assert_eq!(positions, [0, 1, 2]);
+        assert!(!s.set_group("p", "nope", None, None));
+    }
+
+    #[test]
+    fn select_is_exclusive_per_project() {
+        let mut s = three();
+        let mut other = rec("x", RecordState::Live, Some("x"), None);
+        other.project = "q".into();
+        other.selected = true;
+        s.upsert(other);
+        assert!(s.select("p", "b"));
+        assert!(s.select("p", "c"));
+        let sel: Vec<bool> = s.records("p").iter().map(|r| r.selected).collect();
+        assert_eq!(sel, [false, false, true]);
+        assert!(s.records("q")[0].selected, "another project's choice stays");
+        assert!(!s.select("p", "x"), "not this project's");
+    }
+
+    #[test]
+    fn folds_closed_clearing_and_lookups() {
+        let mut s = three();
+        s.set_folded("p", "g", true);
+        assert_eq!(s.folded("p"), ["g"]);
+        s.set_folded("p", "g", false);
+        assert!(s.folded("p").is_empty());
+        assert_eq!(s.project_of_block("b-b").as_deref(), Some("p"));
+        let mut gone = rec("z", RecordState::Closed, None, Some("claude --resume z"));
+        gone.position = 3;
+        s.upsert(gone.clone());
+        let mut also = gone.clone();
+        also.id = "y".into();
+        s.upsert(also);
+        assert!(s.clear_closed("p", Some("z")));
+        assert!(!s.clear_closed("p", Some("a")), "only closed records clear");
+        assert!(s.clear_closed("p", None));
+        assert_eq!(ids(&s), ["a", "b", "c"]);
+        assert!(s.remove_project("p"));
+        assert!(s.records("p").is_empty());
+    }
+
+    #[test]
+    fn folds_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.json");
+        let mut s = AgentStore::load(path.clone());
+        s.set_folded("p", "g", true);
+        assert_eq!(AgentStore::load(path).folded("p"), ["g"]);
     }
 
     #[test]

@@ -981,6 +981,152 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     probe::bump_tab_await(window.label(), &id, true);
 }
 
+// The agent tab list's commands (`rex::lifecycle`). Each answers a refusal at once; Rex work runs
+// on a worker, its failure goes to the window's error banner, and `warden:agents` follows.
+
+/// A new agent tab in tab `tab_id`'s main pane, typing the tab's `cmd`, selected.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_new(window: tauri::WebviewWindow, tab_id: String) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::run(
+        window.app_handle(),
+        window.label(),
+        &tab_id,
+        rex::lifecycle::AgentOp::New,
+    )
+}
+
+/// Show agent tab `record_id`, waking it when it is asleep.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_select(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::select(window.app_handle(), window.label(), &tab_id, &record_id)
+}
+
+/// Put agent tab `record_id` to sleep; refused while it hasn't reported how to resume.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_sleep(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Sleep(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Wake asleep agent tab `record_id`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_wake(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Wake(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Close agent tab `record_id` into the closed fold. One that never reported how to resume is
+/// refused (the chrome then confirms it goes for good) unless `confirmed`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_close(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Close {
+        id: record_id,
+        confirmed,
+    };
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Reopen closed agent tab `record_id`, the most recently closed when absent.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_reopen(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: Option<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Reopen(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Name agent tab `record_id`; a blank name gives a live tab Rex's default.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_rename(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    name: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Rename(record_id, name);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Move agent tab `record_id` into `group` (absent or blank: ungrouped; a new name makes the
+/// group) at `index` among that group's tabs, last when absent.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_group(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    group: Option<String>,
+    index: Option<usize>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.set_group(&tab_id, &record_id, group.as_deref(), index)
+    })
+}
+
+/// Fold or unfold tab `tab_id`'s agent group `group`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_fold(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    group: String,
+    folded: bool,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.set_folded(&tab_id, &group, folded);
+        true
+    })
+}
+
+/// Clear closed agent tab `record_id` from the fold, or every closed one when absent.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_clear_closed(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: Option<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.clear_closed(&tab_id, record_id.as_deref()) || record_id.is_none()
+    })
+}
+
 /// Re-scan every project-tree root of the focused window's config and reconcile:
 /// projects that appeared/vanished on disk surface as tab add/remove, without a
 /// config-file edit. Diffs the freshly-expanded config against what's on screen
@@ -1488,7 +1634,17 @@ fn main() {
             shell_home_create_config,
             shell_home_edit_config,
             shell_home_open_window,
-            probe_now
+            probe_now,
+            agent_new,
+            agent_select,
+            agent_sleep,
+            agent_wake,
+            agent_close,
+            agent_reopen,
+            agent_rename,
+            agent_group,
+            agent_fold,
+            agent_clear_closed
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -1560,6 +1716,10 @@ fn main() {
                 // Rex tabs' presence dots follow the hub's session lists (not the probe
                 // scheduler, which skips them).
                 rex::spawn::watch_presence(handle.clone());
+                // Agent tab lists follow Rex's windows and statuses and the relays' resume
+                // reports.
+                rex::lifecycle::watch_agents(handle.clone());
+                rex::lifecycle::watch_reports(handle.clone());
 
                 // Background presence-probe scheduler — the single probe driver. Per-window
                 // fast-until-stable bursts on key moments (tab activate, window focus/open, session

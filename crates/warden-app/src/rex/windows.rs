@@ -14,9 +14,6 @@
 //!
 //! Views and pulls are read on their own worker threads, never under the state lock.
 
-// The agent tab list is the first caller of these; until then only the tests read them.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Weak};
@@ -27,8 +24,8 @@ use rex_client::{ControlClient, Event, RexError};
 use serde_json::{json, Value};
 
 use super::{
-    budgeted, call_seq, str_field, terminal_options, view_blocks, HubEvent, Inner, RexHub,
-    OPEN_BUDGET, TERMINAL_CREATOR, TERMINAL_FLAVOR,
+    call_seq, str_field, terminal_options, view_blocks, HubEvent, Inner, RexHub, TERMINAL_CREATOR,
+    TERMINAL_FLAVOR,
 };
 
 const PROGRAM_STATUS: &str = "com.superlogical.terminal.program_status";
@@ -155,7 +152,9 @@ impl RexHub {
     }
 
     /// A new window in `session_id` labelled `label`, with one terminal in `dir` typing `startup`
-    /// and a newline. Ends by [`OPEN_BUDGET`], then `Unreachable`.
+    /// and a newline. Ends by [`super::OPEN_BUDGET`], then `Unreachable`. The lifecycle runs
+    /// [`Inner::new_window_until`] inside its own budget.
+    #[cfg(test)]
     pub fn new_window(
         &self,
         server: &str,
@@ -164,11 +163,11 @@ impl RexHub {
         startup: Option<&str>,
         label: &str,
     ) -> Result<AgentWindow, RexError> {
-        let deadline = Instant::now() + OPEN_BUDGET;
-        let made = self
-            .inner
-            .new_window_until(server, session_id, dir, startup, label, deadline);
-        budgeted(deadline, made)
+        let deadline = Instant::now() + super::OPEN_BUDGET;
+        let made =
+            self.inner
+                .new_window_until(server, session_id, dir, startup, Some(label), deadline);
+        super::budgeted(deadline, made)
     }
 
     /// Close `window_id` and every block in it. A window already gone is closed.
@@ -217,30 +216,30 @@ impl RexHub {
 }
 
 impl Inner {
-    /// [`RexHub::new_window`]'s work, every call waiting until `deadline`.
+    /// [`RexHub::new_window`]'s work, every call waiting until `deadline`. Without a `label` Rex
+    /// names the window, and the list shows that name once Rex reports it.
     pub(super) fn new_window_until(
         self: &Arc<Self>,
         server: &str,
         session_id: &str,
         dir: &Path,
         startup: Option<&str>,
-        label: &str,
+        label: Option<&str>,
         deadline: Instant,
     ) -> Result<AgentWindow, RexError> {
         let (client, _) = self.conn_until(server, deadline)?;
-        let (_, made) = client.call_seq_until(
-            "session.new_window",
-            json!({
-                "session_id": session_id,
-                "window_label": label,
-                "layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": terminal_options(dir, startup)}},
-            }),
-            deadline,
-        )?;
+        let mut args = json!({
+            "session_id": session_id,
+            "layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": terminal_options(dir, startup)}},
+        });
+        if let Some(label) = label {
+            args["window_label"] = json!(label);
+        }
+        let (_, made) = client.call_seq_until("session.new_window", args, deadline)?;
         let window = AgentWindow {
             window_id: str_field(&made["window_id"], "session.new_window window_id")?,
             block_id: made["block_ids"][0].as_str().map(str::to_owned),
-            label: label.to_owned(),
+            label: label.unwrap_or_default().to_owned(),
         };
         self.edit_windows(server, session_id, |list| {
             match list.iter_mut().find(|w| w.window_id == window.window_id) {
@@ -277,6 +276,14 @@ impl Inner {
             .windows
             .entry((server.to_owned(), session_id.to_owned()))
             .or_default();
+    }
+
+    /// Whether a view of `session_id` is held, so its windows are current without attaching.
+    pub(super) fn watching(&self, server: &str, session_id: &str) -> bool {
+        self.lock()
+            .windows
+            .get(&(server.to_owned(), session_id.to_owned()))
+            .is_some_and(|w| w.viewed)
     }
 
     /// Stop watching a session whose attach failed, unless an earlier view keeps it watched.

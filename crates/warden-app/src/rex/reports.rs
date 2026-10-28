@@ -4,9 +4,6 @@
 //! Relays connect to one Unix socket owned by warden-app and write a JSON line per report:
 //! `{"session":…,"block":…,"resume":…}`. [`listen`] turns those lines into [`AgentReport`]s.
 
-// `listen` has no caller until the hub consumes reports.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::io::{self, BufRead, BufReader};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};

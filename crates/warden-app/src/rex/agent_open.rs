@@ -91,52 +91,9 @@ impl RexHub {
         if !req.auto && shown.is_none() {
             let asleep =
                 last_selected(&records).filter(|&i| records[i].state == RecordState::Asleep);
-            match asleep.and_then(|i| Some((i, records[i].resume.clone()?))) {
-                Some((i, resume)) => {
-                    let cmd = warden_config::apply_resume(req.resume.as_deref(), &resume);
-                    let name = Some(records[i].name.as_str()).filter(|n| !n.is_empty());
-                    let (endpoint, sid, window) = match &session {
-                        Some((endpoint, sid)) => {
-                            let w = self.inner.new_window_until(
-                                server,
-                                sid,
-                                &req.dir,
-                                Some(&cmd),
-                                name.unwrap_or(&req.label),
-                                deadline,
-                            )?;
-                            (endpoint.clone(), sid.clone(), w)
-                        }
-                        None => {
-                            let t = self.inner.ensure_until(
-                                project,
-                                server,
-                                &req.dir,
-                                Some(&cmd),
-                                &req.label,
-                                name,
-                                deadline,
-                            )?;
-                            let w = self
-                                .windows(server, &t.session_id)
-                                .into_iter()
-                                .find(|w| w.block_id.as_deref() == Some(t.block_id.as_str()))
-                                .ok_or_else(|| {
-                                    api_error(
-                                        "no_terminal",
-                                        "the woken agent's window is missing",
-                                        0,
-                                    )
-                                })?;
-                            (t.endpoint, t.session_id, w)
-                        }
-                    };
-                    let r = &mut records[i];
-                    r.state = RecordState::Live;
-                    r.window_id = Some(window.window_id);
-                    r.block_id = window.block_id;
-                    r.closed_at = None;
-                    session = Some((endpoint, sid));
+            match asleep.filter(|&i| records[i].resume.is_some()) {
+                Some(i) => {
+                    self.wake_until(req, &mut session, &mut records[i], deadline)?;
                     shown = Some(i);
                 }
                 None if records.iter().any(|r| r.state == RecordState::Live) => {}
@@ -168,9 +125,73 @@ impl RexHub {
         Ok(opened)
     }
 
+    /// Wake `record` (asleep or closed, with a resume command) in `req`'s pane: a window typing
+    /// `apply_resume(req.resume, record.resume)` in `session`, or, with none, a session created
+    /// for it, which `session` then names. The window keeps the record's name. The record goes
+    /// live on that window; its group and position stay.
+    pub(super) fn wake_until(
+        &self,
+        req: &RexOpen,
+        session: &mut Option<(Endpoint, String)>,
+        record: &mut AgentRecord,
+        deadline: Instant,
+    ) -> Result<(), RexError> {
+        let (project, server) = (req.pane_key.as_str(), req.server.as_str());
+        let Some(resume) = record.resume.as_deref() else {
+            return Err(api_error("no_resume", super::lifecycle::NO_RESUME, 0));
+        };
+        let cmd = warden_config::apply_resume(req.resume.as_deref(), resume);
+        let name = Some(record.name.as_str()).filter(|n| !n.is_empty());
+        let (endpoint, sid, window) = match session.as_ref() {
+            Some((endpoint, sid)) => {
+                let w = self.inner.new_window_until(
+                    server,
+                    sid,
+                    &req.dir,
+                    Some(&cmd),
+                    Some(name.unwrap_or(&req.label)),
+                    deadline,
+                )?;
+                (endpoint.clone(), sid.clone(), w)
+            }
+            None => {
+                let t = self.inner.ensure_until(
+                    project,
+                    server,
+                    &req.dir,
+                    Some(&cmd),
+                    &req.label,
+                    name,
+                    deadline,
+                )?;
+                let w = self.window_of(server, &t.session_id, &t.block_id)?;
+                (t.endpoint, t.session_id, w)
+            }
+        };
+        record.state = RecordState::Live;
+        record.window_id = Some(window.window_id);
+        record.block_id = window.block_id;
+        record.closed_at = None;
+        *session = Some((endpoint, sid));
+        Ok(())
+    }
+
+    /// The window of `session_id` holding `block_id`, which a session just created shows.
+    pub(super) fn window_of(
+        &self,
+        server: &str,
+        session_id: &str,
+        block_id: &str,
+    ) -> Result<AgentWindow, RexError> {
+        self.windows(server, session_id)
+            .into_iter()
+            .find(|w| w.block_id.as_deref() == Some(block_id))
+            .ok_or_else(|| api_error("no_terminal", "the new agent's window is missing", 0))
+    }
+
     /// `pane_key`'s mapped session on `server` if it still exists there — attached, so its
     /// windows are current — else `None`. Never creates one.
-    fn find_session_until(
+    pub(super) fn find_session_until(
         &self,
         pane_key: &str,
         server: &str,
@@ -192,8 +213,9 @@ impl RexHub {
     }
 
     /// Bind each live agent of `project` in `session` to its block (dropping the pane's earlier
-    /// bindings and its own block), and say what the pane shows.
-    fn bind_agents(
+    /// bindings and its own block), and say what the pane shows. With a session the pane's
+    /// windows are followed as agent tabs from now on ([`RexHub::agent_panes`]).
+    pub(super) fn bind_agents(
         &self,
         project: &str,
         session: Option<&(Endpoint, String)>,
@@ -214,6 +236,7 @@ impl RexHub {
         let Some((endpoint, session_id)) = session else {
             return AgentsOpened::default();
         };
+        st.agent_panes.insert(project.to_owned());
         let mut live: Vec<&AgentRecord> = records
             .iter()
             .filter(|r| r.state == RecordState::Live && r.block_id.is_some())
@@ -271,7 +294,7 @@ fn first_live(records: &[AgentRecord]) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
@@ -284,7 +307,7 @@ mod tests {
     use crate::rex::store::{PaneRecord, RexStore};
     use crate::rex::{PaneTarget, RexHub};
 
-    fn hub(endpoint: Endpoint, dir: &tempfile::TempDir) -> (RexHub, PathBuf) {
+    pub(crate) fn hub(endpoint: Endpoint, dir: &tempfile::TempDir) -> (RexHub, PathBuf) {
         let path = dir.path().join("rex-sessions.json");
         let info = ClientInfo {
             kind: "app",
@@ -294,7 +317,7 @@ mod tests {
         (RexHub::for_test(path.clone(), info, endpoint), path)
     }
 
-    fn map(path: &Path, session_id: &str) {
+    pub(crate) fn map(path: &Path, session_id: &str) {
         RexStore::load(path.to_path_buf()).set(
             "t",
             Some(PaneRecord {
@@ -305,7 +328,7 @@ mod tests {
     }
 
     /// A `session.view` of `session_id` with one terminal block per `(window, block, label)`.
-    fn view(session_id: &str, windows: &[(&str, &str, &str)]) -> Value {
+    pub(crate) fn view(session_id: &str, windows: &[(&str, &str, &str)]) -> Value {
         let windows: Vec<Value> = windows
             .iter()
             .map(|(w, b, label)| {
@@ -326,7 +349,7 @@ mod tests {
     /// A fake whose session `alive` attaches with `windows` (none alive: every attach is
     /// `session_not_found`), and whose `session.create` makes `session:new` with `window:new`
     /// holding `block:new`, attached as one window labelled `created`.
-    fn fake(
+    pub(crate) fn fake(
         alive: Option<&'static str>,
         windows: Vec<(&'static str, &'static str, &'static str)>,
     ) -> FakeServer {
@@ -359,7 +382,7 @@ mod tests {
         f
     }
 
-    fn record(
+    pub(crate) fn record(
         id: &str,
         state: RecordState,
         window: Option<&str>,
@@ -380,7 +403,7 @@ mod tests {
         }
     }
 
-    fn store(records: Vec<AgentRecord>) -> Mutex<AgentStore> {
+    pub(crate) fn store(records: Vec<AgentRecord>) -> Mutex<AgentStore> {
         let mut s = AgentStore::default();
         for (i, mut r) in records.into_iter().enumerate() {
             r.position = i as u32;
@@ -389,7 +412,7 @@ mod tests {
         Mutex::new(s)
     }
 
-    fn open(auto: bool, resume: Option<&str>) -> RexOpen {
+    pub(crate) fn open(auto: bool, resume: Option<&str>) -> RexOpen {
         RexOpen {
             pane_key: "t".into(),
             server: "local".into(),
@@ -403,7 +426,7 @@ mod tests {
         }
     }
 
-    fn state_of(s: &Mutex<AgentStore>, id: &str) -> Option<AgentRecord> {
+    pub(crate) fn state_of(s: &Mutex<AgentStore>, id: &str) -> Option<AgentRecord> {
         s.lock()
             .unwrap()
             .records("t")
