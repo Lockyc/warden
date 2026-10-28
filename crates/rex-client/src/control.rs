@@ -220,7 +220,27 @@ fn would_block(e: &tungstenite::Error) -> bool {
 impl ControlClient {
     /// Connects as a new client: hello at API revision 7, then the welcome.
     pub fn connect(endpoint: &Endpoint, client: &ClientInfo) -> Result<ControlClient, RexError> {
-        Self::open(endpoint, client, None)
+        Self::open(endpoint, client, None, None)
+    }
+
+    /// [`ControlClient::connect`] that gives up at `deadline`: connecting, the WebSocket upgrade
+    /// and the welcome together never outlast it. For callers with a budget, such as a UI path.
+    pub fn connect_until(
+        endpoint: &Endpoint,
+        client: &ClientInfo,
+        deadline: Instant,
+    ) -> Result<ControlClient, RexError> {
+        Self::open(endpoint, client, None, Some(deadline))
+    }
+
+    /// [`ControlClient::resume`] that gives up at `deadline`, as [`ControlClient::connect_until`].
+    pub fn resume_until(
+        endpoint: &Endpoint,
+        client: &ClientInfo,
+        reconnect_token: &str,
+        deadline: Instant,
+    ) -> Result<ControlClient, RexError> {
+        Self::open(endpoint, client, Some(reconnect_token), Some(deadline))
     }
 
     /// Connects continuing the client a dropped connection served, with the `reconnect_token`
@@ -231,15 +251,16 @@ impl ControlClient {
         client: &ClientInfo,
         reconnect_token: &str,
     ) -> Result<ControlClient, RexError> {
-        Self::open(endpoint, client, Some(reconnect_token))
+        Self::open(endpoint, client, Some(reconnect_token), None)
     }
 
     fn open(
         endpoint: &Endpoint,
         client: &ClientInfo,
         reconnect_token: Option<&str>,
+        deadline: Option<Instant>,
     ) -> Result<ControlClient, RexError> {
-        let mut ws = endpoint::open(endpoint, "/api/control", CONTROL_PROTOCOL)?;
+        let mut ws = endpoint::open_until(endpoint, "/api/control", CONTROL_PROTOCOL, deadline)?;
         let mut hello = json!({
             "type": "hello",
             "api_revision": API_REVISION,
@@ -256,7 +277,11 @@ impl ControlClient {
         ws.send(Message::text(hello.to_string()))
             .map_err(|e| ws_err(e, None))?;
 
-        ws.set_read_timeout(Some(WELCOME_TIMEOUT)).map_err(io_err)?;
+        let welcome_limit = match deadline {
+            Some(_) => endpoint::step(deadline)?.min(WELCOME_TIMEOUT),
+            None => WELCOME_TIMEOUT,
+        };
+        ws.set_read_timeout(Some(welcome_limit)).map_err(io_err)?;
         let mut closed = None;
         let welcome: Value = loop {
             match ws.read() {
@@ -366,6 +391,17 @@ impl ControlClient {
     /// had queued before it started the request. The result already includes events up to it,
     /// so skip events with `seq <= ` it and apply later ones on top.
     pub fn call_seq(&self, method: &str, payload: Value) -> Result<(u64, Value), RexError> {
+        self.call_seq_until(method, payload, Instant::now() + CALL_TIMEOUT)
+    }
+
+    /// [`ControlClient::call_seq`] waiting for the response only until `deadline`
+    /// (`Timeout` after it).
+    pub fn call_seq_until(
+        &self,
+        method: &str,
+        payload: Value,
+        deadline: Instant,
+    ) -> Result<(u64, Value), RexError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let mut msg = json!({"type": "request", "id": id, "method": method});
         if !payload.is_null() {
@@ -393,7 +429,7 @@ impl ControlClient {
             return Err(RexError::Closed(self.closed().unwrap_or(ABNORMAL)));
         }
         self.wake();
-        match rx.recv_timeout(CALL_TIMEOUT) {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(r) => r,
             Err(RecvTimeoutError::Timeout) => {
                 self.shared.lock().pending.remove(&id);
@@ -647,6 +683,73 @@ mod tests {
         assert!(h.get("reconnect_token").is_none());
         assert_eq!(c.id(), fake.client_ids()[0]);
         assert!(c.id().starts_with("client:"));
+    }
+
+    /// A listener that accepts connections and never answers, holding them open.
+    fn silent<L: Send + 'static, S: Send + 'static>(
+        listener: L,
+        accept: fn(&L) -> std::io::Result<S>,
+    ) {
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok(s) = accept(&listener) {
+                held.push(s);
+            }
+        });
+    }
+
+    #[test]
+    fn connect_until_gives_up_at_the_deadline() {
+        let dir = std::env::temp_dir().join(format!("rex-silent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("s.sock");
+        silent(
+            std::os::unix::net::UnixListener::bind(&sock).unwrap(),
+            |l| l.accept().map(|(s, _)| s),
+        );
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        silent(tcp, |l| l.accept().map(|(s, _)| s));
+
+        for ep in [
+            Endpoint::Unix(sock.clone()),
+            Endpoint::Https {
+                host: "127.0.0.1".into(),
+                port,
+            },
+        ] {
+            let started = Instant::now();
+            let r =
+                ControlClient::connect_until(&ep, &info(), started + Duration::from_millis(300));
+            assert!(r.is_err(), "{ep}: connected to a silent listener");
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "{ep}: took {:?}",
+                started.elapsed()
+            );
+            let r = ControlClient::resume_until(
+                &ep,
+                &info(),
+                "token",
+                Instant::now() + Duration::from_millis(300),
+            );
+            assert!(r.is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn call_seq_until_stops_waiting_at_the_deadline() {
+        let fake = FakeServer::start();
+        fake.on("slow", |_, _| {
+            Reply::ok(json!({})).after(Duration::from_secs(2))
+        });
+        let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
+        let started = Instant::now();
+        let r = c.call_seq_until("slow", json!({}), started + Duration::from_millis(200));
+        assert_eq!(r, Err(RexError::Timeout));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
