@@ -152,9 +152,8 @@ Report each line it printed. The hook takes effect at the next Claude Code sessi
 remove it from a file, write it back (again via `cat >`) through
 `jq '.hooks.SessionStart |= map(select(any(.hooks[]?; (.command // "") | contains("warden/agent-hooks/")) | not))'`.
 
-Agents on a Rex server on another machine run that machine's Claude Code: the hook has to be
-installed there by hand (copy `scripts/agent-hooks/claude-session-start.sh` over and wire it the
-same way).
+This wires this Mac only; for a Rex server on another machine, see "The hook on a remote Rex host"
+in `docs/FOLLOWUPS.md`.
 
 ### 7. Offer to launch
 
