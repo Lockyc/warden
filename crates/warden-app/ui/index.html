@@ -1275,10 +1275,20 @@
           sleep.title = r.sleepReason || "Sleep (⌥⌘S)";
           btns.append(sleep);
         }
-        btns.append(agentButton("Close", () => agentClose(tab, r, false)), agentButton("Rename", () => startRename(r.id)));
+        const fork = agentButton("Fork", () => {
+          agentUi.open = null;
+          renderAgents();
+          agentCall("agent_fork", { tabId: tab, recordId: r.id });
+        });
+        fork.disabled = !r.canFork;
+        fork.title = r.forkReason || "Fork (⌥⌘F)";
+        btns.append(fork, agentButton("Close", () => agentClose(tab, r, false)), agentButton("Rename", () => startRename(r.id)));
         box.append(btns);
         if (r.state !== "asleep" && !r.canSleep && r.sleepReason) {
           box.append(agentEl("div", "a-reason", "Can't sleep: " + r.sleepReason));
+        }
+        if (!r.canFork && r.forkReason) {
+          box.append(agentEl("div", "a-reason", "Can't fork: " + r.forkReason));
         }
         const label = agentEl("label", null, "Group");
         const pick = agentEl("select");
@@ -1897,13 +1907,19 @@
         showServerSleep(e.payload.server, e.payload.losses || []);
       });
 
-      // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane: the backend names the tab, the active one here. Sleep acts
-      // on the selected agent tab; its refusal shows in the error bar like a row's.
+      // ⌘T / ⌥⌘S / ⌥⌘F / ⌘⇧T in an agent pane: the backend names the tab, the active one here. Sleep
+      // and Fork act on the selected agent tab; its refusal shows in the error bar like a row's.
       listen("warden:agent-new", (e) => {
         if (forMe(e) && e.payload.tabId) agentCall("agent_new", { tabId: e.payload.tabId });
       });
       listen("warden:agent-reopen", (e) => {
         if (forMe(e) && e.payload.tabId) agentCall("agent_reopen", { tabId: e.payload.tabId, recordId: null });
+      });
+      listen("warden:agent-fork", (e) => {
+        if (!forMe(e) || !e.payload.tabId) return;
+        const dto = agentLists.get(e.payload.tabId);
+        const r = dto && dto.rows.find((r) => r.selected);
+        if (r) agentCall("agent_fork", { tabId: e.payload.tabId, recordId: r.id });
       });
       listen("warden:agent-sleep", (e) => {
         if (!forMe(e) || !e.payload.tabId) return;

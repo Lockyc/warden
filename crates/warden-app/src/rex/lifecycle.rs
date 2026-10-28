@@ -16,13 +16,16 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::agents::{self, AgentRecord, AgentStore, RecordState};
 use super::attention::Attention;
 use super::spawn::unix_now;
-use super::windows::{AgentState, BlockStatus};
+use super::windows::{AgentState, AgentWindow, BlockStatus};
 use super::{budget_error, lock, HubEvent, RexHub, OPEN_BUDGET};
 use crate::registry::{AgentsOpened, RexOpen};
 use crate::ManagerState;
 
 /// Why an agent tab can't sleep, or closes for good: it never reported its resume command.
 pub const NO_RESUME: &str = "this agent hasn't reported how to resume it";
+
+/// Why an agent tab can't fork: it never reported a resume command warden knows how to fork.
+pub const NO_FORK: &str = "this agent hasn't reported how to fork it";
 
 const NO_AGENT: &str = "that agent tab is gone";
 
@@ -41,6 +44,10 @@ pub enum AgentOp {
     Reopen(Option<String>),
     /// Name the tab; a live one's window is relabelled in Rex.
     Rename(String, String),
+    /// A new window forking the agent's conversation, named `<name> ⑂ <n>`, landing below the
+    /// agent and its earlier forks in its group, selected. The agent itself is left as it is,
+    /// whatever its state.
+    Fork(String),
     /// Follow the session's windows as they are now.
     Refresh,
     /// The agent's program exited and its window was let go ([`RexHub::end_agent_if_exited`]):
@@ -50,7 +57,7 @@ pub enum AgentOp {
 }
 
 /// Why `op` can't run on `records`: sleeping, or closing unconfirmed, an agent that never
-/// reported its resume command ([`NO_RESUME`]).
+/// reported its resume command ([`NO_RESUME`]); forking one with no fork command ([`NO_FORK`]).
 pub fn refusal(op: &AgentOp, records: &[AgentRecord]) -> Option<&'static str> {
     let id = match op {
         AgentOp::Sleep(id)
@@ -58,12 +65,27 @@ pub fn refusal(op: &AgentOp, records: &[AgentRecord]) -> Option<&'static str> {
             id,
             confirmed: false,
         } => id,
+        AgentOp::Fork(id) => {
+            return records
+                .iter()
+                .any(|r| r.id == *id && !can_fork(r))
+                .then_some(NO_FORK)
+        }
         _ => return None,
     };
     records
         .iter()
         .any(|r| r.id == *id && r.state == RecordState::Live && r.resume.is_none())
         .then_some(NO_RESUME)
+}
+
+/// Whether `record` has a conversation warden knows how to fork, in any state.
+fn can_fork(record: &AgentRecord) -> bool {
+    record
+        .resume
+        .as_deref()
+        .and_then(agents::fork_command)
+        .is_some()
 }
 
 /// How an op failed: refused before any Rex work, or Rex said no.
@@ -169,30 +191,8 @@ impl RexHub {
                 }
             }
             AgentOp::New => {
-                let made = match &session {
-                    Some((_, sid)) => self.inner.new_window_until(
-                        server,
-                        sid,
-                        &req.dir,
-                        req.startup.as_deref(),
-                        None,
-                        deadline,
-                    )?,
-                    None => {
-                        let t = self.inner.ensure_until(
-                            project,
-                            server,
-                            &req.dir,
-                            req.startup.as_deref(),
-                            &req.label,
-                            None,
-                            deadline,
-                        )?;
-                        let w = self.window_of(server, &t.session_id, &t.block_id)?;
-                        session = Some((t.endpoint, t.session_id));
-                        w
-                    }
-                };
+                let made =
+                    self.agent_window(req, &mut session, req.startup.as_deref(), None, deadline)?;
                 let sid = session
                     .as_ref()
                     .map(|(_, s)| s.as_str())
@@ -243,6 +243,50 @@ impl RexHub {
                     r.closed_at = Some(now);
                 }
             }
+            AgentOp::Fork(id) => {
+                let i = at(&records, id)?;
+                let parent = &records[i];
+                let fork = parent
+                    .resume
+                    .as_deref()
+                    .and_then(agents::fork_command)
+                    .ok_or(Failed::Refused(NO_FORK))?;
+                let name = format!("{} \u{2442} {}", parent.name, parent.forks_made + 1);
+                let (group, target) = (
+                    parent.group.clone(),
+                    parent.position + parent.forks_made + 1,
+                );
+                let cmd = warden_config::apply_resume(req.resume.as_deref(), &fork);
+                let made =
+                    self.agent_window(req, &mut session, Some(&cmd), Some(&name), deadline)?;
+                let sid = session
+                    .as_ref()
+                    .map(|(_, s)| s.as_str())
+                    .unwrap_or_default();
+                let mut windows = self.windows(server, sid);
+                if !windows.iter().any(|w| w.window_id == made.window_id) {
+                    windows.push(made.clone());
+                }
+                records = agents::reconcile(project, &records, &windows, true, now);
+                // Everything from the fork's slot down moves one place, so the fork sits below
+                // the parent and its earlier forks and nothing else changes order.
+                let new = records
+                    .iter()
+                    .position(|r| r.window_id.as_deref() == Some(made.window_id.as_str()));
+                for (j, r) in records.iter_mut().enumerate() {
+                    if Some(j) != new && r.position >= target {
+                        r.position += 1;
+                    }
+                }
+                if let Some(n) = new {
+                    records[n].group = group;
+                    records[n].position = target;
+                }
+                if let Some(p) = records.iter_mut().find(|r| r.id == *id) {
+                    p.forks_made += 1;
+                }
+                want = new;
+            }
             AgentOp::Rename(id, name) => {
                 let i = at(&records, id)?;
                 let name = name.trim();
@@ -271,6 +315,32 @@ impl RexHub {
         let opened = self.bind_agents(project, session.as_ref(), &records, shown);
         lock(store).merge(&held, records);
         Ok(opened)
+    }
+
+    /// A new window in the pane's session typing `startup` (named `name`, else Rex names it),
+    /// recreating the session first when it is gone; `session` then holds the live one.
+    fn agent_window(
+        &self,
+        req: &RexOpen,
+        session: &mut Option<(Endpoint, String)>,
+        startup: Option<&str>,
+        name: Option<&str>,
+        deadline: Instant,
+    ) -> Result<AgentWindow, RexError> {
+        let (project, server) = (req.pane_key.as_str(), req.server.as_str());
+        match session.as_ref() {
+            Some((_, sid)) => self
+                .inner
+                .new_window_until(server, sid, &req.dir, startup, name, deadline),
+            None => {
+                let t = self.inner.ensure_until(
+                    project, server, &req.dir, startup, &req.label, name, deadline,
+                )?;
+                let w = self.window_of(server, &t.session_id, &t.block_id)?;
+                *session = Some((t.endpoint, t.session_id));
+                Ok(w)
+            }
+        }
     }
 
     /// `project`'s session on `server`: the one the hub already follows, read without a call,
@@ -586,6 +656,9 @@ pub struct AgentRowDto {
     pub can_sleep: bool,
     /// Why a live tab can't sleep.
     pub sleep_reason: Option<String>,
+    pub can_fork: bool,
+    /// Why the tab can't fork.
+    pub fork_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -650,6 +723,8 @@ pub fn agent_list(
             selected: r.selected,
             can_sleep: live && r.resume.is_some(),
             sleep_reason: (live && r.resume.is_none()).then(|| NO_RESUME.to_owned()),
+            can_fork: can_fork(r),
+            fork_reason: (!can_fork(r)).then(|| NO_FORK.to_owned()),
         });
     }
     let mut closed: Vec<&AgentRecord> = records
@@ -681,18 +756,20 @@ pub fn emit_agents(app: &AppHandle, tab_id: &str) {
     crate::sync_agent_menu(app);
 }
 
-/// What the agent tab menu items can do for tab `tab_id`: `(sleep, reopen)` — its selected agent
-/// tab is live and can sleep; it has a closed agent tab to reopen.
-pub fn menu_actions(app: &AppHandle, tab_id: &str) -> (bool, bool) {
+/// What the agent tab menu items can do for tab `tab_id`: `(sleep, reopen, fork)` — its selected
+/// agent tab is live and can sleep; it has a closed agent tab to reopen; its selected agent tab
+/// can fork.
+pub fn menu_actions(app: &AppHandle, tab_id: &str) -> (bool, bool, bool) {
     let Some(store) = app.try_state::<Mutex<AgentStore>>() else {
-        return (false, false);
+        return (false, false, false);
     };
     let records = lock(&store).records(tab_id);
     let sleep = records
         .iter()
         .any(|r| r.selected && r.state == RecordState::Live && r.resume.is_some());
     let reopen = records.iter().any(|r| r.state == RecordState::Closed);
-    (sleep, reopen)
+    let fork = records.iter().any(|r| r.selected && can_fork(r));
+    (sleep, reopen, fork)
 }
 
 /// Project `tab_id`'s list as it stands: what `warden:agents` carries, and what the chrome pulls
@@ -1297,7 +1374,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{agent_list, AgentOp, NO_RESUME};
+    use super::{agent_list, AgentOp, NO_FORK, NO_RESUME};
     use crate::rex::agent_open::tests::{fake, hub, map, open, record, state_of, store};
     use crate::rex::agents::RecordState;
     use crate::rex::attention::Attention;
@@ -2130,5 +2207,125 @@ mod tests {
         .expect("rename asleep");
         assert_eq!(f.requests_for("session.set_window_label").len(), 1);
         assert_eq!(state_of(&s, "b").unwrap().name, "later");
+    }
+
+    /// Parent `a` (position 0) with `claude --resume aaa`, then `b`, in a live session.
+    fn fork_fixture(
+        parent_resume: Option<&str>,
+        parent_state: RecordState,
+    ) -> (
+        rex_client::fake::FakeServer,
+        std::sync::Mutex<crate::rex::agents::AgentStore>,
+        crate::rex::RexHub,
+        tempfile::TempDir,
+    ) {
+        let live = parent_state == RecordState::Live;
+        let mut windows = vec![("window:2", "block:2", "b")];
+        if live {
+            windows.insert(0, ("window:1", "block:1", "a"));
+        }
+        let f = fake(Some("session:old"), windows);
+        // Each fork gets a window of its own, as Rex gives.
+        let n = std::sync::atomic::AtomicU32::new(0);
+        f.on("session.new_window", move |_, _| {
+            let n = n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            rex_client::fake::Reply::ok(
+                json!({"window_id": format!("window:fork{n}"), "block_ids": [format!("block:fork{n}")], "revision": 2}),
+            )
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut a = record("a", parent_state, live.then_some("window:1"), parent_resume);
+        a.selected = true;
+        let mut b = record("b", RecordState::Live, Some("window:2"), None);
+        b.group = Some("g".into());
+        let s = store(vec![a, b]);
+        (f, s, hub, dir)
+    }
+
+    fn names(s: &std::sync::Mutex<crate::rex::agents::AgentStore>) -> Vec<String> {
+        crate::rex::agents::in_list_order(&s.lock().unwrap().records("t"))
+            .into_iter()
+            .map(|r| r.name)
+            .collect()
+    }
+
+    #[test]
+    fn fork_refused_without_fork_command() {
+        for resume in [Some("codex resume abc"), None] {
+            let (f, s, hub, _d) = fork_fixture(resume, RecordState::Live);
+            let got = hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7);
+            assert_eq!(got, Err(NO_FORK.to_string()), "{resume:?}");
+            assert!(f.requests_for("session.new_window").is_empty());
+            assert_eq!(state_of(&s, "a").unwrap().forks_made, 0);
+        }
+        assert_eq!(NO_FORK, "this agent hasn't reported how to fork it");
+    }
+
+    #[test]
+    fn fork_types_fork_command_with_program_swap() {
+        let (f, s, hub, _d) = fork_fixture(Some("claude --resume aaa"), RecordState::Live);
+        hub.agent_op(
+            &s,
+            &open(false, Some("claude-work")),
+            &AgentOp::Fork("a".into()),
+            7,
+        )
+        .expect("fork");
+        let made = f.requests_for("session.new_window");
+        assert_eq!(made.len(), 1);
+        assert_eq!(
+            made[0].payload["layout"]["block"]["options"]["initial_input"],
+            "claude-work --resume aaa --fork-session\n"
+        );
+        assert_eq!(made[0].payload["window_label"], "a \u{2442} 1");
+        assert!(
+            f.requests_for("session.close_window").is_empty(),
+            "the parent's window is untouched"
+        );
+        let a = state_of(&s, "a").unwrap();
+        assert_eq!(a.window_id.as_deref(), Some("window:1"));
+        assert_eq!(a.forks_made, 1);
+    }
+
+    #[test]
+    fn fork_lands_below_parent_in_group_and_selected() {
+        let (_f, s, hub, _d) = fork_fixture(Some("claude --resume aaa"), RecordState::Live);
+        let got = hub
+            .agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .expect("fork");
+        assert_eq!(names(&s), ["a", "a \u{2442} 1", "b"]);
+        let list = agent_list("t", &s.lock().unwrap(), &Attention::default(), |_| None);
+        let fork = &list.rows[1];
+        assert!(fork.selected && !list.rows[0].selected);
+        assert_eq!(got.selected.as_deref(), Some(fork.id.as_str()));
+        assert_eq!(fork.group, None, "the parent's group");
+        assert_eq!(state_of(&s, "b").unwrap().group.as_deref(), Some("g"));
+    }
+
+    #[test]
+    fn second_fork_lands_below_first() {
+        let (_f, s, hub, _d) = fork_fixture(Some("claude --resume aaa"), RecordState::Live);
+        for _ in 0..2 {
+            hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+                .expect("fork");
+        }
+        assert_eq!(names(&s), ["a", "a \u{2442} 1", "a \u{2442} 2", "b"],);
+        assert_eq!(state_of(&s, "a").unwrap().forks_made, 2);
+    }
+
+    #[test]
+    fn fork_of_asleep_parent_leaves_it_asleep() {
+        let (f, s, hub, _d) = fork_fixture(Some("claude --resume aaa"), RecordState::Asleep);
+        hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .expect("fork");
+        let a = state_of(&s, "a").unwrap();
+        assert_eq!(
+            (a.state, a.window_id, a.forks_made),
+            (RecordState::Asleep, None, 1)
+        );
+        assert_eq!(f.requests_for("session.new_window").len(), 1);
+        assert_eq!(names(&s), ["a", "a \u{2442} 1", "b"]);
     }
 }
