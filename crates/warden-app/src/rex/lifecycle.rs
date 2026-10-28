@@ -438,14 +438,18 @@ pub fn agent_list(
 /// Send project `tab_id`'s list (`warden:agents`) to every window. The list is the same in any
 /// window holding the tab, and a window without it ignores it, so it goes unaddressed.
 pub fn emit_agents(app: &AppHandle, tab_id: &str) {
-    let (Some(store), Some(hub)) = (
-        app.try_state::<Mutex<AgentStore>>(),
-        app.try_state::<RexHub>(),
-    ) else {
-        return;
-    };
+    if let Some(dto) = current_list(app, tab_id) {
+        let _ = app.emit("warden:agents", dto);
+    }
+}
+
+/// Project `tab_id`'s list as it stands: what `warden:agents` carries, and what the chrome pulls
+/// (`agents_init`) for a tab it has no list for yet.
+pub fn current_list(app: &AppHandle, tab_id: &str) -> Option<AgentListDto> {
+    let store = app.try_state::<Mutex<AgentStore>>()?;
+    let hub = app.try_state::<RexHub>()?;
     let dto = agent_list(tab_id, &lock(&store), |b| hub.block_status(b));
-    let _ = app.emit("warden:agents", dto);
+    Some(dto)
 }
 
 /// Run `op` on tab `tab_id`'s agent pane for window `label` (main thread). A refusal answers at
