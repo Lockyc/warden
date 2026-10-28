@@ -200,3 +200,8 @@ install:
     # included, which `login_shell` reads). launch-app.sh's header carries the full footgun.
     bash scripts/launch-app.sh
     echo "✓ warden updated in /Applications"
+
+# Replay the summary pipeline over transcripts at five cuts, warden vs amux (LM Studio; not part of gate)
+[group("dev")]
+summary-eval *TRANSCRIPTS:
+    cargo run --release -p warden-summary --bin summary-eval -- {{TRANSCRIPTS}}
