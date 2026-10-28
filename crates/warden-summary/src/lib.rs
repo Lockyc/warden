@@ -2,8 +2,16 @@
 //! the refresh state machine beside them. No GUI, no async.
 
 mod claude;
+mod gate;
+mod model;
+mod prompt;
+mod rows;
 
 pub use claude::Claude;
+pub use gate::strip_unbacked_done;
+pub use model::{HttpModel, Model};
+pub use prompt::{label, stand};
+pub use rows::{parse_stand, StandRows};
 
 use std::path::Path;
 
