@@ -821,6 +821,8 @@
             suspendable: !!t.has_suspend,
             startable: !!t.has_cmd, // presence dot can restart a dead session by re-running `cmd`
             warn: !!t.warn,
+            // The project's assigned colour (`#rrggbb`) → chrome-core's row mark; null draws none.
+            accent: t.accent ?? null,
           })),
         };
       }
