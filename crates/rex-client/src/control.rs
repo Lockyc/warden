@@ -113,7 +113,7 @@ enum Cmd {
     Close,
 }
 
-type Pending = HashMap<String, Sender<Result<Value, RexError>>>;
+type Pending = HashMap<String, Sender<Result<(u64, Value), RexError>>>;
 
 #[derive(Default)]
 struct Shared {
@@ -170,7 +170,7 @@ impl Shared {
     }
 }
 
-fn response_result(v: &Value) -> Result<Value, RexError> {
+fn response_result(v: &Value) -> Result<(u64, Value), RexError> {
     match v.get("error").filter(|e| !e.is_null()) {
         Some(e) => Err(RexError::Api {
             code: e
@@ -189,7 +189,10 @@ fn response_result(v: &Value) -> Result<Value, RexError> {
                 .and_then(|s| u16::try_from(s).ok())
                 .unwrap_or(500),
         }),
-        None => Ok(v.get("payload").cloned().unwrap_or(Value::Null)),
+        None => Ok((
+            v.get("seq").and_then(Value::as_u64).unwrap_or(0),
+            v.get("payload").cloned().unwrap_or(Value::Null),
+        )),
     }
 }
 
@@ -356,6 +359,13 @@ impl ControlClient {
 
     /// Calls `method` and waits up to 10 s for its result. A failed call is `RexError::Api`.
     pub fn call(&self, method: &str, payload: Value) -> Result<Value, RexError> {
+        self.call_seq(method, payload).map(|(_, p)| p)
+    }
+
+    /// [`ControlClient::call`], also returning the response's `seq`: the last event the server
+    /// had queued before it started the request. The result already includes events up to it,
+    /// so skip events with `seq <= ` it and apply later ones on top.
+    pub fn call_seq(&self, method: &str, payload: Value) -> Result<(u64, Value), RexError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let mut msg = json!({"type": "request", "id": id, "method": method});
         if !payload.is_null() {
@@ -660,6 +670,29 @@ mod tests {
             order.lock().unwrap().push("fast");
         });
         assert_eq!(*order.lock().unwrap(), ["fast", "slow"]);
+    }
+
+    #[test]
+    fn call_seq_returns_response_seq() {
+        let fake = FakeServer::start();
+        fake.reply("session.attach", json!({"view": "v"}));
+        let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
+        let events = c.events();
+        assert_eq!(
+            c.call_seq("session.attach", json!({}))
+                .expect("before events"),
+            (0, json!({"view": "v"}))
+        );
+        fake.push_event("hosts_changed", json!({}));
+        fake.push_event("hosts_changed", json!({}));
+        for _ in 0..2 {
+            events.recv_timeout(WAIT).expect("event");
+        }
+        assert_eq!(
+            c.call_seq("session.attach", json!({}))
+                .expect("after events"),
+            (2, json!({"view": "v"}))
+        );
     }
 
     #[test]
