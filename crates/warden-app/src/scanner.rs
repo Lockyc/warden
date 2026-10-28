@@ -39,6 +39,7 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 probe: root.probe.clone(),
                 kill: root.kill.clone(),
                 suspend: root.suspend.clone(),
+                resume: root.resume.clone(),
                 server: root.server.clone(),
                 split: root.split.clone(),
             }
@@ -77,6 +78,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -124,6 +126,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -144,6 +147,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -199,6 +203,7 @@ mod tests {
             probe: Some("p".into()),
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };

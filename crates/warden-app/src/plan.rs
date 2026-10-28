@@ -615,6 +615,7 @@ colour = "#0f8a8a"
                 probe: None,
                 kill: None,
                 suspend: None,
+                resume: None,
                 server: None,
                 split: None,
             }],
@@ -627,6 +628,7 @@ colour = "#0f8a8a"
                 probe: None,
                 kill: None,
                 suspend: None,
+                resume: None,
                 server: None,
                 split: None,
             }],
@@ -908,6 +910,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -945,6 +948,7 @@ colour = "#111111"
                     probe: None,
                     kill: None,
                     suspend: None,
+                    resume: None,
                     server: None,
                     split: None,
                 }],
@@ -997,6 +1001,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -1035,6 +1040,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -1054,6 +1060,7 @@ colour = "#111111"
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };

@@ -57,6 +57,7 @@ pub struct RawConfig {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
     /// Seconds between background session-probe passes (global only). `None` →
@@ -110,6 +111,7 @@ pub struct RawWindow {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
     // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,
@@ -147,6 +149,7 @@ pub struct RawRoot {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
 }
@@ -166,6 +169,7 @@ pub struct RawTab {
     pub probe: Option<String>,
     pub kill: Option<String>,
     pub suspend: Option<String>,
+    pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
     #[serde(default)]

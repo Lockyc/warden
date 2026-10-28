@@ -1648,6 +1648,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -1660,6 +1661,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };

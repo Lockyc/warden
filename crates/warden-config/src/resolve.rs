@@ -173,6 +173,23 @@ fn resolve_density(raw: Option<&str>) -> Result<Density, ResolveError> {
     }
 }
 
+/// Swap the program word of an agent's reported resume command for the configured `resume`
+/// program, keeping everything after it byte-for-byte (quoted arguments included). `None`
+/// returns `reported` unchanged. A blank `reported` has no program to swap and comes back
+/// unchanged too, so a wake never types a bare program with no resume arguments.
+pub fn apply_resume(program: Option<&str>, reported: &str) -> String {
+    let Some(program) = program else {
+        return reported.to_string();
+    };
+    let body = reported.trim_start();
+    if body.is_empty() {
+        return reported.to_string();
+    }
+    let lead = reported.len() - body.len();
+    let word_end = body.find(char::is_whitespace).unwrap_or(body.len());
+    format!("{}{}{}", &reported[..lead], program, &body[word_end..])
+}
+
 /// Render a resolved dir to its identity string: the lossy path with any single trailing
 /// separator stripped (so `~/a` and `~/a/` are one identity) — except a bare root `/`.
 /// The one dir-identity scheme: curated tabs and warden-app's discovered projects both key
@@ -216,6 +233,7 @@ pub fn resolve_with(
         probe: raw.probe.as_deref(),
         kill: raw.kill.as_deref(),
         suspend: raw.suspend.as_deref(),
+        resume: raw.resume.as_deref(),
         server: raw.server.as_deref(),
         split: global_split.as_ref(),
     };
@@ -267,6 +285,7 @@ struct Globals<'a> {
     probe: Option<&'a str>,
     kill: Option<&'a str>,
     suspend: Option<&'a str>,
+    resume: Option<&'a str>,
     server: Option<&'a str>,
     split: Option<&'a Option<Split>>,
 }
@@ -465,6 +484,7 @@ fn resolve_tab(
         probe,
         kill,
         suspend,
+        resume,
         split,
     } = resolve_cascade(
         NearestLevel {
@@ -473,6 +493,7 @@ fn resolve_tab(
             probe: rt.probe.as_deref(),
             kill: rt.kill.as_deref(),
             suspend: rt.suspend.as_deref(),
+            resume: rt.resume.as_deref(),
             split: rt.split.as_ref(),
         },
         rp,
@@ -492,6 +513,7 @@ fn resolve_tab(
         probe,
         kill,
         suspend,
+        resume,
         server,
         split,
     })
@@ -522,6 +544,7 @@ struct NearestLevel<'a> {
     probe: Option<&'a str>,
     kill: Option<&'a str>,
     suspend: Option<&'a str>,
+    resume: Option<&'a str>,
     split: Option<&'a RawSplit>,
 }
 
@@ -532,6 +555,7 @@ struct Cascaded {
     probe: Option<String>,
     kill: Option<String>,
     suspend: Option<String>,
+    resume: Option<String>,
     split: Option<Split>,
 }
 
@@ -557,6 +581,7 @@ fn resolve_cascade(
         probe: level(near.probe, rp.probe.as_deref(), globals.probe),
         kill: level(near.kill, rp.kill.as_deref(), globals.kill),
         suspend: level(near.suspend, rp.suspend.as_deref(), globals.suspend),
+        resume: level(near.resume, rp.resume.as_deref(), globals.resume),
         split: cascade_split(near_split.as_ref(), window_split, globals.split),
     })
 }
@@ -598,6 +623,7 @@ fn resolve_root(
         probe,
         kill,
         suspend,
+        resume,
         split,
     } = resolve_cascade(
         NearestLevel {
@@ -606,6 +632,7 @@ fn resolve_root(
             probe: rr.probe.as_deref(),
             kill: rr.kill.as_deref(),
             suspend: rr.suspend.as_deref(),
+            resume: rr.resume.as_deref(),
             split: rr.split.as_ref(),
         },
         rp,
@@ -622,6 +649,7 @@ fn resolve_root(
         probe,
         kill,
         suspend,
+        resume,
         server,
         split,
     }))
@@ -2078,6 +2106,92 @@ title = "w"
         // empty id = unset; trailing slash normalized away.
         assert_eq!(cfg.windows[0].tabs[0].key, "/tmp/a");
         assert_eq!(cfg.windows[0].tabs[0].id, None);
+    }
+
+    #[test]
+    fn apply_resume_swaps_program_only() {
+        assert_eq!(
+            apply_resume(Some("claude-personal"), "claude --resume X"),
+            "claude-personal --resume X"
+        );
+    }
+
+    #[test]
+    fn apply_resume_none_keeps_report() {
+        assert_eq!(apply_resume(None, "claude --resume X"), "claude --resume X");
+    }
+
+    #[test]
+    fn apply_resume_keeps_quoted_args() {
+        assert_eq!(
+            apply_resume(Some("cx"), "codex resume 'a b'"),
+            "cx resume 'a b'"
+        );
+    }
+
+    #[test]
+    fn apply_resume_edge_shapes() {
+        assert_eq!(apply_resume(Some("cx"), "codex"), "cx");
+        assert_eq!(apply_resume(Some("cx"), "  codex  resume"), "  cx  resume");
+        assert_eq!(apply_resume(Some("cx"), ""), "");
+        assert_eq!(apply_resume(Some("cx"), "  \t"), "  \t");
+    }
+
+    #[test]
+    fn resume_cascades_like_cmd() {
+        let (cfg, _) = resolve_str(
+            r##"
+resume = "global-resume"
+[[window]]
+title = "work"
+colour = "#000000"
+resume = "win-resume"
+  [[window.tab]]
+  title = "inherits"
+  dir = "/tmp/a"
+  [[window.tab]]
+  title = "overrides"
+  dir = "/tmp/b"
+  resume = "tab-resume"
+  [[window.tab]]
+  title = "opts-out"
+  dir = "/tmp/c"
+  resume = ""
+  [[window.group]]
+  name = "g"
+    [[window.group.tab]]
+    title = "grouped"
+    dir = "/tmp/g"
+  [[window.root]]
+  dir = "/tmp/roots"
+  resume = "root-resume"
+  [[window.root]]
+  name = "plain-root"
+  dir = "/tmp/roots2"
+[[window]]
+title = "plain"
+colour = "#000000"
+  [[window.tab]]
+  title = "from-global"
+  dir = "/tmp/d"
+"##,
+        )
+        .unwrap();
+        let work = &cfg.windows[0];
+        assert_eq!(work.tabs[0].resume.as_deref(), Some("win-resume"));
+        assert_eq!(work.tabs[1].resume.as_deref(), Some("tab-resume"));
+        assert_eq!(work.tabs[2].resume, None);
+        assert_eq!(
+            work.tabs[3].resume.as_deref(),
+            Some("win-resume"),
+            "groups add no cascade level"
+        );
+        assert_eq!(work.roots[0].resume.as_deref(), Some("root-resume"));
+        assert_eq!(work.roots[1].resume.as_deref(), Some("win-resume"));
+        assert_eq!(
+            cfg.windows[1].tabs[0].resume.as_deref(),
+            Some("global-resume")
+        );
     }
 
     #[test]
