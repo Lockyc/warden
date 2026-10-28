@@ -44,6 +44,8 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 /// The longest a caller waits for a usable connection. Opening a tab calls the hub, and an
 /// unreachable server must answer within 3 s; the margin covers the work after the deadline.
 const CONNECT_BUDGET: Duration = Duration::from_millis(2700);
+/// Less budget than this left, and autostart isn't worth starting.
+const AUTOSTART_MIN: Duration = Duration::from_millis(250);
 
 /// Where a pane's terminal lives: what the relay connects to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +83,8 @@ pub enum HubEvent {
     },
 }
 
-type Autostart = fn() -> Result<(), RexError>;
+/// Starts the local server, waiting at most the given time.
+type Autostart = fn(Duration) -> Result<(), RexError>;
 
 /// Cheap to clone; every clone is the same hub.
 #[derive(Clone)]
@@ -158,7 +161,7 @@ impl RexHub {
             RexStore::load(store_path),
             client,
             Endpoint::local(),
-            Some(server::autostart_local),
+            Some(server::autostart_local_within),
         )
     }
 
@@ -168,7 +171,7 @@ impl RexHub {
             RexStore::default(),
             client,
             Endpoint::local(),
-            Some(server::autostart_local),
+            Some(server::autostart_local_within),
         )
     }
 
@@ -176,6 +179,17 @@ impl RexHub {
     #[cfg(test)]
     pub(crate) fn for_test(store_path: PathBuf, client: ClientInfo, local: Endpoint) -> RexHub {
         Self::build(RexStore::load(store_path), client, local, None)
+    }
+
+    /// [`RexHub::for_test`] whose unreachable `"local"` runs `autostart`.
+    #[cfg(test)]
+    pub(crate) fn for_test_autostart(
+        store_path: PathBuf,
+        client: ClientInfo,
+        local: Endpoint,
+        autostart: Autostart,
+    ) -> RexHub {
+        Self::build(RexStore::load(store_path), client, local, Some(autostart))
     }
 
     fn build(
@@ -447,7 +461,13 @@ impl Inner {
         let connect = || ControlClient::connect_until(&endpoint, &self.client, deadline);
         let client = match (connect(), self.autostart) {
             (Err(RexError::Unreachable), Some(start)) if server == LOCAL => {
-                start()?;
+                // Autostart gets what's left of this caller's budget; with too little left to
+                // start and still connect, it isn't tried.
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left < AUTOSTART_MIN {
+                    return Err(RexError::Unreachable);
+                }
+                start(left)?;
                 connect()?
             }
             (r, _) => r?,

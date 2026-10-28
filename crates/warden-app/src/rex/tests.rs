@@ -494,3 +494,42 @@ fn reconnect_in_flight_never_holds_up_a_caller() {
     );
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
+
+/// A local server that takes longer to start than anyone waits: sleeps its whole allowance.
+fn slow_autostart(limit: Duration) -> Result<(), RexError> {
+    std::thread::sleep(limit.min(Duration::from_secs(2)));
+    Ok(())
+}
+
+#[test]
+fn autostart_stays_within_each_callers_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = Endpoint::Unix(dir.path().join("no-server.sock"));
+    let hub = RexHub::for_test_autostart(
+        dir.path().join("rex-sessions.json"),
+        info(),
+        missing,
+        slow_autostart,
+    );
+    // Two tabs open together: the second waits behind the first caller's connect + autostart.
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|s| {
+        let callers: Vec<_> = ["tab-a", "tab-b"]
+            .into_iter()
+            .map(|pane| {
+                let (hub, barrier) = (&hub, &barrier);
+                s.spawn(move || {
+                    barrier.wait();
+                    let started = Instant::now();
+                    let r = hub.ensure_session(pane, "local", Path::new("/w"), None, "w · main");
+                    (r.err(), started.elapsed())
+                })
+            })
+            .collect();
+        for c in callers {
+            let (err, took) = c.join().unwrap();
+            assert_eq!(err, Some(RexError::Unreachable));
+            assert!(took < Duration::from_secs(3), "a caller took {took:?}");
+        }
+    });
+}
