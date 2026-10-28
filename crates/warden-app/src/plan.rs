@@ -978,6 +978,7 @@ colour = "#111111"
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            summary: None,
         };
         let name_to_label: HashMap<String, String> = [("dev".to_string(), "dev".to_string())]
             .into_iter()
@@ -1044,6 +1045,7 @@ colour = "#111111"
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            summary: None,
         };
 
         // OLD: the project is only discovered by the root → a tree row under "Developer".

@@ -104,6 +104,7 @@ mod tests {
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            summary: None,
         };
         let eff = crate::manager::effective_config(&cfg, None);
         let tabs = &eff.windows[0].tabs;
@@ -174,6 +175,7 @@ mod tests {
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            summary: None,
         };
         let eff = crate::manager::effective_config(&cfg, None);
         let tabs = &eff.windows[0].tabs;

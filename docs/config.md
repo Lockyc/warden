@@ -50,6 +50,11 @@ side = "right"                         #   "left" | "right" (default right); whe
 size = 0.5                             #   the second pane's share of the hole, 0.1–0.9 (default 0.5)
 cmd  = ""                              #   typed into the second pane's shell; absent/"" = bare scratch shell
 
+[summary]                              # optional; global only — the agent tabs' done/now/next summary
+url     = "http://localhost:1234/v1/chat/completions"  # the OpenAI-compatible endpoint; unset/blank = summaries off
+model   = "qwen2.5-14b-instruct"       #   model id sent with each request (default "")
+timeout = 45                           #   seconds per request (default 45)
+
 [[window]]                             # = a native macOS window
 title  = "work"                        # required, unique, non-empty; banner + window title
 colour = "#0f8a8a"                     # optional; #rgb or #rrggbb; omit → neutral default
@@ -135,6 +140,8 @@ therefore means exactly one thing: **a plain launch here would offer a restore**
 
 The confirm row is bound to the **cyan** dot only — a ghost is a drop on a *dead* server, so
 there is nothing to end, and chrome-core never arms it.
+
+**`[summary]` turns on the agent summaries.** Global only, no cascade. It resolves to `Config.summary: Option<SummaryConfig>`, which is `Some` only when `url` is set and not blank (`resolve.rs::resolve_summary`; `DEFAULT_SUMMARY_TIMEOUT`), so a table without a `url` leaves the summaries off. A Live agent tab on `server = "local"` whose agent is Claude Code then gets a done/now/next summary in its strip, derived from its transcript by this model. The driver is `warden-app/src/rex/summary.rs`. An edit applies on the next refresh: it swaps the model, respawns nothing, and keeps the rows already shown.
 
 **`split` declares a tab's second pane, and cascades as a whole table.** Global `[split]`, `[window.split]`, `[window.root.split]`, `[window.tab.split]` — the nearest set level wins **whole** (a tab table that sets only `size` takes the table defaults for `side` and `cmd`, not the global table's values); `split = false` at a nearer level opts out, `split = true` is the default table (right, `0.5`, bare shell). Resolution collapses it to `Tab.split: Option<Split>` (`resolve_split_level` + `cascade_split` in `resolve.rs`; `DEFAULT_SPLIT_SIZE`, `SPLIT_SIZE_MIN`/`MAX` are the defaults and the validated band, shared with the chrome's drag clamp). The second pane runs in the tab's own `shell` and `dir`; `split.cmd` is typed into it exactly like `cmd` (absent or `""` = bare shell). `probe`/`kill`/attention/presence stay on the primary. `size` is the **second** pane's share. On hot-reload a `side`/`size` change is a live re-layout (`set_meta`); adding/removing the split or changing its `cmd` respawns the tab (`respawn_tabs`). Runtime behaviour — the in-memory drag override, an exited pane staying closed until relaunch, ⌘D recreating it — is in `docs/native-splits-direction.md`.
 
