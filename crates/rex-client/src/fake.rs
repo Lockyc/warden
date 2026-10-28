@@ -3,8 +3,10 @@
 //!
 //! - **Control:** every request is recorded ([`FakeHandle::requests`]) and answered by the
 //!   handler registered for its method ([`FakeHandle::on`]). An unscripted method answers `{}`,
-//!   except `data.connect`, which mints a ticket the data side accepts. Events, close codes and
-//!   drops are pushed to every open control connection.
+//!   except `data.connect`, which mints a ticket the data side accepts, and a terminal's `title`
+//!   and `program_status`, which answer what [`FakeHandle::push_block_event`] has reported, and
+//!   `server.stop`, which replies and then stops the fake as Rex stops ([`FakeHandle::stopped`]).
+//!   Events, close codes and drops are pushed to every open control connection.
 //! - **Data:** a HELLO with a minted ticket opens a new stream (its opening bytes from
 //!   [`FakeHandle::on_data_open`]); a RESUME with a stream's latest token replays its log from the
 //!   client's count. [`FakeHandle::push_data`], [`FakeHandle::drop_data`] and
@@ -100,6 +102,8 @@ struct Shared {
     state: Mutex<State>,
     changed: Condvar,
     shutdown: AtomicBool,
+    /// Set by `server.stop` (alongside `shutdown`).
+    stopped: AtomicBool,
     socket: PathBuf,
 }
 
@@ -120,6 +124,10 @@ struct State {
     streams: Vec<Stream>,
     handshakes: Vec<DataHandshake>,
     counter: u64,
+    /// Block → its title, as the last `title_changed` pushed set it.
+    titles: HashMap<String, String>,
+    /// Block → its program status records by id (`""` for the root), as pushed.
+    records: HashMap<String, std::collections::BTreeMap<String, Value>>,
 }
 
 struct Stream {
@@ -180,9 +188,12 @@ impl FakeServer {
                 streams: Vec::new(),
                 handshakes: Vec::new(),
                 counter: 0,
+                titles: HashMap::new(),
+                records: HashMap::new(),
             }),
             changed: Condvar::new(),
             shutdown: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
             socket,
         });
         let handle = FakeHandle { shared };
@@ -297,17 +308,44 @@ impl FakeHandle {
     }
 
     /// Sends a block's own event (`name`, e.g. `bell`), wrapped in `block_event` + `session_event`.
+    /// `title_changed`, `program_status_changed` and `program_status_removed` also change what
+    /// the block's unscripted `title` and `program_status` answer, in the same order as the event.
     pub fn push_block_event(&self, session_id: &str, block_id: &str, name: &str, payload: Value) {
-        self.push_session_event(
-            session_id,
-            "block_event",
-            json!({
+        let ev = json!({"type": "session_event", "payload": {
+            "session_id": session_id,
+            "event": {"type": "block_event", "payload": {
                 "block_id": block_id,
                 "creator_name": "com.superlogical.terminal",
                 "name": name,
                 "payload": payload,
-            }),
-        );
+            }},
+        }});
+        let mut st = self.state();
+        let id = |v: &Value| v.as_str().unwrap_or_default().to_owned();
+        match name {
+            "title_changed" => {
+                st.titles.insert(block_id.to_owned(), id(&payload["title"]));
+            }
+            "program_status_changed" => {
+                st.records
+                    .entry(block_id.to_owned())
+                    .or_default()
+                    .insert(id(&payload["id"]), payload["record"].clone());
+            }
+            "program_status_removed" => {
+                let records = st.records.entry(block_id.to_owned()).or_default();
+                match payload["ids"].as_array() {
+                    Some(ids) => ids.iter().for_each(|i| {
+                        records.remove(&id(i));
+                    }),
+                    None => records.clear(),
+                }
+            }
+            _ => {}
+        }
+        for (_, tx) in &st.controls {
+            let _ = tx.send(CtlOut::Event(ev.clone()));
+        }
     }
 
     /// Closes every control connection with this status and reason.
@@ -365,6 +403,12 @@ impl FakeHandle {
     /// The client id each welcome carried, in connection order (a resumed client repeats its id).
     pub fn client_ids(&self) -> Vec<String> {
         self.state().client_ids.clone()
+    }
+
+    /// Whether an unscripted `server.stop` stopped the fake: it replied, closed every connection,
+    /// and refuses new ones.
+    pub fn stopped(&self) -> bool {
+        self.shared.stopped.load(Ordering::SeqCst)
     }
 
     /// The number of control connections currently open.
@@ -457,6 +501,31 @@ impl FakeHandle {
 }
 
 impl State {
+    /// The unscripted answer to a terminal's `title` or `program_status`, from the events pushed.
+    fn block_state(&self, method: &str, payload: &Value) -> Option<Value> {
+        let block = payload["block_id"].as_str().unwrap_or_default();
+        match method {
+            "com.superlogical.terminal.title" => {
+                let title = self.titles.get(block).cloned().unwrap_or_default();
+                Some(json!({ "title": title }))
+            }
+            "com.superlogical.terminal.program_status" => {
+                let records = self.records.get(block).into_iter().flatten();
+                let records: Vec<Value> = records
+                    .map(|(id, record)| {
+                        let mut r = record.clone();
+                        if !id.is_empty() {
+                            r["id"] = json!(id);
+                        }
+                        r
+                    })
+                    .collect();
+                Some(json!({ "records": records }))
+            }
+            _ => None,
+        }
+    }
+
     /// A fresh 16-byte value, distinct from every other the fake has made.
     fn fresh(&mut self, tag: u8) -> [u8; 16] {
         self.counter += 1;
@@ -646,13 +715,40 @@ fn handle_request(h: &FakeHandle, tx: &Sender<CtlOut>, v: &Value, raw_len: usize
             payload: payload.clone(),
             raw_len,
         });
-        st.handlers.get(&method).cloned()
+        let handler = st.handlers.get(&method).cloned();
+        // Answered under the lock that orders block events, so the answer's seq covers exactly
+        // the events it reflects.
+        if handler.is_none() {
+            if let Some(result) = st.block_state(&method, &payload) {
+                let _ = tx.send(CtlOut::Response {
+                    id,
+                    result: Ok(result),
+                });
+                drop(st);
+                h.notify();
+                return;
+            }
+        }
+        handler
     };
     h.notify();
     let reply = match handler {
         Some(f) => f(&payload, h),
         None if method == "data.connect" => {
             Reply::ok(json!({"ticket": h.mint_ticket(), "expires_in_ms": 60_000}))
+        }
+        None if method == "server.stop" => {
+            let in_use = payload["if_idle"].as_bool() == Some(true) && h.state().controls.len() > 1;
+            if in_use {
+                Reply::error("conflict", "another client is connected", 409)
+            } else {
+                let _ = tx.send(CtlOut::Response {
+                    id,
+                    result: Ok(json!({})),
+                });
+                stop(h);
+                return;
+            }
         }
         None => Reply::ok(json!({})),
     };
@@ -669,6 +765,15 @@ fn handle_request(h: &FakeHandle, tx: &Sender<CtlOut>, v: &Value, raw_len: usize
             let _ = tx.send(out);
         });
     }
+}
+
+/// Stop as Rex's `server.stop` does once it has replied: every connection ends (each loop sends
+/// what it holds, then sees `shutdown`) and the socket goes, so new connections are refused.
+fn stop(h: &FakeHandle) {
+    h.shared.stopped.store(true, Ordering::SeqCst);
+    h.shared.shutdown.store(true, Ordering::SeqCst);
+    let _ = std::fs::remove_file(&h.shared.socket);
+    h.notify();
 }
 
 fn serve_data(mut ws: WebSocket<UnixStream>, h: FakeHandle) {

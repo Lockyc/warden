@@ -97,6 +97,8 @@ pub struct Root {
     pub kill: Option<String>,
     /// Resolved session-suspend command for discovered projects (`None` = no suspend action).
     pub suspend: Option<String>,
+    /// Resolved resume program for discovered projects (`None` = the agent's own program).
+    pub resume: Option<String>,
     /// Rex server hosting this tab's panes: `Some("local")` or a host label; `None` = a plain tab.
     pub server: Option<String>,
     /// Resolved second-pane split for discovered projects (`None` = no split).
@@ -137,6 +139,9 @@ pub struct Tab {
     /// identically. `None` = no suspend action. The app runs it when the user confirms
     /// suspending the tab's session.
     pub suspend: Option<String>,
+    /// Program that replaces the first word of an agent's reported resume command (cascaded
+    /// tab→window→global, `""` opts out). `None` = type the report as-is. See `apply_resume`.
+    pub resume: Option<String>,
     /// Rex server hosting this tab's panes: `Some("local")` or a host label; `None` = a plain tab.
     pub server: Option<String>,
     /// Resolved second pane for this tab (cascaded tab→window→global, whole-table). `None`

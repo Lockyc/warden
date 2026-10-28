@@ -228,6 +228,43 @@ pub fn announce_detached_secondary_closed(
     );
 }
 
+/// A popped-out tab [`WindowManager::end_detached`] ended, for [`announce_detached_ended`].
+pub struct DetachedTabEnded {
+    dlabel: String,
+    origin_label: String,
+    tab_id: String,
+    /// The origin's new active tab when the whole tab went cold; `None` when a running sibling
+    /// agent keeps it.
+    new_active: Option<Option<String>>,
+    dto: Option<InitDto>,
+}
+
+/// The chrome half of [`WindowManager::end_detached`], run with the lock RELEASED: the detached
+/// window closes, then the origin gets a snapshot (the row stops rendering detached, reads cold)
+/// and the same `warden:tab-exited` a docked exit sends.
+pub fn announce_detached_ended(app: &AppHandle, ended: DetachedTabEnded) {
+    let DetachedTabEnded {
+        dlabel,
+        origin_label,
+        tab_id,
+        new_active,
+        dto,
+    } = ended;
+    if let Some(win) = app.get_window(&dlabel) {
+        let _ = win.close();
+    }
+    if let Some(dto) = dto {
+        let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
+    }
+    if let Some(new_active) = new_active {
+        let _ = app.emit_to(
+            origin_label.as_str(),
+            "warden:tab-exited",
+            serde_json::json!({ "label": origin_label, "id": tab_id, "newActive": new_active }),
+        );
+    }
+}
+
 /// Tear down a popped-out tab's surfaces on purpose — the one place a live PTY is
 /// intentionally ended by the pop-out/redock flow (and its failure arms). Goes through
 /// `close()`, never a bare `drop`: `GhosttySurface::drop` treats a surface dropped without
@@ -300,9 +337,18 @@ pub struct DetachedSurface {
     pub spec: TabSpec,
     pub origin_label: String,
     pub tab_id: String,
+    /// The agent whose surface travelled (`Registry::selected_agent` at pop-out), for a Rex
+    /// tab's main pane holding agents; `None` otherwise.
+    pub agent: Option<String>,
 }
 
 impl DetachedSurface {
+    /// The Rex key pane `which`'s travelling surface answers to: the agent's own for an agent,
+    /// else the pane's (`registry::shown_rex_key`). `None` for a plain tab.
+    pub fn rex_key(&self, which: crate::registry::PaneIdx) -> Option<String> {
+        crate::registry::shown_rex_key(&self.spec, which, self.agent.as_deref())
+    }
+
     /// Whether this window's holes are laid out secondary-first: a left-side split with its
     /// second pane still live. Once the secondary is gone the one remaining hole is the
     /// primary's whatever the side was, so this is keyed on `secondary`'s presence, not just
@@ -487,6 +533,7 @@ impl WindowManager {
 
         let mut registry = Registry::new(ns_window, INITIAL_RECT);
         registry.set_rex_opener(crate::rex::spawn::opener(app.clone(), spec.label.clone()));
+        registry.set_report_socket(crate::rex::reports::socket_path(app));
         // Surface-create failures (a null libghostty surface, an interior-NUL in a
         // config dir/shell) must NOT panic the whole app at launch — the failing
         // tab stays cold and its reason is collected for the init banner; every
@@ -587,6 +634,7 @@ impl WindowManager {
                 // within a burst pass (covers `probe_interval = 0`, which never steady-polls).
                 tauri::WindowEvent::Focused(true) => {
                     crate::probe::bump(&label_for_event);
+                    crate::sync_agent_menu(&app_for_event);
                 }
                 _ => {}
             }
@@ -707,12 +755,14 @@ impl WindowManager {
     /// surfaces closed, the origin's `Detached` placeholders retired to `Cold`
     /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told
     /// `warden:tab-exited` exactly as if the exit had happened docked — never a "Process exited"
-    /// overlay left sitting in the detached window.
+    /// overlay left sitting in the detached window. A travelling agent whose pane still holds a
+    /// running sibling ends only itself: the origin tab stays, showing that sibling if on screen.
     ///
     /// **A Rex pane** exits the same way (its relay is the child), and additionally has its Rex
     /// session ended when the program in it finished (`rex::spawn::end_if_exited`, on a worker),
     /// so the next open makes a fresh one. A relay that left for any other reason leaves the
-    /// session to be reattached.
+    /// session to be reattached. An agent's relay exiting closes that agent alone
+    /// (`Registry::close_agent`): the tab stays live while another of its agents is.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
@@ -725,15 +775,35 @@ impl WindowManager {
             let Some(ws) = lock.windows.get_mut(&label) else {
                 return;
             };
-            let Some((tab_id, which)) = ws.registry.locate_surface(surface_id) else {
+            let Some(key) = ws.registry.surface_key(surface_id) else {
                 return;
             };
-            // A Rex pane's relay exited: its session ends too if its program did.
-            if let Some(key) = ws.registry.rex_pane_key(&tab_id, which) {
-                crate::rex::spawn::end_if_exited(app, key);
+            let Some((tab_id, which, agent)) = ws.registry.locate_key(&key) else {
+                return;
+            };
+            // A Rex pane's relay exited: its session (an agent's: its window) ends too if its
+            // program did.
+            if let Some(key) = ws.registry.rex_key_of_surface(surface_id) {
+                let owner = agent.clone().map(|r| (tab_id.clone(), r));
+                crate::rex::spawn::end_if_exited(app, key, owner);
             }
-            let new_active = match which {
-                crate::registry::PaneIdx::Secondary => {
+            let new_active = match (which, agent) {
+                (crate::registry::PaneIdx::Primary, Some(record)) => {
+                    match ws.registry.close_agent(&tab_id, &record) {
+                        Some(crate::registry::AgentClosed::PaneCold(next)) => next,
+                        // Another agent of the pane is live and on screen now: the tab stays.
+                        _ => {
+                            lock.record_session(&label);
+                            let dto = lock.init_dto(&label);
+                            drop(lock);
+                            if let Some(dto) = dto {
+                                let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
+                            }
+                            return;
+                        }
+                    }
+                }
+                (crate::registry::PaneIdx::Secondary, _) => {
                     ws.registry.close_secondary(&tab_id);
                     drop(lock);
                     // `warden:tab-exited` means "the whole tab went cold" to the chrome
@@ -748,7 +818,7 @@ impl WindowManager {
                     );
                     return;
                 }
-                crate::registry::PaneIdx::Primary => ws.registry.unload(&tab_id),
+                (crate::registry::PaneIdx::Primary, None) => ws.registry.unload(&tab_id),
             };
             lock.record_session(&label);
             drop(lock);
@@ -766,12 +836,15 @@ impl WindowManager {
         let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
             return; // already gone (redocked or closed) — drop the signal
         };
-        if let Some(key) = lock
-            .detached
-            .get(&dlabel)
-            .and_then(|d| crate::registry::rex_pane_key(&d.spec, which))
-        {
-            crate::rex::spawn::end_if_exited(app, key);
+        if let Some(d) = lock.detached.get(&dlabel) {
+            if let Some(key) = d.rex_key(which) {
+                let owner = d
+                    .agent
+                    .clone()
+                    .filter(|_| which == crate::registry::PaneIdx::Primary)
+                    .map(|r| (d.tab_id.clone(), r));
+                crate::rex::spawn::end_if_exited(app, key, owner);
+            }
         }
         match which {
             crate::registry::PaneIdx::Secondary => {
@@ -782,44 +855,57 @@ impl WindowManager {
                 announce_detached_secondary_closed(app, &dlabel, &origin_label, &tab_id);
             }
             crate::registry::PaneIdx::Primary => {
-                let DetachedSurface {
-                    secondary_left: _,
-                    secondary_went_out: _,
-                    spec: _,
-                    surface,
-                    secondary,
-                    origin_label,
-                    tab_id,
-                } = lock.detached.remove(&dlabel).expect("located above");
-                // The whole tab ends, scratch pane included — the same one-dead-tab semantic the
-                // docked primary path applies via `unload`.
-                close_both(surface, secondary);
-                let new_active = lock
-                    .windows
-                    .get_mut(&origin_label)
-                    .and_then(|ws| ws.registry.clear_detached(&tab_id));
-                lock.record_session(&origin_label);
-                // The entry is gone from `detached`, so `is_empty` may now be true (origin closed
-                // while the tab was out): the home surface must appear, exactly as it would after
-                // `redock`. The window's own `Destroyed` → `redock` finds no entry and is a no-op.
-                lock.sync_empty_surface(app);
-                let dto = lock.init_dto(&origin_label);
-                drop(lock);
-                if let Some(win) = app.get_window(&dlabel) {
-                    let _ = win.close();
+                if let Some(ended) = lock.end_detached(app, &dlabel) {
+                    drop(lock);
+                    announce_detached_ended(app, ended);
                 }
-                // Snapshot first (the row stops rendering detached, reads cold), then the same
-                // tail a docked exit runs.
-                if let Some(dto) = dto {
-                    let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
-                }
-                let _ = app.emit_to(
-                    origin_label.as_str(),
-                    "warden:tab-exited",
-                    serde_json::json!({ "label": origin_label, "id": tab_id, "newActive": new_active }),
-                );
             }
         }
+    }
+
+    /// End popped-out tab `dlabel` whole, scratch pane included — the same one-dead-tab semantic
+    /// the docked primary path applies via `unload` — and retire its origin's placeholder. A
+    /// travelling agent that ended leaves its pane's running siblings: the tab stays, showing one
+    /// if it is the tab on screen. Returns what [`announce_detached_ended`] tells, once the lock is
+    /// released; `None` when `dlabel` isn't a detached window.
+    pub fn end_detached(&mut self, app: &AppHandle, dlabel: &str) -> Option<DetachedTabEnded> {
+        let DetachedSurface {
+            surface,
+            secondary,
+            origin_label,
+            tab_id,
+            ..
+        } = self.detached.remove(dlabel)?;
+        close_both(surface, secondary);
+        let ended = self.windows.get_mut(&origin_label).map(|ws| {
+            let ended = ws.registry.clear_detached(&tab_id);
+            if ended == crate::registry::DetachedEnded::SiblingShown
+                && ws.registry.active_tab() == Some(tab_id.as_str())
+            {
+                if let Err(e) = ws.registry.activate(&tab_id) {
+                    eprintln!("warden: couldn't show an agent of tab {tab_id:?}: {e}");
+                }
+            }
+            ended
+        });
+        let new_active = match ended {
+            Some(crate::registry::DetachedEnded::Cold(next)) => Some(next),
+            Some(crate::registry::DetachedEnded::SiblingShown) => None,
+            None => Some(None),
+        };
+        self.record_session(&origin_label);
+        // The entry is gone from `detached`, so `is_empty` may now be true (origin closed while
+        // the tab was out): the home surface must appear, exactly as it would after `redock`. The
+        // window's own `Destroyed` → `redock` finds no entry and is a no-op.
+        self.sync_empty_surface(app);
+        let dto = self.init_dto(&origin_label);
+        Some(DetachedTabEnded {
+            dlabel: dlabel.to_owned(),
+            origin_label,
+            tab_id,
+            new_active,
+            dto,
+        })
     }
 
     /// Record that the surface `surface_id` became first responder — the user clicked into it, or
@@ -1000,7 +1086,7 @@ impl WindowManager {
             crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
         };
         s.set_frame(rect);
-        crate::rex::size::PaneSize::of(crate::registry::rex_pane_key(&ds.spec, which)?, s)
+        crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
     }
 
     /// The size of the live Rex pane surface `surface_id` shows, docked or popped out; `None`
@@ -1019,7 +1105,7 @@ impl WindowManager {
             crate::registry::PaneIdx::Primary => &ds.surface,
             crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
         };
-        crate::rex::size::PaneSize::of(crate::registry::rex_pane_key(&ds.spec, which)?, s)
+        crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
     }
 
     /// The user turned to a Rex pane ([`SurfaceSignal::UserInput`]): claim its block for
@@ -1087,6 +1173,7 @@ impl WindowManager {
             spec: spawned,
             origin_label,
             tab_id,
+            agent,
         } = self.detached.remove(detached_label)?;
 
         // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
@@ -1116,7 +1203,10 @@ impl WindowManager {
                         let _ = s.reparent(nsw as *mut c_void, INITIAL_RECT);
                     }
                 }
-                match ws.registry.attach(&tab_id, surface, secondary) {
+                match ws
+                    .registry
+                    .attach(&tab_id, surface, secondary, agent.as_deref())
+                {
                     // Re-assert the origin's CURRENT selection — NOT the returned tab. The chrome
                     // owns selection (warden passes no `active`), so force-activating the returned
                     // tab here would show its terminal while the sidebar still highlights whatever
@@ -1258,7 +1348,6 @@ impl WindowManager {
     pub fn has_reopen_target(&self) -> bool {
         self.reopen_target().is_some()
     }
-
     /// The window `⌘⇧T` would reopen right now — the one computation behind both the action
     /// and its menu item's enabled state.
     fn reopen_target(&self) -> Option<String> {
@@ -1444,6 +1533,7 @@ fn reconcile_returned_tab(
         probe: n.probe.clone(),
         kill: n.kill.clone(),
         suspend: n.suspend.clone(),
+        resume: n.resume.clone(),
         title: n.title.clone(),
         split: n.split.clone(),
     };
@@ -1547,6 +1637,7 @@ mod tests {
             tree_path: Vec::new(),
             split: None,
             server: None,
+            resume: None,
         }
     }
 
@@ -1647,6 +1738,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -1659,6 +1751,7 @@ mod tests {
             probe: None,
             kill: None,
             suspend: None,
+            resume: None,
             server: None,
             split: None,
         };
@@ -1770,6 +1863,7 @@ mod tests {
             secondary_spawned: false,
             split: false,
             split_layout: None,
+            agents: false,
             presence: None,
         }
     }

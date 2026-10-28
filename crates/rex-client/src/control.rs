@@ -833,6 +833,26 @@ mod tests {
     }
 
     #[test]
+    fn fake_server_stop_replies_then_shuts_down() {
+        let fake = FakeServer::start();
+        let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
+        let other = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
+        assert_eq!(
+            c.call("server.stop", json!({"if_idle": true}))
+                .map_err(|e| matches!(e, RexError::Api { ref code, .. } if code == "conflict")),
+            Err(true),
+            "another client is connected"
+        );
+        drop(other);
+        fake.wait_control_connections(1, WAIT);
+        assert!(!fake.stopped());
+        assert_eq!(c.call("server.stop", json!({})), Ok(json!({})));
+        assert!(fake.stopped());
+        assert_eq!(fake.wait_control_connections(0, WAIT), 0);
+        assert!(ControlClient::connect(&fake.endpoint(), &info()).is_err());
+    }
+
+    #[test]
     fn a_client_ignoring_events_holds_none() {
         let fake = FakeServer::start();
         let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");

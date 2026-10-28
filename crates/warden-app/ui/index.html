@@ -234,6 +234,140 @@
         -webkit-user-select: none;
       }
       #empty-state svg, #empty-state-2 svg { width: 160px; height: auto; opacity: 0.9; }
+
+      /* The agent tab list: a column right of the main pane of a Rex tab, inside #terminal-hole
+         but outside #pane-primary, so `reportRect` measures a primary hole narrower by its width.
+         Shown only while `#terminal-hole.agents` (the active tab's main pane holds agent tabs and
+         is docked here; `syncAgentsColumn` is its one toggle), so a plain tab's layout is exactly
+         the column-less one. DOM order puts it after #pane-primary: right of the primary whichever
+         side a split takes (before the divider of a right split, at the window edge of a left
+         one). At the window edge the primary's right corners are no longer window corners, so
+         they go square here and the native surface squares them from its own frame. Opaque, like
+         every painted surface on this transparent window. `.narrow` folds it to a rail of dots —
+         automatically on a narrow hole, or by the fold button (`railPref`). */
+      :root { --agents-w: 220px; --agents-narrow-w: 34px; }
+      #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
+        flex-direction: column; background: #15191e; border-left: 1px solid #313640;
+        color: #c3ccd8; font-size: 12px; user-select: none; -webkit-user-select: none; }
+      #terminal-hole.agents #agents { display: flex; }
+      #terminal-hole.agents #pane-primary { --c-tr: 0px; --c-br: 0px; }
+      #agents.narrow { flex-basis: var(--agents-narrow-w); }
+      #agents-list { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 6px 4px; }
+      :where(#agents) button { font: inherit; color: inherit; background: transparent; border: 0;
+        cursor: pointer; padding: 0; }
+      #agents button:disabled { cursor: default; opacity: 0.4; }
+      .a-row { display: flex; align-items: center; gap: 7px; padding: 4px 4px 4px 6px;
+        border-radius: 5px; cursor: default; }
+      .a-row:hover { background: #22272e; }
+      .a-row.sel { background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.55); }
+      .a-row.asleep .a-text { opacity: 0.5; }
+      .a-row.dragging { opacity: 0.35; }
+      .a-row.drop-before { box-shadow: inset 0 2px 0 #56b4e9; }
+      .a-row.drop-after { box-shadow: inset 0 -2px 0 #56b4e9; }
+      .a-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+      .a-name, .a-ctx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .a-name.untitled { color: #6b7280; font-style: italic; }
+      .a-ctx { color: #7d8590; font-size: 11px; }
+      .a-more { flex: none; width: 18px; height: 18px; border-radius: 4px; color: #7d8590;
+        line-height: 18px; text-align: center; }
+      .a-more:hover, .a-row.open .a-more { background: #313640; color: #c3ccd8; }
+      .a-rename { font: inherit; color: #ddd; background: rgba(0, 0, 0, 0.35); width: 100%;
+        box-sizing: border-box; border: 1px solid #56b4e9; border-radius: 4px; padding: 0 4px;
+        margin: -1px 0 -1px -5px; line-height: inherit;
+        outline: none; user-select: text; -webkit-user-select: text; }
+      /* The row's actions, expanded in place under it. */
+      .a-actions { margin: 0 2px 6px 20px; padding: 6px; border-radius: 5px; background: #1c2128;
+        display: flex; flex-direction: column; gap: 5px; }
+      .a-btns { display: flex; flex-wrap: wrap; gap: 4px; }
+      .a-btns button, .a-confirm button, .a-newgroup button { padding: 2px 7px;
+        border-radius: 4px; background: #2a2f37; }
+      .a-btns button:not(:disabled):hover { background: #363c46; }
+      .a-reason { color: #9aa4b2; font-size: 11px; line-height: 1.3; }
+      .a-actions select, .a-newgroup input { font: inherit; font-size: 11px; color: #ddd;
+        background: rgba(0, 0, 0, 0.35); border: 1px solid #313640; border-radius: 4px;
+        padding: 1px 3px; min-width: 0; }
+      .a-actions label { display: flex; gap: 6px; align-items: center; color: #9aa4b2;
+        font-size: 11px; }
+      .a-actions label select { flex: 1; }
+      .a-newgroup { display: flex; gap: 4px; }
+      .a-newgroup input { flex: 1; outline: none; user-select: text; -webkit-user-select: text; }
+      .a-confirm { color: #ffd; background: #4a1f1f; border-radius: 4px; padding: 5px 6px;
+        font-size: 11px; line-height: 1.35; display: flex; flex-direction: column; gap: 5px; }
+      .a-confirm button.danger { background: #8a2b2b; }
+      .a-group { display: flex; align-items: center; gap: 5px; padding: 8px 6px 3px;
+        font-size: 11px; font-weight: 600; color: #9aa4b2; cursor: default; }
+      .a-group:hover { color: #c3ccd8; }
+      .a-group.amber { color: #f0883e; }
+      .a-group.drop-into { box-shadow: inset 0 -2px 0 #56b4e9; }
+      .a-group.drop-before { box-shadow: inset 0 2px 0 #56b4e9; }
+      .a-caret { width: 9px; flex: none; }
+      .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .a-gdots { display: flex; flex-wrap: wrap; gap: 3px; margin-left: auto; }
+      .a-group:not(.folded) .a-gdots { display: none; }
+      .a-row.k { padding-left: 14px; }
+      .a-empty { color: #6b7280; padding: 6px; font-size: 11px; }
+      .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
+        color: #7d8590; font-size: 11px; }
+      .a-newdrop.over { border-color: #56b4e9; color: #c3ccd8; }
+      /* The dots: chrome-core's palette (cyan presence, green live, amber attention). */
+      .a-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-sizing: border-box; }
+      .a-dot.st-working { background: #56b4e9; animation: a-pulse 1s infinite alternate; }
+      .a-dot.st-blocked { background: #f0883e; }
+      .a-dot.st-done, .a-dot.st-error { background: #3fb950; } /* the spec's dot: error = done */
+      .a-dot.st-idle { border: 1.5px solid #6e7681; }
+      .a-dot.st-asleep { border: 1.5px dashed #6e7681; }
+      @keyframes a-pulse { to { opacity: 0.35; } }
+      #agents-foot { flex: none; border-top: 1px solid #313640; padding: 4px; }
+      .a-foot-row { display: flex; gap: 4px; }
+      #agents-new { flex: 1; text-align: left; padding: 4px 6px; border-radius: 5px;
+        color: #9aa4b2; }
+      #agents-new:hover, #agents-rail:hover, .a-closed-head:hover { background: #22272e; }
+      #agents-rail { flex: none; width: 24px; border-radius: 5px; color: #7d8590; }
+      .a-closed-head { display: flex; align-items: center; gap: 5px; padding: 4px 6px;
+        border-radius: 5px; color: #9aa4b2; font-size: 11px; font-weight: 600; }
+      .a-closed-head .a-count { color: #6b7280; font-weight: 400; }
+      .a-closed-head .a-clear { margin-left: auto; font-weight: 400; color: #9aa4b2;
+        padding: 0 4px; border-radius: 4px; }
+      .a-closed-list { max-height: 30vh; overflow-y: auto; }
+      .a-closed { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 20px;
+        font-size: 11px; }
+      .a-closed .a-name { flex: 1; color: #9aa4b2; }
+      .a-closed .a-when { color: #6b7280; flex: none; }
+      .a-closed button { flex: none; color: #9aa4b2; padding: 0 3px;
+        border-radius: 4px; }
+      .a-closed button:hover { background: #313640; }
+      /* The folded rail: dots only (names in each row's tooltip), groups as a hairline. */
+      #agents.narrow #agents-list { padding: 6px 0; }
+      #agents.narrow .a-row { justify-content: center; padding: 6px 0; }
+      #agents.narrow .a-text, #agents.narrow .a-more, #agents.narrow .a-actions,
+      #agents.narrow .a-gname, #agents.narrow .a-group .a-caret, #agents.narrow .a-empty,
+      #agents.narrow .a-newdrop { display: none; }
+      #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
+        border-top: 1px solid #313640; margin: 4px 4px 0; }
+      #agents.narrow .a-gdots { margin: 0; justify-content: center; }
+      #agents.narrow .a-foot-row { flex-direction: column; }
+      #agents.narrow #agents-new { text-align: center; padding: 4px 0; }
+      #agents.narrow #agents-rail { width: auto; padding: 4px 0; }
+      #agents.narrow .a-closed-head { justify-content: center; padding: 4px 0; }
+      #agents.narrow .a-closed-head .a-label, #agents.narrow .a-closed-head .a-clear,
+      #agents.narrow .a-closed-list { display: none; }
+      /* Sleep Server's confirm (`warden:server-sleep-confirm`): over the foot of the sidebar —
+         the one column a native terminal never covers — at the sidebar's width (`placeServerSleep`). */
+      #server-sleep { position: fixed; left: 8px; bottom: 8px; z-index: 20; box-sizing: border-box;
+        color: #ffd; background: #4a1f1f; border: 1px solid #6b2a2a; border-radius: 6px;
+        padding: 8px; font-size: 12px; line-height: 1.35; display: flex; flex-direction: column;
+        gap: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45); }
+      #server-sleep[hidden] { display: none; }
+      #server-sleep .ss-head { font-weight: 600; }
+      #server-sleep ul { margin: 0; padding: 0; list-style: none; max-height: 40vh; overflow-y: auto;
+        display: flex; flex-direction: column; gap: 2px; }
+      #server-sleep li { display: flex; gap: 6px; align-items: baseline; }
+      #server-sleep .ss-name { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+      #server-sleep .ss-kind { flex: none; color: #d9a7a7; font-size: 11px; }
+      #server-sleep .ss-btns { display: flex; gap: 6px; justify-content: flex-end; }
+      #server-sleep button { font: inherit; color: inherit; border: 0; cursor: pointer;
+        padding: 3px 9px; border-radius: 4px; background: #2a2f37; }
+      #server-sleep button.danger { background: #8a2b2b; }
     </style>
   </head>
   <body>
@@ -243,6 +377,16 @@
            sidebar BODY drag is stamped by chrome-core per the `windowDrag` DTO flag (from
            `sidebar_drag`). -->
       <aside id="sidebar" data-tauri-drag-region></aside>
+      <!-- Sleep Server's confirm: every loss by name. Filled by `showServerSleep`. -->
+      <div id="server-sleep" hidden role="alertdialog" aria-labelledby="server-sleep-head">
+        <div id="server-sleep-head" class="ss-head"></div>
+        <div>Ends for good:</div>
+        <ul id="server-sleep-list"></ul>
+        <div class="ss-btns">
+          <button id="server-sleep-cancel">Cancel</button>
+          <button id="server-sleep-go" class="danger">Sleep server</button>
+        </div>
+      </div>
       <div id="terminal-hole">
         <div id="pane-primary" class="pane">
           <div id="empty-state">
@@ -258,6 +402,18 @@
             </svg>
           </div>
         </div>
+        <!-- The agent tab list (a Rex tab's main pane only): rows, groups, and the foot's `+` and
+             Closed fold. Rendered by `renderAgents`; shown by `syncAgentsColumn`. -->
+        <aside id="agents">
+          <div id="agents-list"></div>
+          <div id="agents-foot">
+            <div class="a-foot-row">
+              <button id="agents-new" title="New agent tab (⌘T)">+ New tab</button>
+              <button id="agents-rail"></button>
+            </div>
+            <div id="agents-closed"></div>
+          </div>
+        </aside>
         <!-- Hidden when unsplit — the common case, identical to the single-hole layout — via
              setSplitVisible(false), the SOLE toggle for both `.split` and `hidden` (see the
              CSS comment above #terminal-hole). `split_pane` and a config split turn it on; the
@@ -303,6 +459,17 @@
       // set from every snapshot before anything can lay a split out.
       let splitBand;
       const detached = new Set(); // tab ids popped out into their own window (onSelect → raise it)
+      // True while warden itself drives the component (`wardenSelect`): an onSelect fired
+      // synchronously inside it is warden's own open, not the user's, so it wakes no agent.
+      let wardenSelecting = false;
+      function wardenSelect(f) {
+        wardenSelecting = true;
+        try {
+          f();
+        } finally {
+          wardenSelecting = false;
+        }
+      }
       // tab id → whether its secondary pane is live, mirrored from TabDto.secondary_spawned on
       // every snapshot (init_tabs / warden:refresh) — the same tab-liveness payload `spawned`
       // (primary) already rides in. setActiveId reads this by id so secondaryLive tracks the
@@ -497,6 +664,7 @@
         // every path that lands here (tab switch, refresh, unload's neighbour-follow) re-asserts
         // it rather than leaving a split tab's layout bleeding into the next tab's single hole.
         // Subsumes paintEmptyState()/updateFocusMarker()/reportRect(), which it already calls.
+        syncAgentsColumn(); // ahead of setSplitVisible's reportRect: the column narrows the hole
         setSplitVisible(split);
       }
 
@@ -596,6 +764,9 @@
         splitById.forEach((_, id) => { if (!ids.has(id)) splitById.delete(id); });
         splitLayoutById.forEach((_, id) => { if (!ids.has(id)) splitLayoutById.delete(id); });
         ratioOverride.forEach((_, id) => { if (!ids.has(id)) ratioOverride.delete(id); });
+        agentsById.clear();
+        dto.tabs.forEach((t) => { if (t.agents) agentsById.set(t.id, true); });
+        agentLists.forEach((_, id) => { if (!agentsById.has(id)) agentLists.delete(id); });
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
         detached.clear();
@@ -656,7 +827,8 @@
 
       function applyDto(dto) {
         splitBand = dto.split_band;
-        sb.update(toComponentDto(dto));
+        // chrome-core's first-tab fallback fires onSelect inside `update` — warden's own open.
+        wardenSelect(() => sb.update(toComponentDto(dto)));
         // The window colour on the ROOT, for the pane focus ring (`.pane.focused` reads it —
         // the panes sit outside chrome-core's sidebar root, so its own tokens never reach them).
         // Hot-reload re-runs this, so a `colour` edit re-tints the ring with the banner.
@@ -790,6 +962,457 @@
         }
       }
 
+      // ── The agent tab list (#agents) ──
+      // tab id → whether its main pane holds agent tabs (`TabDto.agents`), rebuilt on every snapshot.
+      const agentsById = new Map();
+      // tab id → its latest `AgentListDto`: pulled once by `agents_init`, then replaced by every
+      // `warden:agents`. That event goes to every window unaddressed (the list is the same in each
+      // window holding the tab), so it is kept for this window's own agent tabs, not `forMe`-filtered.
+      const agentLists = new Map();
+      // The list's own UI state, for one tab: whose actions are open under its row, which row is
+      // being renamed, which close awaits its confirm, which row is naming a new group.
+      const agentUi = { tab: null, open: null, renaming: null, confirming: null, newGroupFor: null };
+      const closedOpen = new Set(); // tab ids whose Closed fold is open
+      // Below this hole width the list folds to a rail of dots, leaving the agent ~480px. The fold
+      // button overrides it per window (`railKey`); choosing what the width would pick clears that.
+      const NARROW_HOLE = 700;
+      const railKey = () => `agents-rail:${myLabel}`;
+      let drag = null; // a row being dragged between groups (see `rowMouseDown`)
+      // An asleep row's click, held for `DBLCLICK_MS` (see `dragEnd`): `{ timer, tab }`.
+      let pendingWake = null;
+      const DBLCLICK_MS = 250;
+      function cancelWake() {
+        if (pendingWake) clearTimeout(pendingWake.timer);
+        pendingWake = null;
+      }
+
+      // The tab whose list is on screen: the active tab, when its main pane holds agent tabs and
+      // is docked here (a popped-out tab's panes are in its own window).
+      const agentsTab = () =>
+        activeId !== null && agentsById.get(activeId) && !detached.has(activeId) ? activeId : null;
+
+      // The one toggle for the column (`#terminal-hole.agents`). Runs inside every `setActiveId`,
+      // ahead of the `reportRect` there, so the first rect reported for a tab is already the
+      // narrower one. A tab with no list yet pulls it.
+      function syncAgentsColumn() {
+        const tab = agentsTab();
+        if (pendingWake && pendingWake.tab !== tab) cancelWake(); // a held wake ends with its tab
+        document.getElementById("terminal-hole").classList.toggle("agents", tab !== null);
+        if (tab === null) return;
+        syncRail();
+        refreshAgents();
+        if (!agentLists.has(tab)) {
+          invoke("agents_init", { tabId: tab })
+            .then((dto) => {
+              if (!dto || agentLists.has(tab)) return; // a `warden:agents` landed first — it's newer
+              agentLists.set(tab, dto);
+              if (agentsTab() === tab) refreshAgents();
+            })
+            .catch((err) => console.error("warden: IPC agents_init failed", err));
+        }
+      }
+
+      function railPref() {
+        try { return localStorage.getItem(railKey()); } catch (e) { return null; }
+      }
+      const autoNarrow = () =>
+        document.getElementById("terminal-hole").getBoundingClientRect().width < NARROW_HOLE;
+      function isNarrow() {
+        const pref = railPref();
+        return pref ? pref === "narrow" : autoNarrow();
+      }
+      function syncRail() {
+        const narrow = isNarrow();
+        document.getElementById("agents").classList.toggle("narrow", narrow);
+        const btn = document.getElementById("agents-rail");
+        btn.textContent = narrow ? "«" : "»";
+        btn.title = narrow ? "Show names" : "Fold to dots";
+        document.getElementById("agents-new").textContent = narrow ? "+" : "+ New tab";
+      }
+      function setRail(narrow) {
+        try {
+          if (narrow === autoNarrow()) localStorage.removeItem(railKey());
+          else localStorage.setItem(railKey(), narrow ? "narrow" : "wide");
+        } catch (e) {}
+        syncRail();
+        reportRect();
+      }
+
+      // Run an agent command; a refusal or Rex failure shows in the sidebar's error bar. The list
+      // itself follows `warden:agents`.
+      function agentCall(cmd, args) {
+        return invoke(cmd, args).catch((err) => {
+          console.error("warden: IPC " + cmd + " failed", err);
+          if (sb) sb.setError("⚠ " + err);
+        });
+      }
+      function agentSelect(tab, id) {
+        const dto = agentLists.get(tab);
+        if (dto) dto.rows.forEach((r) => { r.selected = r.id === id; }); // highlight at once
+        renderAgents();
+        agentCall("agent_select", { tabId: tab, recordId: id });
+      }
+      // Close, after a confirm when the agent can't come back from Closed (it never reported how
+      // to resume — the row's `sleepReason` says so, and so does the command's refusal).
+      function agentClose(tab, r, confirmed) {
+        if (!confirmed && r.sleepReason) {
+          agentUi.confirming = r.id;
+          renderAgents();
+          return;
+        }
+        agentUi.open = agentUi.confirming = null;
+        renderAgents();
+        agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: !!confirmed });
+      }
+      function agentGroup(tab, id, group, index) {
+        agentUi.open = agentUi.newGroupFor = null;
+        renderAgents();
+        agentCall("agent_group", { tabId: tab, recordId: id, group, index: index ?? null });
+      }
+      function startRename(id) {
+        agentUi.renaming = id;
+        agentUi.open = null;
+        renderAgents();
+      }
+
+      // `agent`-prefixed: this page's top-level functions share one global scope with
+      // chrome-core.js, whose own `el` a plain `function el` here would replace.
+      function agentEl(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text !== undefined) e.textContent = text;
+        return e;
+      }
+      function agentButton(text, onClick, cls) {
+        const b = agentEl("button", cls, text);
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onClick();
+        });
+        return b;
+      }
+      // An input in the list takes typing only once this webview is the key view — a terminal
+      // holds first responder (same reason as ⌘⇧F's `focus_sidebar`).
+      function focusInput(input) {
+        invoke("focus_sidebar")
+          .catch(() => {})
+          .finally(() => {
+            input.focus();
+            input.select();
+          });
+      }
+      function textInput(cls, value, placeholder, commit, cancel) {
+        const input = agentEl("input", cls);
+        input.value = value;
+        input.placeholder = placeholder;
+        let done = false;
+        const finish = (ok) => {
+          if (done) return;
+          done = true;
+          ok ? commit(input.value.trim()) : cancel();
+        };
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") finish(true);
+          else if (e.key === "Escape") finish(false);
+        });
+        input.addEventListener("blur", () => finish(true));
+        input.addEventListener("mousedown", (e) => e.stopPropagation());
+        input.addEventListener("dblclick", (e) => e.stopPropagation());
+        setTimeout(() => focusInput(input));
+        return input;
+      }
+      // How long ago a closed tab closed, from `closedAt` (unix seconds).
+      function ago(secs) {
+        const s = Math.max(0, Date.now() / 1000 - secs);
+        if (s < 60) return "now";
+        if (s < 3600) return Math.floor(s / 60) + "m";
+        if (s < 86400) return Math.floor(s / 3600) + "h";
+        return Math.floor(s / 86400) + "d";
+      }
+
+      // Repaint the list for the tab on screen from its DTO. Ungrouped rows sit above the groups;
+      // a folded group shows its rows' dots in its header instead of the rows.
+      function renderAgents() {
+        const tab = agentsTab();
+        const list = document.getElementById("agents-list");
+        const closedBox = document.getElementById("agents-closed");
+        list.textContent = "";
+        closedBox.textContent = "";
+        if (tab === null) return;
+        const dto = agentLists.get(tab);
+        if (!dto) return; // `agents_init` in flight
+        if (agentUi.tab !== tab) Object.assign(agentUi, { tab, open: null, renaming: null, confirming: null, newGroupFor: null });
+        const ids = new Set(dto.rows.map((r) => r.id));
+        for (const k of ["open", "renaming", "confirming", "newGroupFor"]) {
+          if (agentUi[k] !== null && !ids.has(agentUi[k])) agentUi[k] = null;
+        }
+        dto.rows.filter((r) => !r.group).forEach((r) => list.append(...agentRow(tab, dto, r, false)));
+        dto.groups.forEach((g) => {
+          const members = dto.rows.filter((r) => r.group === g.name);
+          list.append(groupHeader(tab, g, members));
+          if (!g.folded) members.forEach((r) => list.append(...agentRow(tab, dto, r, true)));
+        });
+        if (!dto.rows.length) list.append(agentEl("div", "a-empty", "No agent tabs"));
+        renderClosed(tab, dto);
+      }
+      // Repaint for a change from outside the list (`warden:agents`, a snapshot) — held while the
+      // user is mid-drag or typing a name in it, since a repaint would drop the drag or the field;
+      // the gesture's own end repaints from the newest DTO. A working agent re-sends the list on
+      // every status change, so without the hold a rename could not be typed.
+      function refreshAgents() {
+        const busy = (drag && drag.moved) || agentUi.renaming !== null || agentUi.newGroupFor !== null;
+        if (!busy || agentUi.tab !== agentsTab()) renderAgents();
+      }
+
+      function agentRow(tab, dto, r, grouped) {
+        const row = agentEl("div", "a-row");
+        row.classList.toggle("k", grouped);
+        row.classList.toggle("sel", !!r.selected);
+        row.classList.toggle("asleep", r.state === "asleep");
+        row.classList.toggle("open", agentUi.open === r.id);
+        row.dataset.id = r.id;
+        row.dataset.group = r.group ?? "";
+        const name = r.name || "untitled";
+        const ctx = r.context || (r.state === "asleep" ? "asleep" : "");
+        row.title = ctx ? name + "\n" + ctx : name;
+        row.append(agentEl("span", "a-dot st-" + r.state));
+        const text = agentEl("span", "a-text");
+        if (agentUi.renaming === r.id) {
+          const stop = () => { agentUi.renaming = null; renderAgents(); };
+          text.append(textInput("a-rename", r.name, "Name", (v) => {
+            stop();
+            if (v !== r.name) agentCall("agent_rename", { tabId: tab, recordId: r.id, name: v });
+          }, stop));
+        } else {
+          text.append(agentEl("span", r.name ? "a-name" : "a-name untitled", name));
+        }
+        if (ctx) text.append(agentEl("span", "a-ctx", ctx));
+        row.append(text);
+        const more = agentButton("⋯", () => toggleActions(r.id), "a-more");
+        more.title = "Sleep, close, rename, group";
+        row.append(more);
+        row.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          toggleActions(r.id);
+        });
+        row.addEventListener("dblclick", (e) => {
+          if (e.target.closest("button")) return;
+          cancelWake();
+          startRename(r.id);
+        });
+        row.addEventListener("mousedown", (e) => rowMouseDown(e, tab, r, row));
+        return agentUi.open === r.id ? [row, agentActions(tab, dto, r)] : [row];
+      }
+      function toggleActions(id) {
+        agentUi.open = agentUi.open === id ? null : id;
+        agentUi.confirming = agentUi.newGroupFor = null;
+        renderAgents();
+      }
+
+      // A row's actions, expanded in place under it. Sleep stays on screen when it can't run,
+      // disabled with the reason beneath; an asleep row offers Wake in its place.
+      function agentActions(tab, dto, r) {
+        const box = agentEl("div", "a-actions");
+        box.addEventListener("mousedown", (e) => e.stopPropagation());
+        if (agentUi.confirming === r.id) {
+          const c = agentEl("div", "a-confirm");
+          const why = r.sleepReason.charAt(0).toUpperCase() + r.sleepReason.slice(1);
+          c.append(agentEl("span", null, why + ", so closing ends it for good."));
+          const btns = agentEl("div", "a-btns");
+          btns.append(
+            agentButton("Close for good", () => agentClose(tab, r, true), "danger"),
+            agentButton("Keep", () => { agentUi.confirming = null; renderAgents(); })
+          );
+          c.append(btns);
+          box.append(c);
+          return box;
+        }
+        const btns = agentEl("div", "a-btns");
+        if (r.state === "asleep") {
+          btns.append(agentButton("Wake", () => agentSelect(tab, r.id)));
+        } else {
+          const sleep = agentButton("Sleep", () => {
+            agentUi.open = null;
+            renderAgents();
+            agentCall("agent_sleep", { tabId: tab, recordId: r.id });
+          });
+          sleep.disabled = !r.canSleep;
+          sleep.title = r.sleepReason || "Sleep (⌥⌘S)";
+          btns.append(sleep);
+        }
+        btns.append(agentButton("Close", () => agentClose(tab, r, false)), agentButton("Rename", () => startRename(r.id)));
+        box.append(btns);
+        if (r.state !== "asleep" && !r.canSleep && r.sleepReason) {
+          box.append(agentEl("div", "a-reason", "Can't sleep: " + r.sleepReason));
+        }
+        const label = agentEl("label", null, "Group");
+        const pick = agentEl("select");
+        const opt = (value, text) => {
+          const o = agentEl("option", null, text);
+          o.value = value;
+          o.selected = value === (r.group ?? "");
+          return o;
+        };
+        pick.append(opt("", "Ungrouped"), ...dto.groups.map((g) => opt(g.name, g.name)));
+        pick.addEventListener("change", () => agentGroup(tab, r.id, pick.value || null));
+        label.append(pick);
+        box.append(label);
+        if (agentUi.newGroupFor === r.id) {
+          const row = agentEl("div", "a-newgroup");
+          const cancel = () => { agentUi.newGroupFor = null; renderAgents(); };
+          row.append(textInput("", "", "New group name", (v) => (v ? agentGroup(tab, r.id, v) : cancel()), cancel));
+          box.append(row);
+        } else {
+          const ng = agentEl("div", "a-btns");
+          ng.append(agentButton("New group…", () => { agentUi.newGroupFor = r.id; renderAgents(); }));
+          box.append(ng);
+        }
+        return box;
+      }
+
+      function groupHeader(tab, g, members) {
+        const h = agentEl("div", "a-group");
+        h.classList.toggle("folded", g.folded);
+        h.classList.toggle("amber", g.folded && g.amber);
+        h.dataset.group = g.name;
+        h.title = g.name;
+        h.append(agentEl("span", "a-caret", g.folded ? "▸" : "▾"), agentEl("span", "a-gname", g.name));
+        const dots = agentEl("span", "a-gdots");
+        members.forEach((r) => dots.append(agentEl("span", "a-dot st-" + r.state)));
+        h.append(dots);
+        h.addEventListener("click", () =>
+          agentCall("agent_fold", { tabId: tab, group: g.name, folded: !g.folded }));
+        return h;
+      }
+
+      // The Closed fold: newest first, each with Reopen and ✕ (forget it), and Clear for all.
+      // Header and Clear stay when nothing is closed — Clear disabled.
+      function renderClosed(tab, dto) {
+        const box = document.getElementById("agents-closed");
+        const open = closedOpen.has(tab);
+        const n = dto.closed.length;
+        const head = agentEl("div", "a-closed-head");
+        head.title = "Closed tabs";
+        head.append(agentEl("span", "a-caret", open ? "▾" : "▸"), agentEl("span", "a-label", "Closed"), agentEl("span", "a-count", String(n)));
+        const clear = agentButton("Clear", () => agentCall("agent_clear_closed", { tabId: tab, recordId: null }), "a-clear");
+        clear.disabled = n === 0;
+        clear.title = n ? "Forget every closed tab" : "Nothing closed";
+        head.append(clear);
+        head.addEventListener("click", () => {
+          if (isNarrow()) {
+            closedOpen.add(tab);
+            setRail(false);
+          } else if (open) closedOpen.delete(tab);
+          else closedOpen.add(tab);
+          renderAgents();
+        });
+        box.append(head);
+        if (!open) return;
+        const list = agentEl("div", "a-closed-list");
+        if (!n) list.append(agentEl("div", "a-empty", "Nothing closed"));
+        dto.closed.forEach((c) => {
+          const row = agentEl("div", "a-closed");
+          row.append(agentEl("span", c.name ? "a-name" : "a-name untitled", c.name || "untitled"), agentEl("span", "a-when", ago(c.closedAt)));
+          const re = agentButton("↺", () => agentCall("agent_reopen", { tabId: tab, recordId: c.id }));
+          re.title = "Reopen" + (dto.closed[0] === c ? " (⌘⇧T)" : "");
+          const forget = agentButton("✕", () => agentCall("agent_clear_closed", { tabId: tab, recordId: c.id }));
+          forget.title = "Forget";
+          row.append(re, forget);
+          list.append(row);
+        });
+        box.append(list);
+      }
+
+      // Drag a row between groups: a press that moves 4px starts it, a "New group" target joins the
+      // list's foot, and the drop runs `agent_group` (a group's index counts the rows it shows, the
+      // dragged one aside). A press that doesn't move is a click, selecting the row. Same unstick as
+      // the divider: a release over the native terminal never reaches this page, so a move with no
+      // button held ends the drag.
+      function rowMouseDown(e, tab, r, row) {
+        if (e.button !== 0 || e.target.closest("button, input, select")) return;
+        drag = { tab, id: r.id, row, startY: e.clientY, moved: false, drop: null, click: e.detail <= 1,
+          asleep: r.state === "asleep" };
+        window.addEventListener("mousemove", dragMove);
+        window.addEventListener("mouseup", dragEnd);
+        window.addEventListener("blur", dragEnd);
+      }
+      function dragMove(e) {
+        if (!drag) return;
+        if (e.buttons === 0) return dragEnd(e);
+        if (!drag.moved) {
+          if (Math.abs(e.clientY - drag.startY) < 4) return;
+          drag.moved = true;
+          drag.row.classList.add("dragging");
+          document.getElementById("agents-list").append(agentEl("div", "a-newdrop", "+ New group"));
+        }
+        drag.drop = dropAt(e.clientX, e.clientY);
+        document.querySelectorAll("#agents .drop-before, #agents .drop-after, #agents .drop-into, #agents .over")
+          .forEach((x) => x.classList.remove("drop-before", "drop-after", "drop-into", "over"));
+        if (drag.drop) drag.drop.el.classList.add(drag.drop.cls);
+      }
+      function dragEnd(e) {
+        const d = drag;
+        drag = null;
+        window.removeEventListener("mousemove", dragMove);
+        window.removeEventListener("mouseup", dragEnd);
+        window.removeEventListener("blur", dragEnd);
+        if (!d) return;
+        if (!d.moved) {
+          if (e.type !== "mouseup" || !d.click) return;
+          // Selecting an asleep row wakes it, so its click waits out a double-click (a rename,
+          // which cancels it); an awake row selects at once. Any later click supersedes it, and it
+          // lands only if its row is still on screen.
+          cancelWake();
+          if (d.asleep) {
+            const timer = setTimeout(() => {
+              pendingWake = null;
+              const dto = agentsTab() === d.tab && agentLists.get(d.tab);
+              if (dto && dto.rows.some((r) => r.id === d.id)) agentSelect(d.tab, d.id);
+            }, DBLCLICK_MS);
+            pendingWake = { timer, tab: d.tab };
+          } else agentSelect(d.tab, d.id);
+          return;
+        }
+        const t = d.drop;
+        if (t && t.newGroup) Object.assign(agentUi, { open: d.id, newGroupFor: d.id });
+        renderAgents(); // drops the drag marks and the New group target
+        if (t && !t.newGroup) agentGroup(d.tab, d.id, t.group, t.index);
+      }
+      // Where a drop at (x, y) lands: a row's upper/lower half → before/after it in its group; a
+      // group header's lower half → that group's top (its end when folded), its upper half → the
+      // end of the section above it.
+      function dropAt(x, y) {
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || !hit.closest("#agents-list")) return null;
+        const nd = hit.closest(".a-newdrop");
+        if (nd) return { newGroup: true, el: nd, cls: "over" };
+        const row = hit.closest(".a-row");
+        if (row) {
+          if (row.dataset.id === drag.id) return null;
+          const group = row.dataset.group || null;
+          const peers = [...document.querySelectorAll("#agents-list .a-row")].filter(
+            (x) => x.dataset.id !== drag.id && (x.dataset.group || null) === group);
+          const r = row.getBoundingClientRect();
+          const after = y > r.top + r.height / 2;
+          return { group, index: peers.indexOf(row) + (after ? 1 : 0), el: row, cls: after ? "drop-after" : "drop-before" };
+        }
+        const h = hit.closest(".a-group");
+        if (!h) return null;
+        const r = h.getBoundingClientRect();
+        if (y > r.top + r.height / 2) {
+          return { group: h.dataset.group, index: h.classList.contains("folded") ? null : 0, el: h, cls: "drop-into" };
+        }
+        const heads = [...document.querySelectorAll("#agents-list .a-group")];
+        const prev = heads[heads.indexOf(h) - 1];
+        return { group: prev ? prev.dataset.group : null, index: null, el: h, cls: "drop-before" };
+      }
+
+      document.getElementById("agents-new").addEventListener("click", () => {
+        const tab = agentsTab();
+        if (tab) agentCall("agent_new", { tabId: tab });
+      });
+      document.getElementById("agents-rail").addEventListener("click", () => setRail(!isNarrow()));
+
       async function init() {
         let dto;
         try {
@@ -807,6 +1430,8 @@
           document.getElementById("sidebar"),
           {
             async onSelect(id) {
+              // Read before any await: warden's own selects are synchronous calls into the component.
+              const user = !wardenSelecting;
               // A popped-out tab has no local surface to activate — "select" means "raise its
               // window". Don't change local selection (leave activeId on whatever's in this hole).
               if (detached.has(id)) {
@@ -822,7 +1447,7 @@
               // tab's own split/focused layout — the authoritative answer `setActiveId`'s third
               // arg exists for (see its own doc comment): this is the ONE place a tab switch's
               // preserved focus (Registry::activate's untestable branch) is ever confirmed.
-              const res = await invoke("activate_tab", { id }).catch((err) => {
+              const res = await invoke("activate_tab", { id, user }).catch((err) => {
                 console.error("warden: IPC activate_tab failed", err);
                 return { live: false, split: false, focused: 0 };
               });
@@ -932,10 +1557,11 @@
         // Open on the tab the backend activated (a `remember_tabs` restore), not chrome-core's
         // first-tab fallback — that fallback fires onSelect, which would spawn the first tab too.
         // Only on init: after this the component owns selection. `select` runs the normal
-        // onSelect path (the tab is already live, so activate_tab is a warm switch).
+        // onSelect path as warden's own open: the backend already activated this tab, and an
+        // agent pane of it that found nothing live must stay asleep.
         if (dto.active) sb.setActive(dto.active);
         applyDto(dto);
-        if (dto.active) sb.select(dto.active);
+        if (dto.active) wardenSelect(() => sb.select(dto.active));
         if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
 
         // (The launch + 6h update checks are armed by chrome-core from the `autoUpdate` mount config.)
@@ -1058,6 +1684,10 @@
       const ro = new ResizeObserver(() => reportRect());
       ro.observe(document.getElementById("pane-primary"));
       ro.observe(document.getElementById("pane-secondary"));
+      // The agent list folds by the hole's width; its own fold narrows the primary, which the
+      // observer above re-reports.
+      new ResizeObserver(() => { if (agentsTab() !== null) syncRail(); })
+        .observe(document.getElementById("terminal-hole"));
 
       // Divider drag-to-resize: chrome owns split geometry — Rust never sees a ratio, only the
       // rects reportRect derives from these panes' live flex-basis. Same mousedown→mousemove→mouseup
@@ -1087,10 +1717,12 @@
           currentFrac = applySplitFlex(frac); // shared clamp/apply with split restoration
           reportRect();
         }
+        // What the two panes share: the hole less the divider and the agent list (0 wide when hidden).
         function usableWidth() {
           const hole = document.getElementById("terminal-hole").getBoundingClientRect();
           const dividerW = divider.getBoundingClientRect().width;
-          return hole.width - dividerW;
+          const agentsW = document.getElementById("agents").getBoundingClientRect().width;
+          return hole.width - dividerW - agentsW;
         }
         function onMove(e) {
           if (!dragging) return;
@@ -1176,6 +1808,67 @@
       });
       listen("warden:terminate-tab", (e) => {
         if (forMe(e) && activeId) sb.requestEnd(activeId, "destroy");
+      });
+
+      // The agent tab list of a tab (`warden:agents`, sent to every window — see `agentLists`).
+      listen("warden:agents", (e) => {
+        const p = e.payload;
+        if (!p || !p.tabId || !agentsById.has(p.tabId)) return;
+        agentLists.set(p.tabId, p);
+        if (agentsTab() === p.tabId) refreshAgents();
+      });
+      // Tab ▸ Sleep Server with something it can't bring back: confirm, listing every loss by
+      // name. Confirming sends those names back (`server_sleep`); a loss the backend finds that
+      // isn't among them asks again. Cancel does nothing.
+      const SS_KIND = { shell: "terminal", agent: "agent tab", session: "session" };
+      let serverSleep = null; // { server, names } while the confirm shows
+      function placeServerSleep() {
+        const box = document.getElementById("server-sleep");
+        const side = document.getElementById("sidebar").getBoundingClientRect();
+        box.style.left = side.left + 8 + "px";
+        box.style.width = Math.max(160, side.width - 16) + "px";
+      }
+      function showServerSleep(server, losses) {
+        serverSleep = { server, names: losses.map((l) => l.name) };
+        document.getElementById("server-sleep-head").textContent = "Sleep Rex server " + server + "?";
+        const list = document.getElementById("server-sleep-list");
+        list.replaceChildren(...losses.map((l) => {
+          const li = agentEl("li");
+          li.append(agentEl("span", "ss-name", l.name), agentEl("span", "ss-kind", SS_KIND[l.kind] || l.kind));
+          return li;
+        }));
+        placeServerSleep();
+        document.getElementById("server-sleep").hidden = false;
+      }
+      function hideServerSleep() {
+        serverSleep = null;
+        document.getElementById("server-sleep").hidden = true;
+      }
+      document.getElementById("server-sleep-cancel").addEventListener("click", hideServerSleep);
+      document.getElementById("server-sleep-go").addEventListener("click", () => {
+        const s = serverSleep;
+        hideServerSleep();
+        if (s) agentCall("server_sleep", { server: s.server, accepted: s.names });
+      });
+      window.addEventListener("resize", () => { if (serverSleep) placeServerSleep(); });
+      listen("warden:server-sleep-confirm", (e) => {
+        if (!forMe(e) || !e.payload || !e.payload.server) return;
+        showServerSleep(e.payload.server, e.payload.losses || []);
+      });
+
+      // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane: the backend names the tab, the active one here. Sleep acts
+      // on the selected agent tab; its refusal shows in the error bar like a row's.
+      listen("warden:agent-new", (e) => {
+        if (forMe(e) && e.payload.tabId) agentCall("agent_new", { tabId: e.payload.tabId });
+      });
+      listen("warden:agent-reopen", (e) => {
+        if (forMe(e) && e.payload.tabId) agentCall("agent_reopen", { tabId: e.payload.tabId, recordId: null });
+      });
+      listen("warden:agent-sleep", (e) => {
+        if (!forMe(e) || !e.payload.tabId) return;
+        const dto = agentLists.get(e.payload.tabId);
+        const r = dto && dto.rows.find((r) => r.selected);
+        if (r) agentCall("agent_sleep", { tabId: e.payload.tabId, recordId: r.id });
       });
 
       // A split's secondary process exited — the one way a split ends — collapse the layout

@@ -8,6 +8,7 @@ use rex_client::{ClientInfo, Endpoint, RexError};
 use serde_json::{json, Value};
 
 use super::store::{PaneRecord, RexStore};
+use super::windows::{AgentState, AgentWindow, BlockStatus};
 use super::{HubEvent, RexHub};
 
 const WAIT: Duration = Duration::from_secs(3);
@@ -786,16 +787,23 @@ fn claim_is_noop_when_already_owner() {
     assert!(fake.requests_for("session.own_block").is_empty());
     assert_eq!(fake.requests_for(RESIZE).len(), 1);
 
-    // Owner, at this size: every later claim costs no request at all.
-    let before = fake.requests().len();
+    // Owner, at this size: every later claim costs no request at all. (The attach's status pull
+    // runs alongside, on its own worker.)
+    let sizing = || {
+        fake.requests()
+            .iter()
+            .filter(|r| r.method != PROGRAM_STATUS && r.method != TITLE)
+            .count()
+    };
+    let before = sizing();
     for _ in 0..5 {
         assert_eq!(hub.claim("tab-a", 120, 40, None), Ok(false));
     }
-    assert_eq!(fake.requests().len(), before, "no requests");
+    assert_eq!(sizing(), before, "no requests");
 
     // An unmapped pane has nothing to claim.
     assert_eq!(hub.claim("never-opened", 120, 40, None), Ok(false));
-    assert_eq!(fake.requests().len(), before);
+    assert_eq!(sizing(), before);
 }
 
 #[test]
@@ -1164,4 +1172,411 @@ fn an_unopened_unclaimed_row_reads_alive_while_listed() {
     fake.push_event("session_destroyed", json!({"session_id": "session:orphan"}));
     next_event(&rx, |e| matches!(e, HubEvent::SessionsChanged { .. }));
     assert!(!hub.session_alive("rex:session:orphan"));
+}
+
+// ── agent windows and block status ──
+
+const PROGRAM_STATUS: &str = "com.superlogical.terminal.program_status";
+const TITLE: &str = "com.superlogical.terminal.title";
+
+/// A `session.view` of `session_id` with one window per `(window_id, label, block_id)`, each
+/// holding a single terminal block, at `revision`.
+fn windows_view(session_id: &str, revision: u64, windows: &[(&str, &str, &str)]) -> Value {
+    let windows: Vec<Value> = windows
+        .iter()
+        .map(|(w, label, b)| {
+            json!({"window_id": w, "label": label, "layers": [{
+                "layer_id": format!("layer-of-{w}"), "kind": "tiled", "bounds": [0, 0, 1, 1],
+                "layout": {"rect": [0, 0, 1, 1], "block_id": b},
+                "blocks": [{"block_id": b, "creator_name": "com.superlogical.terminal",
+                            "flavor": "com.superlogical.terminal.shell"}],
+            }]})
+        })
+        .collect();
+    json!({"revision": revision, "session_id": session_id, "windows": windows})
+}
+
+/// A fake whose `session:new` holds the windows in the returned list: `session.attach` and
+/// `session.view` read it, so a test changes the session by editing the list and pushing the
+/// events Rex would send.
+fn windowed(
+    windows: &[(&str, &str, &str)],
+) -> (
+    FakeServer,
+    std::sync::Arc<std::sync::Mutex<(u64, Vec<(String, String, String)>)>>,
+) {
+    let fake = scripted(json!([]));
+    let held = std::sync::Arc::new(std::sync::Mutex::new((
+        1u64,
+        windows
+            .iter()
+            .map(|(w, l, b)| (w.to_string(), l.to_string(), b.to_string()))
+            .collect::<Vec<_>>(),
+    )));
+    let render = |h: &std::sync::Mutex<(u64, Vec<(String, String, String)>)>| {
+        let h = h.lock().unwrap();
+        let ws: Vec<(&str, &str, &str)> =
+            h.1.iter()
+                .map(|(w, l, b)| (w.as_str(), l.as_str(), b.as_str()))
+                .collect();
+        windows_view("session:new", h.0, &ws)
+    };
+    let h = held.clone();
+    fake.on("session.attach", move |_, _| {
+        Reply::ok(json!({"client_id": "client:fake-1", "view": render(&h)}))
+    });
+    let h = held.clone();
+    fake.on("session.view", move |_, _| Reply::ok(render(&h)));
+    (fake, held)
+}
+
+fn agent(window_id: &str, block_id: Option<&str>, label: &str) -> AgentWindow {
+    AgentWindow {
+        window_id: window_id.into(),
+        block_id: block_id.map(str::to_owned),
+        label: label.into(),
+    }
+}
+
+/// Waits until `f` holds, or panics after [`WAIT`].
+fn eventually(what: &str, f: impl Fn() -> bool) {
+    let deadline = Instant::now() + WAIT;
+    while !f() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn windows_follow_created_and_closed() {
+    let (fake, held) = windowed(&[("window:1", "main", "block:new")]);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert_eq!(
+        hub.windows("local", "session:new"),
+        [agent("window:1", Some("block:new"), "main")]
+    );
+    // Subscribed after the attach, so its own view isn't what the next event matches.
+    let rx = hub.subscribe();
+
+    // Another client opens a window: Rex sends window_created, then session_view_changed.
+    {
+        let mut h = held.lock().unwrap();
+        h.0 = 2;
+        h.1.push(("window:2".into(), "review".into(), "block:2".into()));
+    }
+    fake.push_session_event(
+        "session:new",
+        "window_created",
+        json!({"window_id": "window:2", "label": "review"}),
+    );
+    next_event(&rx, |e| {
+        matches!(e, HubEvent::WindowsChanged { server, session_id }
+            if server == "local" && session_id == "session:new")
+    });
+    assert_eq!(
+        hub.windows("local", "session:new"),
+        [
+            agent("window:1", Some("block:new"), "main"),
+            agent("window:2", None, "review"),
+        ],
+        "listed from the event alone, its block unknown until the view"
+    );
+    fake.push_session_event(
+        "session:new",
+        "session_view_changed",
+        json!({"revision": 2}),
+    );
+    eventually("the new window's block", || {
+        hub.windows("local", "session:new")
+            == [
+                agent("window:1", Some("block:new"), "main"),
+                agent("window:2", Some("block:2"), "review"),
+            ]
+    });
+
+    // A relabel, then the first window closes.
+    fake.push_session_event(
+        "session:new",
+        "window_label_changed",
+        json!({"window_id": "window:2", "label": "tests"}),
+    );
+    eventually("the relabel", || {
+        hub.windows("local", "session:new")[1].label == "tests"
+    });
+    {
+        let mut h = held.lock().unwrap();
+        h.0 = 4;
+        h.1.remove(0);
+        h.1[0].1 = "tests".into();
+    }
+    fake.push_session_event(
+        "session:new",
+        "window_closed",
+        json!({"window_id": "window:1"}),
+    );
+    fake.push_session_event(
+        "session:new",
+        "session_view_changed",
+        json!({"revision": 4}),
+    );
+    eventually("the closed window to go", || {
+        hub.windows("local", "session:new") == [agent("window:2", Some("block:2"), "tests")]
+    });
+
+    // A session no pane shows is never tracked.
+    assert!(hub.windows("local", "session:other").is_empty());
+}
+
+#[test]
+fn status_from_program_status_changed() {
+    let (fake, _) = windowed(&[("window:1", "main", "block:new")]);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    // A child record is ignored.
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        json!({"id": "build/test", "record": {"id": "build/test", "state": "error",
+               "updated_at": "2026-10-28T00:00:00Z"}, "reason": "report"}),
+    );
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        json!({"id": "", "record": {"state": "blocked", "kind": "permission",
+               "msg": "Allow edit?", "updated_at": "2026-10-28T00:00:01Z"}, "reason": "report"}),
+    );
+    next_event(
+        &rx,
+        |e| matches!(e, HubEvent::StatusChanged { block_id } if block_id == "block:new"),
+    );
+    assert_eq!(
+        hub.block_status("block:new"),
+        Some(BlockStatus {
+            state: AgentState::Blocked,
+            msg: Some("Allow edit?".into()),
+            title: None,
+        })
+    );
+
+    for (state, want) in [
+        ("working", AgentState::Working),
+        ("done", AgentState::Done),
+        ("error", AgentState::Error),
+        ("idle", AgentState::Idle),
+        ("pondering", AgentState::Idle),
+    ] {
+        fake.push_block_event(
+            "session:new",
+            "block:new",
+            "program_status_changed",
+            json!({"id": "", "record": {"state": state, "updated_at": "2026-10-28T00:00:02Z"},
+                   "reason": "report"}),
+        );
+        eventually(state, || {
+            hub.block_status("block:new").map(|s| (s.state, s.msg)) == Some((want, None))
+        });
+    }
+
+    // Removing only a child keeps the root's status; a new prompt removes the root too.
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        json!({"id": "", "record": {"state": "working", "updated_at": "2026-10-28T00:00:03Z"},
+               "reason": "report"}),
+    );
+    eventually("working", || {
+        hub.block_status("block:new").map(|s| s.state) == Some(AgentState::Working)
+    });
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_removed",
+        json!({"ids": ["build/test"], "reason": "clear"}),
+    );
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "title_changed",
+        json!({"title": "after the child", "owner": {"pid": 1, "name": "sh"}}),
+    );
+    eventually("the title after the child's removal", || {
+        hub.block_status("block:new").and_then(|s| s.title) == Some("after the child".into())
+    });
+    assert_eq!(
+        hub.block_status("block:new").map(|s| s.state),
+        Some(AgentState::Working)
+    );
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_removed",
+        json!({"ids": ["", "build/test"], "reason": "prompt"}),
+    );
+    eventually("the removal", || {
+        hub.block_status("block:new").map(|s| s.state) == Some(AgentState::Idle)
+            && hub.block_status("block:new").and_then(|s| s.msg).is_none()
+    });
+}
+
+#[test]
+fn status_pulled_on_attach() {
+    let (fake, _) = windowed(&[("window:1", "main", "block:new")]);
+    fake.on(PROGRAM_STATUS, |p, _| {
+        assert_eq!(p["block_id"], "block:new");
+        Reply::ok(json!({"records": [
+            {"state": "done", "msg": "Tests pass", "updated_at": "2026-10-28T00:00:00Z"},
+            {"id": "sub", "state": "blocked", "updated_at": "2026-10-28T00:00:00Z"},
+        ]}))
+    });
+    fake.reply(TITLE, json!({"title": "fix the parser"}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    eventually("the pulled status", || {
+        hub.block_status("block:new")
+            == Some(BlockStatus {
+                state: AgentState::Done,
+                msg: Some("Tests pass".into()),
+                title: Some("fix the parser".into()),
+            })
+    });
+    assert_eq!(
+        fake.requests_for(PROGRAM_STATUS)[0].payload["session_id"],
+        "session:new"
+    );
+}
+
+#[test]
+fn title_change_updates_status_title() {
+    let (fake, _) = windowed(&[("window:1", "main", "block:new")]);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "title_changed",
+        json!({"title": "refactor auth", "owner": {"pid": 42, "name": "claude"}}),
+    );
+    next_event(
+        &rx,
+        |e| matches!(e, HubEvent::StatusChanged { block_id } if block_id == "block:new"),
+    );
+    assert_eq!(
+        hub.block_status("block:new"),
+        Some(BlockStatus {
+            state: AgentState::Idle,
+            msg: None,
+            title: Some("refactor auth".into()),
+        })
+    );
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        json!({"record": {"state": "working", "updated_at": "2026-10-28T00:00:00Z"}}),
+    );
+    eventually("the title kept beside the state", || {
+        hub.block_status("block:new")
+            == Some(BlockStatus {
+                state: AgentState::Working,
+                msg: None,
+                title: Some("refactor auth".into()),
+            })
+    });
+}
+
+#[test]
+fn new_window_types_startup() {
+    let (fake, _) = windowed(&[("window:1", "main", "block:new")]);
+    fake.reply(
+        "session.new_window",
+        json!({"window_id": "window:9", "block_ids": ["block:9"], "revision": 2}),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    let w = hub
+        .new_window(
+            "local",
+            "session:new",
+            Path::new("/work/proj"),
+            Some("agent --go"),
+            "second",
+        )
+        .expect("new_window");
+    assert_eq!(w, agent("window:9", Some("block:9"), "second"));
+    let calls = fake.requests_for("session.new_window");
+    assert_eq!(calls.len(), 1);
+    let p = &calls[0].payload;
+    assert_eq!(p["session_id"], "session:new");
+    assert_eq!(p["window_label"], "second");
+    let block = &p["layout"]["block"];
+    assert_eq!(block["flavor"], "com.superlogical.terminal.shell");
+    assert_eq!(block["options"]["cwd"], "/work/proj");
+    assert_eq!(block["options"]["initial_input"], "agent --go\n");
+    assert_eq!(
+        hub.windows("local", "session:new"),
+        [
+            agent("window:1", Some("block:new"), "main"),
+            agent("window:9", Some("block:9"), "second"),
+        ]
+    );
+
+    // Without a startup command nothing is typed.
+    hub.new_window("local", "session:new", Path::new("/w"), None, "third")
+        .expect("new_window");
+    let options = &fake.requests_for("session.new_window")[1].payload["layout"]["block"]["options"];
+    assert!(options.get("initial_input").is_none(), "{options}");
+}
+
+#[test]
+fn close_window_removes_it() {
+    let (fake, _) = windowed(&[
+        ("window:1", "main", "block:new"),
+        ("window:2", "second", "block:2"),
+    ]);
+    fake.reply("session.close_window", json!({"revision": 3}));
+    fake.reply("session.set_window_label", json!({"revision": 4}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+
+    hub.close_window("local", "session:new", "window:2")
+        .expect("close_window");
+    let close = &fake.requests_for("session.close_window")[0].payload;
+    assert_eq!(close["session_id"], "session:new");
+    assert_eq!(close["window_id"], "window:2");
+    assert_eq!(
+        hub.windows("local", "session:new"),
+        [agent("window:1", Some("block:new"), "main")]
+    );
+
+    // A window already gone closes cleanly.
+    fake.fail("session.close_window", "not_found", "no such window", 404);
+    hub.close_window("local", "session:new", "window:2")
+        .expect("closing a closed window");
+
+    hub.set_window_label("local", "session:new", "window:1", "renamed")
+        .expect("set_window_label");
+    let set = &fake.requests_for("session.set_window_label")[0].payload;
+    assert_eq!(set["window_id"], "window:1");
+    assert_eq!(set["label"], "renamed");
+    assert_eq!(hub.windows("local", "session:new")[0].label, "renamed");
 }

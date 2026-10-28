@@ -55,6 +55,122 @@ const MENU_TAB_SPLIT: &str = "warden:split-pane";
 const MENU_TAB_SUSPEND: &str = "warden:suspend-tab";
 const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
+/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) — act on the agent tab list of the focused
+/// window's active tab, enabled only while there is one ([`sync_agent_menu`]). The id doubles as
+/// the event name, sent with the tab's id. ⌘⇧T reaches the same list as `warden:agent-reopen`
+/// when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
+const MENU_AGENT_NEW: &str = "warden:agent-new";
+const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
+const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
+
+/// New Agent Tab, Sleep Agent Tab and Reopen Last Closed, kept from the last menu build so their
+/// enabled state follows the focused window's active tab without a rebuild ([`sync_agent_menu`]).
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct AgentMenu(std::sync::Mutex<Option<[tauri::menu::MenuItem<tauri::Wry>; 3]>>);
+
+/// Tab ▸ Sleep Server ▸ `<server>` — one item per Rex server; the id is this prefix plus the
+/// server.
+const MENU_SLEEP_SERVER: &str = "warden:sleep-server:";
+
+/// The Sleep Server items by server, kept from the last menu build so their enabled state and
+/// reason follow the hub's connections without a rebuild ([`sync_server_menu`]).
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct ServerMenu(std::sync::Mutex<Vec<(String, tauri::menu::MenuItem<tauri::Wry>)>>);
+
+/// Every Rex server warden knows: named by a tab in an open window, the store, or the hub — sorted.
+#[cfg(target_os = "macos")]
+fn rex_servers(app: &tauri::AppHandle) -> Vec<String> {
+    use tauri::Manager;
+    let mut servers: Vec<String> = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.windows
+            .values()
+            .flat_map(|ws| ws.registry.rex_tabs().into_iter().map(|(_, s)| s))
+            .collect()
+    };
+    if let Some(hub) = app.try_state::<rex::RexHub>() {
+        servers.extend(hub.servers());
+        servers.extend(hub.store_servers());
+    }
+    servers.sort();
+    servers.dedup();
+    servers
+}
+
+/// Enable each Sleep Server item while its server can sleep, else disable it with the reason
+/// beside its name ([`rex::RexHub::stoppable`]). Main thread: off it `set_enabled` waits on it.
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_server_menu(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let (Some(menu), Some(hub)) = (
+        app.try_state::<ServerMenu>(),
+        app.try_state::<rex::RexHub>(),
+    ) else {
+        return;
+    };
+    let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for (server, item) in items {
+        let why = hub.stoppable(&server).err();
+        let _ = item.set_enabled(why.is_none());
+        let _ = item.set_text(match why {
+            None => server.clone(),
+            Some(why) => format!("{server} — {why}"),
+        });
+    }
+}
+
+/// What the focused window's active tab offers the agent menu items: `(label, tab, sleep,
+/// reopen)` when it holds agent tabs — its selected agent tab can sleep, it has a closed one to
+/// reopen — else `None`.
+#[cfg(target_os = "macos")]
+fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bool)> {
+    use tauri::Manager;
+    let label = app
+        .webview_windows()
+        .into_values()
+        .find(|w| w.is_focused().unwrap_or(false))?
+        .label()
+        .to_string();
+    let tab = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.windows
+            .get(&label)?
+            .registry
+            .active_agent_tab()?
+            .to_owned()
+    };
+    let (sleep, reopen) = rex::lifecycle::menu_actions(app, &tab);
+    Some((label, tab, sleep, reopen))
+}
+
+/// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
+/// holds agent tabs, Sleep Agent Tab while its selected one can sleep, and Reopen Last Closed
+/// while there is an agent tab or a window to reopen. Runs on every menu build, window focus,
+/// tab activation and agent list change, so it also marks the agent tabs now on screen seen
+/// (`rex::lifecycle::mark_seen`); locks `ManagerState`, so callers must not hold it.
+#[cfg(target_os = "macos")]
+pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    rex::lifecycle::mark_seen(app);
+    let Some(menu) = app.try_state::<AgentMenu>() else {
+        return;
+    };
+    let agent = focused_agent_tab(app);
+    let reopen_window = app.state::<ManagerState>().lock().has_reopen_target();
+    // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
+    // waiting on this lock.
+    let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some([new, sleep, reopen]) = items {
+        let _ = new.set_enabled(agent.is_some());
+        let _ = sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
+        let _ = reopen.set_enabled(agent.as_ref().is_some_and(|a| a.3) || reopen_window);
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct RectArg {
     x: f64,
@@ -109,7 +225,7 @@ fn build_app_menu(
     app: &tauri::AppHandle,
     mode: warden_config::TabDigitKeys,
     entries: Vec<crate::plan::WindowMenuEntry>,
-    reopen_available: bool,
+    servers: Vec<String>,
 ) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
@@ -149,6 +265,15 @@ fn build_app_menu(
     let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, "Terminate Session…")
         .accelerator("Shift+Cmd+KeyK")
         .build(app)?;
+    // Enabled by `sync_agent_menu`, which `rebuild_menu` runs right after this build.
+    let agent_new_item = MenuItemBuilder::with_id(MENU_AGENT_NEW, "New Agent Tab")
+        .accelerator("CmdOrCtrl+KeyT")
+        .enabled(false)
+        .build(app)?;
+    let agent_sleep_item = MenuItemBuilder::with_id(MENU_AGENT_SLEEP, "Sleep Agent Tab")
+        .accelerator("Alt+Cmd+KeyS")
+        .enabled(false)
+        .build(app)?;
     // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
     // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
     tab_menu = tab_menu
@@ -160,7 +285,31 @@ fn build_app_menu(
         .separator()
         .item(&suspend_item)
         .item(&terminate_item)
-        .separator();
+        .separator()
+        .item(&agent_new_item)
+        .item(&agent_sleep_item);
+    // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
+    // disabled line says so.
+    let server_items = servers
+        .into_iter()
+        .map(|s| {
+            let item = MenuItemBuilder::with_id(format!("{MENU_SLEEP_SERVER}{s}"), s.as_str())
+                .enabled(false)
+                .build(app)?;
+            Ok((s, item))
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let mut server_menu = SubmenuBuilder::new(app, "Sleep Server");
+    for (_, item) in &server_items {
+        server_menu = server_menu.item(item);
+    }
+    if server_items.is_empty() {
+        let none = MenuItemBuilder::new("No Rex servers")
+            .enabled(false)
+            .build(app)?;
+        server_menu = server_menu.item(&none);
+    }
+    tab_menu = tab_menu.item(&server_menu.build()?).separator();
     for it in &nav.jumps {
         tab_menu = tab_menu.item(it);
     }
@@ -169,10 +318,11 @@ fn build_app_menu(
     // Reopen Last Closed (⌘⇧T) is warden-only (curator/lector have no equivalent), so it's not
     // part of the spine (YAGNI — add it there only if a sibling app wants it too). Spliced into
     // the spine's already-built Window submenu, at the top, mirroring warden's original layout
-    // (reopen-last + separator, then the rest).
+    // (reopen-last + separator, then the rest). In an agent pane with a closed agent tab ⌘⇧T
+    // reopens that instead; `sync_agent_menu` enables it for either.
     let reopen_last = MenuItemBuilder::with_id(MENU_WINDOW_REOPEN_LAST, "Reopen Last Closed")
         .accelerator("Shift+Cmd+KeyT")
-        .enabled(reopen_available)
+        .enabled(false)
         .build(app)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let window_menu = &spine.submenus[2];
@@ -187,6 +337,13 @@ fn build_app_menu(
         ])
         .build()?;
     app.set_menu(menu)?;
+    if let Some(keep) = tauri::Manager::try_state::<AgentMenu>(app) {
+        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some([agent_new_item, agent_sleep_item, reopen_last]);
+    }
+    if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
+        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = server_items;
+    }
     Ok(())
 }
 
@@ -198,15 +355,14 @@ fn build_app_menu(
 fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::Manager;
     let st = app.state::<ManagerState>();
-    let (mode, entries, reopen_available) = {
+    let (mode, entries) = {
         let m = st.lock();
-        (
-            m.last_good.tab_digit_keys,
-            m.window_menu_entries(),
-            m.has_reopen_target(),
-        )
+        (m.last_good.tab_digit_keys, m.window_menu_entries())
     };
-    build_app_menu(app, mode, entries, reopen_available)
+    build_app_menu(app, mode, entries, rex_servers(app))?;
+    sync_agent_menu(app);
+    sync_server_menu(app);
+    Ok(())
 }
 
 /// Return the calling window's banner + tab descriptors, resolved by label.
@@ -265,12 +421,17 @@ struct ActivateResult {
 /// the leak the placeholder exists to stop. Report liveness so the chrome paints it. A Rex tab
 /// still opening its session is cold too: `live` is false until the `warden:refresh` its landing
 /// sends (`rex::spawn`).
+///
+/// `user` is false when the chrome selected the tab on warden's behalf (window init, the
+/// component's fallback after a snapshot): an agent pane then opens as warden's own and wakes
+/// nothing (`Registry::activate`). Absent, it is the user's.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn activate_tab(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
     id: String,
+    user: Option<bool>,
 ) -> ActivateResult {
     use tauri::Emitter;
     // Capture both the spawn outcome AND whether this call spawned a FRESH cold surface (whose
@@ -283,7 +444,12 @@ fn activate_tab(
         let out = match m.windows.get_mut(window.label()) {
             Some(ws) => {
                 let has_probe = ws.registry.tab_has_probe(&id);
-                let (fresh, err) = match ws.registry.activate(&id) {
+                let activated = if user.unwrap_or(true) {
+                    ws.registry.activate_user(&id)
+                } else {
+                    ws.registry.activate(&id)
+                };
+                let (fresh, err) = match activated {
                     Ok(fresh) => (fresh, None),
                     Err(e) => (false, Some(e)),
                 };
@@ -348,6 +514,7 @@ fn activate_tab(
             let _ = window.emit("warden:refresh", dto);
         }
     }
+    sync_agent_menu(tauri::Manager::app_handle(&window));
     ActivateResult {
         live,
         split,
@@ -365,12 +532,16 @@ fn unload_tab(
     state: tauri::State<ManagerState>,
     id: String,
 ) -> Option<String> {
-    let mut m = state.lock();
-    let new_active = m
-        .windows
-        .get_mut(window.label())
-        .and_then(|ws| ws.registry.unload(&id));
-    m.record_session(window.label());
+    let new_active = {
+        let mut m = state.lock();
+        let new_active = m
+            .windows
+            .get_mut(window.label())
+            .and_then(|ws| ws.registry.unload(&id));
+        m.record_session(window.label());
+        new_active
+    };
+    sync_agent_menu(tauri::Manager::app_handle(&window));
     new_active
 }
 
@@ -405,7 +576,7 @@ fn split_pane(
                 "this tab can't split: it shows a Rex session opened from the sidebar".into(),
             );
         }
-        ws.registry.activate(&id)
+        ws.registry.activate_user(&id)
     };
     if let Err(e) = primary {
         eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
@@ -546,7 +717,7 @@ fn pop_out_tab(
 
     // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
     // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, secondary, secondary_left, tab_spec, spec, token) = {
+    let (surface, secondary, secondary_left, tab_spec, spec, token, agent) = {
         let mut m = state.lock();
         let ws = m
             .windows
@@ -568,6 +739,8 @@ fn pop_out_tab(
                     .to_string(),
             );
         }
+        // The agent whose surface travels, so its size and exit still name the agent.
+        let agent = ws.registry.selected_agent(&id).map(str::to_string);
         let (surface, secondary) = ws
             .registry
             .detach(&id)
@@ -609,7 +782,15 @@ fn pop_out_tab(
             ]),
         };
         let token = crate::plan::detach_window_token(&origin_label, &id);
-        (surface, secondary, secondary_left, tab_spec, spec, token)
+        (
+            surface,
+            secondary,
+            secondary_left,
+            tab_spec,
+            spec,
+            token,
+            agent,
+        )
     };
 
     // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
@@ -732,7 +913,10 @@ fn pop_out_tab(
             let secondary = secondary_opt.take();
             let mut m = state.lock();
             if let Some(ws) = m.windows.get_mut(&origin_label) {
-                match ws.registry.attach(&id, surface, secondary) {
+                match ws
+                    .registry
+                    .attach(&id, surface, secondary, agent.as_deref())
+                {
                     // Re-assert the origin's CURRENT selection (not this tab — pop-out can be
                     // driven on a background tab, and `activate` would move the shown surface
                     // out from under the sidebar's highlight). This is what re-applies the
@@ -765,6 +949,7 @@ fn pop_out_tab(
                 spec: tab_spec,
                 origin_label: origin_label.clone(),
                 tab_id: id.clone(),
+                agent,
             },
         );
     }
@@ -789,6 +974,7 @@ fn pop_out_tab(
                     "warden:tab-seen",
                     serde_json::json!({ "label": origin, "id": tab }),
                 );
+                sync_agent_menu(&app2);
             }
         });
     }
@@ -955,6 +1141,177 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     // Probe this tab first in the burst so its dot lights as soon as the session comes up, not after
     // the rest of a wide window's sweep; the await keeps the burst alive across the async start.
     probe::bump_tab_await(window.label(), &id, true);
+}
+
+// The agent tab list's commands (`rex::lifecycle`). Each answers a refusal at once; Rex work runs
+// on a worker, its failure goes to the window's error banner, and `warden:agents` follows.
+
+/// Tab `tab_id`'s agent tab list as it stands, for a chrome that has none for it yet; every change
+/// after this arrives as `warden:agents`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agents_init(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+) -> Option<rex::lifecycle::AgentListDto> {
+    use tauri::Manager;
+    rex::lifecycle::current_list(window.app_handle(), &tab_id)
+}
+
+/// A new agent tab in tab `tab_id`'s main pane, typing the tab's `cmd`, selected.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_new(window: tauri::WebviewWindow, tab_id: String) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::run(
+        window.app_handle(),
+        window.label(),
+        &tab_id,
+        rex::lifecycle::AgentOp::New,
+    )
+}
+
+/// Show agent tab `record_id`, waking it when it is asleep.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_select(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::select(window.app_handle(), window.label(), &tab_id, &record_id)
+}
+
+/// Put agent tab `record_id` to sleep; refused while it hasn't reported how to resume.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_sleep(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Sleep(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Wake asleep agent tab `record_id`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_wake(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Wake(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Close agent tab `record_id` into the closed fold. One that never reported how to resume is
+/// refused (the chrome then confirms it goes for good) unless `confirmed`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_close(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Close {
+        id: record_id,
+        confirmed,
+    };
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Reopen closed agent tab `record_id`, the most recently closed when absent.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_reopen(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: Option<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Reopen(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Name agent tab `record_id`; a blank name gives a live tab Rex's default.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_rename(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    name: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Rename(record_id, name);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
+/// Move agent tab `record_id` into `group` (absent or blank: ungrouped; a new name makes the
+/// group) at `index` among that group's tabs, last when absent.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_group(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    group: Option<String>,
+    index: Option<usize>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.set_group(&tab_id, &record_id, group.as_deref(), index)
+    })
+}
+
+/// Fold or unfold tab `tab_id`'s agent group `group`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_fold(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    group: String,
+    folded: bool,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.set_folded(&tab_id, &group, folded);
+        true
+    })
+}
+
+/// Clear closed agent tab `record_id` from the fold, or every closed one when absent.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_clear_closed(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: Option<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.clear_closed(&tab_id, record_id.as_deref()) || record_id.is_none()
+    })
+}
+
+/// Sleep Rex server `server`, the user having confirmed losing `accepted` (by name). A loss not
+/// among them asks again; Tab ▸ Sleep Server starts here with none.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn server_sleep(
+    window: tauri::WebviewWindow,
+    server: String,
+    accepted: Vec<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::sleep_server(window.app_handle(), window.label(), &server, &accepted)
 }
 
 /// Re-scan every project-tree root of the focused window's config and reconcile:
@@ -1336,6 +1693,33 @@ fn main() {
                 return;
             }
 
+            // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
+            // chrome gets the active tab's id. ⌘T and ⌥⌘S are disabled elsewhere (`sync_agent_menu`);
+            // ⌘⇧T falls through to reopening a window.
+            if id == MENU_AGENT_NEW || id == MENU_AGENT_SLEEP || id == MENU_WINDOW_REOPEN_LAST {
+                // ⌘⇧T reaches the list only when it has a closed agent tab; otherwise it reopens
+                // a window, as everywhere else.
+                let target = focused_agent_tab(app)
+                    .filter(|a| id != MENU_WINDOW_REOPEN_LAST || a.3)
+                    .map(|(label, tab, ..)| (label, tab));
+                if let Some((label, tab)) = target {
+                    let event = if id == MENU_WINDOW_REOPEN_LAST {
+                        EVENT_AGENT_REOPEN
+                    } else {
+                        id
+                    };
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        event,
+                        serde_json::json!({ "label": label, "tabId": tab }),
+                    );
+                    return;
+                }
+                if id != MENU_WINDOW_REOPEN_LAST {
+                    return;
+                }
+            }
+
             // Window menu acts on the manager/app, not the focused window — handle it
             // before the focused-window lookup (reopen-last needs no focused window).
             if id == MENU_WINDOW_REOPEN_LAST {
@@ -1370,6 +1754,17 @@ fn main() {
                 return;
             };
             let label = win.label().to_string();
+            // Sleep Server ▸ <server>: the focused window confirms any loss.
+            if let Some(server) = id.strip_prefix(MENU_SLEEP_SERVER) {
+                if let Err(message) = rex::lifecycle::sleep_server(app, &label, server, &[]) {
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        "warden:error",
+                        serde_json::json!({ "label": label, "message": message }),
+                    );
+                }
+                return;
+            }
             // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases) — shell-core routes the
             // id, so this handler is mode-blind: the aliases arrive as plain Next/Prev.
             if let Some(action) = shell_core::menu::tab_nav_action(id) {
@@ -1464,7 +1859,19 @@ fn main() {
             shell_home_create_config,
             shell_home_edit_config,
             shell_home_open_window,
-            probe_now
+            probe_now,
+            agents_init,
+            agent_new,
+            agent_select,
+            agent_sleep,
+            agent_wake,
+            agent_close,
+            agent_reopen,
+            agent_rename,
+            agent_group,
+            agent_fold,
+            agent_clear_closed,
+            server_sleep
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -1497,6 +1904,12 @@ fn main() {
                 };
                 app.manage(rex::size::Sizer::start(hub.clone()));
                 app.manage(hub);
+                // What warden keeps about agent tabs, read and written by agent panes' opens.
+                app.manage(std::sync::Mutex::new(match scoped(rex::agents::STEM) {
+                    Some(path) => rex::agents::AgentStore::load(path),
+                    None => rex::agents::AgentStore::default(),
+                }));
+                app.manage(std::sync::Mutex::new(rex::attention::Attention::default()));
                 // Load config; a config that parses (even with zero `[[window]]` entries) always
                 // materializes — `materialize` builds nothing for an empty window list and
                 // `sync_empty_surface` shows the home surface's window list (empty or not). A
@@ -1521,6 +1934,8 @@ fn main() {
                     }
                 }
                 app.manage(ManagerState(std::sync::Mutex::new(mgr)));
+                app.manage(AgentMenu::default());
+                app.manage(ServerMenu::default());
 
                 // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
                 // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;
@@ -1531,6 +1946,10 @@ fn main() {
                 // Rex tabs' presence dots follow the hub's session lists (not the probe
                 // scheduler, which skips them).
                 rex::spawn::watch_presence(handle.clone());
+                // Agent tab lists follow Rex's windows and statuses and the relays' resume
+                // reports.
+                rex::lifecycle::watch_agents(handle.clone());
+                rex::lifecycle::watch_reports(handle.clone());
 
                 // Background presence-probe scheduler — the single probe driver. Per-window
                 // fast-until-stable bursts on key moments (tab activate, window focus/open, session

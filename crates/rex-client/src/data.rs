@@ -277,7 +277,7 @@ mod tests {
             let echoed = |out: &[u8]| String::from_utf8_lossy(out).contains("rex-client-$((6*7))");
             while !(resized && echoed(&out)) {
                 let Some(chunk) = s.read()? else { break };
-                let (bytes, msgs) = demux.push(&chunk);
+                let (bytes, msgs, _) = demux.push(&chunk);
                 out.extend(bytes);
                 resized |= msgs.iter().any(|m| matches!(m, RexMessage::Resize { .. }));
             }
