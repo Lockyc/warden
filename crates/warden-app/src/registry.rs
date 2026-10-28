@@ -259,6 +259,12 @@ fn runs_probe(spec: &TabSpec) -> bool {
     spec.probe.is_some() && spec.server.is_none()
 }
 
+/// The `suspend` command a tab offers ⏻ with. It runs here, with cwd = the tab's `dir`, so a
+/// remote Rex tab — whose `dir` is a path on its server — offers none.
+fn suspend_cmd(spec: &TabSpec) -> Option<&String> {
+    spec.suspend.as_ref().filter(|_| !is_remote(spec))
+}
+
 /// Whether `spec` runs on a Rex server other than this Mac's, so its `dir` is a path there.
 fn is_remote(spec: &TabSpec) -> bool {
     spec.server
@@ -636,7 +642,7 @@ impl Registry {
                 group: t.primary.spec.group.clone(),
                 has_probe: t.primary.spec.probe.is_some() || t.primary.spec.server.is_some(),
                 has_kill: t.primary.spec.kill.is_some() || t.primary.spec.server.is_some(),
-                has_suspend: t.primary.spec.suspend.is_some(),
+                has_suspend: suspend_cmd(&t.primary.spec).is_some(),
                 has_cmd: t.primary.spec.startup.is_some(),
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
@@ -682,7 +688,8 @@ impl Registry {
     }
 
     /// How to end tab `id`'s session the `how` way — its `suspend` or `kill` command — else `None`
-    /// (unknown tab, or that command isn't set). A Rex tab's destroy is its panes' Rex sessions —
+    /// (unknown tab, that command isn't set, or a suspend on a remote Rex tab — `suspend_cmd`).
+    /// A Rex tab's destroy is its panes' Rex sessions —
     /// both pane keys, mapped or not, since a split's session outlives the split. Independent of
     /// the surface being live — a session can exist while warden's surface is cold.
     pub fn end_target(&self, id: &str, how: EndSession) -> Option<EndTarget> {
@@ -695,7 +702,7 @@ impl Registry {
                     secondary_spec(spec, id).id,
                 ]));
             }
-            EndSession::Suspend => spec.suspend.as_ref(),
+            EndSession::Suspend => suspend_cmd(spec),
             EndSession::Destroy => spec.kill.as_ref(),
         };
         cmd.map(|c| EndTarget::Command(spec.dir.clone(), t.title.clone(), c.clone()))
@@ -2379,8 +2386,9 @@ mod tests {
         assert_eq!(
             r.end_target("rex", EndSession::Suspend),
             Some(EndTarget::Command("/tmp".into(), "rex".into(), "s".into())),
-            "suspend stays the configured command"
+            "a local Rex tab keeps its suspend command"
         );
+        assert!(r.tab_dtos()[0].has_suspend);
         assert_eq!(
             r.end_target("plain", EndSession::Destroy),
             Some(EndTarget::Command(
@@ -2389,6 +2397,16 @@ mod tests {
                 "k".into()
             ))
         );
+    }
+
+    #[test]
+    fn remote_rex_tab_offers_no_suspend() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut remote = rex_spec("remote", "remote-host");
+        remote.suspend = Some("s".into());
+        r.add(&remote, false).unwrap();
+        assert!(!r.tab_dtos()[0].has_suspend);
+        assert_eq!(r.end_target("remote", EndSession::Suspend), None);
     }
 
     #[test]
