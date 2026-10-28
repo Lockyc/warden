@@ -33,7 +33,7 @@ public. Rex is chosen per tab.
 | Piece | Owns |
 |---|---|
 | `crates/rex-client` | The protocol: control connection (`ControlClient`), data streams (`DataStream`), wire codecs, `Endpoint`. Pins `API_REVISION` in `hello`; the server translates older revisions forward. `rex_client::fake` (feature `fake`) is the in-process fake server every gate test uses. |
-| `crates/warden-relay` | One pane's block: stream → stdout (the opening snapshot decoded to VT with libghostty-vt, then raw output minus Rex's own messages), stdin → `terminal.write`, resume/restart on a dropped stream. |
+| `crates/warden-relay` | One pane's block: stream → stdout (the opening snapshot decoded to VT with libghostty-vt at the pane's size, then raw output minus Rex's own messages), stdin → `terminal.write`, resume/restart on a dropped stream. |
 | `rex/mod.rs` — `RexHub` | warden-app's one owner of Rex control connections: one per server, the live session lists, find-or-create per pane, block owners, claim/resize, destroy, `HubEvent`s. |
 | `rex/store.rs` | The only Rex state warden keeps: pane key → {server, session id}, persisted per config file. |
 | `rex/server.rs` | `server` value → `Endpoint` (host labels via the local server's `hosts.list`); starting a stopped local server. |

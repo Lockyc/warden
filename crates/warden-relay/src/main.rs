@@ -304,7 +304,7 @@ impl Feed {
             None => chunk.to_vec(),
             Some(buf) => {
                 buf.extend_from_slice(chunk);
-                match vt::snapshot_to_vt(buf) {
+                match vt::snapshot_to_vt(buf, term::pane_size()) {
                     Ok((screen, len)) => {
                         if self.restart {
                             out.write_all(RESET)?;
