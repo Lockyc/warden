@@ -14,7 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rex_client::RexError;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::agents::{self, AgentStore};
+use super::agents::AgentStore;
+use super::lifecycle::AgentOp;
 use super::server::LOCAL;
 use super::{unclaimed, HubEvent, PaneTarget, RexHub};
 use crate::probe::Presence;
@@ -242,31 +243,22 @@ pub fn watch_presence(app: AppHandle) {
 /// finished ([`RexHub::destroy_if_exited`]), on a worker, then refresh ([`hub_changed`]). A relay that left for any other reason (the server
 /// unreachable, the pane closed) leaves the session for the next open to reattach.
 ///
-/// For an agent's key (`project` names its tab) only that agent's window is let go
-/// ([`RexHub::end_agent_if_exited`]), and its record follows the windows left: closed when it can
-/// resume, else dropped (`agents::reconcile`).
-pub fn end_if_exited(app: &AppHandle, pane_key: String, project: Option<String>) {
+/// For an agent's key (`agent` names its tab and record) only that agent's window is let go
+/// ([`RexHub::end_agent_if_exited`]), and its record closes, or drops when it can't resume, as an
+/// op on its pane ([`AgentOp::Exited`]).
+pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, String)>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("warden-rex-exit".into())
         .spawn(move || {
             if let Some(hub) = app.try_state::<RexHub>() {
-                match &project {
+                match agent {
                     None => {
                         hub.destroy_if_exited(&pane_key);
                     }
-                    Some(project) => {
-                        let left = hub.end_agent_if_exited(&pane_key);
-                        let store = app.try_state::<Mutex<AgentStore>>();
-                        if let (Some(left), Some(store)) = (left, store) {
-                            {
-                                let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
-                                let records = store.records(project);
-                                let next =
-                                    agents::reconcile(project, &records, &left, true, unix_now());
-                                store.set_project(project, next);
-                            }
-                            super::lifecycle::emit_agents(&app, project);
+                    Some((project, record)) => {
+                        if hub.end_agent_if_exited(&pane_key) {
+                            super::lifecycle::follow(&app, &project, &AgentOp::Exited(record));
                         }
                     }
                 }

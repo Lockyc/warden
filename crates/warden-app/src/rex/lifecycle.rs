@@ -43,6 +43,10 @@ pub enum AgentOp {
     Rename(String, String),
     /// Follow the session's windows as they are now.
     Refresh,
+    /// The agent's program exited and its window was let go ([`RexHub::end_agent_if_exited`]):
+    /// as a confirmed close, without the Rex call. Closed even when its session ended with it,
+    /// which a refresh would read as a lost session and sleep it, waking it on the next open.
+    Exited(String),
 }
 
 /// Why `op` can't run on `records`: sleeping, or closing unconfirmed, an agent that never
@@ -149,6 +153,21 @@ impl RexHub {
         let mut drop = None;
         match op {
             AgentOp::Refresh => {}
+            AgentOp::Exited(id) => {
+                // Gone already when its window closed in a live session without a resume command.
+                let open = records
+                    .iter_mut()
+                    .find(|r| r.id == *id && r.state != RecordState::Closed);
+                if let Some(r) = open {
+                    r.window_id = None;
+                    r.block_id = None;
+                    r.state = RecordState::Closed;
+                    r.closed_at = Some(now);
+                    if r.resume.is_none() {
+                        drop = Some(r.id.clone());
+                    }
+                }
+            }
             AgentOp::New => {
                 let made = match &session {
                     Some((_, sid)) => self.inner.new_window_until(
@@ -1180,37 +1199,42 @@ pub fn mark_seen(app: &AppHandle) {
     }
 }
 
-/// Reconcile `project`'s list with its session's windows on a worker, if a window holds the tab.
+/// Reconcile `project`'s list with its session's windows on a worker ([`follow`]).
 fn refresh(app: &AppHandle, project: String) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("warden-agent-refresh".into())
+        .spawn(move || follow(&app, &project, &AgentOp::Refresh));
+    if let Err(e) = spawned {
+        eprintln!("warden: couldn't start following agent tabs: {e}");
+    }
+}
+
+/// Run `op`, one Rex has already made happen, on `project`'s agent pane and land it, if a window
+/// holds the tab. Worker only: it waits on the pane's hold and on Rex. A failure is logged, since
+/// no window asked for it.
+pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
     let req = {
         let st = app.state::<ManagerState>();
         let m = st.lock();
         m.windows
             .values()
-            .find_map(|ws| ws.registry.agent_request(&project))
+            .find_map(|ws| ws.registry.agent_request(project))
     };
-    let Some(req) = req else { return };
-    let app = app.clone();
-    let spawned = std::thread::Builder::new()
-        .name("warden-agent-refresh".into())
-        .spawn(move || {
-            let (Some(hub), Some(store)) = (
-                app.try_state::<RexHub>(),
-                app.try_state::<Mutex<AgentStore>>(),
-            ) else {
-                return;
-            };
-            let result = hub.agent_op(&store, &req, &AgentOp::Refresh, unix_now());
-            if let Err(e) = &result {
-                eprintln!("warden: couldn't follow {project:?}'s agent tabs: {e}");
-                return;
-            }
-            let main = app.clone();
-            let _ = app.run_on_main_thread(move || land(&main, None, &project, result));
-        });
-    if let Err(e) = spawned {
-        eprintln!("warden: couldn't start following agent tabs: {e}");
+    let (Some(req), Some(hub), Some(store)) = (
+        req,
+        app.try_state::<RexHub>(),
+        app.try_state::<Mutex<AgentStore>>(),
+    ) else {
+        return;
+    };
+    let result = hub.agent_op(&store, &req, op, unix_now());
+    if let Err(e) = &result {
+        eprintln!("warden: couldn't follow {project:?}'s agent tabs: {e}");
+        return;
     }
+    let (main, project) = (app.clone(), project.to_owned());
+    let _ = app.run_on_main_thread(move || land(&main, None, &project, result));
 }
 
 /// Listen for the resume commands relays report ([`super::reports`]) for the app's life, storing
@@ -1290,6 +1314,53 @@ mod tests {
         assert_eq!(NO_RESUME, "this agent hasn't reported how to resume it");
         assert!(f.requests_for("session.close_window").is_empty());
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Live);
+    }
+
+    /// Agent `a` (resumable when `resume`) alone in its session, opened, then its program exits
+    /// and its window is let go, ending the session.
+    fn exited_alone(
+        resume: Option<&str>,
+    ) -> (
+        rex_client::fake::FakeServer,
+        std::sync::Mutex<crate::rex::agents::AgentStore>,
+    ) {
+        let f = fake(Some("session:old"), vec![("window:1", "block:1", "a")]);
+        f.reply(
+            "session.list_blocks",
+            json!({"blocks": [{"block_id": "block:1", "placement": "placed"}]}),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut a = record("a", RecordState::Live, Some("window:1"), resume);
+        a.selected = true;
+        let s = store(vec![a]);
+        hub.open_agents(&s, &open(true, None), 7).expect("open");
+        f.reply(
+            "com.superlogical.terminal.process",
+            json!({"last_exit": {"exit_code": 0}}),
+        );
+        assert!(hub.end_agent_if_exited(&crate::registry::agent_key("t", "a")));
+        assert_eq!(f.requests_for("session.destroy").len(), 1);
+        hub.agent_op(&s, &open(false, None), &AgentOp::Exited("a".into()), 9)
+            .expect("exited");
+        (f, s)
+    }
+
+    #[test]
+    fn an_exit_that_ends_the_session_closes_the_agent_rather_than_sleeping_it() {
+        let (_f, s) = exited_alone(Some("claude --resume aaa"));
+        let a = state_of(&s, "a").unwrap();
+        assert_eq!(a.state, RecordState::Closed, "a user open won't wake it");
+        assert_eq!(a.closed_at, Some(9));
+        assert_eq!((a.window_id, a.block_id), (None, None));
+        assert!(!a.selected);
+    }
+
+    #[test]
+    fn an_exit_without_a_resume_command_drops_the_agent() {
+        let (_f, s) = exited_alone(None);
+        assert_eq!(state_of(&s, "a"), None);
     }
 
     #[test]
