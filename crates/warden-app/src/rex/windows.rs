@@ -601,7 +601,8 @@ fn terminal_blocks(view: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Whether a record id names the root record: Rex leaves it out (or empty) for the root.
+/// Whether a record id names the root record: `""` in `program_status_changed` and
+/// `program_status_removed`, left out in `program_status`'s records.
 fn is_root(id: &Value) -> bool {
     id.as_str().is_none_or(str::is_empty)
 }
