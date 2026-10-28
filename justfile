@@ -118,7 +118,7 @@ shell-pin: (_core-patch "pin" "shell")
 # Verifies each zip's sha256. After: update vendor/PROVENANCE.md's Ghostty ref/sha (from the
 # release notes), then `cargo clean -p warden-app` + rebuild. Needs `gh` authed to
 # github.com/lockyc/libghostty-build.
-# Re-vendor GhosttyKit.xcframework + resources from a libghostty-build release (default: latest)
+# Re-vendor GhosttyKit.xcframework + resources + libghostty-vt from a libghostty-build release (default: latest)
 [group("ghostty")]
 revendor-ghostty tag="latest":
     #!/usr/bin/env bash
@@ -127,13 +127,13 @@ revendor-ghostty tag="latest":
     repo=lockyc/libghostty-build
     dl=$(mktemp -d); trap 'rm -rf "$dl"' EXIT
     if [ "{{tag}}" = latest ]; then
-      gh release download --repo "$repo" --pattern 'Ghostty*.zip*' -D "$dl"
+      gh release download --repo "$repo" --pattern '*.zip*' -D "$dl"
       tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
     else
-      gh release download "{{tag}}" --repo "$repo" --pattern 'Ghostty*.zip*' -D "$dl"
+      gh release download "{{tag}}" --repo "$repo" --pattern '*.zip*' -D "$dl"
       tag="{{tag}}"
     fi
-    ( cd "$dl" && shasum -a 256 -c GhosttyKit.xcframework.zip.sha256 GhosttyResources.zip.sha256 )
+    ( cd "$dl" && shasum -a 256 -c GhosttyKit.xcframework.zip.sha256 GhosttyResources.zip.sha256 libghostty-vt-macos.zip.sha256 )
     echo "✓ sha256 verified ($tag)"
     ditto -x -k "$dl/GhosttyKit.xcframework.zip" "$dl/unz"
     dest=crates/warden-app/vendor/GhosttyKit.xcframework
@@ -147,6 +147,12 @@ revendor-ghostty tag="latest":
     rm -rf "$res"; mkdir -p "$res"; cp -R "$dl/unz-res/." "$res/"
     test -e "$res/terminfo/78/xterm-ghostty" || { echo "✗ terminfo sentinel missing in $res — libghostty would fall back to xterm-256color"; exit 1; }
     echo "✓ vendored $res (terminfo + shell-integration)"
+    # libghostty-vt feeds warden-relay (the crate itself builds against this dir).
+    ditto -x -k "$dl/libghostty-vt-macos.zip" "$dl/unz-vt"
+    vt=crates/warden-relay/vendor/libghostty-vt
+    rm -rf "$vt"; mkdir -p "$vt"; cp -R "$dl/unz-vt/." "$vt/"
+    test -f "$vt/lib/libghostty-vt.a" && test -f "$vt/include/ghostty/vt.h" || { echo "✗ libghostty-vt incomplete in $vt"; exit 1; }
+    echo "✓ vendored $vt"
     echo "  → update vendor/PROVENANCE.md (Ghostty ref/sha in the release notes), then: cargo clean -p warden-app && cargo build -p warden-app"
 
 # Build the release .app bundle (needs the Tauri CLI: `cargo install tauri-cli --version ^2`)

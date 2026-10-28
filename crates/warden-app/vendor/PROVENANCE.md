@@ -21,6 +21,7 @@ directory). The library and the resources come from the **same release** — kee
   `v1.4.0`, 2026-10-27).
 - **Release asset `GhosttyKit.xcframework.zip` sha256:** `63ba2c8dc9d211817d7d8a48375f0edd57712001d9a74212e22dd9ed197aed25`.
 - **Release asset `GhosttyResources.zip` sha256:** `fe41fcf256b63610019cf39d363556ec5621ad4c158c96272156c2dcb5943379`.
+- **Release asset `libghostty-vt-macos.zip` sha256:** `80b20927622a0dc0274b2e36605d10ce69519e0a8bf5c2bce96983f1bf7e4f9f` — Ghostty's standalone VT library (`-Demit-lib-vt`), universal and debug-stripped, vendored to `crates/warden-relay/vendor/libghostty-vt/` (`lib/libghostty-vt.a` sha256 `bb6004de7535f8c1170a34cfeed1f544b76b68e0402e3e5f0c2ae5211ffcebb6`, plus `include/ghostty/`).
 - **Committed `macos-arm64_x86_64/libghostty.a` sha256:** `11b7e4ceb850698a0009338b706403e836bb887a75402e6a664d44e91e5f6cdb`.
 - **Toolchain:** Zig 0.17.0 (Ghostty's `minimum_zig_version` at that commit) on a GitHub `macos-15`
   runner (Sequoia SDK — the SDK the build is verified against). Built via Ghostty's own
@@ -59,7 +60,7 @@ The compiled libghostty bytes are exactly upstream's; `libghostty-build` only re
 ## Updating
 
 Bump `GHOSTTY_REF` in `libghostty-build`, let its CI republish, then `just revendor-ghostty` (verifies
-both sha256s and swaps this directory) and refresh the shas above. **A rebuild is not reproducible:
+all three sha256s and swaps this directory) and refresh the shas above. **A rebuild is not reproducible:
 re-running the CI on the *same* ref clobbers the release assets with byte-different ones** (the Zig
 static archive embeds build paths/timestamps), so a revendor then churns the committed 48MB
 `libghostty.a` for no functional change. Re-run the build only to change the pin or the packaging —
