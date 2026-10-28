@@ -56,33 +56,21 @@ pub fn new_id() -> String {
     format!("{nanos:x}-{:x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-/// The programs a reported resume command may start. A closed allowlist: any program in the
-/// pane can print the report, so a forged one must not get to choose what warden later types
-/// into a shell.
-const KNOWN_HARNESSES: &[&str] = &["claude", "codex"];
+/// The resume shapes a report may take: the fixed words (program and flags) before the one id.
+/// A closed table because a forged report must not choose the program or its flags; a new
+/// harness, or a new syntax for one, is one row.
+const RESUME_SHAPES: &[&[&str]] = &[&["claude", "--resume"], &["codex", "resume"]];
 
-/// Whether a reported resume command is safe to store: `<harness> <arg>...`, split on single
-/// spaces, at least one arg, every arg a non-empty unquoted token of plain characters.
+/// Whether a reported resume command is safe to store: exactly a row of `RESUME_SHAPES`, then
+/// one non-empty id of `[A-Za-z0-9-]`, joined by single spaces, nothing else.
 fn resume_is_safe(s: &str) -> bool {
-    let mut words = s.split(' ');
-    let Some(program) = words.next() else {
+    let words: Vec<&str> = s.split(' ').collect();
+    let Some((id, fixed)) = words.split_last() else {
         return false;
     };
-    if !KNOWN_HARNESSES.contains(&program) {
-        return false;
-    }
-    let mut args = 0;
-    for w in words {
-        let plain = |c: char| {
-            c.is_ascii_alphanumeric()
-                || matches!(c, '.' | '_' | ':' | '=' | '/' | '@' | '%' | '+' | '-')
-        };
-        if w.is_empty() || !w.chars().all(plain) {
-            return false;
-        }
-        args += 1;
-    }
-    args > 0
+    !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && RESUME_SHAPES.contains(&fixed)
 }
 
 /// Every record plus where they persist. `path: None` (the `Default`) keeps records in memory
@@ -380,6 +368,12 @@ mod tests {
             "claude --resume\nid",
             "claude",
             "claude  --resume x",
+            "claude --mcp-config /tmp/x.json --resume x",
+            "claude --resume x --dangerously-skip-permissions",
+            "claude --settings /tmp/s --resume x",
+            "codex -c k=v resume x",
+            "claude --resume x/y",
+            "codex --resume x",
         ] {
             assert!(!s.report_resume("b-w1", bad), "{bad:?}");
         }
