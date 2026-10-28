@@ -1,6 +1,6 @@
 // The bottom strip's rendering (see strip.css). `WardenStrip.render(el, dto)` paints a
-// `StripDto` ({ name, colour, rows: { done, now, next } | null }) into `el`, or hides `el` for a
-// null dto. Pure DOM, so the page and an off-screen harness share it.
+// `StripDto` ({ name, colour, rows: { subject, done, now, next } | null }) into `el`, or hides
+// `el` for a null dto. Pure DOM, so the page and an off-screen harness share it.
 window.WardenStrip = (function () {
   const ROWS = [["done", "Done"], ["now", "Now"], ["next", "Next"]];
   function render(el, dto) {
@@ -10,8 +10,19 @@ window.WardenStrip = (function () {
     el.style.setProperty("--strip-colour", dto.colour);
     const name = document.createElement("div");
     name.className = "strip-name";
-    name.textContent = dto.name;
-    name.title = dto.name;
+    const project = document.createElement("span");
+    project.className = "strip-project";
+    project.textContent = dto.name;
+    project.title = dto.name;
+    name.appendChild(project);
+    const subject = dto.rows && dto.rows.subject;
+    if (subject) {
+      const s = document.createElement("span");
+      s.className = "strip-subject";
+      s.textContent = subject;
+      s.title = subject;
+      name.appendChild(s);
+    }
     el.appendChild(name);
     const rows = document.createElement("div");
     rows.className = "strip-rows";
