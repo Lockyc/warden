@@ -41,6 +41,7 @@ public. Rex is chosen per tab.
 | `rex/spawn.rs` | The relay command line, and carrying a pane's open off the main thread and back. |
 | `rex/size.rs` | The size worker (`Sizer`) behind every claim and resize. |
 | `rex/unclaimed.rs` | Sessions no tab claims, as sidebar rows under `Rex · <server>`. |
+| `rex/windows.rs` | Each attached session's windows (new, close, relabel) and every terminal block's status: its root OSC 7501 record and its title, from Rex's events. |
 
 Who holds which connection:
 
