@@ -90,8 +90,20 @@ pub struct RawConfig {
     // Off by default; a debug aid for the macOS-26 banner-suppression issue (see
     // docs/notifications.md). Opaque to the crate — the app owns the behaviour.
     pub notify_debug: Option<bool>,
+    // The done/now/next summary's model endpoint (global only). See resolve.rs.
+    pub summary: Option<RawSummary>,
     #[serde(default, rename = "window")]
     pub windows: Vec<RawWindow>,
+}
+
+/// `[summary]`: an OpenAI-compatible chat-completions endpoint the agent summaries call.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSummary {
+    pub url: Option<String>,
+    pub model: Option<String>,
+    /// Seconds.
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

@@ -119,6 +119,14 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `auto_update` | `true` | Check for a new release on launch and every 6h. `false` suppresses the auto-check; **Check for Updates…** still works. Takes effect at next launch. |
 | `notify_debug` | `false` | Trace the notification path to `$TMPDIR/warden-notify-dbg.log` — a debug aid, read at launch (see [`docs/notifications.md`](docs/notifications.md)). |
 
+**`[summary]`** — the agent tabs' done/now/next summary, off unless `url` is set. Covers Claude Code agent tabs on `server = "local"`:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `url` | none | An OpenAI-compatible `/v1/chat/completions` endpoint (LM Studio, Ollama, llama.cpp). Unset or blank, there are no summaries. |
+| `model` | `""` | Model id sent with each request. |
+| `timeout` | `45` | Seconds to wait for each request. A slower reply is skipped, and the last summary stays. |
+
 **`[[window]]`** — one native macOS window each:
 
 | Key | Default | What it does |

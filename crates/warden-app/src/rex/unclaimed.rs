@@ -262,6 +262,7 @@ mod tests {
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            summary: None,
         }
     }
 

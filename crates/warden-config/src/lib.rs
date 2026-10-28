@@ -26,7 +26,7 @@ pub use config_core::{
     DEFAULT_ROOT_DEPTH,
 };
 pub use load::{config_path, load, load_with, login_shell, LoadError, Loaded};
-pub use model::{Config, Root, Split, SplitSide, Tab, Window};
+pub use model::{Config, Root, Split, SplitSide, SummaryConfig, Tab, Window};
 pub use project_colour::{assign_project_colours, PROJECT_POOL};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, TerminalSpec, WindowUpdate};
 pub use resolve::{apply_resume, normalize_dir_key, ResolveError};

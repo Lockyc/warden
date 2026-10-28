@@ -42,6 +42,20 @@ pub struct Config {
     /// Diagnostic: when true, warden-app traces the notification path to a log
     /// file. Default false. Opaque to the crate — a debug aid the app interprets.
     pub notify_debug: bool,
+    /// The agent summaries' model endpoint; `None` (no `[summary] url`) turns them off.
+    /// Whole-app concern — no per-window cascade.
+    pub summary: Option<SummaryConfig>,
+}
+
+/// `[summary]`, resolved: present only when `url` is set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryConfig {
+    /// The full chat-completions URL, posted to as given.
+    pub url: String,
+    /// The model id sent with each request; `""` when unset.
+    pub model: String,
+    /// Whole-request deadline.
+    pub timeout: std::time::Duration,
 }
 
 // `Density`, `TabDigitKeys`, and `Warning` are the leaf-free primitives shared with curator and

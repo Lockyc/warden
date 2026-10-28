@@ -1,5 +1,5 @@
-use crate::model::{Config, Root, Split, SplitSide, Tab, Window};
-use crate::raw::{RawConfig, RawSplit, RawWindow};
+use crate::model::{Config, Root, Split, SplitSide, SummaryConfig, Tab, Window};
+use crate::raw::{RawConfig, RawSplit, RawSummary, RawWindow};
 use crate::{Colour, ColourError};
 use config_core::{Density, TabDigitKeys, Warning};
 use std::collections::HashSet;
@@ -33,6 +33,26 @@ pub const SPLIT_SIZE_MAX: f64 = 0.9;
 
 /// The `server` value naming this machine's own Rex server; any other value is a remote host label.
 pub const LOCAL_SERVER: &str = "local";
+
+/// `[summary] timeout` when unset, in seconds: a mid-size local model's stand-line call takes
+/// 30–45 s.
+pub const DEFAULT_SUMMARY_TIMEOUT: u64 = 45;
+
+/// `[summary]` resolved: `None` unless `url` is set and not blank, so a table without one leaves
+/// the summaries off.
+fn resolve_summary(raw: Option<&RawSummary>) -> Option<SummaryConfig> {
+    let raw = raw?;
+    let url = raw
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())?;
+    Some(SummaryConfig {
+        url: url.to_owned(),
+        model: raw.model.as_deref().map(str::trim).unwrap_or("").to_owned(),
+        timeout: std::time::Duration::from_secs(raw.timeout.unwrap_or(DEFAULT_SUMMARY_TIMEOUT)),
+    })
+}
 
 /// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
 /// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
@@ -278,6 +298,7 @@ pub fn resolve_with(
             sidebar_drag: raw.sidebar_drag.unwrap_or(true),
             auto_update: raw.auto_update.unwrap_or(true),
             notify_debug: raw.notify_debug.unwrap_or(false),
+            summary: resolve_summary(raw.summary.as_ref()),
         },
         warnings,
     ))
@@ -735,6 +756,40 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert!(cfg.notify_debug);
+    }
+
+    #[test]
+    fn summary_table_absent_means_off() {
+        let (cfg, _) = resolve_str("").unwrap();
+        assert_eq!(cfg.summary, None);
+        let (cfg, _) = resolve_str("[summary]\nmodel = \"m\"\ntimeout = 9\n").unwrap();
+        assert_eq!(cfg.summary, None, "no url: still off");
+        let (cfg, _) = resolve_str("[summary]\nurl = \"  \"\n").unwrap();
+        assert_eq!(cfg.summary, None, "a blank url: still off");
+    }
+
+    #[test]
+    fn summary_table_with_url_resolves_with_defaults() {
+        let (cfg, _) = resolve_str("[summary]\nurl = \"http://h/v1/chat/completions\"\n").unwrap();
+        assert_eq!(
+            cfg.summary,
+            Some(SummaryConfig {
+                url: "http://h/v1/chat/completions".into(),
+                model: String::new(),
+                timeout: std::time::Duration::from_secs(45),
+            })
+        );
+        let (cfg, _) = resolve_str(
+            "[summary]\nurl = \"http://h\"\nmodel = \"qwen\"\ntimeout = 10\n[[window]]\ntitle = \"w\"\n",
+        )
+        .unwrap();
+        let s = cfg.summary.unwrap();
+        assert_eq!((s.model.as_str(), s.timeout.as_secs()), ("qwen", 10));
+    }
+
+    #[test]
+    fn summary_table_rejects_unknown_keys() {
+        assert!(parse("[summary]\nurl = \"http://h\"\ntimout = 3\n").is_err());
     }
 
     #[test]
