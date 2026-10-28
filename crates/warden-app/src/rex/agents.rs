@@ -56,24 +56,33 @@ pub fn new_id() -> String {
     format!("{nanos:x}-{:x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-/// Whether a reported resume command is safe to store. Waking a tab types it into a shell, and
-/// any program in the pane can print the report, so only plain words survive: a bare program
-/// name first, a closed character set, balanced single quotes. Anything that could chain,
-/// substitute, redirect or end the line is refused.
+/// The programs a reported resume command may start. A closed allowlist: any program in the
+/// pane can print the report, so a forged one must not get to choose what warden later types
+/// into a shell.
+const KNOWN_HARNESSES: &[&str] = &["claude", "codex"];
+
+/// Whether a reported resume command is safe to store: `<harness> <arg>...`, split on single
+/// spaces, at least one arg, every arg a non-empty unquoted token of plain characters.
 fn resume_is_safe(s: &str) -> bool {
-    let first = s.split(' ').next().unwrap_or("");
-    !first.is_empty()
-        && first
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && s.chars().all(|c| {
+    let mut words = s.split(' ');
+    let Some(program) = words.next() else {
+        return false;
+    };
+    if !KNOWN_HARNESSES.contains(&program) {
+        return false;
+    }
+    let mut args = 0;
+    for w in words {
+        let plain = |c: char| {
             c.is_ascii_alphanumeric()
-                || matches!(
-                    c,
-                    '.' | '_' | '/' | '=' | ':' | '@' | '%' | '+' | ',' | '\'' | ' ' | '-'
-                )
-        })
-        && s.matches('\'').count().is_multiple_of(2)
+                || matches!(c, '.' | '_' | ':' | '=' | '/' | '@' | '%' | '+' | '-')
+        };
+        if w.is_empty() || !w.chars().all(plain) {
+            return false;
+        }
+        args += 1;
+    }
+    args > 0
 }
 
 /// Every record plus where they persist. `path: None` (the `Default`) keeps records in memory
@@ -85,12 +94,18 @@ pub struct AgentStore {
 }
 
 impl AgentStore {
-    /// Load from `path`. A missing or unreadable file is an empty store.
+    /// Load from `path`. A missing or unreadable file is an empty store. A `resume` that fails
+    /// the report check is cleared (the record stays), so a tampered file can't bypass the gate.
     pub fn load(path: PathBuf) -> Self {
-        let records = std::fs::read(&path)
+        let mut records: Vec<AgentRecord> = std::fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        for r in &mut records {
+            if r.resume.as_deref().is_some_and(|c| !resume_is_safe(c)) {
+                r.resume = None;
+            }
+        }
         AgentStore {
             path: Some(path),
             records,
@@ -355,19 +370,45 @@ mod tests {
         let mut s = AgentStore::default();
         s.upsert(rec("a", RecordState::Live, Some("w1"), None));
         for bad in [
-            "claude --resume x; rm -rf ~",
-            "claude $(id)",
-            "claude `id`",
-            "claude\nrm -rf ~",
-            "claude 'unbalanced",
-            "/bin/claude",
-            "",
-            "claude && id",
+            "sh -c 'id'",
+            "eval 'id'",
+            ". /tmp/x",
+            "bash -c id",
+            "claude --resume 'x y'",
+            "claude --resume x; id",
+            "claude --resume $(id)",
+            "claude --resume\nid",
+            "claude",
+            "claude  --resume x",
         ] {
             assert!(!s.report_resume("b-w1", bad), "{bad:?}");
         }
         assert_eq!(s.records("p")[0].resume, None);
-        assert!(s.report_resume("b-w1", "claude --resume 'a b'"));
+        assert!(s.report_resume(
+            "b-w1",
+            "claude --resume 6f1c2d3e-aaaa-bbbb-cccc-123456789abc"
+        ));
+        assert!(s.report_resume("b-w1", "codex resume abc123"));
+    }
+
+    #[test]
+    fn load_clears_tampered_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agents.json");
+        let mut s = AgentStore::load(path.clone());
+        s.upsert(rec("a", RecordState::Asleep, None, Some("sh -c 'id'")));
+        s.upsert(rec(
+            "b",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume x"),
+        ));
+        let loaded = AgentStore::load(path);
+        let r = loaded.records("p");
+        assert_eq!(r.len(), 2, "records are kept");
+        let by = |id: &str| r.iter().find(|x| x.id == id).unwrap().resume.clone();
+        assert_eq!(by("a"), None);
+        assert_eq!(by("b").as_deref(), Some("claude --resume x"));
     }
 
     #[test]
@@ -381,7 +422,7 @@ mod tests {
         let path = dir.path().join("nested").join("agents.json");
         let mut s = AgentStore::load(path.clone());
         assert!(s.records("p").is_empty(), "missing file is an empty store");
-        let mut b = rec("b", RecordState::Asleep, None, Some("claude"));
+        let mut b = rec("b", RecordState::Asleep, None, Some("claude --resume x"));
         b.position = 1;
         s.upsert(b.clone());
         s.upsert(rec("a", RecordState::Live, Some("w1"), None));
