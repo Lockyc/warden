@@ -951,8 +951,13 @@
       const NARROW_HOLE = 700;
       const railKey = () => `agents-rail:${myLabel}`;
       let drag = null; // a row being dragged between groups (see `rowMouseDown`)
-      let pendingWake = null; // an asleep row's click, held for `DBLCLICK_MS` (see `dragEnd`)
+      // An asleep row's click, held for `DBLCLICK_MS` (see `dragEnd`): `{ timer, tab }`.
+      let pendingWake = null;
       const DBLCLICK_MS = 250;
+      function cancelWake() {
+        if (pendingWake) clearTimeout(pendingWake.timer);
+        pendingWake = null;
+      }
 
       // The tab whose list is on screen: the active tab, when its main pane holds agent tabs and
       // is docked here (a popped-out tab's panes are in its own window).
@@ -964,6 +969,7 @@
       // narrower one. A tab with no list yet pulls it.
       function syncAgentsColumn() {
         const tab = agentsTab();
+        if (pendingWake && pendingWake.tab !== tab) cancelWake(); // a held wake ends with its tab
         document.getElementById("terminal-hole").classList.toggle("agents", tab !== null);
         if (tab === null) return;
         syncRail();
@@ -1164,8 +1170,7 @@
         });
         row.addEventListener("dblclick", (e) => {
           if (e.target.closest("button")) return;
-          clearTimeout(pendingWake);
-          pendingWake = null;
+          cancelWake();
           startRename(r.id);
         });
         row.addEventListener("mousedown", (e) => rowMouseDown(e, tab, r, row));
@@ -1328,9 +1333,17 @@
         if (!d.moved) {
           if (e.type !== "mouseup" || !d.click) return;
           // Selecting an asleep row wakes it, so its click waits out a double-click (a rename,
-          // which cancels it); an awake row selects at once.
-          if (d.asleep) pendingWake = setTimeout(() => { pendingWake = null; agentSelect(d.tab, d.id); }, DBLCLICK_MS);
-          else agentSelect(d.tab, d.id);
+          // which cancels it); an awake row selects at once. Any later click supersedes it, and it
+          // lands only if its row is still on screen.
+          cancelWake();
+          if (d.asleep) {
+            const timer = setTimeout(() => {
+              pendingWake = null;
+              const dto = agentsTab() === d.tab && agentLists.get(d.tab);
+              if (dto && dto.rows.some((r) => r.id === d.id)) agentSelect(d.tab, d.id);
+            }, DBLCLICK_MS);
+            pendingWake = { timer, tab: d.tab };
+          } else agentSelect(d.tab, d.id);
           return;
         }
         const t = d.drop;
