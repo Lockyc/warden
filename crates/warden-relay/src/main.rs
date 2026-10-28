@@ -138,6 +138,8 @@ impl Link {
             Some(t) => ControlClient::resume(&self.endpoint, &info, &t)?,
             None => ControlClient::connect(&self.endpoint, &info)?,
         };
+        // The relay reads its block through the data stream, never through events.
+        c.ignore_events();
         if !c.resumed() {
             c.call("session.attach", json!({"session_id": self.session}))?;
         }
