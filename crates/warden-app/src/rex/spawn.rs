@@ -212,7 +212,9 @@ pub fn watch_presence(app: AppHandle) {
                         hub_changed(&app, Some(&server))
                     }
                     HubEvent::Disconnected { server } => refresh_presence(&app, Some(&server)),
-                    HubEvent::OwnerChanged { .. } => {}
+                    HubEvent::OwnerChanged { .. }
+                    | HubEvent::WindowsChanged { .. }
+                    | HubEvent::StatusChanged { .. } => {}
                 }
             }
         });

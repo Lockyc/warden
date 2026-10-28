@@ -5,8 +5,9 @@
 //! with `session.attach_all` (scope `session`) for the server-wide session list, plus
 //! `session.attach` for each session a pane shows. It finds or creates each pane's session —
 //! or, for an unclaimed session's pane ([`unclaimed`]), attaches the one it was pointed at —
-//! persists pane → session ids ([`store`]), tracks block owners, claims and sizes a pane's block
-//! for warden ([`RexHub::claim`], driven by [`size`]), and reports changes to
+//! persists pane → session ids ([`store`]), tracks block owners and each attached session's
+//! windows and block status ([`windows`]), claims and sizes a pane's block for warden
+//! ([`RexHub::claim`], driven by [`size`]), and reports changes to
 //! [`RexHub::subscribe`]rs.
 //!
 //! Threads: the hub's methods block their caller on the network and never hold the state lock
@@ -29,6 +30,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 pub mod unclaimed;
+pub mod windows;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -85,6 +87,15 @@ pub enum HubEvent {
         session_id: String,
         block_id: String,
         owner: Option<String>,
+    },
+    /// A watched session's windows changed; read them with [`RexHub::windows`].
+    WindowsChanged {
+        server: String,
+        session_id: String,
+    },
+    /// A block's status changed; read it with [`RexHub::block_status`].
+    StatusChanged {
+        block_id: String,
     },
     Disconnected {
         server: String,
@@ -152,6 +163,10 @@ struct State {
     /// A server's session list as last heard on a connection that has since dropped, so its
     /// sessions stay listed until a new connection rereads it.
     heard: HashMap<String, Vec<SessionInfo>>,
+    /// (server, session) → the windows of each attached session ([`windows`]).
+    windows: HashMap<(String, String), windows::SessionWindows>,
+    /// Block → what its program last reported ([`windows`]).
+    statuses: HashMap<String, windows::Tracked>,
     next_gen: u64,
 }
 
@@ -411,10 +426,7 @@ impl Inner {
             });
         }
 
-        let mut options = json!({ "cwd": dir.to_string_lossy() });
-        if let Some(s) = startup.filter(|s| !s.is_empty()) {
-            options["initial_input"] = json!(format!("{s}\n"));
-        }
+        let options = terminal_options(dir, startup);
         let (_, created) = client.call_seq_until(
             "session.create",
             json!({
@@ -436,6 +448,8 @@ impl Inner {
                 if let Some(a) = st.attached.get_mut(&prev.server) {
                     a.remove(&prev.session_id);
                 }
+                st.windows
+                    .remove(&(prev.server.clone(), prev.session_id.clone()));
             }
             st.store.set(
                 pane_key,
@@ -479,6 +493,8 @@ impl Inner {
         if let Some(a) = st.attached.get_mut(&rec.server) {
             a.remove(&rec.session_id);
         }
+        st.windows
+            .remove(&(rec.server.clone(), rec.session_id.clone()));
         Some(rec)
     }
 
@@ -923,16 +939,24 @@ impl Inner {
         Ok((client, true))
     }
 
-    /// `session.attach` `session_id` on `client`, recording its blocks' owners; returns the view.
+    /// `session.attach` `session_id` on `client`, recording its blocks' owners and its windows
+    /// and pulling its blocks' status ([`windows`]); returns the view.
     fn attach(
-        &self,
+        self: &Arc<Self>,
         server: &str,
         client: &Arc<ControlClient>,
         session_id: &str,
         deadline: Option<Instant>,
     ) -> Result<Value, RexError> {
         let args = json!({ "session_id": session_id });
-        let (seq, result) = call_seq(client, "session.attach", args, deadline)?;
+        self.watch_windows(server, session_id);
+        let (seq, result) = match call_seq(client, "session.attach", args, deadline) {
+            Ok(r) => r,
+            Err(e) => {
+                self.unwatch_unviewed(server, session_id);
+                return Err(e);
+            }
+        };
         let view = result["view"].clone();
         self.lock()
             .attached
@@ -940,6 +964,7 @@ impl Inner {
             .or_default()
             .insert(session_id.to_owned());
         self.record_owners(server, client, session_id, seq, view_blocks(&view, None));
+        self.learn_view(server, client, session_id, seq, &view, true);
         Ok(view)
     }
 
@@ -980,14 +1005,23 @@ impl Inner {
     }
 
     /// Apply one event from connection `gen` of `server`; a replaced connection's are ignored.
-    fn apply(&self, server: &str, gen: u64, ev: Event) {
+    fn apply(self: &Arc<Self>, server: &str, gen: u64, ev: Event) {
         let mut out = Vec::new();
-        {
+        let refresh = {
             let mut guard = self.lock();
             let st = &mut *guard;
             let Some(conn) = st.conns.get_mut(server).filter(|c| c.gen == gen) else {
                 return;
             };
+            let refresh = windows::apply_event(
+                &mut st.windows,
+                &mut st.statuses,
+                server,
+                gen,
+                &ev,
+                &mut out,
+            )
+            .map(|session| (conn.client.clone(), session));
             let sessions_changed = || HubEvent::SessionsChanged {
                 server: server.to_owned(),
             };
@@ -1010,6 +1044,16 @@ impl Inner {
                         }
                         st.adopted
                             .retain(|_, r| !(r.server == server && r.session_id == id));
+                        if st
+                            .windows
+                            .remove(&(server.to_owned(), id.clone()))
+                            .is_some()
+                        {
+                            out.push(HubEvent::WindowsChanged {
+                                server: server.to_owned(),
+                                session_id: id,
+                            });
+                        }
                         out.push(sessions_changed());
                     }
                 }
@@ -1028,8 +1072,12 @@ impl Inner {
                 }
                 _ => {}
             }
-        }
+            refresh
+        };
         self.emit(out);
+        if let Some((client, session)) = refresh {
+            self.spawn_refresh(server, &client, &session);
+        }
     }
 
     /// Reopen `server`'s connection after a drop, resuming its client when `token` is still
@@ -1141,6 +1189,15 @@ fn str_field(v: &Value, what: &str) -> Result<String, RexError> {
     v.as_str()
         .map(str::to_owned)
         .ok_or_else(|| RexError::Protocol(format!("{what} missing")))
+}
+
+/// A new terminal's options: started in `dir`, typing `startup` and a newline.
+fn terminal_options(dir: &Path, startup: Option<&str>) -> Value {
+    let mut options = json!({ "cwd": dir.to_string_lossy() });
+    if let Some(s) = startup.filter(|s| !s.is_empty()) {
+        options["initial_input"] = json!(format!("{s}\n"));
+    }
+    options
 }
 
 fn parse_session(v: &Value) -> Option<SessionInfo> {
