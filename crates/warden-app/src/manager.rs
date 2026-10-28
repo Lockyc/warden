@@ -784,8 +784,8 @@ impl WindowManager {
             // A Rex pane's relay exited: its session (an agent's: its window) ends too if its
             // program did.
             if let Some(key) = ws.registry.rex_key_of_surface(surface_id) {
-                let project = agent.as_ref().map(|_| tab_id.clone());
-                crate::rex::spawn::end_if_exited(app, key, project);
+                let owner = agent.clone().map(|r| (tab_id.clone(), r));
+                crate::rex::spawn::end_if_exited(app, key, owner);
             }
             let new_active = match (which, agent) {
                 (crate::registry::PaneIdx::Primary, Some(record)) => {
@@ -838,12 +838,12 @@ impl WindowManager {
         };
         if let Some(d) = lock.detached.get(&dlabel) {
             if let Some(key) = d.rex_key(which) {
-                let project = d
+                let owner = d
                     .agent
-                    .as_ref()
+                    .clone()
                     .filter(|_| which == crate::registry::PaneIdx::Primary)
-                    .map(|_| d.tab_id.clone());
-                crate::rex::spawn::end_if_exited(app, key, project);
+                    .map(|r| (d.tab_id.clone(), r));
+                crate::rex::spawn::end_if_exited(app, key, owner);
             }
         }
         match which {

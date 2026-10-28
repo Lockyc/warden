@@ -38,21 +38,24 @@ impl RexHub {
 
     /// Let agent `agent_key` go if its program has finished ([`RexHub::block_exited`]): close its
     /// window, or, when that window was the session's last, end the session as a plain pane's
-    /// exit does ([`RexHub::destroy_if_exited`]). Returns the session's windows left (none once
-    /// it ended) when the agent was let go; `None` while it runs, when that can't be told, or for
-    /// a key no open bound.
-    pub fn end_agent_if_exited(&self, agent_key: &str) -> Option<Vec<AgentWindow>> {
-        let pane = self.inner.lock().agents.get(agent_key).cloned()?;
-        let _held = self.inner.hold_pane(&pane, None).ok()?;
+    /// exit does ([`RexHub::destroy_if_exited`]). Returns whether the agent was let go: false
+    /// while it runs, when that can't be told, or for a key no open bound.
+    pub fn end_agent_if_exited(&self, agent_key: &str) -> bool {
+        let Some(pane) = self.inner.lock().agents.get(agent_key).cloned() else {
+            return false;
+        };
+        let Ok(_held) = self.inner.hold_pane(&pane, None) else {
+            return false;
+        };
         if !self.block_exited(agent_key) {
-            return None;
+            return false;
         }
         let (rec, block) = {
             let st = self.inner.lock();
-            (
-                st.record(agent_key).cloned()?,
-                st.blocks.get(agent_key).cloned()?,
-            )
+            match (st.record(agent_key), st.blocks.get(agent_key)) {
+                (Some(rec), Some(block)) => (rec.clone(), block.clone()),
+                _ => return false,
+            }
         };
         let windows = self.windows(&rec.server, &rec.session_id);
         let shows = |w: &AgentWindow| w.block_id.as_deref() == Some(block.as_str());
@@ -68,7 +71,7 @@ impl RexHub {
             eprintln!("warden: couldn't end Rex session for {pane:?}: {e}");
         }
         self.inner.lock().unbind_agent(agent_key);
-        Some(self.windows(&rec.server, &rec.session_id))
+        true
     }
 
     /// [`RexHub::open_agents`]' work, every call waiting until `deadline`.
@@ -691,13 +694,14 @@ pub(super) mod tests {
         assert!(!hub.block_exited(&b));
         let asked = f.requests_for("com.superlogical.terminal.process");
         assert_eq!(asked[0].payload["block_id"], "block:2");
-        assert_eq!(hub.end_agent_if_exited(&b), None, "still running");
+        assert!(!hub.end_agent_if_exited(&b), "still running");
 
         f.reply(
             "com.superlogical.terminal.process",
             json!({"last_exit": {"exit_code": 0}}),
         );
-        let left = hub.end_agent_if_exited(&b).expect("it exited");
+        assert!(hub.end_agent_if_exited(&b), "it exited");
+        let left = hub.windows("local", "session:old");
         let closes = f.requests_for("session.close_window");
         assert_eq!(closes.len(), 1);
         assert_eq!(closes[0].payload["window_id"], "window:2");
@@ -757,10 +761,8 @@ pub(super) mod tests {
             "com.superlogical.terminal.process",
             json!({"last_exit": {"exit_code": 0}}),
         );
-        let left = hub
-            .end_agent_if_exited(&agent_key("t", "a"))
-            .expect("exited");
-        assert!(left.is_empty());
+        assert!(hub.end_agent_if_exited(&agent_key("t", "a")), "exited");
+        assert!(hub.windows("local", "session:old").is_empty());
         assert_eq!(f.requests_for("session.destroy").len(), 1);
         assert!(!hub.session_alive("t"));
     }
