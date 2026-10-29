@@ -1620,7 +1620,7 @@
       // Menu tab nav: cycle ONLY loaded tabs (⌘⇧[/]) and jump (⌘1–9). emit_to leaks → forMe filter.
       listen("warden:cycle-tab", (e) => {
         if (!forMe(e) || !sb) return;
-        sb.selectByOffset(e.payload.dir, { liveOnly: true });
+        sb.selectByOffset(e.payload.dir, { liveOnly: true, from: e.payload.from });
       });
       listen("warden:select-tab", (e) => {
         if (!forMe(e) || !sb) return;
