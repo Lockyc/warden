@@ -73,6 +73,11 @@ check in this order:
    at its default `false`), and ⌘ is the link modifier. Plain ⌘ or plain shift does nothing. This
    is libghostty by design (Ghostty.app and iTerm match), so a shift-⌘-click that still fails means
    something upstream is broken — usually action-tag drift. Diagnostic: `tmux -L <socket> show -g mouse`.
+3. **A link that opens on ⌃-click but not ⌘-click is the program inside, not libghostty.** When it
+   tracks the mouse (Claude Code does), the click is reported to it, and a mouse report carries
+   ⇧/⌥/⌃ but never ⌘ — so ⌘-click arrives as a bare click and the program opens links on its own
+   terms (Claude Code: ⌃-click). ⇧⌘-click still reaches libghostty's handler, file paths included.
+   Diagnostic: `tmux -L <socket> list-panes -F '#{mouse_any_flag}'` reads `1`.
 
 ## Child exit
 
