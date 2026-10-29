@@ -1769,19 +1769,37 @@ fn main() {
             // id, so this handler is mode-blind: the aliases arrive as plain Next/Prev.
             if let Some(action) = shell_core::menu::tab_nav_action(id) {
                 use shell_core::menu::TabNavAction;
+                // A popped-out window has no sidebar: its nav belongs to the origin window's, which
+                // is raised (a docked target shows there) and cycles from the popped-out tab — it
+                // never holds the origin's highlight, so the highlight would lead back to it.
+                let origin = app
+                    .state::<ManagerState>()
+                    .lock()
+                    .detached
+                    .get(&label)
+                    .map(|ds| (ds.origin_label.clone(), ds.tab_id.clone()));
+                let (label, from) = match origin {
+                    Some((origin_label, tab_id)) => {
+                        if let Some(w) = app.get_webview_window(&origin_label) {
+                            let _ = w.set_focus();
+                        }
+                        (origin_label, Some(tab_id))
+                    }
+                    None => (label, None),
+                };
                 match action {
                     TabNavAction::Prev => {
                         let _ = app.emit_to(
                             label.as_str(),
                             "warden:cycle-tab",
-                            serde_json::json!({ "label": label, "dir": -1 }),
+                            serde_json::json!({ "label": label, "dir": -1, "from": from }),
                         );
                     }
                     TabNavAction::Next => {
                         let _ = app.emit_to(
                             label.as_str(),
                             "warden:cycle-tab",
-                            serde_json::json!({ "label": label, "dir": 1 }),
+                            serde_json::json!({ "label": label, "dir": 1, "from": from }),
                         );
                     }
                     TabNavAction::Jump(n) => {
