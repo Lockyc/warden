@@ -155,4 +155,4 @@ warden, [curator](https://github.com/Lockyc/curator) (browser keeper-tabs) and [
 - **shell-core never touches config-core** — the home surface's "Create a starter config" is warden's own `shell_home_create_config`, calling `config_core::write_default_config` with `src/default-config.toml`.
 - **`DetachSpec.panes` is a generic `Vec<f64>` of hole ratios**, not a warden split type — an empty vec keeps curator's and lector's payload unchanged.
 - **Stays warden's own:** IPC fan-out (`emit_to` + `forMe()`), the config watcher (parses inside, drives root scans; curator/lector share `shell_core::watch`), and the warden-only Tab items. No chrome-caller command gate — warden's surfaces are native views with no webview to spoof a call.
-- **`warden://open?window=<title>` is warden's own** (`Info.plist` `CFBundleURLTypes` → `RunEvent::Opened` → `main.rs::open_or_focus_window`, the one open-by-label path). If curator/lector want the same, lift the scheme handling into shell-core then.
+- **`warden://open?window=<title>`** (`Info.plist` `CFBundleURLTypes` → `RunEvent::Opened` → shell-core's `open_request` → `main.rs::open_or_focus_window`, the one open-by-label path).

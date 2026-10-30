@@ -33,7 +33,7 @@ mod windows;
 #[cfg(target_os = "macos")]
 use manager::{InitDto, WindowManager};
 #[cfg(target_os = "macos")]
-use shell_core::windows::WindowSet;
+use shell_core::windows::{open_request, WindowSet};
 
 use geometry::WebRect;
 
@@ -1625,18 +1625,6 @@ fn window_menu(x: f64, y: f64, window: tauri::WebviewWindow) -> Result<(), Strin
         .map_err(|e| e.to_string())
 }
 
-/// The window title a `warden://open?window=<title>` URL names (percent-decoded), or `None` for
-/// any other URL. The scripting entry point for a window `open_on_start = false` keeps closed:
-/// `open 'warden://open?window=work'` launches warden if needed and opens/focuses that window.
-fn open_url_window_title(url: &tauri::Url) -> Option<String> {
-    if url.scheme() != "warden" || url.host_str() != Some("open") {
-        return None;
-    }
-    url.query_pairs()
-        .find(|(k, _)| k == "window")
-        .map(|(_, v)| v.into_owned())
-}
-
 /// Remove tmux's `$TMUX`/`$TMUX_PANE` from warden-app's own environment so the shells it
 /// spawns never inherit them. tmux exports these into every process under a pane, and
 /// warden-app is routinely launched from inside a tmux session — e.g. the very agentmux
@@ -2239,7 +2227,10 @@ fn main() {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Opened { urls } => {
                 use tauri::Manager;
-                for title in urls.iter().filter_map(open_url_window_title) {
+                for title in urls
+                    .iter()
+                    .filter_map(|u| open_request(u, "warden")?.window)
+                {
                     let label = app.state::<WindowSet>().label_for_title(&title);
                     match label {
                         Some(label) => open_or_focus_window(app, &label),
@@ -2281,8 +2272,8 @@ mod tests {
     }
 
     #[test]
-    fn open_url_window_title_reads_only_warden_open_urls() {
-        let t = |s: &str| open_url_window_title(&tauri::Url::parse(s).unwrap());
+    fn warden_open_urls_name_a_window_through_the_shell_core_helper() {
+        let t = |s: &str| open_request(&tauri::Url::parse(s).unwrap(), "warden")?.window;
         assert_eq!(t("warden://open?window=work").as_deref(), Some("work"));
         assert_eq!(
             t("warden://open?window=my%20work").as_deref(),

@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- warden:// — `warden://open?window=<title>` (main.rs::open_url_window_title). Tauri merges this file into the bundle's Info.plist. -->
+	<!-- warden:// — `warden://open?window=<title>` (shell-core's `open_request`). Tauri merges this file into the bundle's Info.plist. -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
