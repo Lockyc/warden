@@ -20,8 +20,8 @@ pub mod watch;
 // `config_core::resolve_root_dir` directly, mapping `RootError` onto warden's own `ResolveError`
 // variants with the enclosing window's context.
 pub use config_core::{
-    discover_projects, fmt_cli, format_file, format_str, tree_path, write_default_config, Colour,
-    ColourError, Density, DiscoveredProject, RootDir, SeedError, TabDigitKeys, Warning,
+    discover_projects, fmt_cli, format_file, format_str, set_key, tree_path, write_default_config,
+    Colour, ColourError, Density, DiscoveredProject, RootDir, SeedError, TabDigitKeys, Warning,
     DEFAULT_ROOT_DEPTH,
 };
 pub use load::{config_path, load, load_with, login_shell, LoadError, Loaded};
