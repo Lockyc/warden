@@ -205,8 +205,8 @@ impl ManagerState {
 #[cfg(target_os = "macos")]
 struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 
-/// Build and install the app menu: the shared spine (App/Config/Window submenus + the Close Tab
-/// item) interleaved with warden's own Tab submenu. The digit chords still depend on `mode`, but
+/// Build and install the app menu: the shared spine (App/Config/Window submenus + the Close Tab,
+/// Pop Out Tab and Find in Sidebar items) interleaved with warden's own Tab submenu. The digit chords still depend on `mode`, but
 /// the items themselves now come from `shell_core::menu::build_tab_nav` — the mode's effect
 /// (`Jump`: ⌘1–⌘9 jump straight to that 1-based tab position; `Cycle`: ⌘1/⌘2 alias next/previous,
 /// reclaiming the digit-1/2 chords so jumps shift to ⌘3–⌘9) is defined there once, for all three
