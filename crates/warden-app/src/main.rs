@@ -989,6 +989,11 @@ fn pop_out_tab(
     let secondary = secondary_opt.take();
     {
         let mut m = state.lock();
+        let origin_title = m
+            .windows
+            .get(&origin_label)
+            .map(|ws| ws.title.clone())
+            .unwrap_or_default();
         m.detached.insert(
             label.clone(),
             manager::DetachedSurface {
@@ -998,6 +1003,7 @@ fn pop_out_tab(
                 secondary_left,
                 spec: tab_spec,
                 origin_label: origin_label.clone(),
+                origin_title,
                 tab_id: id.clone(),
                 agent,
             },
@@ -1096,21 +1102,31 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
         return;
     }
     let st = app.state::<ManagerState>();
-    // Reopen the origin if the user closed it while the tab was popped out, so the tab has
-    // somewhere to return to — while the tab is still in `detached`, which is how `build_window`
-    // knows to stand it up as a `Detached` placeholder. Reopened after the removal, an eager tab
-    // (`load_on_open`, remembered, or the first shown) would spawn a second live terminal, and
-    // `attach` would then end the returning one. The lock is released: the `WindowSet` builds
-    // through `WardenHost`, which takes it.
+    // Find the origin by title (`plan::origin_home`) — a window renamed in place and then closed
+    // comes back under a new label — and point the tab at that label. Reopen the origin if the
+    // user closed it while the tab was popped out, so the tab has somewhere to return to — while
+    // the tab is still in `detached`, which is how `build_window` knows to stand it up as a
+    // `Detached` placeholder. Reopened after the removal, an eager tab (`load_on_open`,
+    // remembered, or the first shown) would spawn a second live terminal, and `attach` would then
+    // end the returning one. The lock is released: the `WindowSet` builds through `WardenHost`,
+    // which takes it.
+    let set = app.state::<WindowSet>();
+    let entries = set.entries();
     let closed_origin = {
-        let m = st.lock();
-        m.detached
-            .get(detached_label)
-            .map(|d| d.origin_label.clone())
-            .filter(|o| !m.windows.contains_key(o))
+        let mut m = st.lock();
+        let Some(d) = m.detached.get_mut(detached_label) else {
+            return; // already redocked (double-close) — nothing to do
+        };
+        match plan::origin_home(&d.origin_title, &entries) {
+            Some((label, open)) => {
+                d.origin_label = label.clone();
+                (!open).then_some(label)
+            }
+            None => None,
+        }
     };
     if let Some(origin) = closed_origin {
-        app.state::<WindowSet>().open_or_focus(app, &origin);
+        set.open_or_focus(app, &origin);
     }
     let redocked = st.lock().redock(app, detached_label);
     let Some(manager::Redocked {

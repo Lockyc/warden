@@ -319,7 +319,13 @@ pub struct DetachedSurface {
     /// compares the config against this, not the origin registry's spec, which a hot-reload's
     /// `set_meta` or a rebuilt origin has moved on (`reconcile_returned_tab`).
     pub spec: TabSpec,
+    /// The origin window's current label — repointed when the origin is rebuilt under another
+    /// label (`build_window`) or found under one on return (`main.rs::redock`).
     pub origin_label: String,
+    /// The origin window's title, which identifies it across a rename in place (`retitle`) and a
+    /// close: a window renamed in place keeps its live label, but its closed slot is relabelled
+    /// from the new title, and a new window may take the label it left.
+    pub origin_title: String,
     pub tab_id: String,
     /// The agent whose surface travelled (`Registry::selected_agent` at pop-out), for a Rex
     /// tab's main pane holding agents; `None` otherwise.
@@ -475,11 +481,15 @@ impl WindowManager {
         // A tab still popped out of this window (rebuilt while it's out) already has its
         // terminal in the detached window: it is added cold and then marked `Detached`, the
         // same placeholder `detach` leaves, so nothing here or later spawns a second one.
-        let out: HashMap<&str, bool> = self
+        // Matched by title: the window may come back under another label than the one it had.
+        let out: HashMap<String, bool> = self
             .detached
-            .values()
-            .filter(|d| d.origin_label == spec.label)
-            .map(|d| (d.tab_id.as_str(), d.secondary_went_out))
+            .values_mut()
+            .filter(|d| d.origin_title == spec.title)
+            .map(|d| {
+                d.origin_label = spec.label.clone();
+                (d.tab_id.clone(), d.secondary_went_out)
+            })
             .collect();
         for t in &spec.tabs {
             let id = t.spec.id.as_str();
@@ -561,33 +571,49 @@ impl WindowManager {
         }
     }
 
-    /// `WardenHost::retitled`: `label`'s title or colour changed in place. Its terminals keep
-    /// running; the banner, the held configs (so a lookup by title finds the window before the
-    /// reload echo), `⌘⇧T`'s stack and the remembered-tabs key (now `launch_key`) follow it.
+    /// `WardenHost::retitled`: the window the set lists as `label` (in `entries`, already changed)
+    /// was renamed or recoloured in place. An open one's terminals keep running; the banner, the
+    /// held configs (so a lookup by title finds the window before the reload echo), `⌘⇧T`'s stack,
+    /// its popped-out tabs' origin and its remembered-tabs record (now under `launch_key`) follow
+    /// it, open or closed.
     pub fn retitle(
         &mut self,
         label: &str,
         title: &str,
         colour: Colour,
+        entries: &[shell_core::menu::WindowEntry],
         launch_key: Option<String>,
-        listed: impl Fn(&str) -> bool,
     ) {
         let title = title.trim();
-        crate::plan::retitle_window(&mut self.last_good, title, colour, &listed);
-        crate::plan::retitle_window(&mut self.raw_config, title, colour, &listed);
-        let Some(ws) = self.windows.get_mut(label) else {
+        let Some((old, old_key)) = crate::plan::renamed_from(&self.last_good, entries, label)
+        else {
             return;
         };
+        crate::plan::retitle_window(&mut self.last_good, &old, title, colour);
+        crate::plan::retitle_window(&mut self.raw_config, &old, title, colour);
         for t in &mut self.last_closed {
-            if *t == ws.title {
+            if *t == old {
                 *t = title.to_string();
             }
         }
-        ws.title = title.to_string();
-        ws.colour = colour.hex();
-        if let Some(key) = launch_key.filter(|k| *k != ws.session_key) {
-            self.session.rekey(&ws.session_key, &key);
-            ws.session_key = key;
+        for d in self.detached.values_mut() {
+            if d.origin_title == old {
+                d.origin_title = title.to_string();
+            }
+        }
+        let old_key = self
+            .windows
+            .get(label)
+            .map_or(old_key, |ws| ws.session_key.clone());
+        if let Some(key) = launch_key.filter(|k| *k != old_key) {
+            self.session.rekey(&old_key, &key);
+            if let Some(ws) = self.windows.get_mut(label) {
+                ws.session_key = key;
+            }
+        }
+        if let Some(ws) = self.windows.get_mut(label) {
+            ws.title = title.to_string();
+            ws.colour = colour.hex();
         }
     }
 
@@ -1015,14 +1041,17 @@ impl WindowManager {
     /// dropped, the tab that leaned into view (`Redocked::dropped`); `None` if the detached
     /// window was already gone (double-close).
     ///
-    /// Edge cases, in order:
+    /// The origin is the open window titled `origin_title` (renamed in place along with it), under
+    /// the label the caller resolved it to (`plan::origin_home`). Edge cases, in order:
     /// 1. **Origin still open** — its slot is the `Detached` placeholder; `reparent` moves the
     ///    view back, `attach` (Detached → Spawned) restores it.
     /// 2. **Origin closed by the user while detached** — the caller has the `WindowSet` reopen
-    ///    it first, and `build_window` stands the still-out tab up as a `Detached` placeholder
-    ///    (`Registry::mark_detached`), so the return is case 1.
-    /// 3. **Origin removed from config entirely** — the tab has no home, so the surface is
-    ///    dropped (kills its PTY): the one place a live surface is intentionally dropped.
+    ///    it first (under whatever label its slot now has), and `build_window` stands the
+    ///    still-out tab up as a `Detached` placeholder (`Registry::mark_detached`), so the return
+    ///    is case 1.
+    /// 3. **No window has the origin's title** (it left the config) — the tab has no home, so the
+    ///    surface is dropped (kills its PTY): the one place a live surface is intentionally
+    ///    dropped. A window holding the origin's old label under another title is not its home.
     ///
     /// Every step treats the pair as one unit: both surfaces reparent into the origin, both
     /// go back through one `attach`, and case 3 drops both. A runtime split returning to a window
@@ -1039,15 +1068,19 @@ impl WindowManager {
             mut secondary,
             spec: spawned,
             origin_label,
+            origin_title,
             tab_id,
             agent,
         } = self.detached.remove(detached_label)?;
-
-        // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
-        let home = self
+        let at_home = self
             .windows
             .get(&origin_label)
-            .and_then(|ws| self.spec_for(&origin_label, &ws.title));
+            .is_some_and(|ws| ws.title == origin_title);
+
+        // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
+        let home = at_home
+            .then(|| self.spec_for(&origin_label, &origin_title))
+            .flatten();
         let order: Vec<String> = home
             .iter()
             .flat_map(|s| s.tabs.iter().map(|t| t.spec.id.clone()))
@@ -1055,7 +1088,7 @@ impl WindowManager {
         let plan = home.and_then(|s| s.tabs.into_iter().find(|t| t.spec.id == tab_id));
 
         let mut dropped = None;
-        match self.windows.get_mut(&origin_label) {
+        match self.windows.get_mut(&origin_label).filter(|_| at_home) {
             // Case 3: origin gone from config — the tab genuinely ends. Closing the surfaces
             // ends their PTYs (the only intentional live-surface teardown in the whole flow).
             None => close_both(surface, secondary),

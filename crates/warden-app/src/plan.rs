@@ -129,36 +129,40 @@ pub fn decls(config: &Config) -> Vec<WindowDecl> {
 }
 
 /// Carry a window's in-place title or colour change into a held config ahead of the reload that
-/// will echo it: patch the window titled `title` (a colour change), else the one window whose
-/// title `listed` no longer accepts (a rename). With several unlisted (another edit in flight)
-/// nothing is patched and the reload settles it.
-pub fn retitle_window(
-    config: &mut Config,
-    title: &str,
-    colour: Colour,
-    listed: impl Fn(&str) -> bool,
-) {
-    let title = title.trim();
-    let idx = config
-        .windows
-        .iter()
-        .position(|w| w.title == title)
-        .or_else(|| {
-            let mut unlisted = config
-                .windows
-                .iter()
-                .enumerate()
-                .filter(|(_, w)| !listed(&w.title))
-                .map(|(i, _)| i);
-            match (unlisted.next(), unlisted.next()) {
-                (Some(i), None) => Some(i),
-                _ => None,
-            }
-        });
-    if let Some(w) = idx.map(|i| &mut config.windows[i]) {
-        w.title = title.to_string();
+/// will echo it: the window titled `old` becomes `new` (trimmed) in `colour`. warden's own, over
+/// its resolved `Config` — config-core's `retitle_window` works on the raw shared `Window`.
+pub fn retitle_window(config: &mut Config, old: &str, new: &str, colour: Colour) {
+    if let Some(w) = config.windows.iter_mut().find(|w| w.title == old) {
+        w.title = new.trim().to_string();
         w.colour = colour;
     }
+}
+
+/// The title and launch label the window the set lists as `label` had before an in-place change
+/// (`WindowHost::retitled`). The set's `entries` and `config` (the held config, not yet patched)
+/// list the same windows in the same order, so the window's position in one finds it in the other.
+pub fn renamed_from(
+    config: &Config,
+    entries: &[WindowEntry],
+    label: &str,
+) -> Option<(String, String)> {
+    let idx = entries.iter().position(|e| e.id == label)?;
+    let title = config.windows.get(idx)?.title.clone();
+    let launch = shell_core::windows::plan::assign(&decls(config), &Default::default())
+        .swap_remove(idx)
+        .label;
+    Some((title, launch))
+}
+
+/// Where a popped-out tab returns: the configured window titled `origin_title` — its current label
+/// and whether it is open. The label moves when a window renamed in place is closed (its slot is
+/// relabelled from the new title), so a tab never goes home by the label it left. `None`: no window
+/// has that title — the origin left the config.
+pub fn origin_home(origin_title: &str, entries: &[WindowEntry]) -> Option<(String, bool)> {
+    entries
+        .iter()
+        .find(|e| e.title == origin_title)
+        .map(|e| (e.id.clone(), e.open))
 }
 
 /// The label `⌘⇧T` should reopen: the most-recently-closed title (top of `last_closed`) that the
@@ -330,22 +334,54 @@ title = "b"
     }
 
     #[test]
-    fn retitle_window_patches_the_renamed_or_recoloured_window() {
+    fn retitle_window_patches_the_window_with_the_old_title() {
         let mut c = cfg("[[window]]\ntitle = \"Docs\"\n[[window]]\ntitle = \"Side\"\n");
         let red = Colour::parse("#ff0000").unwrap();
-        // "Docs" was renamed to "Notes": "Docs" is the one window no longer listed.
-        let listed = |t: &str| ["Notes", "Side"].contains(&t);
-        retitle_window(&mut c, "Notes", red, listed);
+        retitle_window(&mut c, "Docs", " Notes ", red);
         assert_eq!(c.windows[0].title, "Notes");
         assert_eq!(c.windows[0].colour, red);
-        // A colour change patches the window by its own title.
-        retitle_window(&mut c, " Side ", red, listed);
-        assert_eq!(c.windows[1].title, "Side");
+        // A colour change: old and new title are the same.
+        retitle_window(&mut c, "Side", "Side", red);
         assert_eq!(c.windows[1].colour, red);
-        // Two unlisted windows (another edit in flight): nothing is patched.
-        retitle_window(&mut c, "Other", red, |t| t == "Other");
+        // A title nobody holds patches nothing.
+        retitle_window(&mut c, "Gone", "Other", red);
         let titles: Vec<&str> = c.windows.iter().map(|w| w.title.as_str()).collect();
         assert_eq!(titles, ["Notes", "Side"]);
+    }
+
+    #[test]
+    fn renamed_from_reads_the_old_title_and_launch_label_at_the_windows_position() {
+        // The set has renamed "a b" (live label "a-b") to "Notes"; the held config still says
+        // "a b". Its launch label is "a-b", and the closed "a-b" window's is "a-b-2".
+        let c = cfg("[[window]]\ntitle = \"a b\"\n[[window]]\ntitle = \"a-b\"\n");
+        let entries = [entry("a-b", "Notes", true), entry("a-b-2", "a-b", false)];
+        assert_eq!(
+            renamed_from(&c, &entries, "a-b"),
+            Some(("a b".to_string(), "a-b".to_string()))
+        );
+        assert_eq!(
+            renamed_from(&c, &entries, "a-b-2"),
+            Some(("a-b".to_string(), "a-b-2".to_string()))
+        );
+        assert_eq!(renamed_from(&c, &entries, "nope"), None);
+    }
+
+    #[test]
+    fn a_popped_out_tab_returns_to_the_window_now_holding_its_origin_title() {
+        // "work" was renamed to "job" in place (live label still "work") and closed: the closed
+        // slot is now labelled "job", and that is where the tab goes.
+        let renamed_closed = [entry("job", "job", false)];
+        assert_eq!(
+            origin_home("job", &renamed_closed),
+            Some(("job".to_string(), false))
+        );
+        // Still open under its old label.
+        let open = [entry("work", "job", true)];
+        assert_eq!(origin_home("job", &open), Some(("work".to_string(), true)));
+        // A new window took the free label "work": it is not the origin, and with no window
+        // titled "job" the origin has left the config.
+        let other = [entry("work", "work", false)];
+        assert_eq!(origin_home("job", &other), None);
     }
 
     #[test]

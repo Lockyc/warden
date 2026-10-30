@@ -128,7 +128,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 - **A new *global* setting won't hot-reload if only threaded through the per-window DTO** — a global-only edit is an empty reconcile, so add an old-vs-new compare in `main.rs`'s reload hook (launch works via `InitDto`, which hides it).
 - **A hot-reload while the home surface lists windows must reconcile, not re-materialize** — key recovery on `last_good.windows.is_empty()`, not on zero windows open (`main.rs` reload hook).
 - **Every load failure routes through `WindowSet::set_load_error`** — never a direct `show_home`/`close_home` or a bespoke error window (`main.rs`).
-- **Never call a `WindowSet` method that opens or closes windows while holding `ManagerState`** — it builds and tears down through `WardenHost`, which takes that non-reentrant lock (`main.rs::materialize_effective`, `redock`).
+- **Never call a `WindowSet` method that re-enters `WardenHost` while holding `ManagerState`** (`materialize`, `apply`, `open_or_focus`, `rename`, `delete`) — the host takes that non-reentrant lock (`main.rs::materialize_effective`, `redock`). Lookups and `set_detached_count` are fine under it.
 - **Format-on-save rewrites only on the clean-parse branch and only if bytes differ**, atomically; formatting stays idempotent so warden's own write settles after one retrigger (reload hook + config-core `format_file`).
 - **The watcher matches the config by file name and fires on any event** (`warden-config/src/watch.rs`) — don't restore full-path equality or add an `event.kind` filter.
 - **`rescan_root` diffs a fresh scan against `last_good`** (what's on screen), not two scans (`main.rs::rescan_root`).
