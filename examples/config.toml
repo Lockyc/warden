@@ -37,6 +37,11 @@ auto_update    = true          # check for a new release on launch (default on; 
 # it cascades global -> window: set it inside a [[window]] to override this for that window alone.
 open_tabs_section = false
 
+# Pin a "Recoverable" section below "Open": the unloaded tabs whose probe reports a restorable
+# session (the ghost dot), collapsed until you open it from its header. Default on; cascades like
+# open_tabs_section.
+recoverable_tabs_section = true
+
 # Bring each window back the way it was left: the tabs that had a terminal open respawn when the
 # window opens (at launch, or on a reopen), and the tab you were on is reselected. Default off, and
 # it cascades global -> window.
