@@ -2838,6 +2838,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl"
+version = "2.1.245"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46cce9bc841c0eeb395275a775d11e3cc91b904e6ab370a9a42369e111b3038e"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
 name = "quick-xml"
 version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3479,18 +3494,21 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.3.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=d8f3329739b012dc0cce8384cc08e6d80fb1bcf4#d8f3329739b012dc0cce8384cc08e6d80fb1bcf4"
+source = "git+https://github.com/Lockyc/shell-core?rev=7241f53e612ba9ac86e702810377212f3bd6b57b#7241f53e612ba9ac86e702810377212f3bd6b57b"
 dependencies = [
  "block2 0.6.2",
+ "getrandom 0.2.17",
  "notify",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "psl",
  "serde",
  "serde_json",
  "tauri",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "url",
 ]
 
 [[package]]
