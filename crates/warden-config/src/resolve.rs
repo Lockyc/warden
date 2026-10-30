@@ -1,7 +1,7 @@
 use crate::model::{Config, Root, Split, SplitSide, Tab, Window};
 use crate::raw::{RawConfig, RawSplit, RawWindow};
-use crate::{Colour, ColourError};
-use config_core::{Density, TabDigitKeys, Warning};
+use crate::Colour;
+use config_core::{Density, TabDigitKeys, Warning, WindowError};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -107,32 +107,15 @@ fn cascade_split(
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ResolveError {
-    #[error("duplicate window title: {0:?}")]
-    DuplicateWindow(String),
+    /// A shared `[[window]]` / group key failed config-core's `validate_windows`.
+    #[error(transparent)]
+    Window(#[from] WindowError),
     #[error("window {window:?} has two tabs with the same identity: {identity:?} (give one an `id` to disambiguate, or change its dir)")]
     DuplicateTabIdentity { window: String, identity: String },
     #[error("window {window:?} has a tab with an empty dir")]
     EmptyDir { window: String },
-    #[error("window {window:?} has invalid colour")]
-    BadColour {
-        window: String,
-        #[source]
-        source: ColourError,
-    },
-    #[error("window at index {index} has an empty title")]
-    EmptyWindowTitle { index: usize },
     #[error("window {window:?} has a tab with an empty explicit title")]
     EmptyTabTitle { window: String },
-    #[error("window {window:?} has a group with an empty name")]
-    EmptyGroupName { window: String },
-    #[error("window {window:?} has duplicate group: {group:?}")]
-    DuplicateGroup { window: String, group: String },
-    #[error("window {window:?} has invalid size {width}x{height} (must be > 0)")]
-    InvalidWindowSize {
-        window: String,
-        width: u32,
-        height: u32,
-    },
     #[error("invalid tab_digit_keys {0:?} (expected \"jump\" or \"cycle\")")]
     BadTabDigitKeys(String),
     #[error("invalid density {0:?} (expected \"comfortable\" or \"compact\")")]
@@ -239,20 +222,12 @@ pub fn resolve_with(
     };
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
-    let mut seen_windows = HashSet::new();
     let tab_digit_keys = resolve_tab_digit_keys(raw.tab_digit_keys.as_deref())?;
     let density = resolve_density(raw.density.as_deref())?;
+    // Titles and group names are deduped trimmed, so resolve_window stores them trimmed too.
+    config_core::validate_windows(&raw.windows)?;
 
-    for (index, rp) in raw.windows.iter().enumerate() {
-        // Dedup on the trimmed title so a trailing-space typo collides rather than
-        // creating a distinct window; resolve_window stores it trimmed too (below).
-        let title = rp.title.trim();
-        if title.is_empty() {
-            return Err(ResolveError::EmptyWindowTitle { index });
-        }
-        if !seen_windows.insert(title.to_string()) {
-            return Err(ResolveError::DuplicateWindow(title.to_string()));
-        }
+    for rp in &raw.windows {
         windows.push(resolve_window(
             rp,
             default_shell,
@@ -298,42 +273,32 @@ fn resolve_window(
     global_remember_tabs: Option<bool>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
-    let window_split = resolve_split_level(rp.split.as_ref())?;
-    let colour = match rp.colour.as_deref() {
-        None => DEFAULT_COLOUR,
-        Some(s) => Colour::parse(s).map_err(|source| ResolveError::BadColour {
-            window: rp.title.clone(),
-            source,
-        })?,
-    };
-    let width = rp.width.unwrap_or_else(config_core::default_window_width);
-    let height = rp.height.unwrap_or_else(config_core::default_window_height);
-    if width == 0 || height == 0 {
-        return Err(ResolveError::InvalidWindowSize {
-            window: rp.title.clone(),
-            width,
-            height,
-        });
-    }
-    let open_on_start = rp.open_on_start.unwrap_or(true);
+    let x = &rp.extra;
+    let window_split = resolve_split_level(x.split.as_ref())?;
+    // `validate_windows` already rejected an unparseable colour; only an absent one defaults.
+    let colour = rp
+        .colour
+        .as_deref()
+        .and_then(|s| Colour::parse(s).ok())
+        .unwrap_or(DEFAULT_COLOUR);
     // Cascade global -> window, nearest set level winning. A bool has no "" opt-out
     // (the string cascades' escape hatch): `false` at either level IS the opt-out.
-    let open_tabs_section = rp
+    let open_tabs_section = x
         .open_tabs_section
         .or(global_open_tabs_section)
         .unwrap_or(false);
-    let remember_tabs = rp.remember_tabs.or(global_remember_tabs).unwrap_or(false);
+    let remember_tabs = x.remember_tabs.or(global_remember_tabs).unwrap_or(false);
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
     // presentation only — so every tab resolves identically (tab → window → global)
     // and just carries its group name. Identity uniqueness (id-else-dir) is window-wide
     // (shared `seen_keys` across loose + grouped tabs); titles may repeat.
-    let total: usize = rp.tabs.len() + rp.groups.iter().map(|g| g.tabs.len()).sum::<usize>();
+    let total: usize = x.tabs.len() + rp.groups.iter().map(|g| g.tabs.len()).sum::<usize>();
     let mut tabs = Vec::with_capacity(total);
     let mut seen_keys = HashSet::new();
 
-    for rt in &rp.tabs {
+    for rt in &x.tabs {
         tabs.push(resolve_tab(
             rt,
             None,
@@ -348,24 +313,14 @@ fn resolve_window(
 
     // Section names (group names + root names) share one uniqueness namespace: a group
     // and a root can't share a name, matching how both render as labelled sidebar
-    // sections. A group-vs-group clash still reports `DuplicateGroup`; any other clash
-    // (root-vs-root or cross-kind) reports `DuplicateSection`.
+    // sections. A group-vs-group clash is `validate_windows`' `DuplicateGroupName`; any
+    // other clash (root-vs-root or cross-kind) reports `DuplicateSection`.
     let mut seen_sections = HashSet::new();
     for g in &rp.groups {
-        // Dedup + tag tabs with the trimmed name so a trailing-space typo collides
-        // and Tab.group matches the section name the sidebar renders.
+        // Tag tabs with the trimmed name so Tab.group matches the section name the
+        // sidebar renders.
         let group_name = g.name.trim();
-        if group_name.is_empty() {
-            return Err(ResolveError::EmptyGroupName {
-                window: rp.title.clone(),
-            });
-        }
-        if !seen_sections.insert(group_name.to_string()) {
-            return Err(ResolveError::DuplicateGroup {
-                window: rp.title.clone(),
-                group: group_name.to_string(),
-            });
-        }
+        seen_sections.insert(group_name.to_string());
         for rt in &g.tabs {
             tabs.push(resolve_tab(
                 rt,
@@ -380,8 +335,8 @@ fn resolve_window(
         }
     }
 
-    let mut roots = Vec::with_capacity(rp.roots.len());
-    for rr in &rp.roots {
+    let mut roots = Vec::with_capacity(x.roots.len());
+    for rr in &x.roots {
         let Some(root) = resolve_root(
             rr,
             rp,
@@ -405,9 +360,9 @@ fn resolve_window(
     Ok(Window {
         title: rp.title.trim().to_string(),
         colour,
-        width,
-        height,
-        open_on_start,
+        width: rp.width,
+        height: rp.height,
+        open_on_start: rp.open_on_start,
         open_tabs_section,
         remember_tabs,
         tabs,
@@ -437,7 +392,11 @@ fn resolve_tab(
         });
     }
     // A remote tab's `dir` is a path on the server: no tilde expansion, no existence check.
-    let server = cascade_server(rt.server.as_deref(), rp.server.as_deref(), globals.server);
+    let server = cascade_server(
+        rt.server.as_deref(),
+        rp.extra.server.as_deref(),
+        globals.server,
+    );
     let remote = server.as_deref().is_some_and(|s| s != LOCAL_SERVER);
     let dir = if remote {
         PathBuf::from(dir_str)
@@ -573,15 +532,16 @@ fn resolve_cascade(
     let level =
         |n: Option<&str>, w: Option<&str>, g: Option<&str>| cascade(n, w, g).map(String::from);
     let near_split = resolve_split_level(near.split)?;
+    let w = &rp.extra;
     Ok(Cascaded {
-        shell: cascade(near.shell, rp.shell.as_deref(), globals.shell)
+        shell: cascade(near.shell, w.shell.as_deref(), globals.shell)
             .unwrap_or(default_shell)
             .to_string(),
-        startup: level(near.cmd, rp.cmd.as_deref(), globals.cmd),
-        probe: level(near.probe, rp.probe.as_deref(), globals.probe),
-        kill: level(near.kill, rp.kill.as_deref(), globals.kill),
-        suspend: level(near.suspend, rp.suspend.as_deref(), globals.suspend),
-        resume: level(near.resume, rp.resume.as_deref(), globals.resume),
+        startup: level(near.cmd, w.cmd.as_deref(), globals.cmd),
+        probe: level(near.probe, w.probe.as_deref(), globals.probe),
+        kill: level(near.kill, w.kill.as_deref(), globals.kill),
+        suspend: level(near.suspend, w.suspend.as_deref(), globals.suspend),
+        resume: level(near.resume, w.resume.as_deref(), globals.resume),
         split: cascade_split(near_split.as_ref(), window_split, globals.split),
     })
 }
@@ -600,7 +560,11 @@ fn resolve_root(
     // maps its error onto ResolveError with this window's context.
     let root_dir = config_core::resolve_root_dir(rr.name.as_deref(), &rr.dir, rr.depth)
         .map_err(|e| map_root_error(e, &rp.title))?;
-    let server = cascade_server(rr.server.as_deref(), rp.server.as_deref(), globals.server);
+    let server = cascade_server(
+        rr.server.as_deref(),
+        rp.extra.server.as_deref(),
+        globals.server,
+    );
     if server.as_deref().is_some_and(|s| s != LOCAL_SERVER) {
         warnings.push(Warning {
             window: rp.title.clone(),
@@ -1124,7 +1088,10 @@ colour = "#000000"
 "##,
         )
         .unwrap_err();
-        assert_eq!(err, ResolveError::DuplicateWindow("dup".into()));
+        assert_eq!(
+            err,
+            ResolveError::Window(WindowError::DuplicateTitle("dup".into()))
+        );
     }
 
     #[test]
@@ -1204,7 +1171,10 @@ colour = "teal"
 "##,
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::BadColour { .. }));
+        assert!(matches!(
+            err,
+            ResolveError::Window(WindowError::BadColour { .. })
+        ));
     }
 
     #[test]
@@ -1253,7 +1223,10 @@ colour = "#000000"
 "##,
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::EmptyWindowTitle { index: 0 }));
+        assert!(matches!(
+            err,
+            ResolveError::Window(WindowError::EmptyTitle { index: 0 })
+        ));
     }
 
     #[test]
@@ -1325,7 +1298,10 @@ colour = "#000000"
 "##,
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::EmptyGroupName { .. }));
+        assert!(matches!(
+            err,
+            ResolveError::Window(WindowError::EmptyGroupName(_))
+        ));
     }
 
     #[test]
@@ -1350,10 +1326,10 @@ colour = "#000000"
         .unwrap_err();
         assert_eq!(
             err,
-            ResolveError::DuplicateGroup {
+            ResolveError::Window(WindowError::DuplicateGroupName {
                 window: "work".into(),
                 group: "dup".into()
-            }
+            })
         );
     }
 
@@ -1555,7 +1531,10 @@ height = 800
             .unwrap(),
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::InvalidWindowSize { .. }));
+        assert_eq!(
+            err,
+            ResolveError::Window(WindowError::ZeroSize("work".into()))
+        );
     }
 
     #[test]
@@ -1574,7 +1553,10 @@ height = 0
             .unwrap(),
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::InvalidWindowSize { .. }));
+        assert_eq!(
+            err,
+            ResolveError::Window(WindowError::ZeroSize("work".into()))
+        );
     }
 
     #[test]
@@ -1875,7 +1857,10 @@ colour = "not-a-colour"
             .unwrap(),
         )
         .unwrap_err();
-        assert!(matches!(err, ResolveError::BadColour { .. }));
+        assert!(matches!(
+            err,
+            ResolveError::Window(WindowError::BadColour { .. })
+        ));
     }
 
     // Window titles are validated for emptiness after trimming, so they must also be
@@ -1900,7 +1885,10 @@ title = "work "
 "##,
         )
         .unwrap_err();
-        assert_eq!(err, ResolveError::DuplicateWindow("work".into()));
+        assert_eq!(
+            err,
+            ResolveError::Window(WindowError::DuplicateTitle("work".into()))
+        );
     }
 
     #[test]
@@ -1965,10 +1953,10 @@ title = "work"
         .unwrap_err();
         assert_eq!(
             err,
-            ResolveError::DuplicateGroup {
+            ResolveError::Window(WindowError::DuplicateGroupName {
                 window: "work".into(),
                 group: "backend".into(),
-            }
+            })
         );
     }
 
