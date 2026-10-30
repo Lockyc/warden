@@ -14,7 +14,7 @@ dirs = "5"
 # no extra setup. Pinned by rev (same class as the libghostty pin) — config-core's formatter
 # is warden's source of truth for format-on-save, so a HEAD bump must be deliberate, not
 # floated by `cargo update`.
-config-core = { git = "https://github.com/Lockyc/config-core", rev = "50f863097b53b7f6dccf37335309929e2f498dfa" }
+config-core = { git = "https://github.com/Lockyc/config-core", rev = "b7ba40f1dff382dfe1dd6c1390a30e527551e23f" }
 # Used by load.rs / watch.rs tests for temp config dirs.
 tempfile = "3"
 

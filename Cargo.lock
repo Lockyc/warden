@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "chrome-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/chrome-core?rev=abd6b7b3646ea4f31558331fc249e98c64f4879b#abd6b7b3646ea4f31558331fc249e98c64f4879b"
+source = "git+https://github.com/Lockyc/chrome-core?rev=f6a1463b108d99303f0c5147c259377911c1976f#f6a1463b108d99303f0c5147c259377911c1976f"
 
 [[package]]
 name = "chrono"
@@ -415,7 +415,7 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=50f863097b53b7f6dccf37335309929e2f498dfa#50f863097b53b7f6dccf37335309929e2f498dfa"
+source = "git+https://github.com/Lockyc/config-core?rev=b7ba40f1dff382dfe1dd6c1390a30e527551e23f#b7ba40f1dff382dfe1dd6c1390a30e527551e23f"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -740,7 +740,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -905,7 +905,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2118,7 +2118,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.18",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3103,7 +3103,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3159,7 +3159,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3495,7 +3495,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.3.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=e625065a918d96c59c8110c3ba6c307703d2c9a1#e625065a918d96c59c8110c3ba6c307703d2c9a1"
+source = "git+https://github.com/Lockyc/shell-core?rev=f9f78b9eade018ab0a31b77fac96956b286f1799#f9f78b9eade018ab0a31b77fac96956b286f1799"
 dependencies = [
  "block2 0.6.2",
  "getrandom 0.2.17",
@@ -3565,7 +3565,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4095,7 +4095,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4480,7 +4480,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.18",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4940,7 +4940,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
