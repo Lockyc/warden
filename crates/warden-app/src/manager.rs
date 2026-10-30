@@ -571,47 +571,49 @@ impl WindowManager {
         }
     }
 
-    /// `WardenHost::retitled`: the window the set lists as `label` (in `entries`, already changed)
-    /// was renamed or recoloured in place. An open one's terminals keep running; the banner, the
-    /// held configs (so a lookup by title finds the window before the reload echo), `⌘⇧T`'s stack,
-    /// its popped-out tabs' origin and its remembered-tabs record (now under `launch_key`) follow
-    /// it, open or closed.
+    /// `WardenHost::retitled`: the window now titled `title` in the set's `entries` was renamed or
+    /// recoloured in place; `label` is the label shell-core reports — an open window's live one,
+    /// which a rename keeps. An open window's terminals keep running; the banner, the held configs
+    /// (so a lookup by title finds the window before the reload echo), `⌘⇧T`'s stack, its
+    /// popped-out tabs' origin and its remembered-tabs record (moved to its new launch label)
+    /// follow it, open or closed.
     pub fn retitle(
         &mut self,
         label: &str,
         title: &str,
         colour: Colour,
         entries: &[shell_core::menu::WindowEntry],
-        launch_key: Option<String>,
     ) {
         let title = title.trim();
-        let Some((old, old_key)) = crate::plan::renamed_from(&self.last_good, entries, label)
-        else {
+        let Some(idx) = crate::plan::renamed_index(entries, title) else {
             return;
         };
+        let Some(old) = self.last_good.windows.get(idx).map(|w| w.title.clone()) else {
+            return;
+        };
+        let open = self.windows.get(label).filter(|ws| ws.title == old);
+        let old_key = open
+            .map(|ws| ws.session_key.clone())
+            .or_else(|| crate::plan::launch_label(&self.last_good, idx));
         crate::plan::retitle_window(&mut self.last_good, &old, title, colour);
         crate::plan::retitle_window(&mut self.raw_config, &old, title, colour);
-        for t in &mut self.last_closed {
-            if *t == old {
-                *t = title.to_string();
+        let renamed = self
+            .last_closed
+            .iter_mut()
+            .chain(self.detached.values_mut().map(|d| &mut d.origin_title));
+        for t in renamed.filter(|t| **t == old) {
+            *t = title.to_string();
+        }
+        let new_key = crate::plan::launch_label(&self.last_good, idx);
+        if let (Some(old_key), Some(new_key)) = (old_key, new_key) {
+            if old_key != new_key {
+                self.session.rekey(&old_key, &new_key);
+            }
+            if let Some(ws) = self.windows.get_mut(label).filter(|ws| ws.title == old) {
+                ws.session_key = new_key;
             }
         }
-        for d in self.detached.values_mut() {
-            if d.origin_title == old {
-                d.origin_title = title.to_string();
-            }
-        }
-        let old_key = self
-            .windows
-            .get(label)
-            .map_or(old_key, |ws| ws.session_key.clone());
-        if let Some(key) = launch_key.filter(|k| *k != old_key) {
-            self.session.rekey(&old_key, &key);
-            if let Some(ws) = self.windows.get_mut(label) {
-                ws.session_key = key;
-            }
-        }
-        if let Some(ws) = self.windows.get_mut(label) {
+        if let Some(ws) = self.windows.get_mut(label).filter(|ws| ws.title == old) {
             ws.title = title.to_string();
             ws.colour = colour.hex();
         }
@@ -1419,6 +1421,61 @@ mod tests {
     use super::*;
     use crate::surface::TabSpec;
     use std::sync::atomic::Ordering;
+
+    fn config(src: &str) -> Config {
+        warden_config::resolve::resolve(warden_config::raw::parse(src).unwrap())
+            .unwrap()
+            .0
+    }
+
+    fn entry(id: &str, title: &str) -> shell_core::menu::WindowEntry {
+        shell_core::menu::WindowEntry {
+            id: id.into(),
+            title: title.into(),
+            open: false,
+            colour: None,
+        }
+    }
+
+    fn record() -> crate::session::WindowRecord {
+        crate::session::WindowRecord {
+            loaded: vec!["/tmp".into()],
+            active: None,
+        }
+    }
+
+    /// shell-core reports a closed window's rename under its pre-rename label ("a-b"), which the
+    /// set has since given to the other window whose title slugs to it ("a-b", was "a-b-2").
+    #[test]
+    fn retitle_of_a_closed_window_follows_its_new_title_and_leaves_the_slug_twin_alone() {
+        let mut m = WindowManager::new();
+        let c = config("[[window]]\ntitle = \"a b\"\n[[window]]\ntitle = \"a-b\"\n");
+        m.adopt(c.clone(), c);
+        m.last_closed = vec!["a b".into(), "a-b".into()];
+        m.session.set("a-b", Some(record()));
+        let red = Colour::parse("#ff0000").unwrap();
+        let entries = [entry("x", "x"), entry("a-b", "a-b")];
+        m.retitle("a-b", "x", red, &entries);
+
+        let titles = |c: &Config| {
+            c.windows
+                .iter()
+                .map(|w| w.title.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(&m.last_good), ["x", "a-b"]);
+        assert_eq!(titles(&m.raw_config), ["x", "a-b"]);
+        assert_eq!(m.last_good.windows[0].colour, red);
+        assert_ne!(
+            m.last_good.windows[1].colour, red,
+            "the slug twin is untouched"
+        );
+        // ⌘⇧T's stack and (through the same loop) pop-outs' origin titles follow the rename.
+        assert_eq!(m.last_closed, ["x", "a-b"]);
+        // The remembered tabs move from the old launch label to the new one.
+        assert!(m.session.get("a-b").is_none());
+        assert_eq!(m.session.get("x"), Some(&record()));
+    }
 
     #[test]
     fn probe_interval_defaults_to_5_and_is_settable() {

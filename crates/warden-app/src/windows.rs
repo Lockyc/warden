@@ -44,11 +44,11 @@ impl WindowHost for WardenHost {
             .as_deref()
             .and_then(|c| Colour::parse(c).ok())
             .unwrap_or(DEFAULT_COLOUR);
-        let (entries, launch_key) = (set.entries(), set.launch_label(label));
+        let entries = set.entries();
         let st = app.state::<ManagerState>();
         let dto = {
             let mut m = st.lock();
-            m.retitle(label, &decl.title, colour, &entries, launch_key);
+            m.retitle(label, &decl.title, colour, &entries);
             m.init_dto(label)
         };
         if let Some(dto) = dto {
