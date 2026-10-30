@@ -1102,7 +1102,7 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
         return;
     }
     let st = app.state::<ManagerState>();
-    // Find the origin by title (`plan::origin_home`) — a window renamed in place and then closed
+    // Find the origin by title (`entry_for_title`) — a window renamed in place and then closed
     // comes back under a new label — and point the tab at that label. Reopen the origin if the
     // user closed it while the tab was popped out, so the tab has somewhere to return to — while
     // the tab is still in `detached`, which is how `build_window` knows to stand it up as a
@@ -1117,10 +1117,10 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
         let Some(d) = m.detached.get_mut(detached_label) else {
             return; // already redocked (double-close) — nothing to do
         };
-        match plan::origin_home(&d.origin_title, &entries) {
-            Some((label, open)) => {
-                d.origin_label = label.clone();
-                (!open).then_some(label)
+        match shell_core::windows::plan::entry_for_title(&entries, &d.origin_title) {
+            Some(home) => {
+                d.origin_label = home.id.clone();
+                (!home.open).then(|| home.id.clone())
             }
             None => None,
         }
@@ -2076,8 +2076,8 @@ fn main() {
                 rebuild_menu(app.handle())?;
 
                 // Hot-reload: watch the config file; on each event reload + diff
-                // against last_good + apply the resulting WindowOps to live
-                // windows. The notify callback runs on a background thread, but
+                // against last_good, hand the windows to the `WindowSet` and apply
+                // the kept windows' tab ops. The notify callback runs on a background thread, but
                 // every Tauri/AppKit/registry touch is main-thread only — hop via
                 // run_on_main_thread before doing any of it.
                 let cfg_path = warden_config::config_path();

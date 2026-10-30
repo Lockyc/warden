@@ -37,18 +37,16 @@ impl WindowHost for WardenHost {
     }
 
     /// Rename or recolour in place: the terminals keep running; the banner repaints.
-    fn retitled(&self, app: &AppHandle, label: &str, decl: &WindowDecl) {
-        let set = app.state::<WindowSet>();
+    fn retitled(&self, app: &AppHandle, label: &str, old: &str, decl: &WindowDecl) {
         let colour = decl
             .colour
             .as_deref()
             .and_then(|c| Colour::parse(c).ok())
             .unwrap_or(DEFAULT_COLOUR);
-        let entries = set.entries();
         let st = app.state::<ManagerState>();
         let dto = {
             let mut m = st.lock();
-            m.retitle(label, &decl.title, colour, &entries);
+            m.retitle(label, old, &decl.title, colour);
             m.init_dto(label)
         };
         if let Some(dto) = dto {

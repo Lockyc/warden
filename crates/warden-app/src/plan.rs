@@ -140,15 +140,6 @@ pub fn retitle_window(config: &mut Config, old: &str, new: &str, colour: Colour)
     }
 }
 
-/// The position of the window just changed in place (`WindowHost::retitled`), found by its new
-/// `title` — titles are unique, while the label shell-core reports is the pre-rename one, which a
-/// closed window loses (its slot is relabelled from the new title, and another window may take
-/// the old label). The set's `entries` and the held config list the same windows in the same
-/// order, so this position finds the window in the config too.
-pub fn renamed_index(entries: &[WindowEntry], title: &str) -> Option<usize> {
-    entries.iter().position(|e| e.title.trim() == title.trim())
-}
-
 /// The launch label of `config`'s window at `idx` — the label it gets with nothing open, which
 /// keys its remembered tabs and saved bounds.
 pub fn launch_label(config: &Config, idx: usize) -> Option<String> {
@@ -156,17 +147,6 @@ pub fn launch_label(config: &Config, idx: usize) -> Option<String> {
         .into_iter()
         .nth(idx)
         .map(|s| s.label)
-}
-
-/// Where a popped-out tab returns: the configured window titled `origin_title` — its current label
-/// and whether it is open. The label moves when a window renamed in place is closed (its slot is
-/// relabelled from the new title), so a tab never goes home by the label it left. `None`: no window
-/// has that title — the origin left the config.
-pub fn origin_home(origin_title: &str, entries: &[WindowEntry]) -> Option<(String, bool)> {
-    entries
-        .iter()
-        .find(|e| e.title == origin_title)
-        .map(|e| (e.id.clone(), e.open))
 }
 
 /// The label `⌘⇧T` should reopen: the most-recently-closed title (top of `last_closed`) that the
@@ -357,35 +337,11 @@ title = "b"
     }
 
     #[test]
-    fn renamed_index_finds_the_window_by_its_new_title_not_its_label() {
-        // The closed "a b" (launch label "a-b") was renamed to "x": shell-core reports the
-        // pre-rename label "a-b", but the set's entries now list it as "x", and the freed label
-        // "a-b" belongs to the other window, whose title slugs to it.
+    fn launch_labels_follow_config_order_for_slug_twins() {
         let c = cfg("[[window]]\ntitle = \"a b\"\n[[window]]\ntitle = \"a-b\"\n");
-        let entries = [entry("x", "x", false), entry("a-b", "a-b", false)];
-        assert_eq!(renamed_index(&entries, " x "), Some(0));
-        assert_eq!(c.windows[0].title, "a b");
         assert_eq!(launch_label(&c, 0).as_deref(), Some("a-b"));
         assert_eq!(launch_label(&c, 1).as_deref(), Some("a-b-2"));
-        assert_eq!(renamed_index(&entries, "nope"), None);
-    }
-
-    #[test]
-    fn a_popped_out_tab_returns_to_the_window_now_holding_its_origin_title() {
-        // "work" was renamed to "job" in place (live label still "work") and closed: the closed
-        // slot is now labelled "job", and that is where the tab goes.
-        let renamed_closed = [entry("job", "job", false)];
-        assert_eq!(
-            origin_home("job", &renamed_closed),
-            Some(("job".to_string(), false))
-        );
-        // Still open under its old label.
-        let open = [entry("work", "job", true)];
-        assert_eq!(origin_home("job", &open), Some(("work".to_string(), true)));
-        // A new window took the free label "work": it is not the origin, and with no window
-        // titled "job" the origin has left the config.
-        let other = [entry("work", "work", false)];
-        assert_eq!(origin_home("job", &other), None);
+        assert_eq!(launch_label(&c, 2), None);
     }
 
     #[test]
