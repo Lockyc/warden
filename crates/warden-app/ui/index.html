@@ -797,6 +797,9 @@
           // open_tabs_section (per-window, global → window, default off): pin a mirror list of the open tabs
           // above the main list. Absent field defaults off, matching warden's default.
           openSection: dto.open_tabs_section === true,
+          // recoverable_tabs_section (per-window, default on): pin a collapsed mirror list of the
+          // unloaded tabs whose probe reports a recoverable (ghost) session.
+          recoverableSection: dto.recoverable_tabs_section === true,
           // The window's [[window.root]] names, so an empty root keeps its section and ⟳.
           trees: dto.trees || [],
           tabs: dto.tabs.map((t) => ({
