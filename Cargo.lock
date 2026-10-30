@@ -415,13 +415,14 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=24877d68beda7ff75fdb0f5914cd592178da54bd#24877d68beda7ff75fdb0f5914cd592178da54bd"
+source = "git+https://github.com/Lockyc/config-core?rev=50f863097b53b7f6dccf37335309929e2f498dfa#50f863097b53b7f6dccf37335309929e2f498dfa"
 dependencies = [
  "dirs 6.0.0",
  "serde",
  "taplo",
  "tempfile",
  "thiserror 2.0.18",
+ "toml 0.8.23",
  "toml_edit 0.25.12+spec-1.1.0",
 ]
 

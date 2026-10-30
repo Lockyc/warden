@@ -5,7 +5,8 @@ use serde::Deserialize;
 // `deny_unknown_fields` on every schema struct turns a mistyped key (e.g. `color` for `colour`,
 // `probe_intervall`) into a parse error surfaced via warden's error-banner path, instead of the key
 // being silently dropped. NOTE: this is incompatible with `#[serde(flatten)]` — none of these
-// structs flatten, so keep it that way (or this must be reworked).
+// structs flatten, so keep it that way (config-core's `Window` hands `RawWindowExtras` its
+// leftover keys without flattening, for the same reason).
 /// `split` at any cascade level — a table declaring the tab's second pane, or a bool:
 /// `false` opts the level out of an inherited split (the table-valued analogue of
 /// `cmd = ""`), `true` declares the default split (right side, half the hole, bare shell).
@@ -94,14 +95,14 @@ pub struct RawConfig {
     pub windows: Vec<RawWindow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// One `[[window]]`: config-core's shared container (`title`/`colour`/`width`/`height`/
+/// `open_on_start`, its `[[window.group]]`s of [`RawTab`]) carrying warden's own keys as `extra`.
+pub type RawWindow = config_core::Window<RawTab, RawWindowExtras>;
+
+/// warden's window-level keys, beside config-core's shared ones on the same `[[window]]` table.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RawWindow {
-    pub title: String,
-    pub colour: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub open_on_start: Option<bool>,
+pub struct RawWindowExtras {
     // Overrides the global `open_tabs_section` for THIS window's sidebar.
     pub open_tabs_section: Option<bool>,
     // Overrides the global `remember_tabs` for THIS window.
@@ -115,27 +116,16 @@ pub struct RawWindow {
     pub server: Option<String>,
     pub split: Option<RawSplit>,
     // Loose tabs declared directly under the window (`[[window.tab]]`) — ungrouped,
-    // rendered in a headerless section before any named groups.
+    // rendered in a headerless section before any named groups. Resolution flattens
+    // loose tabs + each group's tabs into one ordered `Tab` list, tagging every tab
+    // with its group (loose = `None`); see resolve.rs.
     #[serde(default, rename = "tab")]
     pub tabs: Vec<RawTab>,
-    // Named groups (`[[window.group]]`), each holding its own `[[window.group.tab]]`s.
-    // Resolution flattens loose tabs + each group's tabs into one ordered `Tab` list,
-    // tagging every tab with its group (loose = `None`); see resolve.rs.
-    #[serde(default, rename = "group")]
-    pub groups: Vec<RawGroup>,
     // Project-tree roots (`[[window.root]]`): a scanned projects dir whose discovered
     // git projects are synthesized into tabs app-side. A new cascade level for its
     // projects (root→window→global); see resolve.rs. Presented as a labelled section.
     #[serde(default, rename = "root")]
     pub roots: Vec<RawRoot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawGroup {
-    pub name: String,
-    #[serde(default, rename = "tab")]
-    pub tabs: Vec<RawTab>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -213,14 +203,15 @@ cmd = "tmux"
         let p = &cfg.windows[0];
         assert_eq!(p.title, "work");
         assert_eq!(p.colour.as_deref(), Some("#0f8a8a"));
-        assert_eq!(p.shell.as_deref(), Some("zsh"));
-        assert_eq!(p.cmd.as_deref(), Some("tmux"));
-        assert_eq!(p.tabs.len(), 2);
-        assert_eq!(p.tabs[0].cmd.as_deref(), Some("tmux"));
-        assert!(p.tabs[0].load_on_open);
-        assert_eq!(p.tabs[1].title.as_deref(), Some("ops"));
-        assert!(p.tabs[1].cmd.is_none()); // inherits via cascade
-        assert!(!p.tabs[1].load_on_open); // serde default
+        assert_eq!(p.extra.shell.as_deref(), Some("zsh"));
+        assert_eq!(p.extra.cmd.as_deref(), Some("tmux"));
+        let tabs = &p.extra.tabs;
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0].cmd.as_deref(), Some("tmux"));
+        assert!(tabs[0].load_on_open);
+        assert_eq!(tabs[1].title.as_deref(), Some("ops"));
+        assert!(tabs[1].cmd.is_none()); // inherits via cascade
+        assert!(!tabs[1].load_on_open); // serde default
     }
 
     #[test]
@@ -258,8 +249,8 @@ colour = "#0f8a8a"
         .unwrap();
         let w = &cfg.windows[0];
         // Loose tabs and group blocks are independent TOML arrays.
-        assert_eq!(w.tabs.len(), 1);
-        assert_eq!(w.tabs[0].dir, "~/notes");
+        assert_eq!(w.extra.tabs.len(), 1);
+        assert_eq!(w.extra.tabs[0].dir, "~/notes");
         assert_eq!(w.groups.len(), 2);
         assert_eq!(w.groups[0].name, "frontend");
         assert_eq!(w.groups[0].tabs.len(), 2);
@@ -286,14 +277,14 @@ colour = "#0f8a8a"
 "##,
         )
         .unwrap();
-        let w = &cfg.windows[0];
-        assert_eq!(w.roots.len(), 2);
-        assert_eq!(w.roots[0].name.as_deref(), Some("Developer"));
-        assert_eq!(w.roots[0].dir, "~/Developer");
-        assert_eq!(w.roots[0].depth, Some(4));
-        assert_eq!(w.roots[0].probe.as_deref(), Some("check --probe"));
-        assert!(w.roots[1].name.is_none());
-        assert_eq!(w.roots[1].dir, "~/work");
+        let roots = &cfg.windows[0].extra.roots;
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].name.as_deref(), Some("Developer"));
+        assert_eq!(roots[0].dir, "~/Developer");
+        assert_eq!(roots[0].depth, Some(4));
+        assert_eq!(roots[0].probe.as_deref(), Some("check --probe"));
+        assert!(roots[1].name.is_none());
+        assert_eq!(roots[1].dir, "~/work");
     }
 
     #[test]
@@ -404,10 +395,11 @@ split = false
         assert!(
             matches!(cfg.split, Some(RawSplit::On(ref t)) if t.side.as_deref() == Some("left") && t.size == Some(0.3))
         );
-        assert_eq!(cfg.windows[0].split, Some(RawSplit::Off(false)));
-        assert_eq!(cfg.windows[0].tabs[0].split, Some(RawSplit::Off(true)));
+        let w = &cfg.windows[0].extra;
+        assert_eq!(w.split, Some(RawSplit::Off(false)));
+        assert_eq!(w.tabs[0].split, Some(RawSplit::Off(true)));
         assert!(
-            matches!(cfg.windows[0].roots[0].split, Some(RawSplit::On(ref t)) if t.cmd.as_deref() == Some("x"))
+            matches!(w.roots[0].split, Some(RawSplit::On(ref t)) if t.cmd.as_deref() == Some("x"))
         );
     }
 
