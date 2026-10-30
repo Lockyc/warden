@@ -1179,7 +1179,7 @@ impl Registry {
             t.primary.spec.split = meta.split.clone();
             // Tree-ness can flip on a kept tab when its group moves between a root
             // section and a plain group (curated↔discovered shadowing) — recomputed
-            // upstream in `reconcile_ops`, so it must be applied here too, not left
+            // upstream in `tab_ops`, so it must be applied here too, not left
             // stale from the prior render.
             t.primary.spec.tree = tree;
             t.primary.spec.tree_path = tree_path;
@@ -2664,7 +2664,7 @@ mod tests {
 
     #[test]
     fn respawn_sequence_replaces_spec_for_same_id() {
-        // `manager.rs`'s `WindowOp::Update` respawn step is exactly this sequence —
+        // `manager.rs`'s `TabOp` respawn step is exactly this sequence —
         // `remove(id)` then `add(&new_spec, ..)` — applied to a kept tab whose terminal
         // spec (e.g. `dir`) changed but whose id (identity) is unchanged. Prove it swaps
         // the underlying spec in place, with no stray duplicate entry left behind. This

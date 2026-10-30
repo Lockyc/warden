@@ -1,18 +1,21 @@
-//! Owns the live windows. Materializes them from config and applies
-//! reconciliations. Impure (Tauri + AppKit) — verified at checkpoints.
+//! Owns each open window's content: its terminals (a `Registry` per window label), the held
+//! configs, pop-outs and remembered tabs. Which windows exist and under which label is
+//! shell-core's `WindowSet`'s, which builds and tears down this content through `WardenHost`
+//! (`windows.rs`). Impure (Tauri + AppKit) — verified at checkpoints.
 
-use crate::plan::{reconcile_ops, window_specs, TabPlan, WindowOp, WindowSpec};
+use crate::plan::{tab_ops, window_to_spec, TabPlan, WindowSpec};
 use crate::probe::Presence;
 use crate::registry::{ProbeTarget, Registry, TabDto};
 use crate::surface::ghostty::GhosttySurface;
 use crate::surface::{PixelRect, TabSpec, TerminalSurface};
 use crate::ManagerState;
+use shell_core::windows::WindowSet;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use warden_config::{Config, Reconciliation};
+use warden_config::{Colour, Config, Reconciliation};
 
 /// Initial surface rect: offset by the 160px sidebar so the surface never
 /// overlaps it before the first JS rect report arrives. (Matches the spike.)
@@ -27,20 +30,11 @@ pub(crate) const INITIAL_RECT: PixelRect = PixelRect {
     height: 600.0,
 };
 
-/// Set once on `RunEvent::ExitRequested` (main.rs), which fires before every window's
-/// `Destroyed` during ⌘Q. Checked at the top of `redock` so a detached window's teardown
-/// doesn't reopen its (already-closed) origin window mid-quit. Never reset — warden doesn't
-/// prevent exit, so once it's true the app is on its way out for good.
-static IS_QUITTING: AtomicBool = AtomicBool::new(false);
-
-/// Mark the app as quitting. Call once, from `RunEvent::ExitRequested`.
-pub fn mark_quitting() {
-    IS_QUITTING.store(true, Ordering::SeqCst);
-}
-
-/// Whether the app is quitting — see `IS_QUITTING`.
-pub fn is_quitting() -> bool {
-    IS_QUITTING.load(Ordering::SeqCst)
+/// Whether the app is quitting: `RunEvent::ExitRequested` (main.rs) marks the `WindowSet`, which
+/// fires before every window's `Destroyed` during ⌘Q.
+pub fn is_quitting(app: &AppHandle) -> bool {
+    app.try_state::<WindowSet>()
+        .is_some_and(|set| set.is_quitting())
 }
 
 /// One window's probe work-list: `(window label, its probe-enabled tabs)`.
@@ -109,7 +103,7 @@ impl PresenceCache {
 
 /// Expand a config's project-tree roots into the effective tab set: for each window,
 /// append the scanner-synthesized project tabs for every `[[window.root]]` to `tabs`.
-/// This is what the whole pipeline (window_specs / reconcile / registry) consumes, so a
+/// This is what the whole pipeline (window_to_spec / reconcile / registry) consumes, so a
 /// discovered project is just a `Tab` and needs no special-casing downstream. Roots'
 /// tabs come after loose + grouped tabs, matching the "sections in file order" rule. With the
 /// Rex hub, each window then lists the unclaimed sessions on its Rex tabs' servers
@@ -207,6 +201,9 @@ pub struct WindowState {
     pub open_tabs_section: bool,
     /// Surface-spawn failure(s) from `build_window`, shown once via the init DTO.
     pub spawn_error: Option<String>,
+    /// The `SessionStore` key this window's remembered tabs live under: its launch label
+    /// (`WindowSet::launch_label`), which a rename in place moves (`retitle`).
+    pub session_key: String,
 }
 
 /// The chrome half of retiring a popped-out tab's second pane, run with the lock RELEASED after
@@ -278,19 +275,6 @@ pub(crate) fn close_both(primary: GhosttySurface, secondary: Option<GhosttySurfa
     }
 }
 
-/// A Window-menu row as shell-core's menu spine and home surface take it — the one mapping both
-/// the app menu (`main.rs::build_app_menu`) and the home surface's window list use.
-impl From<crate::plan::WindowMenuEntry> for shell_core::menu::WindowEntry {
-    fn from(e: crate::plan::WindowMenuEntry) -> Self {
-        shell_core::menu::WindowEntry {
-            id: e.label,
-            title: e.title,
-            open: e.open,
-            colour: Some(e.colour),
-        }
-    }
-}
-
 /// What `WindowManager::redock` hands its caller to announce with the lock released.
 pub struct Redocked {
     pub origin_label: String,
@@ -359,22 +343,13 @@ impl DetachedSurface {
 }
 
 pub struct WindowManager {
-    pub windows: HashMap<String, WindowState>, // key = Tauri label
-    pub names: HashMap<String, String>,        // window title -> label
+    pub windows: HashMap<String, WindowState>, // key = Tauri label (the `WindowSet`'s)
     pub last_good: Config,
     /// The RAW config as loaded (roots UNexpanded). `last_good` is its expanded
     /// form (`effective_config(&raw_config, hub)`, i.e. with discovered project tabs
     /// appended); `raw_config` is retained so `rescan_root` can re-expand + re-scan
     /// without a config-file change.
     pub raw_config: Config,
-    /// Whether the most recent config load attempt succeeded. `None` = the last load was
-    /// clean; `Some(msg)` carries the error text the home surface's `Broken` state shows,
-    /// set on every failed load (missing file / parse / resolve error) and cleared on every
-    /// successful one (`materialize_effective`, plus the watcher's own reconcile path — see
-    /// `main.rs`). `sync_empty_surface` is called from places that carry no load context of
-    /// their own (e.g. a window's `Destroyed` handler), so it can't take this as a parameter
-    /// the way curator's `reconcile_home` does — it must persist here instead.
-    pub load_error: Option<String>,
     /// The presence scheduler's slow-floor cadence in seconds; shared as an `Arc` with
     /// `probe::run_scheduler` so a hot-reload changes it live. 0 = event-driven only
     /// (burst on triggers, then Idle — no steady polling between events).
@@ -384,18 +359,17 @@ pub struct WindowManager {
     /// waiting for the first post-boot probe emit (see `PresenceCache`). Written by the
     /// scheduler each probe pass (`probe::probe_window`), read when building DTOs.
     pub presence_cache: PresenceCache,
-    /// Tauri labels of windows the user has closed, most-recent last (MRU stack).
-    /// Drives `⌘⇧T` (Reopen Last Closed). Deduped on push so a repeated close
-    /// moves the label to the end rather than growing duplicates. Pruned at reopen
-    /// (`reopen_window` / `reopen_last`). Stale entries (closed-then-deleted, or
-    /// already reopened) are filtered at reopen time.
+    /// Titles of windows that closed, most-recent last (MRU stack). Drives `⌘⇧T` (Reopen Last
+    /// Closed). Deduped on push so a repeated close moves the title to the end; a window's build
+    /// drops its title, and a rename in place carries it. Titles since deleted from the config
+    /// are skipped at reopen time (`plan::next_reopen_target`).
     pub last_closed: Vec<String>,
     /// Tabs currently popped out into their own detached windows, keyed by the detached
     /// window's Tauri label (`shell_core::detach::detached_label`). Kept **separate from
-    /// `windows`** so hot-reload reconcile never touches them (it walks `windows` only) and
-    /// so `is_empty` can count them (keeping the home surface hidden while a detached window
-    /// is the only surface on screen). Populated by `pop_out_tab`, drained by `redock` when
-    /// the detached window closes.
+    /// `windows`** so hot-reload reconcile never touches them (it walks `windows` only); their
+    /// count is mirrored into the `WindowSet` (`sync_detached`), which keeps the home surface
+    /// away while a detached window is the only surface on screen. Populated by `pop_out_tab`,
+    /// drained by `redock` when the detached window closes.
     pub detached: HashMap<String, DetachedSurface>,
     /// Each window's remembered loaded + active tabs (`remember_tabs`): read by `build_window`,
     /// written by `record_session`. In-memory only until `main.rs`'s setup points it at disk.
@@ -410,10 +384,8 @@ impl WindowManager {
         let probe_interval = Arc::new(AtomicU64::new(empty.probe_interval));
         WindowManager {
             windows: HashMap::new(),
-            names: HashMap::new(),
             raw_config: empty.clone(),
             last_good: empty,
-            load_error: None,
             probe_interval,
             presence_cache: PresenceCache::default(),
             last_closed: Vec::new(),
@@ -422,63 +394,11 @@ impl WindowManager {
         }
     }
 
-    /// The single authority for what shows when there may be zero real windows. Delegates
-    /// entirely to `shell_core::home::home_state`, mirroring curator's `reconcile_home`:
-    /// `home_state` itself already picks between real-windows-win (`None` → close), no config
-    /// on disk (`NoConfig`), the last load's error (`Broken`), and the configured-window list
-    /// (`Windows`, possibly empty — a config that parses but declares no `[[window]]` at all is
-    /// simply an empty list, not an error). warden has no per-call load context the way
-    /// curator's call sites do (this runs from places like a window's `Destroyed` handler, which
-    /// carries none), so `self.load_error` is the persisted stand-in for curator's `load_error`
-    /// parameter — every load call site sets or clears it (see `materialize_effective` and
-    /// `main.rs`'s watcher). Called after launch materialize, the `Destroyed` handler, every
-    /// hot-reload (success or failure), and every home-surface button click.
-    pub fn sync_empty_surface(&mut self, app: &AppHandle) {
-        let entries: Vec<shell_core::menu::WindowEntry> = self
-            .window_menu_entries()
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        let path = warden_config::config_path();
-        let path_str = path.display().to_string();
-        match shell_core::home::home_state(
-            !self.is_empty(),
-            path.exists(),
-            &path_str,
-            self.load_error.as_deref(),
-            &entries,
-        ) {
-            None => shell_core::home::close_home(app),
-            Some(s) => {
-                // shell_core::home::show_home is idempotent — it refreshes an already-open home
-                // window rather than rebuilding one — so the quit handler below is attached only
-                // the FIRST time this window is actually built, never again on a refresh.
-                let was_open = app
-                    .get_webview_window(shell_core::home::HOME_LABEL)
-                    .is_some();
-                let _ = shell_core::home::show_home(app, &s, "warden");
-                // WARDEN-LOCAL: shell-core's `show_home` installs no window-event handler of its
-                // own (curator/lector need none — plain last-window-quit covers them), but in
-                // warden closing the home surface while no real window exists quits the app
-                // ("closing the last surface == ⌘Q"), a deliberate shipped behaviour. Attached for
-                // every state (`NoConfig`/`Broken`/`Windows`) — they share one window, and closing
-                // it while it's the only surface quits whichever state it shows.
-                if !was_open {
-                    if let Some(w) = app.get_webview_window(shell_core::home::HOME_LABEL) {
-                        let app_for_event = app.clone();
-                        w.on_window_event(move |event| {
-                            if let tauri::WindowEvent::Destroyed = event {
-                                if let Some(st) = app_for_event.try_state::<ManagerState>() {
-                                    let empty = st.lock().is_empty();
-                                    if empty {
-                                        app_for_event.exit(0);
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
-            }
+    /// Mirror the popped-out window count into the `WindowSet`, which keeps the home surface away
+    /// while a detached window is the only surface on screen. Call after `detached` changes.
+    pub fn sync_detached(&self, app: &AppHandle) {
+        if let Some(set) = app.try_state::<WindowSet>() {
+            set.set_detached_count(app, self.detached.len());
         }
     }
 
@@ -497,17 +417,25 @@ impl WindowManager {
             .collect()
     }
 
-    /// Build `spec`'s window and register it: the live window set and the title→label map
-    /// always change together, so every open goes through here.
-    fn open_window(&mut self, app: &AppHandle, spec: &WindowSpec) {
-        let state = self.build_window(app, spec);
-        self.names.insert(spec.title.clone(), spec.label.clone());
-        self.windows.insert(spec.label.clone(), state);
+    /// The spec for the configured window titled `title`, under `label` — from `last_good`, so it
+    /// carries the discovered project tabs.
+    pub fn spec_for(&self, label: &str, title: &str) -> Option<WindowSpec> {
+        self.last_good
+            .windows
+            .iter()
+            .find(|w| w.title == title.trim())
+            .map(|w| window_to_spec(w, label.to_string()))
     }
 
-    /// Build one Tauri window for `spec`, mount its tabs, activate the first.
-    /// Returns the new `WindowState` for `open_window` to register.
-    fn build_window(&self, app: &AppHandle, spec: &WindowSpec) -> WindowState {
+    /// Build one Tauri window for `spec`, mount its tabs, activate the first, and register it
+    /// under `spec.label` with its remembered tabs keyed `session_key`. `WardenHost::build` —
+    /// the `WindowSet` decides when, and wires the window's close.
+    pub fn build_window(
+        &mut self,
+        app: &AppHandle,
+        spec: &WindowSpec,
+        session_key: String,
+    ) -> tauri::Result<WebviewWindow> {
         let window =
             WebviewWindowBuilder::new(app, &spec.label, WebviewUrl::App("index.html".into()))
                 .title(&spec.title)
@@ -521,15 +449,14 @@ impl WindowManager {
                 // only the in-app banner names the window.
                 .hidden_title(true)
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
-                .build()
-                .expect("build window window");
+                .build()?;
 
         // FOOTGUN: do NOT restore geometry by hand here. This window is built at runtime, not
         // from `tauri.conf.json`, so a manual restore looks needed — but shell-core's geometry
         // plugin restores saved bounds on its `on_window_ready` hook, which fires for
         // runtime-built windows too. A second restore here double-applies them.
 
-        let ns_window = window.ns_window().expect("ns_window") as *mut std::os::raw::c_void;
+        let ns_window = window.ns_window()? as *mut std::os::raw::c_void;
 
         let mut registry = Registry::new(ns_window, INITIAL_RECT);
         registry.set_rex_opener(crate::rex::spawn::opener(app.clone(), spec.label.clone()));
@@ -541,7 +468,7 @@ impl WindowManager {
         let mut spawn_errors: Vec<String> = Vec::new();
         let restore = spec
             .remember_tabs
-            .then(|| self.session.get(&spec.label))
+            .then(|| self.session.get(&session_key))
             .flatten()
             .map(|r| r.restore(spec.tabs.iter().map(|t| t.spec.id.as_str())))
             .unwrap_or_default();
@@ -594,94 +521,85 @@ impl WindowManager {
             Some(format!("couldn't open terminal — {joined}"))
         };
 
-        // On manual close (or any destroy), drop the window's state and reap its
-        // surfaces; `sync_empty_surface` shows the home surface once the last real
-        // window goes away — this handler never quits. Idempotent
-        // with `apply`'s `WindowOp::Close` (which removes the state before closing
-        // the window): `HashMap::remove` returns `None` the second time and
-        // `close_all` drains, so there is no double-free.
+        // Focus → fast-burst this window's session dots so a just-focused window is current
+        // within a burst pass (covers `probe_interval = 0`, which never steady-polls). Its close
+        // is the `WindowSet`'s, which calls `WardenHost::closed`.
         let app_for_event = app.clone();
         let label_for_event = spec.label.clone();
         window.on_window_event(move |event| {
-            match event {
-                tauri::WindowEvent::Destroyed => {
-                    if let Some(st) = app_for_event.try_state::<ManagerState>() {
-                        {
-                            let mut m = st.lock();
-                            // Record this close so `⌘⇧T` can reopen it. Fires for
-                            // manual close AND hot-reload removal; a no-longer-
-                            // configured label is filtered at reopen time.
-                            m.last_closed.retain(|l| l != &label_for_event);
-                            m.last_closed.push(label_for_event.clone());
-                            m.remove_window(&label_for_event);
-                            // Persistent home: last-window-close doesn't quit —
-                            // it shows the home surface, in whichever state (window
-                            // list, broken config, or no config) currently applies.
-                            // ⌘Q is the only quit. This also fires for every window
-                            // torn down during ⌘Q, including
-                            // the last one — verified on-device that native
-                            // `terminate:` wins that race, so the home surface is
-                            // never presented; a `RunEvent`/`is_quitting` guard is
-                            // not needed unless that stops holding.
-                            m.sync_empty_surface(&app_for_event);
-                        }
-                        // Refresh the Window menu's checkmarks/(closed) tags. Lock
-                        // dropped above; rebuild_menu re-locks (non-reentrant).
-                        let _ = crate::rebuild_menu(&app_for_event);
-                    }
-                }
-                // Focus → fast-burst this window's session dots so a just-focused window is current
-                // within a burst pass (covers `probe_interval = 0`, which never steady-polls).
-                tauri::WindowEvent::Focused(true) => {
-                    crate::probe::bump(&label_for_event);
-                    crate::sync_agent_menu(&app_for_event);
-                }
-                _ => {}
+            if let tauri::WindowEvent::Focused(true) = event {
+                crate::probe::bump(&label_for_event);
+                crate::sync_agent_menu(&app_for_event);
             }
         });
 
-        WindowState {
-            window,
-            registry,
-            title: spec.title.clone(),
-            colour: spec.colour.clone(),
-            open_tabs_section: spec.open_tabs_section,
-            spawn_error,
+        self.last_closed.retain(|t| *t != spec.title);
+        self.windows.insert(
+            spec.label.clone(),
+            WindowState {
+                window: window.clone(),
+                registry,
+                title: spec.title.clone(),
+                colour: spec.colour.clone(),
+                open_tabs_section: spec.open_tabs_section,
+                spawn_error,
+                session_key,
+            },
+        );
+        Ok(window)
+    }
+
+    /// `WardenHost::closed`: drop `label`'s state and reap its surfaces eagerly via `close_all`
+    /// (rather than `GhosttySurface`'s `Drop` safety net), and remember its title for `⌘⇧T`.
+    /// Fires for a user close and for a window the `WindowSet` closed (deleted, or gone from the
+    /// config — the latter skipped at reopen time). Idempotent.
+    pub fn closed(&mut self, label: &str) {
+        if let Some(mut ws) = self.windows.remove(label) {
+            ws.registry.close_all();
+            self.last_closed.retain(|t| *t != ws.title);
+            self.last_closed.push(ws.title);
         }
     }
 
-    /// Materialize every window as a window. Expands `config`'s project-tree
-    /// roots via `effective_config` before building; `raw_config` keeps the
-    /// unexpanded config for later re-scans (`rescan_root`), while `last_good`
-    /// (the reconcile baseline) holds the expanded form so a reopened window
-    /// still carries its discovered project tabs.
-    pub fn materialize(&mut self, app: &AppHandle, config: Config) {
-        let effective = effective_config(&config, app.try_state::<crate::rex::RexHub>().as_deref());
-        self.materialize_effective(app, config, effective);
+    /// `WardenHost::retitled`: `label`'s title or colour changed in place. Its terminals keep
+    /// running; the banner, the held configs (so a lookup by title finds the window before the
+    /// reload echo), `⌘⇧T`'s stack and the remembered-tabs key (now `launch_key`) follow it.
+    pub fn retitle(
+        &mut self,
+        label: &str,
+        title: &str,
+        colour: Colour,
+        launch_key: Option<String>,
+        listed: impl Fn(&str) -> bool,
+    ) {
+        let title = title.trim();
+        crate::plan::retitle_window(&mut self.last_good, title, colour, &listed);
+        crate::plan::retitle_window(&mut self.raw_config, title, colour, &listed);
+        let Some(ws) = self.windows.get_mut(label) else {
+            return;
+        };
+        for t in &mut self.last_closed {
+            if *t == ws.title {
+                *t = title.to_string();
+            }
+        }
+        ws.title = title.to_string();
+        ws.colour = colour.hex();
+        if let Some(key) = launch_key.filter(|k| *k != ws.session_key) {
+            self.session.rekey(&ws.session_key, &key);
+            ws.session_key = key;
+        }
     }
 
-    /// Materialize from an **already-scanned** effective config. Split out so a caller
-    /// holding the `ManagerState` lock can run the recursive root scan (`effective_config`)
-    /// *before* locking and pass the result in — the scan must never run under the lock
-    /// (it would block the probe thread; mirrors probe.rs's snapshot-then-release rule).
-    pub fn materialize_effective(&mut self, app: &AppHandle, config: Config, effective: Config) {
-        // Every call here follows a successful load (setup, `shell_home_create_config`, the
-        // watcher's recovery branch) — clear a stale error so `sync_empty_surface` below reads
-        // the current status, not a previous failure's leftover `Broken` text. The watcher's
-        // OTHER success path (reconcile against an existing baseline, main.rs) doesn't route
-        // through here, so it clears `load_error` itself at the same point.
-        self.load_error = None;
+    /// Adopt a freshly loaded config — `config` raw, `effective` its root-expanded form (see
+    /// `effective_config`, which callers run *before* locking: the scan must never run under the
+    /// lock, it would block the probe thread). `raw_config` keeps the unexpanded config for later
+    /// re-scans (`rescan_root`), while `last_good` (the reconcile baseline) holds the expanded
+    /// form so a reopened window still carries its discovered project tabs.
+    pub fn adopt(&mut self, config: Config, effective: Config) {
         self.set_probe_interval(config.probe_interval);
-        for spec in window_specs(&effective)
-            .into_iter()
-            .filter(|s| s.open_on_start)
-        {
-            self.open_window(app, &spec);
-        }
         self.raw_config = config;
         self.last_good = effective;
-        self.sync_empty_surface(app);
-        crate::rex::unclaimed::connect(app, &self.last_good);
     }
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {
@@ -793,7 +711,7 @@ impl WindowManager {
                         Some(crate::registry::AgentClosed::PaneCold(next)) => next,
                         // Another agent of the pane is live and on screen now: the tab stays.
                         _ => {
-                            lock.record_session(&label);
+                            lock.record_session(app, &label);
                             let dto = lock.init_dto(&label);
                             drop(lock);
                             if let Some(dto) = dto {
@@ -820,7 +738,7 @@ impl WindowManager {
                 }
                 (crate::registry::PaneIdx::Primary, None) => ws.registry.unload(&tab_id),
             };
-            lock.record_session(&label);
+            lock.record_session(app, &label);
             drop(lock);
             // Per-window event: `emit_to` leaks to sibling webviews, so stamp the label and let the
             // chrome filter (see CLAUDE.md).
@@ -893,11 +811,11 @@ impl WindowManager {
             Some(crate::registry::DetachedEnded::SiblingShown) => None,
             None => Some(None),
         };
-        self.record_session(&origin_label);
-        // The entry is gone from `detached`, so `is_empty` may now be true (origin closed while
+        self.record_session(app, &origin_label);
+        // The entry is gone from `detached`, so nothing may be open now (origin closed while
         // the tab was out): the home surface must appear, exactly as it would after `redock`. The
         // window's own `Destroyed` → `redock` finds no entry and is a no-op.
-        self.sync_empty_surface(app);
+        self.sync_detached(app);
         let dto = self.init_dto(&origin_label);
         Some(DetachedTabEnded {
             dlabel: dlabel.to_owned(),
@@ -1010,39 +928,6 @@ impl WindowManager {
         })
     }
 
-    /// Labels currently in use — the seed `unique_label` must avoid when
-    /// assigning a fresh label to a newly-opened window during reconcile.
-    fn taken_labels(&self) -> HashSet<String> {
-        self.windows.keys().cloned().collect()
-    }
-
-    /// Specs for every configured window (config order), with labels **consistent
-    /// with the live window set** — the single source of truth for the Window menu
-    /// and every reopen path.
-    ///
-    /// An open window keeps its **actual live label** (from `self.names`); a live
-    /// Tauri window can't be relabeled, so the menu/reopen mapping has to match it.
-    /// Closed-but-configured windows get a deterministic fresh label that avoids
-    /// every already-assigned label. Recomputing labels purely from config order
-    /// (`window_specs`) instead diverges from a live window's label whenever two
-    /// titles sanitize to the same base and were introduced in an order that made
-    /// `reconcile_ops` (which seeds from live labels) suffix a different one — which
-    /// made the menu raise the wrong window, reopen build a duplicate, and `⌘⇧T`
-    /// miss the closed window. Pinning open windows here removes that divergence.
-    /// Pure logic lives in `plan::configured_specs` (unit-tested); this just supplies
-    /// the live state (title→label map + the in-use label set).
-    fn configured_specs(&self) -> Vec<WindowSpec> {
-        crate::plan::configured_specs(&self.last_good, &self.names, &self.taken_labels())
-    }
-
-    pub fn is_empty(&self) -> bool {
-        // A popped-out (detached) window is a real surface on screen: while one exists the
-        // app is NOT empty, so the home surface must not appear. `sync_empty_surface` reads
-        // this from places (e.g. a real window's Destroyed handler) that don't otherwise know
-        // about detached windows.
-        self.windows.is_empty() && self.detached.is_empty()
-    }
-
     /// The detached window's label for the tab `(origin_label, tab_id)`, if that tab is
     /// currently popped out. Used to route a click on a detached sidebar row (in the origin
     /// window) to "raise the popped-out window".
@@ -1124,17 +1009,17 @@ impl WindowManager {
     }
 
     /// Return a popped-out tab's surface to its origin window when the detached window closes
-    /// (`shell_core::detach::wire_return`'s `on_close`). Runs on the main thread under the
-    /// `ManagerState` lock. Returns what the caller announces once the lock is released: the
-    /// origin label (menu rebuild + refresh) and, when the returning tab was dropped, the tab
-    /// that leaned into view (`Redocked::dropped`); `None` if the detached window was already
-    /// gone (double-close).
+    /// (`shell_core::detach::wire_return`'s `on_close`, via `main.rs::redock`). Runs on the main
+    /// thread under the `ManagerState` lock. Returns what the caller announces once the lock is
+    /// released: the origin label (menu rebuild + refresh) and, when the returning tab was
+    /// dropped, the tab that leaned into view (`Redocked::dropped`); `None` if the detached
+    /// window was already gone (double-close).
     ///
     /// Edge cases, in order:
     /// 1. **Origin still open** — its slot is the `Detached` placeholder; `reparent` moves the
     ///    view back, `attach` (Detached → Spawned) restores it.
-    /// 2. **Origin closed by the user while detached** — `reopen_window` rebuilds it from
-    ///    config, and `build_window` stands the still-out tab up as a `Detached` placeholder
+    /// 2. **Origin closed by the user while detached** — the caller has the `WindowSet` reopen
+    ///    it first, and `build_window` stands the still-out tab up as a `Detached` placeholder
     ///    (`Registry::mark_detached`), so the return is case 1.
     /// 3. **Origin removed from config entirely** — the tab has no home, so the surface is
     ///    dropped (kills its PTY): the one place a live surface is intentionally dropped.
@@ -1147,24 +1032,6 @@ impl WindowManager {
     /// config edit or rescan that touched it while it was out was skipped for it, so this is
     /// where a deleted tab goes, a changed `dir`/`cmd` respawns, and a relabel lands.
     pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<Redocked> {
-        // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's
-        // `Destroyed`): don't reopen an origin window or reparent a surface mid-teardown —
-        // everything is being torn down and `GhosttySurface`'s `Drop` frees it. Without this,
-        // a detached window whose origin was already closed would build a fresh window during
-        // app termination (reaped by native `terminate:`, but real window resurrection).
-        if is_quitting() {
-            return None;
-        }
-
-        // Rebuild the origin window if the user closed it while the tab was popped out, so the
-        // tab has somewhere to return to (case 2) — while the tab is still in `self.detached`,
-        // which is how `build_window` knows to stand it up as a `Detached` placeholder. Rebuilt
-        // after the removal, an eager tab (`load_on_open`, remembered, or the first shown) would
-        // spawn a second live terminal, and `attach` would then end the returning one.
-        let origin = self.detached.get(detached_label)?.origin_label.clone();
-        if !self.windows.contains_key(&origin) {
-            self.reopen_window(app, &origin);
-        }
         let DetachedSurface {
             secondary_left: _,
             secondary_went_out: _,
@@ -1178,9 +1045,9 @@ impl WindowManager {
 
         // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
         let home = self
-            .configured_specs()
-            .into_iter()
-            .find(|s| s.label == origin_label);
+            .windows
+            .get(&origin_label)
+            .and_then(|ws| self.spec_for(&origin_label, &ws.title));
         let order: Vec<String> = home
             .iter()
             .flat_map(|s| s.tabs.iter().map(|t| t.spec.id.clone()))
@@ -1243,8 +1110,8 @@ impl WindowManager {
             }
         }
 
-        self.record_session(&origin_label);
-        self.sync_empty_surface(app);
+        self.record_session(app, &origin_label);
+        self.sync_detached(app);
         Some(Redocked {
             origin_label,
             dropped,
@@ -1255,8 +1122,8 @@ impl WindowManager {
     /// has it off. Call after anything that changes a window's registry. Skipped while quitting:
     /// ⌘Q's teardown (and any child exits it provokes) must not overwrite the set being
     /// remembered. A closed window records nothing either, so its last set survives for a reopen.
-    pub fn record_session(&mut self, label: &str) {
-        if is_quitting() {
+    pub fn record_session(&mut self, app: &AppHandle, label: &str) {
+        if is_quitting(app) {
             return;
         }
         let Some(ws) = self.windows.get(label) else {
@@ -1271,211 +1138,117 @@ impl WindowManager {
             loaded: ws.registry.loaded_ids(),
             active: ws.registry.active_tab().map(str::to_string),
         });
-        self.session.set(label, record);
+        self.session.set(&ws.session_key, record);
     }
 
     /// `record_session` for every open window — after a hot-reload or rescan, once `last_good`
     /// holds the new config (so a `remember_tabs` flip takes effect here too).
-    pub fn record_all_sessions(&mut self) {
+    pub fn record_all_sessions(&mut self, app: &AppHandle) {
         let labels: Vec<String> = self.windows.keys().cloned().collect();
         for label in labels {
-            self.record_session(&label);
+            self.record_session(app, &label);
         }
     }
 
-    /// Drop a window's state and reap its surfaces, without re-closing the Tauri
-    /// window (used from the `Destroyed` handler, where the OS already destroyed
-    /// the window — calling `window.close()` again would be redundant). Surfaces
-    /// are freed eagerly via `close_all` rather than relying on `GhosttySurface`'s
-    /// `Drop` safety net, so the libghostty handles go with the window, not later.
-    pub fn remove_window(&mut self, label: &str) {
-        if let Some(mut ws) = self.windows.remove(label) {
-            ws.registry.close_all();
-            self.names.retain(|_, l| l != label);
-        }
+    /// The window `⌘⇧T` would reopen right now, given the `WindowSet`'s `entries` — the one
+    /// computation behind both the action and its menu item's enabled state.
+    pub fn reopen_target(&self, entries: &[shell_core::menu::WindowEntry]) -> Option<String> {
+        crate::plan::next_reopen_target(&self.last_closed, entries)
     }
 
-    /// Menu rows for every configured window, tagged open/closed. Derived live
-    /// from `last_good` + the live window set via `configured_specs` (labels pinned
-    /// to live windows) — nothing persisted.
-    pub fn window_menu_entries(&self) -> Vec<crate::plan::WindowMenuEntry> {
-        let specs = self.configured_specs();
-        let open: HashSet<String> = self.windows.keys().cloned().collect();
-        crate::plan::window_menu_entries(&specs, &open)
-    }
-
-    /// The current label of the configured window titled `title` — open or closed — or `None`.
-    pub fn label_for_title(&self, title: &str) -> Option<String> {
-        crate::plan::label_for_title(&self.configured_specs(), title)
-    }
-
-    /// Raise `label`'s window (unminimize + focus) if it is open. No-op otherwise.
-    pub fn focus_window(&self, label: &str) {
-        if let Some(ws) = self.windows.get(label) {
-            let _ = ws.window.unminimize();
-            let _ = ws.window.set_focus();
-        }
-    }
-
-    /// Rebuild a closed window from its config spec (same label ⇒ saved bounds
-    /// restore). Returns `false` if already open or no longer configured.
-    pub fn reopen_window(&mut self, app: &AppHandle, label: &str) -> bool {
-        if self.windows.contains_key(label) {
-            return false;
-        }
-        let Some(spec) = self
-            .configured_specs()
-            .into_iter()
-            .find(|s| s.label == label)
-        else {
-            return false;
-        };
-        self.open_window(app, &spec);
-        self.last_closed.retain(|l| l != label);
-        true
-    }
-
-    /// Reopen the most-recently-closed reopenable window (`⌘⇧T`). Returns whether
-    /// a window was reopened.
-    pub fn reopen_last(&mut self, app: &AppHandle) -> bool {
-        match self.reopen_target() {
-            Some(label) => self.reopen_window(app, &label),
-            None => false,
-        }
-    }
-
-    /// Whether `⌘⇧T` / "Reopen Last Closed" has a reopenable target right now.
-    pub fn has_reopen_target(&self) -> bool {
-        self.reopen_target().is_some()
-    }
-    /// The window `⌘⇧T` would reopen right now — the one computation behind both the action
-    /// and its menu item's enabled state.
-    fn reopen_target(&self) -> Option<String> {
-        let configured: HashSet<String> = self
-            .configured_specs()
-            .into_iter()
-            .map(|s| s.label)
-            .collect();
-        let open: HashSet<String> = self.windows.keys().cloned().collect();
-        crate::plan::next_reopen_target(&self.last_closed, &configured, &open)
-    }
-
-    /// Bring the live window set in line with a reloaded config by executing the
-    /// `WindowOp`s the reconciliation produces, and make `new_config` (the *new* effective
-    /// config, roots already expanded) the baseline `last_good`. Open builds a window; Close
-    /// tears down its surfaces and closes the Tauri window; Update mutates the registry in
-    /// place and pushes a fresh snapshot (`init_dto`, read after the baseline advances, so a
-    /// flipped global reaches the chrome) so the chrome rebuilds its sidebar. `new_config`'s
-    /// windows/roots are also what `reconcile_ops` derives tree metadata from for added tabs.
-    pub fn apply(&mut self, app: &AppHandle, recon: &Reconciliation, new_config: Config) {
-        let ops = reconcile_ops(recon, &new_config, &self.names, &self.taken_labels());
+    /// Bring the open windows' tabs in line with a reloaded config, and make `new_config` (the
+    /// *new* effective config, roots already expanded) the baseline `last_good`. Opening, closing
+    /// and recolouring windows is the `WindowSet`'s (`WindowSet::apply`, run by the caller after
+    /// this with the lock released); `label_of` is its title → label lookup. Each kept window's
+    /// registry is mutated in place and a fresh snapshot pushed (`init_dto`, read after the
+    /// baseline advances, so a flipped global reaches the chrome) so the chrome rebuilds its
+    /// sidebar. `new_config`'s roots are what `tab_ops` derives tree metadata from for added tabs.
+    pub fn apply(
+        &mut self,
+        app: &AppHandle,
+        recon: &Reconciliation,
+        new_config: Config,
+        label_of: impl Fn(&str) -> Option<String>,
+    ) {
+        let ops = tab_ops(recon, &new_config, label_of);
         self.last_good = new_config;
         let mut refreshed: Vec<String> = Vec::new();
         for op in ops {
-            match op {
-                WindowOp::Open(spec) => {
-                    self.open_window(app, &spec);
+            let crate::plan::TabOp {
+                label,
+                add_tabs,
+                remove_tabs,
+                order,
+                set_meta,
+                respawn_tabs,
+                spawn_tabs,
+                open_tabs_section,
+            } = op;
+            if let Some(ws) = self.windows.get_mut(&label) {
+                // Captured before any mutation below, so a respawn that hits the
+                // currently-visible tab can be re-activated once its surface is
+                // rebuilt (see the reactivate step after `reorder`).
+                let was_active = ws.registry.active_tab().map(str::to_string);
+                // Skip no-op updates (e.g. a config save that changes nothing
+                // visible). `order` still carries the unchanged tab sequence; a
+                // metadata change always carries `set_meta`, so it is never
+                // mistaken for a no-op.
+                let current_order: Vec<String> =
+                    ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
+                if open_tabs_section.is_none()
+                    && add_tabs.is_empty()
+                    && remove_tabs.is_empty()
+                    && order == current_order
+                    && set_meta.is_empty()
+                    && respawn_tabs.is_empty()
+                    && spawn_tabs.is_empty()
+                {
+                    continue;
                 }
-                WindowOp::Close(label) => {
-                    if let Some(mut ws) = self.windows.remove(&label) {
-                        ws.registry.close_all();
-                        // Safe to hold the ManagerState mutex across close(): the
-                        // per-window Destroyed handler re-locks this same
-                        // non-reentrant Mutex, but tao delivers WindowEvent::Destroyed
-                        // asynchronously on a later event-loop turn (not synchronously
-                        // inside close()), so there is no same-thread re-entrant
-                        // deadlock. The handler then no-ops (state already removed).
-                        let _ = ws.window.close();
-                        self.names.retain(|_, l| l != &label);
+                if let Some(o) = open_tabs_section {
+                    ws.open_tabs_section = o;
+                }
+                // Add/remove/respawn tabs, skipping any that are currently
+                // popped out (Detached) — see `apply_tab_reconcile`.
+                apply_tab_reconcile(&mut ws.registry, &remove_tabs, &add_tabs, &respawn_tabs);
+                // Apply in-place metadata (group/probe/kill + recomputed
+                // tree/tree_path) without respawning; the warden:refresh below
+                // pushes fresh DTOs (has_probe/has_kill recomputed) and the
+                // post-reload bump_all fast-bursts every window. Tree-ness CAN
+                // flip for a *kept* tab: a curated tab whose normalized dir key
+                // equals a `[[window.root]]` discovery's path key shadows it, so
+                // reconcile sees the same key move between the root section
+                // (tree) and the curated group (not) — a set_meta, not add/
+                // remove. `tab_ops` recomputes `tree`/`tree_path` from the
+                // new group; applying them here keeps the shadowed row from
+                // rendering as a stale tree row (or vice-versa).
+                for m in &set_meta {
+                    ws.registry
+                        .set_meta(&m.id, &m.meta, m.tree, m.tree_path.clone());
+                }
+                // load_on_open turned on: bring a cold tab up now, as a launch
+                // would. A live tab is untouched, and a popped-out one is live.
+                for id in &spawn_tabs {
+                    if ws.registry.is_detached(id) {
+                        continue;
+                    }
+                    if let Err(e) = ws.registry.ensure_spawned_by_id(id) {
+                        eprintln!("warden: spawn on load_on_open failed for {id:?}: {e}");
                     }
                 }
-                WindowOp::Update {
-                    label,
-                    colour,
-                    add_tabs,
-                    remove_tabs,
-                    order,
-                    set_meta,
-                    respawn_tabs,
-                    spawn_tabs,
-                    open_tabs_section,
-                } => {
-                    if let Some(ws) = self.windows.get_mut(&label) {
-                        // Captured before any mutation below, so a respawn that hits the
-                        // currently-visible tab can be re-activated once its surface is
-                        // rebuilt (see the reactivate step after `reorder`).
-                        let was_active = ws.registry.active_tab().map(str::to_string);
-                        // Skip no-op updates (e.g. a config save that changes nothing
-                        // visible). `order` still carries the unchanged tab sequence; a
-                        // metadata change always carries `set_meta`, so it is never
-                        // mistaken for a no-op.
-                        let current_order: Vec<String> =
-                            ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
-                        if colour.is_none()
-                            && open_tabs_section.is_none()
-                            && add_tabs.is_empty()
-                            && remove_tabs.is_empty()
-                            && order == current_order
-                            && set_meta.is_empty()
-                            && respawn_tabs.is_empty()
-                            && spawn_tabs.is_empty()
-                        {
-                            continue;
+                ws.registry.reorder(&order);
+                // If the on-screen tab was respawned, it went cold — re-activate it
+                // so its new surface spawns and shows in place (no blank placeholder).
+                // Runs BEFORE tab_dtos below so the re-activated surface's spawned
+                // state is reflected in the refresh snapshot.
+                if let Some(active) = &was_active {
+                    if respawn_tabs.iter().any(|tp| &tp.spec.id == active) {
+                        if let Err(e) = ws.registry.activate(active) {
+                            eprintln!("warden: reactivate after respawn failed: {e}");
                         }
-                        if let Some(c) = colour {
-                            ws.colour = c;
-                        }
-                        if let Some(o) = open_tabs_section {
-                            ws.open_tabs_section = o;
-                        }
-                        // Add/remove/respawn tabs, skipping any that are currently
-                        // popped out (Detached) — see `apply_tab_reconcile`.
-                        apply_tab_reconcile(
-                            &mut ws.registry,
-                            &remove_tabs,
-                            &add_tabs,
-                            &respawn_tabs,
-                        );
-                        // Apply in-place metadata (group/probe/kill + recomputed
-                        // tree/tree_path) without respawning; the warden:refresh below
-                        // pushes fresh DTOs (has_probe/has_kill recomputed) and the
-                        // post-reload bump_all fast-bursts every window. Tree-ness CAN
-                        // flip for a *kept* tab: a curated tab whose normalized dir key
-                        // equals a `[[window.root]]` discovery's path key shadows it, so
-                        // reconcile sees the same key move between the root section
-                        // (tree) and the curated group (not) — a set_meta, not add/
-                        // remove. `reconcile_ops` recomputes `tree`/`tree_path` from the
-                        // new group; applying them here keeps the shadowed row from
-                        // rendering as a stale tree row (or vice-versa).
-                        for m in &set_meta {
-                            ws.registry
-                                .set_meta(&m.id, &m.meta, m.tree, m.tree_path.clone());
-                        }
-                        // load_on_open turned on: bring a cold tab up now, as a launch
-                        // would. A live tab is untouched, and a popped-out one is live.
-                        for id in &spawn_tabs {
-                            if ws.registry.is_detached(id) {
-                                continue;
-                            }
-                            if let Err(e) = ws.registry.ensure_spawned_by_id(id) {
-                                eprintln!("warden: spawn on load_on_open failed for {id:?}: {e}");
-                            }
-                        }
-                        ws.registry.reorder(&order);
-                        // If the on-screen tab was respawned, it went cold — re-activate it
-                        // so its new surface spawns and shows in place (no blank placeholder).
-                        // Runs BEFORE tab_dtos below so the re-activated surface's spawned
-                        // state is reflected in the refresh snapshot.
-                        if let Some(active) = &was_active {
-                            if respawn_tabs.iter().any(|tp| &tp.spec.id == active) {
-                                if let Err(e) = ws.registry.activate(active) {
-                                    eprintln!("warden: reactivate after respawn failed: {e}");
-                                }
-                            }
-                        }
-                        refreshed.push(label);
                     }
                 }
+                refreshed.push(label);
             }
         }
         // Push each updated window's new snapshot so the chrome rebuilds its sidebar.
@@ -1544,7 +1317,7 @@ fn reconcile_returned_tab(
 /// Apply a hot-reload's tab-set reconcile ops (from the config diff) to one
 /// window's registry — **skipping any tab currently popped out (`Detached`)**.
 ///
-/// `reconcile_ops` is derived purely from the config diff and knows nothing about
+/// `tab_ops` is derived purely from the config diff and knows nothing about
 /// runtime pop-out state, so a config edit to a currently-detached tab would
 /// otherwise clobber its placeholder: `remove`/`respawn`'s `remove` drops the
 /// slot the live surface must return to (→ `redock` finds no slot and closes the
@@ -1644,7 +1417,7 @@ mod tests {
     // `apply` itself needs a live `AppHandle` (Tauri) and a real `GhosttySurface`
     // (AppKit) — both unconstructable in a unit-test process — so the detached-aware
     // guard is exercised at its narrowest real layer: `apply_tab_reconcile`, the free
-    // function `apply`'s `WindowOp::Update` arm delegates the add/remove/respawn to.
+    // function `apply` delegates each `TabOp`'s add/remove/respawn to.
     // `force_detached` reaches a `Detached` slot without a live surface (see registry.rs).
     #[test]
     fn reconcile_leaves_a_detached_tabs_placeholder_alone() {

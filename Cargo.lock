@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "chrome-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/chrome-core?rev=b31e8c0283601a52147f05a197b9642e6e8c1266#b31e8c0283601a52147f05a197b9642e6e8c1266"
+source = "git+https://github.com/Lockyc/chrome-core?rev=abd6b7b3646ea4f31558331fc249e98c64f4879b#abd6b7b3646ea4f31558331fc249e98c64f4879b"
 
 [[package]]
 name = "chrono"
@@ -3495,7 +3495,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.3.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=147435dcbb9c6144442cd9d23f74561087792f46#147435dcbb9c6144442cd9d23f74561087792f46"
+source = "git+https://github.com/Lockyc/shell-core?rev=e625065a918d96c59c8110c3ba6c307703d2c9a1#e625065a918d96c59c8110c3ba6c307703d2c9a1"
 dependencies = [
  "block2 0.6.2",
  "getrandom 0.2.17",

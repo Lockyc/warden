@@ -1,4 +1,4 @@
-//! Remembered tabs (`remember_tabs`): per window label, which tabs had a terminal standing and
+//! Remembered tabs (`remember_tabs`): per window launch label, which tabs had a terminal standing and
 //! which tab was active, so a window built later — next launch, or a reopen — comes back the way
 //! it was left.
 //!
@@ -91,6 +91,15 @@ impl SessionStore {
             }
         }
     }
+
+    /// Move `from`'s record to `to` — a window renamed in place now launches under `to`. Nothing
+    /// recorded under `from` leaves `to` as it is.
+    pub fn rekey(&mut self, from: &str, to: &str) {
+        if let Some(record) = self.get(from).cloned() {
+            self.set(from, None);
+            self.set(to, Some(record));
+        }
+    }
 }
 
 /// Write `value` to `path` as pretty JSON through a temp file + rename, so a crash mid-write can't
@@ -144,6 +153,22 @@ mod tests {
         assert_eq!(back.get("w"), Some(&rec(&["a", "b"], Some("b"))));
         s.set("w", None);
         assert!(SessionStore::load(path).get("w").is_none(), "None forgets");
+    }
+
+    #[test]
+    fn rekey_moves_a_record_to_the_renamed_windows_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.json");
+        let mut s = SessionStore::load(path.clone());
+        s.set("Docs", Some(rec(&["a"], Some("a"))));
+        s.rekey("Docs", "Notes");
+        let back = SessionStore::load(path);
+        assert!(back.get("Docs").is_none());
+        assert_eq!(back.get("Notes"), Some(&rec(&["a"], Some("a"))));
+        // Nothing recorded under the old label: the new one is left alone.
+        s.set("Side", Some(rec(&["b"], None)));
+        s.rekey("Gone", "Side");
+        assert_eq!(s.get("Side"), Some(&rec(&["b"], None)));
     }
 
     #[test]

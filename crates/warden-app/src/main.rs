@@ -28,7 +28,12 @@ mod session;
 mod rex;
 
 #[cfg(target_os = "macos")]
+mod windows;
+
+#[cfg(target_os = "macos")]
 use manager::{InitDto, WindowManager};
+#[cfg(target_os = "macos")]
+use shell_core::windows::WindowSet;
 
 use geometry::WebRect;
 
@@ -160,7 +165,7 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         return;
     };
     let agent = focused_agent_tab(app);
-    let reopen_window = app.state::<ManagerState>().lock().has_reopen_target();
+    let reopen_window = reopen_target(app).is_some();
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -217,13 +222,11 @@ struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 fn build_app_menu(
     app: &tauri::AppHandle,
     mode: warden_config::TabDigitKeys,
-    entries: Vec<crate::plan::WindowMenuEntry>,
+    window_entries: Vec<shell_core::menu::WindowEntry>,
     servers: Vec<String>,
 ) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 
-    let window_entries: Vec<shell_core::menu::WindowEntry> =
-        entries.into_iter().map(Into::into).collect();
     // About box carries the build stamp (shell_core::build_stamp → BUILD_GIT_SHA/BUILD_DATE) so a
     // glance confirms the installed app matches a given commit.
     let spine = shell_core::menu::build_spine(
@@ -329,11 +332,8 @@ fn build_app_menu(
 #[cfg(target_os = "macos")]
 fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::Manager;
-    let st = app.state::<ManagerState>();
-    let (mode, entries) = {
-        let m = st.lock();
-        (m.last_good.tab_digit_keys, m.window_menu_entries())
-    };
+    let mode = app.state::<ManagerState>().lock().last_good.tab_digit_keys;
+    let entries = app.state::<WindowSet>().entries();
     build_app_menu(app, mode, entries, rex_servers(app))?;
     sync_agent_menu(app);
     sync_server_menu(app);
@@ -442,7 +442,7 @@ fn activate_tab(
             }
             None => (false, false, None, false, false, 0),
         };
-        m.record_session(window.label());
+        m.record_session(tauri::Manager::app_handle(&window), window.label());
         out
     };
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
@@ -513,7 +513,7 @@ fn unload_tab(
             .windows
             .get_mut(window.label())
             .and_then(|ws| ws.registry.unload(&id));
-        m.record_session(window.label());
+        m.record_session(tauri::Manager::app_handle(&window), window.label());
         new_active
     };
     sync_agent_menu(tauri::Manager::app_handle(&window));
@@ -636,8 +636,8 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
         // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus); it does NOT
         // close the window. The chrome owns "which tab is active" + the dot/highlight repaint.
         SpineAction::CloseTab => emit("warden:unload-tab"),
-        // Closing a pop-out docks its tab; closing a window reaps its surfaces, then
-        // sync_empty_surface shows the home surface if it was the last real window — no quit.
+        // Closing a pop-out docks its tab; closing a window reaps its surfaces, then the
+        // `WindowSet` shows the home surface if it was the last real window — no quit.
         SpineAction::DockPoppedOut | SpineAction::CloseWindow => {
             if let Some(w) = target {
                 let _ = w.close();
@@ -979,7 +979,7 @@ fn pop_out_tab(
                     Err((p, s)) => manager::close_both(p, s),
                 }
             }
-            m.record_session(&origin_label);
+            m.record_session(&app, &origin_label);
             return Err(format!("couldn't pop out tab: {e}"));
         }
     };
@@ -1029,13 +1029,13 @@ fn pop_out_tab(
         });
     }
 
-    // The origin's row now renders detached; refresh it. sync_empty_surface is a no-op here
-    // (origin still open) but keeps the home-surface authority single-sourced; the menu is
-    // unchanged (detached windows aren't in it) but rebuilt for consistency.
+    // The origin's row now renders detached; refresh it. The `WindowSet` learns the pop-out count
+    // (it keeps the home surface away while one is up); the menu is unchanged (detached windows
+    // aren't in it) but rebuilt for consistency.
     {
         let mut m = state.lock();
-        m.record_session(&origin_label);
-        m.sync_empty_surface(&app);
+        m.record_session(&app, &origin_label);
+        m.sync_detached(&app);
     }
     let _ = rebuild_menu(&app);
     if let Some(dto) = state.lock().init_dto(&origin_label) {
@@ -1088,7 +1088,30 @@ fn pop_in_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, i
 #[cfg(target_os = "macos")]
 fn redock(app: &tauri::AppHandle, detached_label: &str) {
     use tauri::{Emitter, Manager};
+    // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's `Destroyed`):
+    // don't reopen an origin window or reparent a surface mid-teardown — everything is being torn
+    // down and `GhosttySurface`'s `Drop` frees it. Without this, a detached window whose origin
+    // was already closed would build a fresh window during app termination.
+    if manager::is_quitting(app) {
+        return;
+    }
     let st = app.state::<ManagerState>();
+    // Reopen the origin if the user closed it while the tab was popped out, so the tab has
+    // somewhere to return to — while the tab is still in `detached`, which is how `build_window`
+    // knows to stand it up as a `Detached` placeholder. Reopened after the removal, an eager tab
+    // (`load_on_open`, remembered, or the first shown) would spawn a second live terminal, and
+    // `attach` would then end the returning one. The lock is released: the `WindowSet` builds
+    // through `WardenHost`, which takes it.
+    let closed_origin = {
+        let m = st.lock();
+        m.detached
+            .get(detached_label)
+            .map(|d| d.origin_label.clone())
+            .filter(|o| !m.windows.contains_key(o))
+    };
+    if let Some(origin) = closed_origin {
+        app.state::<WindowSet>().open_or_focus(app, &origin);
+    }
     let redocked = st.lock().redock(app, detached_label);
     let Some(manager::Redocked {
         origin_label,
@@ -1381,10 +1404,12 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
     let raw = state.lock().raw_config.clone();
     let fresh = manager::effective_config(&raw, app.try_state::<rex::RexHub>().as_deref());
     {
+        // The window set is untouched: a rescan changes tabs, never the `[[window]]`s.
+        let set = app.state::<WindowSet>();
         let mut m = state.lock();
         let recon = warden_config::reconcile(&m.last_good, &fresh);
-        m.apply(&app, &recon, fresh);
-        m.record_all_sessions();
+        m.apply(&app, &recon, fresh, |t| set.label_for_title(t));
+        m.record_all_sessions(&app);
     } // release the ManagerState lock before the lock-free bump
       // New discovered tabs may carry probes — fast-burst every window so their dots populate now.
     probe::bump_all(&app);
@@ -1491,7 +1516,6 @@ fn toggle_tab_digit_keys(path: &std::path::Path) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
     let path = warden_config::config_path();
     match warden_config::write_default_config(&path, DEFAULT_CONFIG) {
         // A config already existed — say so rather than report a success that didn't happen.
@@ -1501,18 +1525,7 @@ fn shell_home_create_config(app: tauri::AppHandle) -> Result<(), String> {
         )),
         Ok(true) => match warden_config::load_with(&path, &warden_config::login_shell()) {
             Ok(loaded) => {
-                // Expand `[[window.root]]`s into the EFFECTIVE config BEFORE taking the lock —
-                // the walk is slow and must never run under the ManagerState mutex, or it stalls
-                // the background probe thread for its whole duration (same discipline as
-                // `rescan_root` and the hot-reload watcher below).
-                let effective = manager::effective_config(
-                    &loaded.config,
-                    app.try_state::<rex::RexHub>().as_deref(),
-                );
-                let st = app.state::<ManagerState>();
-                let mut m = st.lock();
-                m.materialize_effective(&app, loaded.config, effective);
-                drop(m); // release before rebuild_menu (non-reentrant mutex)
+                materialize(&app, loaded.config);
                 let _ = rebuild_menu(&app);
                 Ok(())
             }
@@ -1538,24 +1551,62 @@ fn shell_home_open_window(id: String, app: tauri::AppHandle) {
     open_or_focus_window(&app, &id);
 }
 
-/// Open the configured window `label`, or focus it if already open, then sync the empty surface
-/// (it recedes once a real window exists) and rebuild the Window menu. The one open-by-label path:
-/// the Window menu, the home surface, and `warden://open` all route here, because every
-/// window-open path must sync — `MENU_WINDOW_REOPEN_LAST`'s handler upholds the same invariant.
+/// Adopt a clean load with no baseline to reconcile against — launch, the home surface's starter
+/// config, or the first good save after a launch without one: the `WindowSet` opens the
+/// `open_on_start` windows. Expands `[[window.root]]`s into the EFFECTIVE config BEFORE taking the
+/// lock — the walk is slow and must never run under the ManagerState mutex, or it stalls the
+/// background probe thread for its whole duration (same discipline as `rescan_root` and the
+/// hot-reload watcher). The lock is released before the set builds: it builds through
+/// `WardenHost`, which takes it.
+#[cfg(target_os = "macos")]
+fn materialize(app: &tauri::AppHandle, config: warden_config::Config) {
+    use tauri::Manager;
+    let effective = manager::effective_config(&config, app.try_state::<rex::RexHub>().as_deref());
+    materialize_effective(app, config, effective);
+}
+
+/// [`materialize`] from an already-scanned effective config.
+#[cfg(target_os = "macos")]
+fn materialize_effective(
+    app: &tauri::AppHandle,
+    config: warden_config::Config,
+    effective: warden_config::Config,
+) {
+    use tauri::Manager;
+    let decls = plan::decls(&effective);
+    rex::unclaimed::connect(app, &effective);
+    app.state::<ManagerState>().lock().adopt(config, effective);
+    app.state::<WindowSet>().materialize(app, decls);
+}
+
+/// The window `⌘⇧T` would reopen right now (its label), if any.
+#[cfg(target_os = "macos")]
+fn reopen_target(app: &tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    let entries = app.state::<WindowSet>().entries();
+    app.state::<ManagerState>().lock().reopen_target(&entries)
+}
+
+/// Open the configured window `label`, or focus it if already open (the `WindowSet` closes the
+/// home surface once a real window exists), and rebuild the Window menu. The one open-by-label
+/// path: the Window menu, the home surface, ⌘⇧T and `warden://open` all route here.
 #[cfg(target_os = "macos")]
 fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
     use tauri::Manager;
-    let st = app.state::<ManagerState>();
-    {
-        let mut m = st.lock();
-        if m.windows.contains_key(label) {
-            m.focus_window(label);
-        } else {
-            m.reopen_window(app, label);
-        }
-        m.sync_empty_surface(app);
-    } // release the lock before rebuild_menu (non-reentrant mutex)
+    app.state::<WindowSet>().open_or_focus(app, label);
     let _ = rebuild_menu(app);
+}
+
+/// The banner's context menu (chrome-core's `onBannerMenu`) at the chrome's `(x, y)`: Edit
+/// Window… and Delete Window… for the calling window. Its items arrive as menu events.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn window_menu(x: f64, y: f64, window: tauri::WebviewWindow) -> Result<(), String> {
+    use tauri::Manager;
+    let app = window.app_handle();
+    app.state::<WindowSet>()
+        .banner_menu(app, window.label(), x, y)
+        .map_err(|e| e.to_string())
 }
 
 /// The window title a `warden://open?window=<title>` URL names (percent-decoded), or `None` for
@@ -1736,6 +1787,22 @@ fn main() {
     // `skip_labels` carries none of warden's windows here.
     let config_path = warden_config::config_path();
     shell_core::register_plugins(tauri::Builder::default(), Some(&config_path), &[])
+        // Persistent home: closing the last window shows the home surface rather than quitting
+        // (`quit_on_last_close(false)` below), and closing the home surface while nothing else is
+        // open quits — "closing the last surface == ⌘Q", whichever state it shows.
+        .on_window_event(|window, event| {
+            use tauri::Manager;
+            if window.label() == shell_core::home::HOME_LABEL
+                && matches!(event, tauri::WindowEvent::Destroyed)
+            {
+                let app = window.app_handle();
+                if let Some(set) = app.try_state::<WindowSet>() {
+                    if !set.has_open() && !set.is_quitting() {
+                        app.exit(0);
+                    }
+                }
+            }
+        })
         // Menu items act on the focused window. Tab nav (⌘⇧[/⌘⇧], ⌘1–⌘9) and Close Tab (⌘W)
         // route through its chrome, which owns the tab list + select()/unload. emit_to is NOT a
         // reliable per-window target here (it leaks to siblings — the same reason warden:refresh
@@ -1760,14 +1827,14 @@ fn main() {
                     // Every sidebar, and the home surface when no window is open — the watcher's
                     // failed-load path.
                     let _ = app.emit("warden:error", e.clone());
-                    {
-                        let st = app.state::<ManagerState>();
-                        let mut m = st.lock();
-                        m.load_error = Some(e);
-                        m.sync_empty_surface(app);
-                    }
+                    app.state::<WindowSet>().set_load_error(app, Some(e));
                     let _ = rebuild_menu(app);
                 }
+                return;
+            }
+
+            // New Window… and the banner menu's Edit / Delete Window…: shell-core's form flow.
+            if app.state::<WindowSet>().handle_menu(app, id) {
                 return;
             }
 
@@ -1801,21 +1868,8 @@ fn main() {
             // Window menu acts on the manager/app, not the focused window — handle it
             // before the focused-window lookup (reopen-last needs no focused window).
             if id == MENU_WINDOW_REOPEN_LAST {
-                let st = app.state::<ManagerState>();
-                let reopened = {
-                    let mut m = st.lock();
-                    let reopened = m.reopen_last(app);
-                    // Reopening takes the live set from zero→≥1, so close the home surface if
-                    // it was showing (⌘⇧T is reachable while it's the front surface). Same
-                    // invariant `shell_home_open_window` upholds — every window-open path must
-                    // sync, not just the home surface's own click.
-                    if reopened {
-                        m.sync_empty_surface(app);
-                    }
-                    reopened
-                };
-                if reopened {
-                    let _ = rebuild_menu(app);
+                if let Some(label) = reopen_target(app) {
+                    open_or_focus_window(app, &label);
                 }
                 return;
             }
@@ -1876,6 +1930,7 @@ fn main() {
             shell_home_create_config,
             shell_home_edit_config,
             shell_home_open_window,
+            window_menu,
             probe_now,
             agents_init,
             agent_new,
@@ -1927,13 +1982,22 @@ fn main() {
                     None => rex::agents::AgentStore::default(),
                 }));
                 app.manage(std::sync::Mutex::new(rex::attention::Attention::default()));
+                // The window set builds through `WardenHost`, which locks `ManagerState`, so both
+                // are managed before anything opens. Closing the last window shows the home surface
+                // instead of quitting (see the Builder's `on_window_event`).
+                app.manage(ManagerState(std::sync::Mutex::new(mgr)));
+                app.manage(AgentMenu::default());
+                app.manage(ServerMenu::default());
+                app.manage(
+                    WindowSet::new("warden", warden_config::config_path(), windows::WardenHost)
+                        .quit_on_last_close(false),
+                );
                 // Load config; a config that parses (even with zero `[[window]]` entries) always
-                // materializes — `materialize` builds nothing for an empty window list and
-                // `sync_empty_surface` shows the home surface's window list (empty or not). A
-                // missing/invalid config instead records the error and shows the home surface
-                // directly: `sync_empty_surface`'s `home_state` call picks `NoConfig` when the file
+                // materializes — the set opens nothing for an empty window list and shows the home
+                // surface's window list (empty or not). A missing/invalid config instead records
+                // the error and the set shows the home surface directly: `NoConfig` when the file
                 // doesn't exist, `Broken` when it does but didn't load. Recovery from either happens
-                // in the watcher: the first valid load while no real window is live materializes.
+                // in the watcher: the first valid load with no baseline materializes.
                 // Read the `notify_debug` toggle from the loaded config (default false) before the
                 // config is consumed by materialize — it gates notify.rs's diagnostic trace.
                 let mut notify_debug = false;
@@ -1943,16 +2007,12 @@ fn main() {
                 ) {
                     Ok(loaded) => {
                         notify_debug = loaded.config.notify_debug;
-                        mgr.materialize(&handle, loaded.config);
+                        materialize(&handle, loaded.config);
                     }
-                    Err(e) => {
-                        mgr.load_error = Some(e.to_string());
-                        mgr.sync_empty_surface(&handle);
-                    }
+                    Err(e) => handle
+                        .state::<WindowSet>()
+                        .set_load_error(&handle, Some(e.to_string())),
                 }
-                app.manage(ManagerState(std::sync::Mutex::new(mgr)));
-                app.manage(AgentMenu::default());
-                app.manage(ServerMenu::default());
 
                 // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
                 // surfaces to their tabs (badge + macOS banner). Installs the surface-event sink;
@@ -2031,22 +2091,17 @@ fn main() {
                                     // snapshot-then-release discipline). We're on the main
                                     // thread here, so no other writer interleaves. A config
                                     // that parses but declares zero `[[window]]` entries is
-                                    // NOT special-cased here: `window_specs`/`reconcile` on an
-                                    // empty windows list simply open nothing / close everything,
-                                    // and `sync_empty_surface` below shows the home surface's
-                                    // (now-empty) window list — not an error state.
+                                    // NOT special-cased here: the window set on an empty
+                                    // windows list simply opens nothing / closes everything,
+                                    // and shows the home surface's (now-empty) window list —
+                                    // not an error state.
                                     let new_eff = manager::effective_config(
                                         &loaded.config,
                                         wh.try_state::<rex::RexHub>().as_deref(),
                                     );
                                     let st = wh.state::<ManagerState>();
+                                    let set = wh.state::<WindowSet>();
                                     let mut m = st.lock();
-                                    // A previous save may have left an error recorded (Broken);
-                                    // this load succeeded, so clear it before sync_empty_surface
-                                    // reads it below. The `recover` branch's materialize_effective
-                                    // also clears it, but the `else` reconcile branch doesn't call
-                                    // that, so this is the one point both paths share.
-                                    m.load_error = None;
                                     // The app menu is global, not part of window reconcile;
                                     // rebuilt below from current state.
                                     // Density + sidebar_drag are global too — a change to either
@@ -2068,8 +2123,8 @@ fn main() {
                                     // Do NOT also recover on "the home surface is showing an error":
                                     // the home-surface state can *become* Broken (close every
                                     // window, then save a half-written config — the Err branch below
-                                    // records the error via `sync_empty_surface` regardless of live
-                                    // windows), and recovering on the next good save would
+                                    // records the error regardless of live windows), and
+                                    // recovering on the next good save would
                                     // re-materialize every window the user deliberately closed. An
                                     // empty `last_good` already covers every genuine no-baseline case
                                     // (invalid/missing config at launch, or a config later saved with
@@ -2082,22 +2137,20 @@ fn main() {
                                         // Recovery: no reconcile baseline. Materialize from the
                                         // already-scanned effective config rather than reconciling
                                         // against an empty last_good.
-                                        m.materialize_effective(
-                                            &wh,
-                                            loaded.config.clone(),
-                                            new_eff,
-                                        );
+                                        drop(m);
+                                        materialize_effective(&wh, loaded.config.clone(), new_eff);
                                     } else {
                                         // Reconcile against the EFFECTIVE (root-expanded) configs
                                         // so a project appearing/vanishing on disk since last load
                                         // surfaces as a tab add/remove. Re-scans on every reload.
                                         let recon =
                                             warden_config::reconcile(&m.last_good, &new_eff);
+                                        let decls = plan::decls(&new_eff);
                                         // Advances the reconcile baseline — this branch is
                                         // only reached on a valid load.
-                                        m.apply(&wh, &recon, new_eff);
+                                        m.apply(&wh, &recon, new_eff, |t| set.label_for_title(t));
                                         m.raw_config = loaded.config.clone();
-                                        m.record_all_sessions();
+                                        m.set_probe_interval(loaded.config.probe_interval);
                                         rex::unclaimed::connect(&wh, &m.last_good);
                                         // A density/sidebar_drag flip alone produces no per-window
                                         // op, so apply() emitted nothing; re-push every window's
@@ -2105,22 +2158,14 @@ fn main() {
                                         if old_density != new_density || old_drag != new_drag {
                                             m.refresh_all_chrome(&wh);
                                         }
+                                        drop(m);
+                                        // Open added windows, close removed ones, recolour kept
+                                        // ones (a window the user closed stays closed); clears
+                                        // the home surface's error. Lock released: the set builds
+                                        // through `WardenHost`, which takes it.
+                                        set.apply(&wh, decls);
+                                        st.lock().record_all_sessions(&wh);
                                     }
-                                    // Update the empty-surface (home surface) now that the live
-                                    // window set may have changed: recovery may have opened only
-                                    // some (or zero, if all `open_on_start = false`) windows; a
-                                    // reconcile may have closed the last one or opened the first.
-                                    // Recomputes the window list fresh every call, so — unlike the
-                                    // old launcher — no separate "push a stale list a refresh" step
-                                    // is needed afterward: shell_core::home::show_home is idempotent
-                                    // and this already re-shows/refreshes it with current entries.
-                                    // (`recover`'s materialize_effective already calls this too;
-                                    // idempotent, so the second call here is a harmless no-op then.)
-                                    m.sync_empty_surface(&wh);
-                                    // Apply the (possibly changed) probe cadence while we still
-                                    // hold the lock, then release it before any lock-free work.
-                                    m.set_probe_interval(loaded.config.probe_interval);
-                                    drop(m);
                                     // Opt-in tidy: rewrite the file formatted. Diff-guarded in
                                     // format_file, so warden's own write doesn't loop the watcher.
                                     // Only runs on a clean parse (this branch).
@@ -2128,8 +2173,7 @@ fn main() {
                                         let _ = warden_config::format_file(&fmt_path);
                                     }
                                     // Rebuild the global app menu: the digit-keys mode and/or the
-                                    // window set may have changed (open/close ops in apply). Lock
-                                    // was released at `drop(m)` above; rebuild_menu re-locks.
+                                    // window set may have changed.
                                     let _ = rebuild_menu(&wh);
                                     // Clear any stale error banner.
                                     let _ = wh.emit("warden:error-clear", ());
@@ -2138,20 +2182,14 @@ fn main() {
                                     probe::bump_all(&wh);
                                 }
                                 Err(e) => {
-                                    // Keep last_good; record the error and let sync_empty_surface
-                                    // route it — home_state's own precedence already no-ops when a
-                                    // real window exists (has_windows wins over Broken), so it's safe
-                                    // to call unconditionally. The banner is a separate concern (a
-                                    // parse error mid-edit while windows are open needs its own
-                                    // sidebar notice — sync_empty_surface has nothing to show there).
+                                    // Keep last_good; record the error with the window set, whose
+                                    // home surface shows it only when nothing is open. The banner is
+                                    // a separate concern (a parse error mid-edit while windows are
+                                    // open needs its own sidebar notice).
                                     let msg = e.to_string();
-                                    let st = wh.state::<ManagerState>();
-                                    let mut m = st.lock();
-                                    m.load_error = Some(msg.clone());
-                                    let had_windows = !m.is_empty();
-                                    m.sync_empty_surface(&wh);
-                                    drop(m);
-                                    if had_windows {
+                                    let set = wh.state::<WindowSet>();
+                                    set.set_load_error(&wh, Some(msg.clone()));
+                                    if set.has_open() {
                                         let _ = wh.emit("warden:error", msg);
                                     }
                                 }
@@ -2175,14 +2213,18 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building warden")
         .run(|app, event| match event {
-            tauri::RunEvent::ExitRequested { .. } => crate::manager::mark_quitting(),
+            tauri::RunEvent::ExitRequested { .. } => {
+                if let Some(set) = tauri::Manager::try_state::<WindowSet>(app) {
+                    set.mark_quitting();
+                }
+            }
             // A `warden://` URL (CFBundleURLTypes in Info.plist) — cold launch or warm, macOS
             // delivers it here after `setup` has materialized the config's windows.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Opened { urls } => {
                 use tauri::Manager;
                 for title in urls.iter().filter_map(open_url_window_title) {
-                    let label = app.state::<ManagerState>().lock().label_for_title(&title);
+                    let label = app.state::<WindowSet>().label_for_title(&title);
                     match label {
                         Some(label) => open_or_focus_window(app, &label),
                         None => {
