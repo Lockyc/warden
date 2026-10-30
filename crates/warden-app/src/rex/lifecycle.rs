@@ -827,7 +827,7 @@ fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
                 exited.push((l.clone(), id.clone(), new_active));
                 projects.push(id);
             }
-            m.record_session(&l);
+            m.record_session(app, &l);
         }
         let popped: Vec<String> = m
             .detached
@@ -974,7 +974,7 @@ pub fn select(app: &AppHandle, label: &str, tab_id: &str, record_id: &str) -> Re
         }
         r => r.map(|_| ()),
     };
-    m.record_session(label);
+    m.record_session(app, label);
     let dto = m.init_dto(label);
     drop(m);
     if let Some(dto) = dto {
@@ -1019,7 +1019,7 @@ fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<Agent
     let dtos: Vec<_> = refreshed
         .iter()
         .filter_map(|l| {
-            m.record_session(l);
+            m.record_session(app, l);
             Some((l.clone(), m.init_dto(l)?))
         })
         .collect();

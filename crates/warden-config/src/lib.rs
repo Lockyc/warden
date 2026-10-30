@@ -19,8 +19,10 @@ pub mod watch;
 // own `Tab` shape (scanner.rs); resolve.rs delegates a raw root's name/dir/depth validation to
 // `config_core::resolve_root_dir` directly, mapping `RootError` onto warden's own `ResolveError`
 // variants with the enclosing window's context.
+// `edit` is config-core's comment-preserving config writer: warden-app's window form writes
+// through it (`WardenHost::write`).
 pub use config_core::{
-    discover_projects, fmt_cli, format_file, format_str, toggle_tab_digit_keys, tree_path,
+    discover_projects, edit, fmt_cli, format_file, format_str, toggle_tab_digit_keys, tree_path,
     write_default_config, Colour, ColourError, Density, DiscoveredProject, RootDir, SeedError,
     TabDigitKeys, Warning, DEFAULT_ROOT_DEPTH,
 };

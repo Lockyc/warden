@@ -26,7 +26,7 @@ macOS only.
 
 ## Features
 
-- **A window per `[[window]]`** — native macOS windows, each with a colour + title banner, a curator-style draggable sidebar, and the terminal under an overlay titlebar. The **Window** menu lists every configured window — raise an open one or reopen one you've closed (**⌘⇧T** reopens the last closed).
+- **A window per `[[window]]`** — native macOS windows, each with a colour + title banner, a curator-style draggable sidebar, and the terminal under an overlay titlebar. The **Window** menu lists every configured window — raise an open one or reopen one you've closed (**⌘⇧T** reopens the last closed). **New Window…** (**⌥⌘N**) adds one, and right-clicking a window's banner renames or recolours it in place (its terminals keep running) or deletes it — each written to the config, comments kept.
 - **Persistent, not last-window-quit** — warden opens the windows you mark `open_on_start` (default all) and shows a **home surface** when none are open, listing every configured window so you can raise or reopen one with a click. Scripts open one by title: `open 'warden://open?window=work'` launches warden if needed and opens (or focuses) that window. It's a persistent app: closing the last window never quits it — **⌘Q** does.
 - **Project tabs** — each tab is a real terminal in a working directory. `load_on_open` tabs spawn at launch and keep running; the rest spawn lazily on first focus — or, with `remember_tabs`, come back loaded if they were open when you quit. Tabs can be **grouped** into labelled sidebar sections.
 - **Project trees** — point a `[[window.root]]` at a directory (e.g. `~/Developer`) and warden auto-discovers every git project under it, rendering them as a collapsible tree of tabs — no per-project config needed. Set `probe`/`kill`/`suspend` on the root (see the session-presence probes below) for a session dot on every discovered project.
@@ -123,7 +123,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `title` | *required* | Banner text + window title; unique across the config. Changing it is destructive — the window is closed and reopened, so its terminals and saved size/position reset. |
+| `title` | *required* | Banner text + window title; unique across the config. Changing it in the file is destructive — the window is closed and reopened, so its terminals and saved size/position reset; **Edit Window…** on the banner renames it in place instead. |
 | `colour` | neutral | Banner accent, `#rgb` or `#rrggbb`. |
 | `width` / `height` | `1500` / `1000` | Initial size in px; the window's saved size/position wins after the first launch. |
 | `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu, or script it with `open 'warden://open?window=<title>'`. |

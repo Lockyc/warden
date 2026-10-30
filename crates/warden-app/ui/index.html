@@ -1537,6 +1537,10 @@
               // component's spinner + outcome; `rescan_root` emits its refresh before it returns.
               return invokeSafe("rescan_root");
             },
+            onBannerMenu({ x, y }) {
+              // Right-click on the banner: Edit Window… / Delete Window… (shell-core's form flow).
+              invoke("window_menu", { x, y }).catch((e) => sb.setError("⚠ " + e));
+            },
             onSearchExit() {
               // Esc in the sidebar search: typing goes back to the terminal it came from.
               if (activeId && !detached.has(activeId)) focusPane(focusedPaneById.get(activeId) ?? 0);

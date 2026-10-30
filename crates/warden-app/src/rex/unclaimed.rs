@@ -134,6 +134,9 @@ pub fn refresh(app: &AppHandle) {
             return;
         };
         {
+            let Some(set) = main.try_state::<shell_core::windows::WindowSet>() else {
+                return;
+            };
             let mut m = st.lock();
             let mut fresh = m.last_good.clone();
             append(&mut fresh, &hub);
@@ -141,8 +144,8 @@ pub fn refresh(app: &AppHandle) {
                 return;
             }
             let recon = warden_config::reconcile(&m.last_good, &fresh);
-            m.apply(&main, &recon, fresh);
-            m.record_all_sessions();
+            m.apply(&main, &recon, fresh, |t| set.label_for_title(t));
+            m.record_all_sessions(&main);
         }
         super::spawn::refresh_presence(&main, None);
     });
