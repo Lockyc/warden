@@ -578,26 +578,22 @@ impl WindowManager {
         }
     }
 
-    /// `WardenHost::retitled`: the window now titled `title` in the set's `entries` was renamed or
-    /// recoloured in place; `label` is the label shell-core reports — an open window's live one,
-    /// which a rename keeps. An open window's terminals keep running; the banner, the held configs
-    /// (so a lookup by title finds the window before the reload echo), `⌘⇧T`'s stack, its
-    /// popped-out tabs' origin and its remembered-tabs record (moved to its new launch label)
-    /// follow it, open or closed.
-    pub fn retitle(
-        &mut self,
-        label: &str,
-        title: &str,
-        colour: Colour,
-        entries: &[shell_core::menu::WindowEntry],
-    ) {
+    /// `WardenHost::retitled`: the window titled `old` was renamed to `title` or recoloured in
+    /// place; `label` is the label shell-core reports — an open window's live one, which a rename
+    /// keeps. An open window's terminals keep running; the banner, the held configs (so a lookup by
+    /// title finds the window before the reload echo), `⌘⇧T`'s stack, its popped-out tabs' origin
+    /// and its remembered-tabs record (moved to its new launch label) follow it, open or closed.
+    pub fn retitle(&mut self, label: &str, old: &str, title: &str, colour: Colour) {
         let title = title.trim();
-        let Some(idx) = crate::plan::renamed_index(entries, title) else {
+        let Some(idx) = self
+            .last_good
+            .windows
+            .iter()
+            .position(|w| w.title.trim() == old.trim())
+        else {
             return;
         };
-        let Some(old) = self.last_good.windows.get(idx).map(|w| w.title.clone()) else {
-            return;
-        };
+        let old = self.last_good.windows[idx].title.clone();
         let open = self.windows.get(label).filter(|ws| ws.title == old);
         let old_key = open
             .map(|ws| ws.session_key.clone())
@@ -1052,7 +1048,7 @@ impl WindowManager {
     /// window was already gone (double-close).
     ///
     /// The origin is the open window titled `origin_title` (renamed in place along with it), under
-    /// the label the caller resolved it to (`plan::origin_home`). Edge cases, in order:
+    /// the label the caller resolved it to (shell-core's `entry_for_title`). Edge cases, in order:
     /// 1. **Origin still open** — its slot is the `Detached` placeholder; `reparent` moves the
     ///    view back, `attach` (Detached → Spawned) restores it.
     /// 2. **Origin closed by the user while detached** — the caller has the `WindowSet` reopen
@@ -1441,15 +1437,6 @@ mod tests {
             .0
     }
 
-    fn entry(id: &str, title: &str) -> shell_core::menu::WindowEntry {
-        shell_core::menu::WindowEntry {
-            id: id.into(),
-            title: title.into(),
-            open: false,
-            colour: None,
-        }
-    }
-
     fn record() -> crate::session::WindowRecord {
         crate::session::WindowRecord {
             loaded: vec!["/tmp".into()],
@@ -1467,8 +1454,7 @@ mod tests {
         m.last_closed = vec!["a b".into(), "a-b".into()];
         m.session.set("a-b", Some(record()));
         let red = Colour::parse("#ff0000").unwrap();
-        let entries = [entry("x", "x"), entry("a-b", "a-b")];
-        m.retitle("a-b", "x", red, &entries);
+        m.retitle("a-b", " a b ", "x", red);
 
         let titles = |c: &Config| {
             c.windows
@@ -1488,6 +1474,24 @@ mod tests {
         // The remembered tabs move from the old launch label to the new one.
         assert!(m.session.get("a-b").is_none());
         assert_eq!(m.session.get("x"), Some(&record()));
+    }
+
+    /// A Delete Window whose reload hasn't landed yet: `last_good` still lists the deleted window
+    /// ahead of the renamed one, so the set's positions no longer line up with it.
+    #[test]
+    fn retitle_finds_the_window_by_its_old_title_while_a_delete_is_in_flight() {
+        let mut m = WindowManager::new();
+        let c = config("[[window]]\ntitle = \"gone\"\n[[window]]\ntitle = \"work\"\n");
+        m.adopt(c.clone(), c);
+        let red = Colour::parse("#ff0000").unwrap();
+        m.retitle("work", "work", "job", red);
+        let titles: Vec<_> = m
+            .last_good
+            .windows
+            .iter()
+            .map(|w| w.title.as_str())
+            .collect();
+        assert_eq!(titles, ["gone", "job"]);
     }
 
     #[test]
