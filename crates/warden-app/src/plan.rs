@@ -138,20 +138,22 @@ pub fn retitle_window(config: &mut Config, old: &str, new: &str, colour: Colour)
     }
 }
 
-/// The title and launch label the window the set lists as `label` had before an in-place change
-/// (`WindowHost::retitled`). The set's `entries` and `config` (the held config, not yet patched)
-/// list the same windows in the same order, so the window's position in one finds it in the other.
-pub fn renamed_from(
-    config: &Config,
-    entries: &[WindowEntry],
-    label: &str,
-) -> Option<(String, String)> {
-    let idx = entries.iter().position(|e| e.id == label)?;
-    let title = config.windows.get(idx)?.title.clone();
-    let launch = shell_core::windows::plan::assign(&decls(config), &Default::default())
-        .swap_remove(idx)
-        .label;
-    Some((title, launch))
+/// The position of the window just changed in place (`WindowHost::retitled`), found by its new
+/// `title` — titles are unique, while the label shell-core reports is the pre-rename one, which a
+/// closed window loses (its slot is relabelled from the new title, and another window may take
+/// the old label). The set's `entries` and the held config list the same windows in the same
+/// order, so this position finds the window in the config too.
+pub fn renamed_index(entries: &[WindowEntry], title: &str) -> Option<usize> {
+    entries.iter().position(|e| e.title.trim() == title.trim())
+}
+
+/// The launch label of `config`'s window at `idx` — the label it gets with nothing open, which
+/// keys its remembered tabs and saved bounds.
+pub fn launch_label(config: &Config, idx: usize) -> Option<String> {
+    shell_core::windows::plan::assign(&decls(config), &Default::default())
+        .into_iter()
+        .nth(idx)
+        .map(|s| s.label)
 }
 
 /// Where a popped-out tab returns: the configured window titled `origin_title` — its current label
@@ -350,20 +352,17 @@ title = "b"
     }
 
     #[test]
-    fn renamed_from_reads_the_old_title_and_launch_label_at_the_windows_position() {
-        // The set has renamed "a b" (live label "a-b") to "Notes"; the held config still says
-        // "a b". Its launch label is "a-b", and the closed "a-b" window's is "a-b-2".
+    fn renamed_index_finds_the_window_by_its_new_title_not_its_label() {
+        // The closed "a b" (launch label "a-b") was renamed to "x": shell-core reports the
+        // pre-rename label "a-b", but the set's entries now list it as "x", and the freed label
+        // "a-b" belongs to the other window, whose title slugs to it.
         let c = cfg("[[window]]\ntitle = \"a b\"\n[[window]]\ntitle = \"a-b\"\n");
-        let entries = [entry("a-b", "Notes", true), entry("a-b-2", "a-b", false)];
-        assert_eq!(
-            renamed_from(&c, &entries, "a-b"),
-            Some(("a b".to_string(), "a-b".to_string()))
-        );
-        assert_eq!(
-            renamed_from(&c, &entries, "a-b-2"),
-            Some(("a-b".to_string(), "a-b-2".to_string()))
-        );
-        assert_eq!(renamed_from(&c, &entries, "nope"), None);
+        let entries = [entry("x", "x", false), entry("a-b", "a-b", false)];
+        assert_eq!(renamed_index(&entries, " x "), Some(0));
+        assert_eq!(c.windows[0].title, "a b");
+        assert_eq!(launch_label(&c, 0).as_deref(), Some("a-b"));
+        assert_eq!(launch_label(&c, 1).as_deref(), Some("a-b-2"));
+        assert_eq!(renamed_index(&entries, "nope"), None);
     }
 
     #[test]
