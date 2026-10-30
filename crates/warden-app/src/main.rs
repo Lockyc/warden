@@ -205,21 +205,15 @@ impl ManagerState {
 #[cfg(target_os = "macos")]
 struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 
-/// Build and install the app menu: the shared spine (App/Config/Window submenus + the Close Tab,
-/// Pop Out Tab and Find in Sidebar items) interleaved with warden's own Tab submenu. The digit chords still depend on `mode`, but
-/// the items themselves now come from `shell_core::menu::build_tab_nav` — the mode's effect
-/// (`Jump`: ⌘1–⌘9 jump straight to that 1-based tab position; `Cycle`: ⌘1/⌘2 alias next/previous,
-/// reclaiming the digit-1/2 chords so jumps shift to ⌘3–⌘9) is defined there once, for all three
-/// apps, not rebuilt here.
+/// Build and install the app menu: shell-core's App, Tab, Config and Window submenus, with
+/// warden's own items as the Tab submenu's groups (Split; the session items; the agent and server
+/// items) and Reopen Last Closed (⌘⇧T) spliced into the Window submenu. `mode` picks the digit
+/// chords inside `build_tab_menu`. No Edit submenu: the menu gets first refusal on a terminal's
+/// key equivalents, and an Edit menu's ⌘C/⌘V have not been checked against libghostty's own copy
+/// and paste.
 ///
-/// **⌘W closes a tab, ⌘⇧W closes the window — unchanged.** warden already had this right (the
-/// family standard other apps are adopting); only the item/id/accelerator moved into
-/// `shell_core::menu` so it can't drift per app. Reopen Last Closed (⌘⇧T) stays warden-only —
-/// spliced into the spine's Window submenu below rather than added to the spine itself.
-///
-/// The on_menu_event handler is mode-agnostic — it keys on item IDs, and the
-/// IDs simply differ per mode. `set_menu` replaces the app-global menu wholesale,
-/// so a hot-reload that flips the mode just rebuilds (see the watcher).
+/// `set_menu` replaces the app-global menu wholesale, so a hot-reload that flips the mode just
+/// rebuilds (see the watcher).
 #[cfg(target_os = "macos")]
 fn build_app_menu(
     app: &tauri::AppHandle,
@@ -231,14 +225,12 @@ fn build_app_menu(
 
     let window_entries: Vec<shell_core::menu::WindowEntry> =
         entries.into_iter().map(Into::into).collect();
-    let config_path = warden_config::config_path();
     // About box carries the build stamp (shell_core::build_stamp → BUILD_GIT_SHA/BUILD_DATE) so a
     // glance confirms the installed app matches a given commit.
     let spine = shell_core::menu::build_spine(
         app,
         shell_core::menu::SpineConfig {
             app_name: "warden",
-            config_path: &config_path,
             windows: &window_entries,
         },
         env!("CARGO_PKG_VERSION"),
@@ -246,16 +238,7 @@ fn build_app_menu(
         env!("BUILD_DATE"),
     )?;
 
-    // The tab-nav block is shell-core's now: Previous/Next Tab, the ⌘1/⌘2 cycle aliases when the
-    // mode asks for them, and the jump items (⌘1–9, or ⌘3–9 once the aliases take 1 and 2). Only
-    // the submenu *composition* below is warden's.
-    let nav = shell_core::menu::build_tab_nav(app, mode.is_cycle())?;
-    let mut tab_menu = SubmenuBuilder::new(app, "Tab");
-    for it in &nav.nav {
-        tab_menu = tab_menu.item(it);
-    }
-    // Split (⌘D) — warden-only (see MENU_TAB_SPLIT's doc comment). Grouped with Close Tab / Pop
-    // Out Tab as the other tab-scoped actions, ahead of the jump block below.
+    // Split (⌘D) — warden-only (see MENU_TAB_SPLIT's doc comment).
     let split_pane_item = MenuItemBuilder::with_id(MENU_TAB_SPLIT, "Split")
         .accelerator("CmdOrCtrl+D")
         .build(app)?;
@@ -274,20 +257,6 @@ fn build_app_menu(
         .accelerator("Alt+Cmd+KeyS")
         .enabled(false)
         .build(app)?;
-    // The spine's Close Tab (⌘W) and Pop Out Tab (⌘⇧O) — warden's own semantics (unload the
-    // active tab, NOT close the window) are unchanged; see the on_menu_event handler.
-    tab_menu = tab_menu
-        .separator()
-        .item(&split_pane_item)
-        .item(&spine.close_tab)
-        .item(&spine.pop_out_tab)
-        .item(&spine.find_in_sidebar)
-        .separator()
-        .item(&suspend_item)
-        .item(&terminate_item)
-        .separator()
-        .item(&agent_new_item)
-        .item(&agent_sleep_item);
     // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
     // disabled line says so.
     let server_items = servers
@@ -309,11 +278,17 @@ fn build_app_menu(
             .build(app)?;
         server_menu = server_menu.item(&none);
     }
-    tab_menu = tab_menu.item(&server_menu.build()?).separator();
-    for it in &nav.jumps {
-        tab_menu = tab_menu.item(it);
-    }
-    let tab_menu = tab_menu.build()?;
+    let server_menu = server_menu.build()?;
+    let tab_menu = shell_core::menu::build_tab_menu(
+        app,
+        &spine,
+        mode.is_cycle(),
+        &[
+            &[&split_pane_item],
+            &[&suspend_item, &terminate_item],
+            &[&agent_new_item, &agent_sleep_item, &server_menu],
+        ],
+    )?;
 
     // Reopen Last Closed (⌘⇧T) is warden-only (curator/lector have no equivalent), so it's not
     // part of the spine (YAGNI — add it there only if a sibling app wants it too). Spliced into
@@ -605,6 +580,73 @@ fn split_pane(
 #[tauri::command]
 fn focus_sidebar(window: tauri::WebviewWindow) {
     let _ = AsRef::<tauri::Webview<_>>::as_ref(&window).set_focus();
+}
+
+/// Runs a spine command in the window `shell_core::menu::route` chose. Every emit is
+/// label-stamped and the chrome's forMe() filter drops the rest: `emit_to` leaks to sibling
+/// webviews, so without the stamp one menu click would act in every open window.
+#[cfg(target_os = "macos")]
+fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
+    use shell_core::menu::{SpineAction, TabNavAction};
+    use tauri::{Emitter, Manager};
+    let label = routed.target.as_str();
+    let target = app.get_webview_window(label);
+    if routed.from_detached.is_some() {
+        if let Some(w) = &target {
+            let _ = w.set_focus();
+        }
+    }
+    // A popped-out tab never holds its origin's highlight, so Next/Previous step from it.
+    let from = routed.from_detached.as_deref().and_then(|l| {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.detached.get(l).map(|ds| ds.tab_id.clone())
+    });
+    let emit = |event: &str| {
+        let _ = app.emit_to(label, event, serde_json::json!({ "label": label }));
+    };
+    match routed.action {
+        SpineAction::Nav(TabNavAction::Next | TabNavAction::Prev) => {
+            let dir = if routed.action == SpineAction::Nav(TabNavAction::Next) {
+                1
+            } else {
+                -1
+            };
+            let _ = app.emit_to(
+                label,
+                "warden:cycle-tab",
+                serde_json::json!({ "label": label, "dir": dir, "from": from }),
+            );
+        }
+        SpineAction::Nav(TabNavAction::Jump(n)) => {
+            let _ = app.emit_to(
+                label,
+                "warden:select-tab",
+                serde_json::json!({ "label": label, "n": n }),
+            );
+        }
+        // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus); it does NOT
+        // close the window. The chrome owns "which tab is active" + the dot/highlight repaint.
+        SpineAction::CloseTab => emit("warden:unload-tab"),
+        // Closing a pop-out docks its tab; closing a window reaps its surfaces, then
+        // sync_empty_surface shows the home surface if it was the last real window — no quit.
+        SpineAction::DockPoppedOut | SpineAction::CloseWindow => {
+            if let Some(w) = target {
+                let _ = w.close();
+            }
+        }
+        SpineAction::PopOutTab => emit("warden:pop-out-tab"),
+        // ⌘⇧F: a terminal NSView holds first responder — make the webview the key view first,
+        // then the chrome focuses its field.
+        SpineAction::FindInSidebar => {
+            if let Some(w) = target {
+                focus_sidebar(w);
+            }
+            emit("warden:find-in-sidebar");
+        }
+        // The chrome runs a manual check whatever auto_update says.
+        SpineAction::CheckUpdates => emit("warden:check-update"),
+    }
 }
 
 /// Point tab `id`'s keyboard focus at pane `pane` (0 = primary, 1 = secondary). Returns false
@@ -1424,6 +1466,18 @@ fn set_hole_rect(
 #[cfg(target_os = "macos")]
 const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
 
+/// Saves `tab_digit_keys` (the Tab menu's Cycle Tabs toggle), seeding the starter config first
+/// when there is no file. The watcher's reload then applies it.
+#[cfg(target_os = "macos")]
+fn write_tab_digit_keys(
+    path: &std::path::Path,
+    mode: warden_config::TabDigitKeys,
+) -> Result<(), String> {
+    warden_config::write_default_config(path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
+    warden_config::set_key(path, "tab_digit_keys", mode.as_str().into())
+        .map_err(|e| format!("config: {e}"))
+}
+
 /// The home surface's "Create a starter config" button. This is where config-core is called (via
 /// `warden_config`'s re-export — this crate never pins config-core directly, the same
 /// one-source-of-truth rule as its other re-exported house helpers) — shell-core owns the
@@ -1693,6 +1747,21 @@ fn main() {
                 return;
             }
 
+            // Tab ▸ Cycle Tabs: save the flip; the watcher's reload rebuilds the menu. muda already
+            // flipped the tick, so a failed write rebuilds to undo it.
+            if id == shell_core::menu::ids::TAB_DIGIT_CYCLE {
+                let next = {
+                    let st = app.state::<ManagerState>();
+                    let m = st.lock();
+                    m.last_good.tab_digit_keys.toggled()
+                };
+                if let Err(e) = write_tab_digit_keys(&cfg_path, next) {
+                    let _ = app.emit("warden:error", e);
+                    let _ = rebuild_menu(app);
+                }
+                return;
+            }
+
             // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
             // chrome gets the active tab's id. ⌘T and ⌥⌘S are disabled elsewhere (`sync_agent_menu`);
             // ⌘⇧T falls through to reopening a window.
@@ -1765,99 +1834,20 @@ fn main() {
                 }
                 return;
             }
-            // Tab navigation (⌘⇧[ / ⌘⇧] , ⌘1–9, and the ⌘1/⌘2 cycle aliases) — shell-core routes the
-            // id, so this handler is mode-blind: the aliases arrive as plain Next/Prev.
-            if let Some(action) = shell_core::menu::tab_nav_action(id) {
-                use shell_core::menu::TabNavAction;
-                // A popped-out window has no sidebar: its nav belongs to the origin window's, which
-                // is raised (a docked target shows there) and cycles from the popped-out tab — it
-                // never holds the origin's highlight, so the highlight would lead back to it.
-                let origin = app
-                    .state::<ManagerState>()
-                    .lock()
-                    .detached
-                    .get(&label)
-                    .map(|ds| (ds.origin_label.clone(), ds.tab_id.clone()));
-                let (label, from) = match origin {
-                    Some((origin_label, tab_id)) => {
-                        if let Some(w) = app.get_webview_window(&origin_label) {
-                            let _ = w.set_focus();
-                        }
-                        (origin_label, Some(tab_id))
-                    }
-                    None => (label, None),
-                };
-                match action {
-                    TabNavAction::Prev => {
-                        let _ = app.emit_to(
-                            label.as_str(),
-                            "warden:cycle-tab",
-                            serde_json::json!({ "label": label, "dir": -1, "from": from }),
-                        );
-                    }
-                    TabNavAction::Next => {
-                        let _ = app.emit_to(
-                            label.as_str(),
-                            "warden:cycle-tab",
-                            serde_json::json!({ "label": label, "dir": 1, "from": from }),
-                        );
-                    }
-                    TabNavAction::Jump(n) => {
-                        let _ = app.emit_to(
-                            label.as_str(),
-                            "warden:select-tab",
-                            serde_json::json!({ "label": label, "n": n }),
-                        );
-                    }
-                }
-                return;
-            }
             if id == MENU_TAB_SPLIT || id == MENU_TAB_SUSPEND || id == MENU_TAB_TERMINATE {
                 // ⌘D / ⌘⇧S / ⌘⇧K act on the active tab. The chrome owns "which tab is active", so
                 // it drives the command on this event. Label-stamped + forMe()-filtered like every
                 // other per-window emit (emit_to leaks to sibling webviews).
                 let _ = app.emit_to(label.as_str(), id, serde_json::json!({ "label": label }));
-            } else if id == shell_core::menu::ids::CLOSE_TAB {
-                // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus),
-                // it does NOT close the window. The chrome owns "which tab is active" + the
-                // dot/highlight repaint, so it drives the unload_tab command on this event.
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:unload-tab",
-                    serde_json::json!({ "label": label }),
-                );
-            } else if id == shell_core::menu::ids::POP_OUT_TAB {
-                // ⌘⇧O pops the active tab out into its own window. The chrome owns "which tab is
-                // active", so it drives the pop_out_tab command on this event. Label-stamped +
-                // forMe()-filtered like every per-window emit (emit_to leaks to siblings).
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:pop-out-tab",
-                    serde_json::json!({ "label": label }),
-                );
-            } else if id == shell_core::menu::ids::FIND_IN_SIDEBAR {
-                // ⌘⇧F: a terminal NSView holds first responder — make the webview the key view
-                // first, then the chrome focuses its field.
-                focus_sidebar(win.clone());
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:find-in-sidebar",
-                    serde_json::json!({ "label": label }),
-                );
-            } else if id == shell_core::menu::ids::CHECK_UPDATES {
-                // Manual update check → the focused window's chrome runs it (ignores auto_update).
-                // Label-stamped like every other per-window emit: `emit_to` leaks to sibling
-                // webviews, so without the stamp + the chrome's forMe() filter one menu click
-                // would run an update check in every open window.
-                let _ = app.emit_to(
-                    label.as_str(),
-                    "warden:check-update",
-                    serde_json::json!({ "label": label }),
-                );
-            } else if id == shell_core::menu::ids::CLOSE_WINDOW {
-                // ⌘⇧W closes the whole window (Destroyed → reap surfaces, then sync_empty_surface:
-                // shows the home surface if it was the last real window — no quit).
-                let _ = win.close();
+                return;
+            }
+            let origin_of = |l: &str| {
+                let st = app.state::<ManagerState>();
+                let m = st.lock();
+                m.detached.get(l).map(|ds| ds.origin_label.clone())
+            };
+            if let Some(routed) = shell_core::menu::route(id, &label, origin_of) {
+                on_spine_action(app, routed);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -2199,6 +2189,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn writing_the_digit_mode_seeds_a_missing_config_first() {
+        use warden_config::TabDigitKeys;
+        let dir = std::env::temp_dir().join(format!("warden-digit-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        let _ = std::fs::remove_dir_all(&dir);
+        write_tab_digit_keys(&path, TabDigitKeys::Cycle).unwrap();
+        let src = std::fs::read_to_string(&path).unwrap();
+        // The starter's documentation survives; only the value changed.
+        assert!(
+            src.starts_with(DEFAULT_CONFIG.lines().next().unwrap()),
+            "{src}"
+        );
+        let shell = warden_config::login_shell();
+        let loaded = warden_config::load_with(&path, &shell).unwrap();
+        assert_eq!(loaded.config.tab_digit_keys, TabDigitKeys::Cycle);
+        write_tab_digit_keys(&path, TabDigitKeys::Jump).unwrap();
+        let loaded = warden_config::load_with(&path, &shell).unwrap();
+        assert_eq!(loaded.config.tab_digit_keys, TabDigitKeys::Jump);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn open_url_window_title_reads_only_warden_open_urls() {
