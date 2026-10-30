@@ -122,7 +122,7 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 /// **What IS detected:**
 /// - Windows opened/closed, matched by `title`.
 /// - For a kept window (a `WindowUpdate`, emitted when any of these is non-empty):
-///   - `colour` and `open_tabs_section` (chrome-only) changes.
+///   - `colour`, `open_tabs_section` and `recoverable_tabs_section` (chrome-only) changes.
 ///   - `add_tabs`/`remove_tabs`, matched by `Tab::key` — `id`-else-normalized-`dir` for a
 ///     curated tab, the absolute project path for a discovered one. A kept tab whose `dir`
 ///     changed with no explicit `id` changes key, so it is a remove + add.
