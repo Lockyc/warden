@@ -165,6 +165,9 @@ pub struct InitDto {
     /// list: this window's resolved `open_tabs_section` (global → window, default
     /// false), read from `WindowState`.
     pub open_tabs_section: bool,
+    /// Whether the sidebar pins a section of the unloaded tabs with a recoverable
+    /// session: this window's resolved `recoverable_tabs_section` (default true).
+    pub recoverable_tabs_section: bool,
     /// Whether warden checks for a new release on launch, from the global
     /// `auto_update` config (default true). Carried per-window (it's global); the
     /// chrome gates its launch-time update check on it (the menu check ignores it).
@@ -199,6 +202,9 @@ pub struct WindowState {
     /// rather than being read off `last_good` per emit because it is per-window now:
     /// a global edit reaches a window as an ordinary reconcile diff.
     pub open_tabs_section: bool,
+    /// Whether THIS window's sidebar pins the "Recoverable" section — kept exactly as
+    /// `open_tabs_section` is.
+    pub recoverable_tabs_section: bool,
     /// Surface-spawn failure(s) from `build_window`, shown once via the init DTO.
     pub spawn_error: Option<String>,
     /// The `SessionStore` key this window's remembered tabs live under: its launch label
@@ -552,6 +558,7 @@ impl WindowManager {
                 title: spec.title.clone(),
                 colour: spec.colour.clone(),
                 open_tabs_section: spec.open_tabs_section,
+                recoverable_tabs_section: spec.recoverable_tabs_section,
                 spawn_error,
                 session_key,
             },
@@ -643,6 +650,7 @@ impl WindowManager {
                 density: self.last_good.density.as_str().to_string(),
                 sidebar_drag: self.last_good.sidebar_drag,
                 open_tabs_section: ws.open_tabs_section,
+                recoverable_tabs_section: ws.recoverable_tabs_section,
                 auto_update: self.last_good.auto_update,
                 split_band: SPLIT_BAND,
                 trees: self
@@ -1218,6 +1226,7 @@ impl WindowManager {
                 respawn_tabs,
                 spawn_tabs,
                 open_tabs_section,
+                recoverable_tabs_section,
             } = op;
             if let Some(ws) = self.windows.get_mut(&label) {
                 // Captured before any mutation below, so a respawn that hits the
@@ -1231,6 +1240,7 @@ impl WindowManager {
                 let current_order: Vec<String> =
                     ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
                 if open_tabs_section.is_none()
+                    && recoverable_tabs_section.is_none()
                     && add_tabs.is_empty()
                     && remove_tabs.is_empty()
                     && order == current_order
@@ -1242,6 +1252,9 @@ impl WindowManager {
                 }
                 if let Some(o) = open_tabs_section {
                     ws.open_tabs_section = o;
+                }
+                if let Some(o) = recoverable_tabs_section {
+                    ws.recoverable_tabs_section = o;
                 }
                 // Add/remove/respawn tabs, skipping any that are currently
                 // popped out (Detached) — see `apply_tab_reconcile`.
@@ -1626,6 +1639,7 @@ mod tests {
                 height: 1000,
                 open_on_start: true,
                 open_tabs_section: false,
+                recoverable_tabs_section: false,
                 remember_tabs: false,
                 tabs: vec![curated],
                 roots: vec![root],
