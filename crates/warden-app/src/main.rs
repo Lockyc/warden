@@ -205,12 +205,11 @@ impl ManagerState {
 #[cfg(target_os = "macos")]
 struct WatcherState(#[allow(dead_code)] warden_config::Watcher);
 
-/// Build and install the app menu: shell-core's App, Tab, Config and Window submenus, with
+/// Build and install the app menu: shell-core's App, Edit, Tab, Config and Window submenus, with
 /// warden's own items as the Tab submenu's groups (Split; the session items; the agent and server
 /// items) and Reopen Last Closed (⌘⇧T) spliced into the Window submenu. `mode` picks the digit
-/// chords inside `build_tab_menu`. No Edit submenu: the menu gets first refusal on a terminal's
-/// key equivalents, and an Edit menu's ⌘C/⌘V have not been checked against libghostty's own copy
-/// and paste.
+/// chords inside `build_tab_menu`. Edit's Copy / Paste / Select All reach a focused terminal
+/// through its view's `copy:` / `paste:` / `selectAll:` (`surface/ghostty.rs`).
 ///
 /// `set_menu` replaces the app-global menu wholesale, so a hot-reload that flips the mode just
 /// rebuilds (see the watcher).
@@ -306,6 +305,7 @@ fn build_app_menu(
     let menu = MenuBuilder::new(app)
         .items(&[
             &spine.submenus[0], // App
+            &spine.edit,
             &tab_menu,
             &spine.submenus[1], // Config
             &spine.submenus[2], // Window
@@ -592,8 +592,16 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
     let label = routed.target.as_str();
     let target = app.get_webview_window(label);
     if routed.from_detached.is_some() {
-        if let Some(w) = &target {
-            let _ = w.set_focus();
+        match &target {
+            Some(w) => {
+                let _ = w.set_focus();
+            }
+            // The pop-out's origin was closed: bring it back. Its chrome mounts fresh, with nothing
+            // listening yet for this command, so the command ends there.
+            None => {
+                open_or_focus_window(app, label);
+                return;
+            }
         }
     }
     // A popped-out tab never holds its origin's highlight, so Next/Previous step from it.
@@ -1466,15 +1474,13 @@ fn set_hole_rect(
 #[cfg(target_os = "macos")]
 const DEFAULT_CONFIG: &str = include_str!("default-config.toml");
 
-/// Saves `tab_digit_keys` (the Tab menu's Cycle Tabs toggle), seeding the starter config first
-/// when there is no file. The watcher's reload then applies it.
+/// Flips `tab_digit_keys` in the file (the Tab menu's Cycle Tabs toggle), seeding the starter
+/// config first when there is none. The watcher's reload then applies it.
 #[cfg(target_os = "macos")]
-fn write_tab_digit_keys(
-    path: &std::path::Path,
-    mode: warden_config::TabDigitKeys,
-) -> Result<(), String> {
+fn toggle_tab_digit_keys(path: &std::path::Path) -> Result<(), String> {
     warden_config::write_default_config(path, DEFAULT_CONFIG).map_err(|e| e.to_string())?;
-    warden_config::set_key(path, "tab_digit_keys", mode.as_str().into())
+    warden_config::toggle_tab_digit_keys(path)
+        .map(|_| ())
         .map_err(|e| format!("config: {e}"))
 }
 
@@ -1750,13 +1756,16 @@ fn main() {
             // Tab ▸ Cycle Tabs: save the flip; the watcher's reload rebuilds the menu. muda already
             // flipped the tick, so a failed write rebuilds to undo it.
             if id == shell_core::menu::ids::TAB_DIGIT_CYCLE {
-                let next = {
-                    let st = app.state::<ManagerState>();
-                    let m = st.lock();
-                    m.last_good.tab_digit_keys.toggled()
-                };
-                if let Err(e) = write_tab_digit_keys(&cfg_path, next) {
-                    let _ = app.emit("warden:error", e);
+                if let Err(e) = toggle_tab_digit_keys(&cfg_path) {
+                    // Every sidebar, and the home surface when no window is open — the watcher's
+                    // failed-load path.
+                    let _ = app.emit("warden:error", e.clone());
+                    {
+                        let st = app.state::<ManagerState>();
+                        let mut m = st.lock();
+                        m.load_error = Some(e);
+                        m.sync_empty_surface(app);
+                    }
                     let _ = rebuild_menu(app);
                 }
                 return;
@@ -2192,12 +2201,12 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn writing_the_digit_mode_seeds_a_missing_config_first() {
+    fn toggling_the_digit_mode_seeds_a_missing_config_first() {
         use warden_config::TabDigitKeys;
         let dir = std::env::temp_dir().join(format!("warden-digit-{}", std::process::id()));
         let path = dir.join("config.toml");
         let _ = std::fs::remove_dir_all(&dir);
-        write_tab_digit_keys(&path, TabDigitKeys::Cycle).unwrap();
+        toggle_tab_digit_keys(&path).unwrap();
         let src = std::fs::read_to_string(&path).unwrap();
         // The starter's documentation survives; only the value changed.
         assert!(
@@ -2207,7 +2216,7 @@ mod tests {
         let shell = warden_config::login_shell();
         let loaded = warden_config::load_with(&path, &shell).unwrap();
         assert_eq!(loaded.config.tab_digit_keys, TabDigitKeys::Cycle);
-        write_tab_digit_keys(&path, TabDigitKeys::Jump).unwrap();
+        toggle_tab_digit_keys(&path).unwrap();
         let loaded = warden_config::load_with(&path, &shell).unwrap();
         assert_eq!(loaded.config.tab_digit_keys, TabDigitKeys::Jump);
         let _ = std::fs::remove_dir_all(&dir);

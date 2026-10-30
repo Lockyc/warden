@@ -505,6 +505,14 @@ extern "C" {
     // bool ghostty_surface_key(ghostty_surface_t, ghostty_input_key_s);
     pub fn ghostty_surface_key(surface: ghostty_surface_t, key: ghostty_input_key_s) -> bool;
 
+    // bool ghostty_surface_binding_action(ghostty_surface_t, const char*, uintptr_t);
+    // Runs a named keybinding action (`copy_to_clipboard`, …); `len` is the name's byte length.
+    pub fn ghostty_surface_binding_action(
+        surface: ghostty_surface_t,
+        action: *const c_char,
+        len: usize,
+    ) -> bool;
+
     // void ghostty_surface_set_focus(ghostty_surface_t, bool);
     pub fn ghostty_surface_set_focus(surface: ghostty_surface_t, focused: bool);
 
