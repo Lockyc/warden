@@ -78,6 +78,10 @@ pub struct RawConfig {
     // list. Cascades global -> window (no tab level: it's a whole-sidebar section,
     // and a sidebar belongs to a window). Optional; unset at both levels -> false.
     pub open_tabs_section: Option<bool>,
+    // Whether the sidebar pins a section of the unloaded tabs whose session is
+    // recoverable. Cascades global -> window like `open_tabs_section`. Optional;
+    // unset at both levels -> true.
+    pub recoverable_tabs_section: Option<bool>,
     // Whether each window respawns the tabs it had loaded, and reselects its active
     // tab, when it is next built (launch or reopen). Cascades global -> window.
     // Optional; unset at both levels -> false.
@@ -104,6 +108,8 @@ pub struct RawWindow {
     pub open_on_start: Option<bool>,
     // Overrides the global `open_tabs_section` for THIS window's sidebar.
     pub open_tabs_section: Option<bool>,
+    // Overrides the global `recoverable_tabs_section` for THIS window's sidebar.
+    pub recoverable_tabs_section: Option<bool>,
     // Overrides the global `remember_tabs` for THIS window.
     pub remember_tabs: Option<bool>,
     pub shell: Option<String>,

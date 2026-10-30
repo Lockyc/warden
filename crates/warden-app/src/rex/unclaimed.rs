@@ -244,6 +244,7 @@ mod tests {
             height: 1000,
             open_on_start: true,
             open_tabs_section: false,
+            recoverable_tabs_section: false,
             remember_tabs: false,
             tabs,
             roots: Vec::new(),

@@ -58,14 +58,15 @@ pub fn tab_to_plan(root_dirs: &HashMap<&str, &Path>, t: &Tab) -> TabPlan {
 /// Everything needed to build one window window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
-    pub label: String,           // sanitized, unique — the Tauri window label
-    pub title: String,           // window title, verbatim — banner + window title
-    pub colour: String,          // "#rrggbb" from Colour::hex()
-    pub width: f64,              // inner width in logical pixels
-    pub height: f64,             // inner height in logical pixels
-    pub open_on_start: bool,     // false = start closed-but-configured (home surface/menu opens it)
+    pub label: String,                  // sanitized, unique — the Tauri window label
+    pub title: String,                  // window title, verbatim — banner + window title
+    pub colour: String,                 // "#rrggbb" from Colour::hex()
+    pub width: f64,                     // inner width in logical pixels
+    pub height: f64,                    // inner height in logical pixels
+    pub open_on_start: bool, // false = start closed-but-configured (home surface/menu opens it)
     pub open_tabs_section: bool, // this window's sidebar pins an "Open" section (cascade collapsed)
-    pub remember_tabs: bool,     // restore this window's remembered loaded + active tabs at build
+    pub recoverable_tabs_section: bool, // ... and a "Recoverable" section (cascade collapsed)
+    pub remember_tabs: bool, // restore this window's remembered loaded + active tabs at build
     pub tabs: Vec<TabPlan>,
 }
 
@@ -146,6 +147,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         height: p.height as f64,
         open_on_start: p.open_on_start,
         open_tabs_section: p.open_tabs_section,
+        recoverable_tabs_section: p.recoverable_tabs_section,
         remember_tabs: p.remember_tabs,
         tabs,
     }
@@ -265,8 +267,10 @@ pub enum WindowOp {
     Update {
         label: String,
         colour: Option<String>, // new "#rrggbb" if changed
-        // The window's "Open" section flag flipped — chrome-only, no surface touched.
+        // The window's "Open" / "Recoverable" section flags flipped — chrome-only, no
+        // surface touched.
         open_tabs_section: Option<bool>,
+        recoverable_tabs_section: Option<bool>,
         add_tabs: Vec<TabPlan>,
         remove_tabs: Vec<String>, // tab ids (= Tab::key)
         order: Vec<String>,       // full new tab id order
@@ -368,6 +372,7 @@ pub fn reconcile_ops(
             label: label.clone(),
             colour: u.colour.map(|c| c.hex()),
             open_tabs_section: u.open_tabs_section,
+            recoverable_tabs_section: u.recoverable_tabs_section,
             add_tabs,
             remove_tabs: u.remove_tabs.clone(),
             order: u.tab_order.clone(),
@@ -398,6 +403,7 @@ mod tests {
             height: 600.0,
             open_on_start: true,
             open_tabs_section: false,
+            recoverable_tabs_section: false,
             remember_tabs: false,
             tabs: Vec::new(),
         }
@@ -603,6 +609,7 @@ colour = "#0f8a8a"
             height: 1000,
             open_on_start: true,
             open_tabs_section: false,
+            recoverable_tabs_section: false,
             remember_tabs: false,
             tabs: vec![Tab {
                 id: None,
@@ -709,6 +716,34 @@ colour = "{C}"
             WindowOp::Update { label, colour, .. } => {
                 assert_eq!(label, "work");
                 assert_eq!(colour.as_deref(), Some("#112233"));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recoverable_tabs_section_reaches_spec_and_update_op() {
+        let base = r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+{R}
+"##;
+        let old = cfg(&base.replace("{R}", ""));
+        assert!(window_specs(&old)[0].recoverable_tabs_section, "default on");
+        let new = cfg(&base.replace("{R}", "recoverable_tabs_section = false"));
+        assert!(!window_specs(&new)[0].recoverable_tabs_section);
+        let r = reconcile(&old, &new);
+        let ops = reconcile_ops(&r, &new, &name_label_map(&old), &taken(&old));
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            WindowOp::Update {
+                recoverable_tabs_section,
+                open_tabs_section,
+                ..
+            } => {
+                assert_eq!(*recoverable_tabs_section, Some(false));
+                assert_eq!(*open_tabs_section, None);
             }
             other => panic!("expected Update, got {other:?}"),
         }
@@ -922,6 +957,7 @@ colour = "#111111"
                 title: "dev".into(),
                 colour: None,
                 open_tabs_section: None,
+                recoverable_tabs_section: None,
                 add_tabs: vec![added],
                 remove_tabs: Vec::new(),
                 tab_order: vec!["/r/Dev/gh/lockyc/warden".into()],
@@ -938,6 +974,7 @@ colour = "#111111"
                 height: 1000,
                 open_on_start: true,
                 open_tabs_section: false,
+                recoverable_tabs_section: false,
                 remember_tabs: false,
                 tabs: Vec::new(),
                 roots: vec![Root {
@@ -1013,6 +1050,7 @@ colour = "#111111"
             height: 1000,
             open_on_start: true,
             open_tabs_section: false,
+            recoverable_tabs_section: false,
             remember_tabs: false,
             tabs,
             roots: vec![root.clone()],

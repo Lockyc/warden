@@ -258,6 +258,7 @@ pub fn resolve_with(
             default_shell,
             &globals,
             raw.open_tabs_section,
+            raw.recoverable_tabs_section,
             raw.remember_tabs,
             &mut warnings,
         )?);
@@ -295,6 +296,7 @@ fn resolve_window(
     default_shell: &str,
     globals: &Globals,
     global_open_tabs_section: Option<bool>,
+    global_recoverable_tabs_section: Option<bool>,
     global_remember_tabs: Option<bool>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
@@ -322,6 +324,10 @@ fn resolve_window(
         .open_tabs_section
         .or(global_open_tabs_section)
         .unwrap_or(false);
+    let recoverable_tabs_section = rp
+        .recoverable_tabs_section
+        .or(global_recoverable_tabs_section)
+        .unwrap_or(true);
     let remember_tabs = rp.remember_tabs.or(global_remember_tabs).unwrap_or(false);
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
@@ -409,6 +415,7 @@ fn resolve_window(
         height,
         open_on_start,
         open_tabs_section,
+        recoverable_tabs_section,
         remember_tabs,
         tabs,
         roots,
@@ -857,6 +864,41 @@ open_tabs_section = false
         .unwrap();
         assert!(cfg.windows[0].open_tabs_section, "inherits the global");
         assert!(!cfg.windows[1].open_tabs_section, "window false wins");
+    }
+
+    #[test]
+    fn recoverable_tabs_section_defaults_to_on() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.windows[0].recoverable_tabs_section);
+    }
+
+    #[test]
+    fn recoverable_tabs_section_cascades_global_to_window() {
+        let (cfg, _) = resolve_str(
+            r##"
+recoverable_tabs_section = false
+[[window]]
+title = "inherits"
+colour = "#0f8a8a"
+[[window]]
+title = "opts in"
+colour = "#0f8a8a"
+recoverable_tabs_section = true
+"##,
+        )
+        .unwrap();
+        assert!(
+            !cfg.windows[0].recoverable_tabs_section,
+            "inherits the global"
+        );
+        assert!(cfg.windows[1].recoverable_tabs_section, "window true wins");
     }
 
     #[test]
