@@ -80,7 +80,7 @@ pub struct RawConfig {
     // and a sidebar belongs to a window). Optional; unset at both levels -> false.
     pub open_tabs_section: Option<bool>,
     // Whether the sidebar pins a section of the unloaded tabs whose session is
-    // recoverable. Cascades global -> window like `open_tabs_section`. Optional;
+    // running or recoverable. Cascades global -> window like `open_tabs_section`. Optional;
     // unset at both levels -> true.
     pub recoverable_tabs_section: Option<bool>,
     // Whether each window respawns the tabs it had loaded, and reselects its active
