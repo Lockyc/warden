@@ -353,6 +353,26 @@ impl RexHub {
         }
     }
 
+    /// Relabel `window_id` in `project`'s session (the one its pane is mapped to), as a summary
+    /// naming its tab does. Nothing to do once the pane has no session.
+    pub fn label_agent_window(
+        &self,
+        project: &str,
+        window_id: &str,
+        label: &str,
+    ) -> Result<(), RexError> {
+        let mapped = self
+            .inner
+            .lock()
+            .store
+            .get(project)
+            .map(|r| (r.server.clone(), r.session_id.clone()));
+        match mapped {
+            Some((server, sid)) => self.set_window_label(&server, &sid, window_id, label),
+            None => Ok(()),
+        }
+    }
+
     /// `project`'s session on `server`: the one the hub already follows, read without a call,
     /// else found ([`RexHub::find_session_until`]). `None` once it is gone.
     fn current_session(
@@ -2207,6 +2227,7 @@ mod tests {
         assert_eq!(set.len(), 1);
         assert_eq!(set[0].payload["window_id"], "window:1");
         assert_eq!(state_of(&s, "a").unwrap().name, "review");
+        assert!(state_of(&s, "a").unwrap().user_named);
 
         hub.agent_op(
             &s,

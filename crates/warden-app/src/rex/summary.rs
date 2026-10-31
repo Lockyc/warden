@@ -363,6 +363,29 @@ fn consider_all(app: &tauri::AppHandle, records: Vec<AgentRecord>) {
     }
 }
 
+/// The name `record` takes from its conversation's `new_subject`, or `None` to leave it alone.
+/// A user-named record never changes; a missing or blank subject, or one that is already the
+/// name, changes nothing. A fork (`forked_from`) keeps its `<parent> ⑂ <n>` name for as long as
+/// its subject is its `parent`'s current one — it is still the parent's conversation — and is
+/// named from the subject once that differs, or the parent is gone.
+fn subject_name(
+    record: &AgentRecord,
+    new_subject: Option<&str>,
+    parent: Option<&AgentRecord>,
+) -> Option<String> {
+    let subject = new_subject.map(str::trim).filter(|s| !s.is_empty())?;
+    if record.user_named || record.name == subject {
+        return None;
+    }
+    if record.forked_from.is_some() {
+        let inherited = parent.and_then(|p| p.subject.as_deref()).map(str::trim);
+        if inherited == Some(subject) {
+            return None;
+        }
+    }
+    Some(subject.to_owned())
+}
+
 /// The worker's answer for record `record_id` (main thread): fold it in ([`SummaryDriver::accept`])
 /// and, when it changed the record's summary, store it ([`AgentStore::upsert`]) and re-send the
 /// strip if the record is its project's selected one. Then consider the record again, for a
@@ -384,7 +407,7 @@ fn land(app: &tauri::AppHandle, record_id: &str, result: Option<RefreshResult>) 
         return;
     };
     if let Some((rows, subject)) = summary {
-        let shown = {
+        let (shown, renamed) = {
             let mut s = super::lock(&store);
             match s.record(record_id) {
                 // A report may have moved it to a new conversation since it was read.
@@ -393,13 +416,35 @@ fn land(app: &tauri::AppHandle, record_id: &str, result: Option<RefreshResult>) 
                 {
                     r.summary = rows;
                     r.subject = subject;
+                    let parent = r.forked_from.as_deref().and_then(|p| s.record(p));
+                    let renamed = subject_name(&r, r.subject.as_deref(), parent.as_ref())
+                        .map(|name| (r.project.clone(), r.window_id.clone(), name));
+                    if let Some((_, _, name)) = &renamed {
+                        r.name.clone_from(name);
+                    }
                     let shown = r.selected.then(|| r.project.clone());
                     s.upsert(r);
-                    shown
+                    (shown, renamed)
                 }
-                _ => None,
+                _ => (None, None),
             }
         };
+        if let Some((project, window, name)) = renamed {
+            super::lifecycle::emit_agents(app, &project);
+            if let (Some(hub), Some(window)) = (app.try_state::<super::RexHub>(), window) {
+                let hub = hub.inner().clone();
+                let spawned = std::thread::Builder::new()
+                    .name("warden-summary-label".into())
+                    .spawn(move || {
+                        if let Err(e) = hub.label_agent_window(&project, &window, &name) {
+                            eprintln!("warden: agent tab label not updated: {e:?}");
+                        }
+                    });
+                if let Err(e) = spawned {
+                    eprintln!("warden: agent tab label not updated: {e}");
+                }
+            }
+        }
         if let Some(project) = shown {
             let st = app.state::<crate::ManagerState>();
             let m = st.lock();
@@ -714,5 +759,66 @@ mod tests {
             .rows
             .expect("the model answered");
         assert_eq!(rows.now.as_deref(), Some("editing"));
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+    use crate::rex::agent_open::tests::record;
+    use crate::rex::agents::RecordState;
+
+    fn rec(id: &str, name: &str) -> AgentRecord {
+        let mut r = record(
+            id,
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume x"),
+        );
+        r.name = name.into();
+        r
+    }
+
+    #[test]
+    fn subject_names_unnamed_record() {
+        let r = rec("a", "Agent 1");
+        assert_eq!(
+            subject_name(&r, Some(" auth flow "), None).as_deref(),
+            Some("auth flow")
+        );
+        // Already that name, or no subject: nothing to do.
+        assert_eq!(
+            subject_name(&rec("a", "auth flow"), Some("auth flow"), None),
+            None
+        );
+        assert_eq!(subject_name(&r, None, None), None);
+        assert_eq!(subject_name(&r, Some("  "), None), None);
+    }
+
+    #[test]
+    fn user_named_record_keeps_name() {
+        let mut r = rec("a", "mine");
+        r.user_named = true;
+        assert_eq!(subject_name(&r, Some("auth flow"), None), None);
+    }
+
+    #[test]
+    fn fork_name_not_overwritten_until_its_own_subject() {
+        let mut parent = rec("p", "Parent");
+        parent.subject = Some("auth flow".into());
+        let mut fork = rec("f", "Parent ⑂ 1");
+        fork.forked_from = Some("p".into());
+        // Same subject as the parent: the fork keeps its name.
+        assert_eq!(subject_name(&fork, Some("auth flow"), Some(&parent)), None);
+        // Its own subject: named from it.
+        assert_eq!(
+            subject_name(&fork, Some("login bug"), Some(&parent)).as_deref(),
+            Some("login bug")
+        );
+        // Parent gone: treated as differing.
+        assert_eq!(
+            subject_name(&fork, Some("auth flow"), None).as_deref(),
+            Some("auth flow")
+        );
     }
 }
