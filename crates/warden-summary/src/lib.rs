@@ -9,7 +9,7 @@ mod refresh;
 mod rows;
 
 pub use claude::{Claude, DigestCursor};
-pub use gate::strip_unbacked_done;
+pub use gate::{has_mutation, strip_unbacked_done};
 pub use model::{HttpModel, Model};
 pub use prompt::{label, stand};
 pub use refresh::{

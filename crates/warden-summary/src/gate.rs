@@ -5,7 +5,7 @@
 /// `wrote ` (file mutations) or `todo-done:` (the agent's own report), at the digest start or
 /// after the ` / ` joiner. `ran:` is deliberately not evidence: read-only investigation emits
 /// it, and planning sessions are where the model invents `done:`.
-fn has_mutation(digest: &str) -> bool {
+pub fn has_mutation(digest: &str) -> bool {
     const MARKERS: [&str; 3] = ["edited ", "wrote ", "todo-done:"];
     MARKERS
         .iter()

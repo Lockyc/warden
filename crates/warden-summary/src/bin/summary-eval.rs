@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use warden_summary::{
-    apply, refresh, Claude, CtxMode, HttpModel, Model, SummaryState, Transcript, DIGEST_BUDGET,
-    SUBJECT_MIN_SEGMENTS,
+    apply, has_mutation, refresh, Claude, CtxMode, HttpModel, Model, SummaryState, Transcript,
+    DIGEST_BUDGET, SUBJECT_MIN_SEGMENTS,
 };
 
 const CUTS: usize = 5;
@@ -31,14 +31,6 @@ fn cell(s: &str) -> String {
     } else {
         s
     }
-}
-
-/// A mutation segment in a digest: `edited `, `wrote `, or `todo-done:` at a segment start.
-fn has_mutation(digest: &str) -> bool {
-    digest.split(" / ").any(|s| {
-        let s = s.trim_start();
-        s.starts_with("edited ") || s.starts_with("wrote ") || s.starts_with("todo-done:")
-    })
 }
 
 fn has_done(stand: &str) -> bool {
