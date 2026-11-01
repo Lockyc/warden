@@ -61,10 +61,11 @@ const MENU_TAB_SPLIT: &str = "warden:split-pane";
 const MENU_TAB_SUSPEND: &str = "warden:suspend-tab";
 const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
-/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) / Fork Agent Tab (⌥⌘F) — act on the agent
-/// tab list of the focused window's active tab, enabled only while there is one
-/// ([`sync_agent_menu`]). The id doubles as the event name, sent with the tab's id. ⌘⇧T reaches the same list as `warden:agent-reopen`
-/// when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
+/// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) / Fork Agent Tab (⌥⌘F) — act on the
+/// agent tab list of the focused window's active tab, enabled only while there is one
+/// ([`sync_agent_menu`]). The id doubles as the event name, sent with the tab's id. ⌘⇧T
+/// reaches the same list as `warden:agent-reopen` when it has a closed agent tab (see
+/// `MENU_WINDOW_REOPEN_LAST`'s handler).
 const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const MENU_AGENT_FORK: &str = "warden:agent-fork";
