@@ -111,9 +111,11 @@ impl SummaryDriver {
 
     /// Record `record`'s block reported `status` (or a tick came round), at `now`. Queues a
     /// refresh when summaries are on and the record is live, on the local server (`local`), on a
-    /// Claude Code conversation, has none out already, and is due: the throttle has passed, or it
-    /// has just entered `Done`, which refreshes once past the throttle. The attempt is stamped
-    /// here, before the call, so a failing model is throttled too. True when one was queued.
+    /// Claude Code conversation, has none out already, and is due: it is `Working` and the
+    /// throttle has passed, or it has just entered `Done`, which refreshes once past the
+    /// throttle. An idle or blocked agent's transcript isn't moving, so it waits. The attempt is
+    /// stamped here, before the call, so a failing model is throttled too. True when one was
+    /// queued.
     pub fn consider(
         &mut self,
         record: &AgentRecord,
@@ -140,7 +142,9 @@ impl SummaryDriver {
         if record.state != RecordState::Live || !local || entry.in_flight {
             return false;
         }
-        if !entry.done_owed && !due(&entry.state, now, THROTTLE) {
+        let working = status == Some(AgentState::Working);
+        let due_working = working && due(&entry.state, now, THROTTLE);
+        if !(entry.done_owed || due_working) {
             return false;
         }
         entry.state.last_attempt = Some(now);
@@ -376,7 +380,8 @@ fn consider_all(app: &tauri::AppHandle, records: Vec<AgentRecord>) {
     ) else {
         return;
     };
-    if records.is_empty() {
+    // Off, `consider` refuses everything: skip the config walk every OSC 7501 record would cost.
+    if records.is_empty() || !super::lock(&driver).is_on() {
         return;
     }
     let local: std::collections::HashSet<String> = {
@@ -620,6 +625,18 @@ mod tests {
             );
         }
         assert!(step(&mut d, &rx, &r, AgentState::Working, t0 + THROTTLE));
+    }
+
+    #[test]
+    fn only_working_refreshes_on_the_throttle() {
+        let (mut d, rx) = driver();
+        let r = agent("claude --resume abc");
+        let t0 = Instant::now();
+        for s in [AgentState::Idle, AgentState::Blocked] {
+            assert!(!step(&mut d, &rx, &r, s, t0), "{s:?}");
+        }
+        assert!(!d.consider(&r, None, true, t0), "no status yet");
+        assert!(step(&mut d, &rx, &r, AgentState::Working, t0));
     }
 
     #[test]
