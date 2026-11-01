@@ -179,6 +179,9 @@ pub(crate) fn open_until(
             Ws::Unix(Box::new(ws))
         }
         Endpoint::Https { host, port } => {
+            // Built first: its first call loads the system trust roots, which takes long enough
+            // to overrun the deadline if it ran after the handshake's timeout was measured.
+            let connector = Connector::Rustls(tls_config()?);
             let stream = connect_tcp(host, *port, deadline)?;
             let limit = step(deadline)?;
             stream
@@ -186,7 +189,6 @@ pub(crate) fn open_until(
                 .and_then(|_| stream.set_write_timeout(Some(limit)))
                 .map_err(io_err)?;
             let req = request(&format!("wss://{host}:{port}{path}"), subprotocol)?;
-            let connector = Connector::Rustls(tls_config()?);
             let (ws, _) = tungstenite::client_tls_with_config(req, stream, None, Some(connector))
                 .map_err(handshake_err)?;
             let ws = Ws::Tls(Box::new(ws));
