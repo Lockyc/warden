@@ -12,8 +12,8 @@ warden surfaces a terminal's attention signals (bell, OSC 9 / OSC 777 desktop no
 tab that raised them: an **amber badge** on the tab row, and — for a desktop notification on a tab
 that isn't the visible one — a **native macOS banner**. The path is `libghostty action_cb` → a
 seam-neutral `SurfaceEvent` → `notify.rs::handle` → `raise` → badge (`warden:notify`) +
-`show_banner` (`UNUserNotificationCenter`); a hidden agent tab needing you enters at `raise` too
-(`docs/rex.md`). See the module docs in `crates/warden-app/src/notify.rs`.
+shell-core's `banner::fire` (`UNUserNotificationCenter`); a hidden agent tab needing you enters at
+`raise` too (`docs/rex.md`). See the module docs in `crates/warden-app/src/notify.rs`.
 
 ## Footgun: a missing banner is almost never a warden bug
 
@@ -22,7 +22,7 @@ warden side of this path was verified end-to-end on a notarized `warden.app` (ma
 
 - the OSC escape decodes to a `Notification` (not a bell — bells are badge-only **by design**),
 - the originating tab is correctly identified as **not visible**,
-- `show_banner` posts the request and **usernoted accepts it** (completion error is nil),
+- `banner::fire` posts the request and **usernoted accepts it** (completion error is nil),
 - the delegate's `willPresentNotification` **fires** and returns `.banner | .sound` (the value is
   correct — `Banner` is `1<<4`), which is what un-suppresses a banner while warden is frontmost.
 
@@ -106,10 +106,10 @@ production notification path is byte-for-byte unchanged when it's off (no comple
 attached). When on, warden appends a trace to **`$TMPDIR/warden-notify-dbg.log`** (the per-user temp
 dir, e.g. `/var/folders/…/T/` — not world-shared `/tmp`, so another local user can't read the traced
 notification text; see `notify_debug_log` in `notify.rs`): the signal type, the
-target tab and its visible/hidden state, whether `show_banner` posted, whether usernoted accepted,
-and whether `willPresent` fired. A reproduction that shows all of those succeeding while no banner
-appears on screen is the signature of the OS-side suppression above — and the proof to *not* edit
-`notify.rs`.
+target tab and its visible/hidden state, whether `banner::fire` posted, whether usernoted accepted,
+and whether `willPresent` fired (shell-core's steps reach the log through `banner::set_trace`). A
+reproduction that shows all of those succeeding while no banner appears on screen is the signature
+of the OS-side suppression above — and the proof to *not* edit `notify.rs` or shell-core's `banner`.
 
 The temp dir is deliberate: a fresh log per boot matches the reboot-and-retry workflow. Turn the flag
 off (or remove it) once the OS-side issue is resolved.

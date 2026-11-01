@@ -8,48 +8,15 @@
 //! looking at it, there's nothing to notify. This is what replaces agentmux's direct `osascript`
 //! call — the signal now flows through the terminal and lands on the right tab.
 //!
-//! The banner is also **clickable**: each one stamps its originating `(window label, tab id)` into
-//! the request's `userInfo`, and the delegate's `did_receive` reads it back on a click to raise that
-//! window and select the tab (`focus_window_tab`) — so a notification surfaces the terminal that
-//! raised it, even from the background.
-//!
-//! The banner is posted via the native **UserNotifications** framework
-//! (`UNUserNotificationCenter`). The earlier `tauri-plugin-notification` backend went through
-//! `notify-rust` → `mac-notification-sys`, which posts via the deprecated `NSUserNotification`
-//! API — a silent no-op on macOS 26 (the call succeeds, nothing is delivered, the app never even
-//! registers in Notification Center). `UNUserNotificationCenter` is the modern, supported path and
-//! posts under warden's own bundle identity. Two requirements it imposes, both handled in
-//! `setup_banners`: the app must request authorization once, and — because the system suppresses
-//! banners while the posting app is frontmost — a delegate must opt in to presenting them anyway
-//! (warden fires banners even when it is the focused app, as long as the *target tab* is hidden).
+//! The banner is shell-core's `banner`, stamped with its originating `(window label, tab id)` and,
+//! for an agent tab, the agent as its `context`; a click surfaces the terminal that raised it
+//! (`focus_window_tab`), even from the background.
 
 use crate::surface::{SurfaceEvent, SurfaceSignal};
 use crate::ManagerState;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::OnceLock;
+use shell_core::banner::{self, Banner, Click};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
-
-use block2::RcBlock;
-use objc2::rc::Retained;
-use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
-use objc2_foundation::{NSDictionary, NSError, NSString};
-use objc2_user_notifications::{
-    UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
-    UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-    UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
-    UNUserNotificationCenterDelegate,
-};
-
-/// True once authorization has been requested and a delegate installed — i.e. native banners are
-/// usable. Stays false in dev (`cargo run`/`just run`): there is no app bundle, and
-/// `UNUserNotificationCenter::currentNotificationCenter` throws on a nil bundle identifier. The
-/// badge channel is independent and works regardless.
-static BANNER_READY: AtomicBool = AtomicBool::new(false);
-
-/// The app handle, captured at `init`. The notification-click delegate (`did_receive`) runs on the
-/// main thread with no context of its own, so it reaches the manager + chrome through this.
-static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
 /// Diagnostic toggle (config `notify_debug`, default false; read once at launch). When on, the
 /// notification path is traced to a log file. Exists to investigate the macOS-26 banner-suppression
@@ -66,7 +33,8 @@ fn notify_debug_log() -> std::path::PathBuf {
 }
 
 /// Append a line to the trace log — a no-op unless `notify_debug` is enabled. Best-effort: a failed
-/// open is silently ignored (diagnostics must never affect the notification path).
+/// open is silently ignored (diagnostics must never affect the notification path). Also the sink
+/// for shell-core's own banner steps (`banner::set_trace`).
 fn dbglog(msg: &str) {
     if !NOTIFY_DEBUG.load(Ordering::Relaxed) {
         return;
@@ -87,131 +55,46 @@ fn dbglog(msg: &str) {
     }
 }
 
-/// Monotonic suffix for notification request identifiers, so distinct alerts don't coalesce
-/// (a reused identifier *replaces* the pending request rather than stacking a new banner).
-static BANNER_SEQ: AtomicU64 = AtomicU64::new(0);
-
-declare_class!(
-    /// `UNUserNotificationCenterDelegate` whose sole job is to present banners even while warden
-    /// is the frontmost app. Without it, the system silently drops the banner (showing it only in
-    /// the Notification Center list) whenever the posting app is foreground — which is exactly the
-    /// hidden-tab-in-the-focused-window case warden notifies on.
-    struct NotificationDelegate;
-
-    unsafe impl ClassType for NotificationDelegate {
-        type Super = NSObject;
-        type Mutability = mutability::InteriorMutable;
-        const NAME: &'static str = "WardenNotificationDelegate";
-    }
-
-    impl DeclaredClass for NotificationDelegate {
-        type Ivars = ();
-    }
-
-    unsafe impl NotificationDelegate {}
-
-    unsafe impl NSObjectProtocol for NotificationDelegate {}
-
-    unsafe impl UNUserNotificationCenterDelegate for NotificationDelegate {
-        #[method(userNotificationCenter:willPresentNotification:withCompletionHandler:)]
-        unsafe fn will_present(
-            &self,
-            _center: &UNUserNotificationCenter,
-            _notification: &UNNotification,
-            completion_handler: &block2::Block<dyn Fn(UNNotificationPresentationOptions)>,
-        ) {
-            dbglog("willPresent fired -> returning .banner | .sound (warden's side is done)");
-            let opts = UNNotificationPresentationOptions::UNNotificationPresentationOptionBanner
-                | UNNotificationPresentationOptions::UNNotificationPresentationOptionSound;
-            completion_handler.call((opts,));
-        }
-
-        // The user clicked (or dismissed) a banner. On a click — the *default* action — surface the
-        // tab that raised it: read the (window label, tab id) we stamped into `userInfo`, raise that
-        // window, and tell its chrome to select the tab. Delivered on the main thread, so touching
-        // Tauri/AppKit here is safe. We always call the completion handler (the system requires it).
-        #[method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:)]
-        unsafe fn did_receive(
-            &self,
-            _center: &UNUserNotificationCenter,
-            response: &UNNotificationResponse,
-            completion_handler: &block2::Block<dyn Fn()>,
-        ) {
-            // Ignore dismiss / custom actions — only a tap on the banner body surfaces the tab.
-            if &*response.actionIdentifier() == UNNotificationDefaultActionIdentifier {
-                let content = response.notification().request().content();
-                let user_info = content.userInfo();
-                if let Some(label) = dict_str(&user_info, "label") {
-                    focus_window_tab(
-                        label,
-                        dict_str(&user_info, "id"),
-                        dict_str(&user_info, "agent"),
-                    );
-                }
-            }
-            completion_handler.call(());
-        }
-    }
-);
-
-/// Read a string value out of a notification's `userInfo`. The dictionary is untyped
-/// (`NSDictionary<AnyObject, AnyObject>`); we stamped only `NSString → NSString` pairs into it
-/// (`show_banner`), so casting to that concrete type and looking the key up is sound.
-unsafe fn dict_str(user_info: &NSDictionary, key: &str) -> Option<String> {
-    let typed: &NSDictionary<NSString, NSString> =
-        &*(user_info as *const NSDictionary as *const NSDictionary<NSString, NSString>);
-    typed
-        .get_retained(&NSString::from_str(key))
-        .map(|s| s.to_string())
-}
-
-/// Raise the window owning a notification and ask its chrome to select the tab. Best-effort: an
-/// unknown label (window since closed) raises nothing; a stale/missing tab id leaves the active tab
-/// alone, so the click still lands you in the right window. A tab popped out of `label` is shown
-/// by its detached window, so that window is the one raised, and the origin's selection is left
-/// alone (selecting a popped-out row only raises that same window). `set_focus` brings the window forward
-/// and activates warden, so this surfaces the terminal even from the background. `emit_to` leaks to
-/// sibling webviews (see CLAUDE.md), so the payload carries the target `label` and the chrome drops
-/// events meant for another window — same guard as every other per-window event. A banner naming
-/// an `agent` tab selects it first, as the user's own pick, so the tab opens on it.
-fn focus_window_tab(label: String, id: Option<String>, agent: Option<String>) {
-    let Some(app) = APP_HANDLE.get() else {
-        return;
-    };
-    let popped = id.as_deref().and_then(|id| {
-        app.state::<ManagerState>()
-            .lock()
-            .detached_label_for(&label, id)
-    });
+/// A clicked banner: raise the window owning it and ask its chrome to select the tab. Best-effort:
+/// an unknown label (window since closed) raises nothing; a stale/missing tab id leaves the active
+/// tab alone, so the click still lands you in the right window. A tab popped out of `label` is
+/// shown by its detached window, so that window is the one raised, and the origin's selection is
+/// left alone (selecting a popped-out row only raises that same window). `emit_to` leaks to sibling
+/// webviews (see CLAUDE.md), so the payload carries the target `label` and the chrome drops events
+/// meant for another window — same guard as every other per-window event. A banner naming an agent
+/// tab (its `context`) selects it first, as the user's own pick, so the tab opens on it.
+fn focus_window_tab(app: &AppHandle, click: &Click) {
+    let (label, id) = (click.window.as_str(), click.tab.as_str());
+    let popped = app
+        .state::<ManagerState>()
+        .lock()
+        .detached_label_for(label, id);
     if let Some(dlabel) = popped {
-        if let Some(win) = app.get_window(&dlabel) {
-            let _ = win.unminimize();
-            let _ = win.set_focus();
-        }
+        banner::raise(app, &dlabel);
         return;
     }
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.unminimize();
-        let _ = win.set_focus();
-    }
-    if let (Some(id), Some(agent)) = (id.as_deref(), agent.as_deref()) {
-        if let Err(e) = crate::rex::lifecycle::select(app, &label, id, agent) {
+    banner::raise(app, label);
+    if let Some(agent) = click.context.as_deref() {
+        if let Err(e) = crate::rex::lifecycle::select(app, label, id, agent) {
             eprintln!("warden: {label}: {id}: {e}");
         }
     }
     let _ = app.emit_to(
-        label.as_str(),
+        label,
         "warden:focus-tab",
         serde_json::json!({ "label": label, "id": id }),
     );
 }
 
 /// Install the surface-signal handler and prime native banners. Called once at setup (on the main
-/// thread); captures the `AppHandle` the callback needs to reach the manager + emit chrome events.
-/// `debug` is the config `notify_debug` flag, read once here (a hot-reload change needs a restart).
+/// thread). `debug` is the config `notify_debug` flag, read once here (a hot-reload change needs a
+/// restart).
 pub fn init(app: AppHandle, debug: bool) {
     NOTIFY_DEBUG.store(debug, Ordering::Relaxed);
-    let _ = APP_HANDLE.set(app.clone());
+    if debug {
+        banner::set_trace(dbglog);
+    }
+    banner::init(&app, focus_window_tab);
     // The sink is the single entry point for every surface signal, so it fans out by kind: a dead
     // child is a *tab-state* change (unload to cold), not an attention signal, so it goes to the
     // manager rather than through the badge/banner path below.
@@ -236,42 +119,9 @@ pub fn init(app: AppHandle, debug: bool) {
         }
         _ => handle(&app, event),
     });
-    setup_banners();
     if debug {
         dbglog("--- notify_debug enabled; tracing notification path ---");
     }
-}
-
-/// Request notification authorization once and install the presentation delegate. No-op in dev
-/// (no bundle → `currentNotificationCenter` would throw); native banners are only expected from the
-/// packaged `warden.app`. Runs on the main thread (Tauri's setup hook).
-fn setup_banners() {
-    if tauri::is_dev() {
-        return;
-    }
-    let center = unsafe { UNUserNotificationCenter::currentNotificationCenter() };
-
-    // The center holds its delegate weakly, so the instance must outlive setup — leak it as an
-    // app-lifetime singleton (it carries no state and is never torn down before exit).
-    let delegate: Retained<NotificationDelegate> =
-        unsafe { msg_send_id![NotificationDelegate::alloc(), init] };
-    unsafe { center.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
-    std::mem::forget(delegate);
-
-    let opts = UNAuthorizationOptions::UNAuthorizationOptionAlert
-        | UNAuthorizationOptions::UNAuthorizationOptionSound;
-    // Async; the system shows its one-time prompt on first launch. Heap block (RcBlock) because it
-    // escapes the call.
-    let handler = RcBlock::new(|granted: Bool, _err: *mut NSError| {
-        if !granted.as_bool() {
-            eprintln!(
-                "warden: notification authorization not granted — banners will be suppressed"
-            );
-        }
-    });
-    unsafe { center.requestAuthorizationWithOptions_completionHandler(opts, &handler) };
-
-    BANNER_READY.store(true, Ordering::Release);
 }
 
 /// Runs on the main thread (the sink is invoked from `action_cb`, which only ever fires from a
@@ -346,10 +196,13 @@ pub fn raise(
     );
 
     if let Some((title, body)) = banner {
-        dbglog(&format!(
-            "raise: posting banner for {label}/{tab} title={title:?}"
-        ));
-        show_banner(&title, &body, label, tab, agent);
+        banner::fire(&Banner {
+            title: &title,
+            body: &body,
+            window: label,
+            tab,
+            context: agent,
+        });
     }
 }
 
@@ -370,54 +223,4 @@ fn locate(app: &AppHandle, surface_id: usize) -> Option<(String, String, bool)> 
         .and_then(|w| w.is_focused().ok())
         .unwrap_or(false);
     Some((ds.origin_label.clone(), ds.tab_id.clone(), visible))
-}
-
-/// Post a native banner via `UNUserNotificationCenter`. No-op until `setup_banners` has run
-/// (dev, or before setup). Main thread only. `label`/`tab` (and `agent`, when set) are stamped
-/// into the request's `userInfo` so a click can route back to the originating window + tab
-/// (`did_receive`).
-fn show_banner(title: &str, body: &str, label: &str, tab: &str, agent: Option<&str>) {
-    if !BANNER_READY.load(Ordering::Acquire) {
-        dbglog("show_banner: BANNER_READY=false -> no-op (dev build, or before setup)");
-        return;
-    }
-    let center = unsafe { UNUserNotificationCenter::currentNotificationCenter() };
-    let content: Retained<UNMutableNotificationContent> =
-        unsafe { msg_send_id![UNMutableNotificationContent::alloc(), init] };
-    unsafe {
-        content.setTitle(&NSString::from_str(title));
-        content.setBody(&NSString::from_str(body));
-        let mut pairs = vec![("label", label), ("id", tab)];
-        pairs.extend(agent.map(|a| ("agent", a)));
-        let keys: Vec<Retained<NSString>> =
-            pairs.iter().map(|(k, _)| NSString::from_str(k)).collect();
-        let vals = pairs.iter().map(|(_, v)| NSString::from_str(v)).collect();
-        let key_refs: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
-        let user_info: Retained<NSDictionary<NSString, NSString>> =
-            NSDictionary::from_vec(&key_refs, vals);
-        // setUserInfo wants the untyped NSDictionary<AnyObject, AnyObject>; our typed dict has the
-        // same layout (phantom key/value types), so the cast is sound.
-        let user_info: Retained<NSDictionary> = Retained::cast(user_info);
-        content.setUserInfo(&user_info);
-    }
-    let id = BANNER_SEQ.fetch_add(1, Ordering::Relaxed);
-    let ident = NSString::from_str(&format!("warden-{id}"));
-    // nil trigger → deliver immediately; nil completion handler → fire-and-forget.
-    let request = unsafe {
-        UNNotificationRequest::requestWithIdentifier_content_trigger(&ident, &content, None)
-    };
-    // Production path is fire-and-forget (nil completion handler). Under notify_debug, attach a
-    // handler that records whether usernoted *accepted* the request — the boundary that tells us
-    // warden handed the OS a valid banner (so a missing banner is downstream of warden).
-    if NOTIFY_DEBUG.load(Ordering::Relaxed) {
-        let cb = RcBlock::new(|err: *mut NSError| {
-            dbglog(&format!(
-                "show_banner: addNotificationRequest accepted by usernoted (err_null={})",
-                err.is_null()
-            ));
-        });
-        unsafe { center.addNotificationRequest_withCompletionHandler(&request, Some(&cb)) };
-    } else {
-        unsafe { center.addNotificationRequest_withCompletionHandler(&request, None) };
-    }
 }
