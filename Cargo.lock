@@ -394,7 +394,7 @@ dependencies = [
 [[package]]
 name = "chrome-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/chrome-core?rev=cac5ab26140d818cf57160b2a4b0f2678d84ec4c#cac5ab26140d818cf57160b2a4b0f2678d84ec4c"
+source = "git+https://github.com/Lockyc/chrome-core?rev=af1bb9feeec0468c81f418eaaa3e4b31606d511d#af1bb9feeec0468c81f418eaaa3e4b31606d511d"
 
 [[package]]
 name = "chrono"
@@ -421,13 +421,14 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=632b918b62e4677f5254e881a650f7cc74230030#632b918b62e4677f5254e881a650f7cc74230030"
+source = "git+https://github.com/Lockyc/config-core?rev=3a92590c2df61f5a867a4cecc6180c66c51b9039#3a92590c2df61f5a867a4cecc6180c66c51b9039"
 dependencies = [
  "dirs 6.0.0",
  "serde",
  "taplo",
  "tempfile",
  "thiserror 2.0.18",
+ "toml 0.8.23",
  "toml_edit 0.25.12+spec-1.1.0",
 ]
 
@@ -2878,6 +2879,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl"
+version = "2.1.245"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46cce9bc841c0eeb395275a775d11e3cc91b904e6ab370a9a42369e111b3038e"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
 name = "quick-xml"
 version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3519,19 +3535,22 @@ dependencies = [
 
 [[package]]
 name = "shell-core"
-version = "0.3.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=01989b90ea8380c980c939c9e333f28229611bde#01989b90ea8380c980c939c9e333f28229611bde"
+version = "0.4.0"
+source = "git+https://github.com/Lockyc/shell-core?rev=aee05b111b568dbbd06c41b5e7b6b22d12d558e9#aee05b111b568dbbd06c41b5e7b6b22d12d558e9"
 dependencies = [
  "block2 0.6.2",
+ "getrandom 0.2.17",
  "notify",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "psl",
  "serde",
  "serde_json",
  "tauri",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "url",
 ]
 
 [[package]]

@@ -789,13 +789,34 @@ declare_class!(
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
         }
 
+        // The Edit menu's Copy / Paste / Select All. The menu has first refusal on ⌘C / ⌘V / ⌘A
+        // (performKeyEquivalent: below), so its standard actions reach the focused terminal here
+        // and run libghostty's own bindings, as Ghostty's macOS app does. Undo, Redo and Cut have
+        // no responder here, so AppKit disables them while a terminal is focused.
+        #[method(copy:)]
+        fn copy(&self, _sender: Option<&AnyObject>) {
+            binding_action(self, "copy_to_clipboard");
+        }
+
+        #[method(paste:)]
+        fn paste(&self, _sender: Option<&AnyObject>) {
+            self.user_input();
+            binding_action(self, "paste_from_clipboard");
+        }
+
+        #[method(selectAll:)]
+        fn select_all(&self, _sender: Option<&AnyObject>) {
+            binding_action(self, "select_all");
+        }
+
         // ⌘-combo key-DOWN events arrive via performKeyEquivalent:, NOT keyDown:. Two owners can
         // want them: the app menu (tab nav ⌘⇧[/⌘⇧], ⌘1–9, ⌘Q/⌘W/…) and libghostty's own keybinds.
         // macOS consults the view hierarchy BEFORE the main menu, and libghostty binds the very
         // same standard tab chords — so forwarding first let it swallow them (consumed=true) and
         // the menu never fired (the "inconsistent tab switch" bug). Give the main menu first
-        // refusal: if it owns the chord, let it act and stop. Otherwise forward to libghostty
-        // (paste/copy/…) and return whether it consumed — if not, return NO so AppKit can still
+        // refusal: if it owns the chord, let it act and stop (the Edit menu's ⌘C/⌘V/⌘A come back
+        // to this view as copy:/paste:/selectAll:). Otherwise forward to libghostty's own
+        // keybinds and return whether it consumed — if not, return NO so AppKit can still
         // route ⌘` and friends. The menu's accelerators define the reserved set (self-maintaining).
         #[method(performKeyEquivalent:)]
         fn perform_key_equivalent(&self, event: &NSEvent) -> objc2::runtime::Bool {
@@ -1218,6 +1239,19 @@ unsafe fn forward_scroll(view: &WardenHostView, event: &NSEvent) {
 /// keys, marked text) is out of scope for the spike.
 /// Returns whether libghostty consumed the event (e.g. as a keybinding like paste/copy) — used by
 /// `performKeyEquivalent:` to decide whether to swallow a ⌘-combo or let AppKit route it.
+/// Runs libghostty's named keybinding `action` on `view`'s surface; a view with no surface yet
+/// does nothing.
+fn binding_action(view: &WardenHostView, action: &str) {
+    let surface = view.ivars().surface.get();
+    if surface.is_null() {
+        return;
+    }
+    // SAFETY: a live surface; `action` outlives the call and `len` is its byte length.
+    unsafe {
+        ffi::ghostty_surface_binding_action(surface, action.as_ptr().cast(), action.len());
+    }
+}
+
 unsafe fn forward_key(
     view: &WardenHostView,
     event: &NSEvent,

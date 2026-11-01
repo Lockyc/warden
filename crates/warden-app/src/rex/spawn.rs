@@ -151,7 +151,7 @@ fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer,
         RexLanded::Failed => failure,
         RexLanded::Opened(r) => r.err().map(|e| format!("couldn't open terminal: {e}")),
     };
-    m.record_session(label);
+    m.record_session(app, label);
     let dto = m.init_dto(label);
     drop(m);
     if let Some(dto) = dto {
