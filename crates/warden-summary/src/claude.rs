@@ -671,6 +671,10 @@ fn todo_segments(todos: &Value) -> Option<String> {
 
 // ---- file plumbing ----
 
+/// Bytes [`RevLines`] keeps of one line. Past it the line comes back empty: a transcript line
+/// carrying a large image or file dump is not a turn worth holding in memory.
+const MAX_LINE: usize = 8 * 1024 * 1024;
+
 /// Lines of a seekable source, newest first, read backward in [`CHUNK`]s so only the tail is
 /// touched. A trailing newline ends the last line rather than starting an empty one.
 struct RevLines<R> {
@@ -680,6 +684,10 @@ struct RevLines<R> {
     /// Bytes from `pos` to the end of the unreturned region; may begin mid-line.
     pending: Vec<u8>,
     done: bool,
+    /// [`MAX_LINE`]; a field so a test can lower it.
+    max_line: usize,
+    /// The line being read outgrew `max_line`: its bytes are discarded as they arrive.
+    skipping: bool,
 }
 
 impl<R: Read + Seek> RevLines<R> {
@@ -690,6 +698,8 @@ impl<R: Read + Seek> RevLines<R> {
             pos: len,
             pending: Vec::new(),
             done: len == 0,
+            max_line: MAX_LINE,
+            skipping: false,
         };
         if len > 0 {
             me.fill()?;
@@ -700,9 +710,11 @@ impl<R: Read + Seek> RevLines<R> {
         Ok(me)
     }
 
-    /// Prepends the next chunk toward the file start.
+    /// Prepends the next chunk toward the file start: at least as many bytes as are pending, so
+    /// a long line's chunks double and copying it stays linear rather than quadratic.
     fn fill(&mut self) -> std::io::Result<()> {
-        let start = self.pos.saturating_sub(CHUNK);
+        let want = CHUNK.max(self.pending.len() as u64);
+        let start = self.pos.saturating_sub(want);
         let mut chunk = vec![0u8; (self.pos - start) as usize];
         self.src.seek(SeekFrom::Start(start))?;
         self.src.read_exact(&mut chunk)?;
@@ -720,16 +732,30 @@ impl<R: Read + Seek> RevLines<R> {
             if let Some(i) = self.pending.iter().rposition(|&b| b == b'\n') {
                 let line = self.pending.split_off(i + 1);
                 self.pending.pop();
-                return Some(line);
+                return Some(self.unless_skipped(line));
             }
             if self.pos == 0 {
                 self.done = true;
-                return Some(std::mem::take(&mut self.pending));
+                let line = std::mem::take(&mut self.pending);
+                return Some(self.unless_skipped(line));
+            }
+            if self.pending.len() > self.max_line {
+                self.skipping = true;
+                self.pending.clear();
             }
             if self.fill().is_err() {
                 self.done = true;
                 return None;
             }
+        }
+    }
+
+    /// `line`, or empty when it was the oversized one being skipped; ends the skip.
+    fn unless_skipped(&mut self, line: Vec<u8>) -> Vec<u8> {
+        if std::mem::take(&mut self.skipping) {
+            Vec::new()
+        } else {
+            line
         }
     }
 }
@@ -752,6 +778,36 @@ mod tests {
 
     fn digest(name: &str, anchor: u64, budget: usize) -> String {
         fresh_digest(&fx(name), anchor, budget)
+    }
+
+    #[test]
+    fn rev_lines_drops_a_line_past_the_cap_and_keeps_its_neighbours() {
+        let chunk = CHUNK as usize;
+        let mut src = b"first\n".to_vec();
+        src.extend(std::iter::repeat_n(b'x', 5 * chunk));
+        src.extend_from_slice(b"\nlast\n");
+        let mut lines = RevLines::new(io::Cursor::new(src)).unwrap();
+        lines.max_line = chunk;
+        assert_eq!(lines.next_line().as_deref(), Some(&b"last"[..]));
+        assert_eq!(
+            lines.next_line().as_deref(),
+            Some(&b""[..]),
+            "the oversized line"
+        );
+        assert!(
+            lines.pending.len() <= 2 * chunk,
+            "kept {} bytes",
+            lines.pending.len()
+        );
+        assert_eq!(lines.next_line().as_deref(), Some(&b"first"[..]));
+        assert_eq!(lines.next_line(), None);
+
+        // Under the cap a line many chunks long comes back whole.
+        let mut src = vec![b'y'; 5 * chunk];
+        src.extend_from_slice(b"\nlast\n");
+        let mut lines = RevLines::new(io::Cursor::new(src)).unwrap();
+        assert_eq!(lines.next_line().as_deref(), Some(&b"last"[..]));
+        assert_eq!(lines.next_line().map(|l| l.len()), Some(5 * chunk));
     }
 
     fn fresh_digest(p: &Path, anchor: u64, budget: usize) -> String {
