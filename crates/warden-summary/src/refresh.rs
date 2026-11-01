@@ -1,6 +1,6 @@
 //! The refresh state machine: when and how a session's subject and done/now/next stand line are
-//! derived from its transcript. Port of agentmux's `tmux-status.sh` refresh job; the failure
-//! taxonomy it must not regress is in agentmux's `docs/ai-summary.md`.
+//! derived from its transcript. The invariants and the failure taxonomy it must not regress are
+//! in `docs/summary.md`.
 
 use crate::{
     label, parse_stand, stand, strip_unbacked_done, CtxMode, Model, StandRows, Transcript,

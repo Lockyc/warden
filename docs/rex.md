@@ -45,6 +45,7 @@ public. Rex is chosen per tab.
 | `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live, waking on a user open. |
 | `rex/lifecycle.rs` | The agent tab list: new, wake, sleep, close, reopen, rename (`RexHub::agent_op`), which agent shows (`settle`, an open's too), following a pane's windows and statuses, storing reported resume commands, and the list `warden:agents` carries. |
 | `rex/attention.rs` | Which agent tabs need you (blocked, or done and unseen): a group's amber, and the row badge and banner a hidden one raises (`notify::raise`). |
+| `rex/summary.rs` | Each local Claude agent's summary: when it refreshes, the worker that runs `warden-summary`, and naming an unnamed agent from its subject. Rationale: [`docs/summary.md`](summary.md). |
 
 Who holds which connection:
 

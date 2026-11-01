@@ -1,7 +1,7 @@
 //! Replay eval for the done/now/next summary: replays transcripts through warden's `refresh` at
 //! five evenly spaced cuts and, when amux is installed, through amux's shell pipeline on the same
-//! cuts, then prints a Markdown side-by-side. Method and traps: agentmux's `docs/ai-summary.md`
-//! ("How to evaluate", "LM backend"). Transcripts are read, never modified; the output quotes
+//! cuts, then prints a Markdown side-by-side. Method and traps: `docs/summary.md`
+//! ("How to evaluate", "Model backend"). Transcripts are read, never modified; the output quotes
 //! them, so it belongs in an untracked file.
 //!
 //! Usage: `summary-eval [--url U --model M] <transcript.jsonl>...`

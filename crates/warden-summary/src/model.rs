@@ -1,8 +1,8 @@
 //! The language-model call: one blocking OpenAI-compatible chat completion.
 //!
 //! Why a healthy-looking endpoint can return nothing, and why `reasoning_effort` is sent
-//! unconditionally: `docs/ai-summary.md` in agentmux, "LM backend: why a healthy-looking
-//! endpoint returns nothing". Every failure is `None`; the summaries are cosmetic and the
+//! unconditionally: `docs/summary.md`, "Model backend: why a healthy-looking endpoint returns
+//! nothing". Every failure is `None`; the summaries are cosmetic and the
 //! caller keeps its last good value.
 
 use serde_json::{json, Value};

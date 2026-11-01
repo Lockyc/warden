@@ -23,6 +23,7 @@ Target platform: **macOS**. Linux is a possible future consideration, not a guar
 | splits, pop-out, the pane chrome | [`docs/native-splits-direction.md`](docs/native-splits-direction.md) |
 | Rex-backed tabs — the hub, `warden-relay`, `rex-client`, size ownership, the session lifecycle | [`docs/rex.md`](docs/rex.md) |
 | the presence dot / probe scheduler | [`docs/probing.md`](docs/probing.md) |
+| the agent summaries — pipeline invariants, backend traps, the replay eval | [`docs/summary.md`](docs/summary.md) |
 | notifications, badges, banners | [`docs/notifications.md`](docs/notifications.md) |
 | packaging, signing, releases, the updater, `install.sh` | [`docs/releasing.md`](docs/releasing.md) |
 | anything that looks missing | [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md) — it may be a conscious deferral |
@@ -77,7 +78,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 
 `crates/warden-app` — `plan.rs` (config → `WindowSpec`/`TabPlan`, reconcile → `WindowOp`; `derive_tree_meta`), `manager.rs` (`WindowManager`: materialize, apply reconciliations, `sync_empty_surface`, `effective_config` expanding roots), `scanner.rs`, `registry.rs` (per-window tab registry over surfaces), `surface/` + `ffi/` (the libghostty embed), `geometry.rs` (web-rect ↔ NSView-rect), `probe.rs`, `notify.rs`, `session.rs`, `rex/` (Rex tabs). `ui/index.html` is the page shell + controller; the home surface is shell-core's `home.html`.
 
-`crates/rex-client` — `control.rs` (`ControlClient`), `data.rs` (`DataStream`), `wire.rs` (codecs, `StreamDemux`, `strip_terminal_replies`), `endpoint.rs`, `fake.rs`. `crates/warden-relay` — `main.rs` (stream + stdin loops, resume/restart), `vt.rs` (libghostty-vt FFI: snapshot → VT), `term.rs` (raw mode); vendored libghostty-vt in its `vendor/`.
+`crates/rex-client` — `control.rs` (`ControlClient`), `data.rs` (`DataStream`), `wire.rs` (codecs, `StreamDemux`, `strip_terminal_replies`), `endpoint.rs`, `fake.rs`. `crates/warden-relay` — `main.rs` (stream + stdin loops, resume/restart), `vt.rs` (libghostty-vt FFI: snapshot → VT), `term.rs` (raw mode); vendored libghostty-vt in its `vendor/`. `crates/warden-summary` — `claude.rs` (the `Transcript` reader), `model.rs` (`HttpModel`), `prompt.rs`, `gate.rs` (`strip_unbacked_done`), `rows.rs` (`parse_stand`), `refresh.rs` (`SummaryState`, `refresh`/`apply`), `bin/summary-eval.rs`.
 
 ## Config schema (`~/.config/warden/config.toml`; override with `WARDEN_CONFIG`)
 

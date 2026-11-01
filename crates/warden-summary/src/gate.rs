@@ -1,5 +1,5 @@
 //! The anti-invention gate: a small model asked for a done/now/next line fabricates `done:`
-//! milestones when the session did nothing but plan. Rationale: agentmux's `docs/ai-summary.md`.
+//! milestones when the session did nothing but plan. Rationale: `docs/summary.md`.
 
 /// Whether the digest carries evidence of finished work: a segment starting `edited `,
 /// `wrote ` (file mutations) or `todo-done:` (the agent's own report), at the digest start or

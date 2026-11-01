@@ -1,7 +1,6 @@
-//! The label and stand prompts and the cleaning of the model's reply, ported from agentmux's
-//! `summarise.sh`. The prompt wording is tuned against a small local model; why each rule
-//! exists is in agentmux's `docs/ai-summary.md`, so edit the text only against a live-model
-//! check.
+//! The label and stand prompts and the cleaning of the model's reply. The prompt wording is
+//! tuned against a small local model; why each rule exists is in `docs/summary.md`, so edit the
+//! text only against a `just summary-eval` run.
 
 use crate::model::Model;
 
