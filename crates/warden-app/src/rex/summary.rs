@@ -215,7 +215,7 @@ fn entry_for<'a>(entries: &'a mut HashMap<String, Entry>, record: &AgentRecord) 
 /// Start the worker that runs `jobs` one at a time: each finds its transcript (`locate`, cached
 /// per conversation once found; a miss is looked for again on the next job), refreshes it with
 /// `transcript` and the job's model, and hands the result to `deliver` — `None` when there was no
-/// transcript to read.
+/// transcript to read, or the refresh panicked.
 pub fn spawn_worker<T: Transcript + Send + 'static>(
     jobs: mpsc::Receiver<Job>,
     transcript: T,
@@ -233,7 +233,15 @@ pub fn spawn_worker<T: Transcript + Send + 'static>(
                         paths.insert(job.conversation.clone(), p.clone());
                     }),
                 };
-                let result = path.map(|p| refresh(&job.state, &transcript, &*job.model, &p));
+                // A panic in one refresh answers `None`, like a missing transcript: left to
+                // unwind, it would end this thread, and every later job with it.
+                let result = path.and_then(|p| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        refresh(&job.state, &transcript, &*job.model, &p)
+                    }))
+                    .inspect_err(|_| eprintln!("warden: agent summary refresh panicked"))
+                    .ok()
+                });
                 deliver(job.record_id, result);
             }
         })
@@ -772,6 +780,57 @@ mod tests {
         fn anchor(&self, _: &std::path::Path) -> u64 {
             0
         }
+    }
+
+    /// Panics on its first read, then reads like [`Fixed`].
+    struct PanicsOnce(std::sync::atomic::AtomicBool);
+
+    impl Transcript for PanicsOnce {
+        fn context(&self, p: &std::path::Path, n: usize, c: usize, m: CtxMode) -> String {
+            if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                panic!("a reader bug");
+            }
+            Fixed.context(p, n, c, m)
+        }
+        fn digest(
+            &self,
+            p: &std::path::Path,
+            a: u64,
+            c: &mut warden_summary::DigestCursor,
+            b: usize,
+        ) -> String {
+            Fixed.digest(p, a, c, b)
+        }
+        fn anchor(&self, p: &std::path::Path) -> u64 {
+            Fixed.anchor(p)
+        }
+    }
+
+    #[test]
+    fn a_panicking_refresh_answers_none_and_the_worker_lives_on() {
+        let (jobs_tx, jobs_rx) = mpsc::channel();
+        let (out_tx, out_rx) = mpsc::channel();
+        spawn_worker(
+            jobs_rx,
+            PanicsOnce(std::sync::atomic::AtomicBool::new(false)),
+            |id| Some(PathBuf::from(format!("/t/{id}.jsonl"))),
+            move |id, r| {
+                let _ = out_tx.send((id, r));
+            },
+        )
+        .unwrap();
+        let job = || Job {
+            record_id: "a".into(),
+            conversation: "abc".into(),
+            state: SummaryState::default(),
+            model: Arc::new(Echo("subject. now: editing".into())),
+        };
+        jobs_tx.send(job()).unwrap();
+        let (_, r) = out_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(r, None, "the panic is answered, so in_flight clears");
+        jobs_tx.send(job()).unwrap();
+        let (_, r) = out_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(r.and_then(|r| r.rows).is_some(), "the next job still runs");
     }
 
     #[test]
