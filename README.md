@@ -127,7 +127,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | Key | Default | What it does |
 | --- | --- | --- |
 | `url` | none | An OpenAI-compatible `/v1/chat/completions` endpoint (LM Studio, Ollama, llama.cpp). Unset or blank, there are no summaries. |
-| `model` | `""` | Model id sent with each request. |
+| `model` | `""` | Model id sent with each request. A server with more than one model loaded needs it; blank beside a `url`, `warden validate` warns. |
 | `timeout` | `45` | Seconds to wait for each request. A slower reply is skipped, and the last summary stays. |
 
 **`[[window]]`** — one native macOS window each:

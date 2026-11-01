@@ -39,17 +39,28 @@ pub const LOCAL_SERVER: &str = "local";
 pub const DEFAULT_SUMMARY_TIMEOUT: u64 = 45;
 
 /// `[summary]` resolved: `None` unless `url` is set and not blank, so a table without one leaves
-/// the summaries off.
-fn resolve_summary(raw: Option<&RawSummary>) -> Option<SummaryConfig> {
+/// the summaries off. A `url` with a blank `model` sends `"model": ""`, which a server holding
+/// several models (Ollama, LM Studio) refuses; the summaries then stay blank with nothing on
+/// screen, so it warns.
+fn resolve_summary(raw: Option<&RawSummary>, warnings: &mut Vec<Warning>) -> Option<SummaryConfig> {
     let raw = raw?;
     let url = raw
         .url
         .as_deref()
         .map(str::trim)
         .filter(|u| !u.is_empty())?;
+    let model = raw.model.as_deref().map(str::trim).unwrap_or("");
+    if model.is_empty() {
+        warnings.push(Warning {
+            window: "summary".to_owned(),
+            message: "url is set but model is blank: a server with more than one model loaded \
+                      refuses the call, and the summaries stay empty"
+                .to_owned(),
+        });
+    }
     Some(SummaryConfig {
         url: url.to_owned(),
-        model: raw.model.as_deref().map(str::trim).unwrap_or("").to_owned(),
+        model: model.to_owned(),
         timeout: std::time::Duration::from_secs(raw.timeout.unwrap_or(DEFAULT_SUMMARY_TIMEOUT)),
     })
 }
@@ -274,7 +285,7 @@ pub fn resolve_with(
             sidebar_drag: raw.sidebar_drag.unwrap_or(true),
             auto_update: raw.auto_update.unwrap_or(true),
             notify_debug: raw.notify_debug.unwrap_or(false),
-            summary: resolve_summary(raw.summary.as_ref()),
+            summary: resolve_summary(raw.summary.as_ref(), &mut warnings),
         },
         warnings,
     ))
@@ -756,6 +767,27 @@ colour = "#0f8a8a"
         .unwrap();
         let s = cfg.summary.unwrap();
         assert_eq!((s.model.as_str(), s.timeout.as_secs()), ("qwen", 10));
+    }
+
+    #[test]
+    fn summary_url_without_a_model_warns() {
+        for toml in [
+            "[summary]\nurl = \"http://h\"\n",
+            "[summary]\nurl = \"http://h\"\nmodel = \" \"\n",
+        ] {
+            let (cfg, warnings) = resolve_str(toml).unwrap();
+            assert!(
+                cfg.summary.is_some(),
+                "still on: some servers need no model"
+            );
+            assert_eq!(warnings.len(), 1, "{toml}");
+            assert_eq!(warnings[0].window, "summary");
+            assert!(warnings[0].message.contains("model"));
+        }
+        let (_, warnings) = resolve_str("[summary]\nurl = \"http://h\"\nmodel = \"q\"\n").unwrap();
+        assert!(warnings.is_empty());
+        let (_, warnings) = resolve_str("[summary]\nmodel = \"\"\n").unwrap();
+        assert!(warnings.is_empty(), "off: nothing is sent");
     }
 
     #[test]
