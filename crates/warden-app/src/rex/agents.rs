@@ -58,6 +58,13 @@ pub struct AgentRecord {
     /// The conversation's stable subject label, kept across refreshes and restarts.
     #[serde(default)]
     pub subject: Option<String>,
+    /// The transcript line the summary's digest starts from (`SummaryState::start_line`): moved
+    /// on by a subject pivot, kept across restarts so the digest doesn't fall back to line 1.
+    #[serde(default)]
+    pub digest_start: usize,
+    /// Consecutive off-subject refreshes so far (`SummaryState::drift`).
+    #[serde(default)]
+    pub drift: u32,
 }
 
 /// A fresh record id: wall-clock nanoseconds plus a process-wide counter, in hex. Unique within
@@ -403,6 +410,8 @@ impl AgentStore {
             rec.resume = Some(resume.to_string());
             rec.summary = None;
             rec.subject = None;
+            rec.digest_start = 0;
+            rec.drift = 0;
             self.save();
         }
         true
@@ -445,7 +454,9 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
         forked_from,
         user_named,
         summary,
-        subject
+        subject,
+        digest_start,
+        drift
     );
 }
 
@@ -544,6 +555,8 @@ pub fn reconcile(
                 user_named: false,
                 summary: None,
                 subject: None,
+                digest_start: 0,
+                drift: 0,
             });
             next += 1;
         }
@@ -578,6 +591,8 @@ mod tests {
             user_named: false,
             summary: None,
             subject: None,
+            digest_start: 0,
+            drift: 0,
         }
     }
 
@@ -635,6 +650,8 @@ mod tests {
             ..Default::default()
         });
         a.subject = Some("auth flow".into());
+        a.digest_start = 40;
+        a.drift = 2;
         let mut s = AgentStore::default();
         s.upsert(a);
 
@@ -644,11 +661,13 @@ mod tests {
             kept.summary.is_some() && kept.subject.is_some(),
             "the same conversation keeps its summary"
         );
+        assert_eq!((kept.digest_start, kept.drift), (40, 2));
 
         assert!(s.report_resume("b-w1", "claude --resume y"));
         let cleared = s.record("a").unwrap();
         assert_eq!(cleared.resume.as_deref(), Some("claude --resume y"));
         assert_eq!((cleared.summary, cleared.subject), (None, None));
+        assert_eq!((cleared.digest_start, cleared.drift), (0, 0));
     }
 
     #[test]
@@ -657,10 +676,13 @@ mod tests {
         let mut after = before.clone();
         after.subject = Some("s".into());
         after.summary = Some(warden_summary::StandRows::default());
+        after.digest_start = 9;
+        after.drift = 1;
         let mut current = before.clone();
         merge_fields(&mut current, &before, &after);
         assert_eq!(current.subject.as_deref(), Some("s"));
         assert!(current.summary.is_some());
+        assert_eq!((current.digest_start, current.drift), (9, 1));
     }
 
     #[test]

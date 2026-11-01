@@ -50,8 +50,33 @@ struct Entry {
     in_flight: bool,
 }
 
-/// What [`SummaryDriver::accept`] hands back for the record: its new rows and subject.
-pub type Summary = (Option<StandRows>, Option<String>);
+/// What [`SummaryDriver::accept`] hands back for the record to keep: its rows and subject, and
+/// the digest anchor and drift count, so a restart resumes a pivoted conversation where it was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Summary {
+    pub rows: Option<StandRows>,
+    pub subject: Option<String>,
+    pub start_line: usize,
+    pub drift: u32,
+}
+
+impl Summary {
+    /// Whether `record` already holds exactly this summary.
+    fn held_by(&self, record: &AgentRecord) -> bool {
+        record.summary == self.rows
+            && record.subject == self.subject
+            && record.digest_start == self.start_line
+            && record.drift == self.drift
+    }
+
+    /// Write this summary into `record`.
+    fn write(self, record: &mut AgentRecord) {
+        record.summary = self.rows;
+        record.subject = self.subject;
+        record.digest_start = self.start_line;
+        record.drift = self.drift;
+    }
+}
 
 /// Decides when each agent record refreshes and keeps its summary state. Main thread only.
 pub struct SummaryDriver {
@@ -151,7 +176,13 @@ impl SummaryDriver {
         if !apply(&mut entry.state, result?) {
             return None;
         }
-        Some((entry.state.rows.clone(), entry.state.subject.clone()))
+        let s = &entry.state;
+        Some(Summary {
+            rows: s.rows.clone(),
+            subject: s.subject.clone(),
+            start_line: s.start_line,
+            drift: s.drift,
+        })
     }
 }
 
@@ -164,6 +195,8 @@ fn entry_for<'a>(entries: &'a mut HashMap<String, Entry>, record: &AgentRecord) 
         state: SummaryState {
             subject: record.subject.clone(),
             rows: record.summary.clone(),
+            start_line: record.digest_start,
+            drift: record.drift,
             ..SummaryState::default()
         },
         ..Entry::default()
@@ -406,16 +439,13 @@ fn land(app: &tauri::AppHandle, record_id: &str, result: Option<RefreshResult>) 
     let Some(record) = record else {
         return;
     };
-    if let Some((rows, subject)) = summary {
+    if let Some(summary) = summary {
         let (shown, renamed) = {
             let mut s = super::lock(&store);
             match s.record(record_id) {
                 // A report may have moved it to a new conversation since it was read.
-                Some(mut r)
-                    if r.resume == record.resume && (r.summary != rows || r.subject != subject) =>
-                {
-                    r.summary = rows;
-                    r.subject = subject;
+                Some(mut r) if r.resume == record.resume && !summary.held_by(&r) => {
+                    summary.write(&mut r);
                     let parent = r.forked_from.as_deref().and_then(|p| s.record(p));
                     let renamed = subject_name(&r, r.subject.as_deref(), parent.as_ref())
                         .map(|name| (r.project.clone(), r.window_id.clone(), name));
@@ -647,9 +677,9 @@ mod tests {
         assert_eq!(job.conversation, "def");
         assert_eq!((&job.state.rows, &job.state.subject), (&None, &None));
         let fresh = result_for(&job, "new");
-        let (rows, subject) = d.accept(&job.record_id, Some(&r), Some(fresh)).unwrap();
-        assert_eq!(rows.unwrap().now.as_deref(), Some("new"));
-        assert_eq!(subject.as_deref(), Some("auth flow"));
+        let s = d.accept(&job.record_id, Some(&r), Some(fresh)).unwrap();
+        assert_eq!(s.rows.unwrap().now.as_deref(), Some("new"));
+        assert_eq!(s.subject.as_deref(), Some("auth flow"));
     }
 
     #[test]
@@ -658,10 +688,28 @@ mod tests {
         let mut r = agent("claude --resume abc");
         r.subject = Some("kept subject".into());
         r.summary = Some(StandRows::default());
+        r.digest_start = 120;
+        r.drift = 2;
         assert!(d.consider(&r, Some(AgentState::Working), true, Instant::now()));
         let job = rx.try_recv().unwrap();
         assert_eq!(job.state.subject.as_deref(), Some("kept subject"));
         assert_eq!(job.state.rows, Some(StandRows::default()));
+        // A pivoted conversation keeps its digest window across a restart.
+        assert_eq!((job.state.start_line, job.state.drift), (120, 2));
+    }
+
+    #[test]
+    fn accept_hands_back_the_anchor_and_drift_to_persist() {
+        let (mut d, rx) = driver();
+        let r = agent("claude --resume abc");
+        assert!(d.consider(&r, Some(AgentState::Working), true, Instant::now()));
+        let job = rx.try_recv().unwrap();
+        let mut res = result_for(&job, "x");
+        res.start_line = 77;
+        res.drift = 1;
+        let s = d.accept(&job.record_id, Some(&r), Some(res)).unwrap();
+        assert_eq!((s.start_line, s.drift), (77, 1));
+        assert_eq!(s.subject.as_deref(), Some("auth flow"));
     }
 
     #[test]
