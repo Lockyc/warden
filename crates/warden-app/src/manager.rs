@@ -628,9 +628,16 @@ impl WindowManager {
     /// re-scans (`rescan_root`), while `last_good` (the reconcile baseline) holds the expanded
     /// form so a reopened window still carries its discovered project tabs.
     pub fn adopt(&mut self, config: Config, effective: Config) {
+        self.adopt_raw(config);
+        self.last_good = effective;
+    }
+
+    /// The raw-config half of [`adopt`](Self::adopt): where a loaded config's global settings
+    /// take effect. A hot-reload's reconcile branch calls it directly (its `apply` advances
+    /// `last_good`), so a global applied here reaches launch, recovery and reload alike.
+    pub fn adopt_raw(&mut self, config: Config) {
         self.set_probe_interval(config.probe_interval);
         self.raw_config = config;
-        self.last_good = effective;
     }
 
     pub fn init_dto(&self, label: &str) -> Option<InitDto> {

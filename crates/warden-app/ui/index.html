@@ -30,8 +30,8 @@
          rule below (`#pane-primary` / `#pane-secondary`, setting `--c-tr`/`--c-br`). The native
          surface's render layer carries the concentric inner curve (`SURFACE_CORNER_RADIUS` in
          surface/ghostty.rs — this less `--ring-w`, with the same continuous corner curve) and
-         decides the same corners from its own frame vs the window (`apply_corner_mask`); change
-         the radius in both together. shell-core's detach.html mirrors it as `--hole-radius`. */
+         decides the same corners from its own frame vs the window (`apply_corner_mask`); a test
+         there fails if the two part. shell-core's detach.html mirrors it as `--hole-radius`. */
       :root { --pane-radius: 16px; }
       /* The focus ring's width — and the pane border that is the ring's layout inset, and the
          inset the native surface sits at. 1px, a hairline, by choice: geometrically it is 1px

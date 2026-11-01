@@ -2158,8 +2158,7 @@ fn main() {
                                         // Advances the reconcile baseline — this branch is
                                         // only reached on a valid load.
                                         m.apply(&wh, &recon, new_eff, |t| set.label_for_title(t));
-                                        m.raw_config = loaded.config.clone();
-                                        m.set_probe_interval(loaded.config.probe_interval);
+                                        m.adopt_raw(loaded.config.clone());
                                         rex::unclaimed::connect(&wh, &m.last_good);
                                         // A density/sidebar_drag flip alone produces no per-window
                                         // op, so apply() emitted nothing; re-push every window's

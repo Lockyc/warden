@@ -92,7 +92,7 @@ const NS_KEYCODE_GRAVE: u16 = 0x32;
 /// circular layer corner under a continuous ring (or vice versa) shows as a sliver of ring or
 /// ground at every window corner. Restated here rather than read from the page because the two
 /// live on opposite sides of the native/web seam (same precedent as the layer ground colour set
-/// beside it in `new`, which matches `--pane-ground`); change both together. WHICH corners
+/// beside it in `new`, which matches `--pane-ground`); `surface_corner_radius_matches_the_page_tokens` fails if they part. WHICH corners
 /// round is not a constant — see [`apply_corner_mask`].
 const SURFACE_CORNER_RADIUS: f64 = 15.0;
 
@@ -1834,6 +1834,24 @@ impl Drop for GhosttySurface {
 #[cfg(test)]
 mod tests {
     use super::is_printable_text;
+
+    /// `SURFACE_CORNER_RADIUS` restates the page's `--pane-radius` − `--ring-w` across the
+    /// native/web seam; editing either side alone shows as a sliver at every window corner.
+    #[test]
+    fn surface_corner_radius_matches_the_page_tokens() {
+        let page = include_str!("../../ui/index.html");
+        let px = |token: &str| -> f64 {
+            let at = page.find(&format!("{token}:")).expect(token) + token.len() + 1;
+            let rest = page[at..].trim_start();
+            rest[..rest.find("px").expect("px value")]
+                .parse()
+                .expect(token)
+        };
+        assert_eq!(
+            super::SURFACE_CORNER_RADIUS,
+            px("--pane-radius") - px("--ring-w")
+        );
+    }
 
     #[test]
     fn printable_text_excludes_control_chars() {

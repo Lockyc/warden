@@ -1742,23 +1742,31 @@ impl Registry {
     /// that won't spawn must not cost the user the pop-out. `detach` then simply carries one
     /// surface instead of two, and the detached window lays out one hole.
     ///
-    /// That second spawn is gated on the PRIMARY being live **in this registry** — the same
-    /// gate `activate` carries, and the two must stay in step — which is
-    /// what keeps the whole call a no-op on an already-`Detached` tab: its surfaces are in
-    /// another window, `detach` will refuse, and spawning its secondary here would leave a
-    /// stray surface in a window the tab isn't showing in — with no pop-out to carry it out
-    /// again.
+    /// Both spawns go through [`spawn_panes`](Self::spawn_panes), whose gate keeps the whole
+    /// call a no-op on an already-`Detached` tab.
     ///
     /// Warden, not the user, is bringing the tab up (`load_on_open` turned on, a pop-out), so an
     /// agent pane opens automatically: it wakes nothing.
     pub fn ensure_spawned_by_id(&mut self, id: &str) -> Result<(), SurfaceError> {
-        if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
-            self.ensure_spawned(idx, PaneIdx::Primary, true)?;
-            if self.tabs[idx].primary.live() && self.tabs[idx].secondary.is_some() {
-                let _ = self.ensure_spawned(idx, PaneIdx::Secondary, true);
-            }
+        match self.tabs.iter().position(|t| t.id == id) {
+            Some(idx) => self.spawn_panes(idx, true).map(|_| ()),
+            None => Ok(()),
         }
-        Ok(())
+    }
+
+    /// Spawn tab `idx`'s primary, then its secondary best-effort, returning the primary's
+    /// result — the one answer to "may this registry birth a secondary surface?", which
+    /// `activate` and `ensure_spawned_by_id` both ask. The secondary is gated on the PRIMARY being
+    /// live **in this registry**: pop out a split tab whose secondary spawn failed and the
+    /// primary is `Detached` while the secondary is still `Cold`, and an ungated spawn would birth
+    /// a surface in the ORIGIN window for a tab that isn't showing there — with no pop-out left
+    /// to carry it out again.
+    fn spawn_panes(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
+        let primary = self.ensure_spawned(idx, PaneIdx::Primary, auto);
+        if self.tabs[idx].primary.live() && self.tabs[idx].secondary.is_some() {
+            let _ = self.ensure_spawned(idx, PaneIdx::Secondary, auto);
+        }
+        primary
     }
 
     /// Return a surface to slot `id` as `Spawned` — the inverse of `detach`,
@@ -1892,22 +1900,8 @@ impl Registry {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return Ok(false);
         };
-        // Spawn every cold pane. The primary's Result is what the caller sees; a secondary
-        // spawn failure doesn't block showing the tab, so it's attempted best-effort and its
-        // error discarded rather than shadowing the primary's.
-        //
-        // Gated on the primary being live **in this registry**, exactly as
-        // `ensure_spawned_by_id` gates its own second spawn — the two sites must stay in step,
-        // because they answer one question ("may this registry birth a secondary surface?") and
-        // a registry that answered it two ways is how the stray gets born. Concretely: pop out a
-        // split tab whose secondary spawn failed and the primary is `Detached` while the
-        // secondary is still `Cold`, so an ungated `activate` on that id would spawn a surface
-        // in the ORIGIN window for a tab that isn't showing there — with no pop-out left to
-        // carry it out again.
-        let spawned = self.ensure_spawned(idx, PaneIdx::Primary, auto);
-        if self.tabs[idx].primary.live() && self.tabs[idx].secondary.is_some() {
-            let _ = self.ensure_spawned(idx, PaneIdx::Secondary, auto);
-        }
+        // Spawn every cold pane; a secondary failure doesn't block showing the tab.
+        let spawned = self.spawn_panes(idx, auto);
         self.active = Some(id.to_string());
         self.show_active();
         spawned
