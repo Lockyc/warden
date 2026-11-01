@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "chrome-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/chrome-core?rev=0b968cf29b0672e37cc56fe91c173bf8a264621d#0b968cf29b0672e37cc56fe91c173bf8a264621d"
+source = "git+https://github.com/Lockyc/chrome-core?rev=f5a4da511872d0df2fb23a55e854e60321b75596#f5a4da511872d0df2fb23a55e854e60321b75596"
 
 [[package]]
 name = "chrono"
