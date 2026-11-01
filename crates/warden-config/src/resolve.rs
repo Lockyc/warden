@@ -145,9 +145,11 @@ pub enum ResolveError {
     DuplicateTabIdentity { window: String, identity: String },
     #[error("window {window:?} has a tab with an empty dir")]
     EmptyDir { window: String },
-    #[error("window {window:?} has invalid project_colour")]
+    /// `at` names the tab (its title, else its dir) or root (its name) carrying the value.
+    #[error("window {window:?}: {at} has invalid project_colour")]
     BadProjectColour {
         window: String,
+        at: String,
         #[source]
         source: ColourError,
     },
@@ -292,10 +294,16 @@ pub fn resolve_with(
 }
 
 /// Parse a tab's or root's `project_colour`; any unparsable value (including `""`) is an error.
-fn resolve_project_colour(raw: Option<&str>, window: &str) -> Result<Option<Colour>, ResolveError> {
+/// `at` names its tab or root for the error.
+fn resolve_project_colour(
+    raw: Option<&str>,
+    window: &str,
+    at: impl FnOnce() -> String,
+) -> Result<Option<Colour>, ResolveError> {
     raw.map(|s| {
         Colour::parse(s).map_err(|source| ResolveError::BadProjectColour {
             window: window.to_string(),
+            at: at(),
             source,
         })
     })
@@ -516,6 +524,13 @@ fn resolve_tab(
         globals,
         window_split,
     )?;
+    let project_colour = resolve_project_colour(rt.project_colour.as_deref(), &rp.title, || {
+        let named = rt.title.as_deref().map(str::trim);
+        format!(
+            "tab {:?}",
+            named.map_or_else(|| dir.display().to_string(), str::to_owned)
+        )
+    })?;
     Ok(Tab {
         id,
         key,
@@ -531,7 +546,7 @@ fn resolve_tab(
         resume,
         server,
         split,
-        project_colour: resolve_project_colour(rt.project_colour.as_deref(), &rp.title)?,
+        project_colour,
     })
 }
 
@@ -661,6 +676,9 @@ fn resolve_root(
         globals,
         window_split,
     )?;
+    let project_colour = resolve_project_colour(rr.project_colour.as_deref(), &rp.title, || {
+        format!("root {:?}", root_dir.name)
+    })?;
     Ok(Some(Root {
         name: root_dir.name,
         dir: root_dir.dir,
@@ -673,7 +691,7 @@ fn resolve_root(
         resume,
         server,
         split,
-        project_colour: resolve_project_colour(rr.project_colour.as_deref(), &rp.title)?,
+        project_colour,
     }))
 }
 
@@ -1355,16 +1373,26 @@ title = "w"
 
     #[test]
     fn malformed_project_colour_errors() {
-        for body in [
-            "[[window.tab]]\n  dir = \"/tmp/a\"\n  project_colour = \"teal\"",
-            "[[window.tab]]\n  dir = \"/tmp/a\"\n  project_colour = \"\"",
-            "[[window.root]]\n  dir = \"/tmp/r\"\n  project_colour = \"#12\"",
+        for (body, names) in [
+            (
+                "[[window.tab]]\n  dir = \"/tmp/a\"\n  project_colour = \"teal\"",
+                "tab \"/tmp/a\"",
+            ),
+            (
+                "[[window.tab]]\n  dir = \"/tmp/a\"\n  title = \"api\"\n  project_colour = \"\"",
+                "tab \"api\"",
+            ),
+            (
+                "[[window.root]]\n  dir = \"/tmp/r\"\n  project_colour = \"#12\"",
+                "root \"r\"",
+            ),
         ] {
             let err = resolve_str(&format!("[[window]]\ntitle = \"w\"\n  {body}\n")).unwrap_err();
             assert!(
                 matches!(err, ResolveError::BadProjectColour { .. }),
                 "{err:?}"
             );
+            assert!(err.to_string().contains(names), "{err} names {names}");
         }
     }
 
