@@ -1219,7 +1219,7 @@ impl WindowManager {
         label_of: impl Fn(&str) -> Option<String>,
     ) {
         let ops = tab_ops(recon, &new_config, label_of);
-        self.last_good = new_config;
+        let old_config = std::mem::replace(&mut self.last_good, new_config);
         let mut refreshed: Vec<String> = Vec::new();
         for op in ops {
             let crate::plan::TabOp {
@@ -1304,9 +1304,13 @@ impl WindowManager {
                 refreshed.push(label);
             }
         }
-        // Push each updated window's new snapshot so the chrome rebuilds its sidebar.
+        // Push each updated window's new snapshot so the chrome rebuilds its sidebar — and every
+        // window's when a project colour moved, so each row mark matches the strip.
         // `emit_to(label, …)`, never `Emitter::emit` (a global broadcast in Tauri 2.11.3,
         // whatever the receiver): emitting on the window would fire every sibling's listener.
+        let open: Vec<String> = self.windows.keys().cloned().collect();
+        let refreshed =
+            crate::plan::windows_to_refresh(&old_config, &self.last_good, refreshed, &open);
         for label in refreshed {
             if let Some(dto) = self.init_dto(&label) {
                 let _ = app.emit_to(label.as_str(), "warden:refresh", dto);

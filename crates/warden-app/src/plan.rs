@@ -20,6 +20,26 @@ pub fn project_colours(config: &Config) -> HashMap<String, String> {
         .collect()
 }
 
+/// The windows a reload re-sends a sidebar snapshot to: `updated` (those with a tab op), or every
+/// `open` window when any project's colour moved between `old` and `new`. The assignment spans
+/// windows — pinning a pool colour takes it out of every other project's pool — so a pin edit in
+/// one window can recolour another window's row marks, as the strip already shows.
+pub fn windows_to_refresh(
+    old: &Config,
+    new: &Config,
+    mut updated: Vec<String>,
+    open: &[String],
+) -> Vec<String> {
+    if project_colours(old) != project_colours(new) {
+        for label in open {
+            if !updated.contains(label) {
+                updated.push(label.clone());
+            }
+        }
+    }
+    updated
+}
+
 /// Derive (tree, tree_path) for a tab from its window's roots (root name → dir).
 /// A tab whose `group` names a root is a tree row; tree_path = folder segments
 /// between that root's dir and the tab's dir (empty for a project directly under
@@ -300,6 +320,37 @@ mod tests {
             open,
             colour: None,
         }
+    }
+
+    #[test]
+    fn a_pin_in_one_window_moves_another_windows_accent() {
+        let two = |pin: &str| {
+            cfg(&format!(
+                "[[window]]\ntitle = \"a\"\n  [[window.tab]]\n  dir = \"/tmp/pa\"\n{pin}\
+                 [[window]]\ntitle = \"b\"\n  [[window.tab]]\n  dir = \"/tmp/pb\"\n"
+            ))
+        };
+        let old = two("");
+        // Pin window a's project to window b's derived colour: b's project can't keep it.
+        let b_was = project_colours(&old)["/tmp/pb"].clone();
+        let new = two(&format!("  project_colour = \"{b_was}\"\n"));
+        assert_ne!(
+            project_colours(&new)["/tmp/pb"],
+            b_was,
+            "b's strip colour moved"
+        );
+
+        let open = ["a".to_string(), "b".to_string()];
+        assert_eq!(
+            windows_to_refresh(&old, &new, vec!["a".into()], &open),
+            open.to_vec(),
+            "b's sidebar mark follows, though b's own tabs didn't change"
+        );
+        assert_eq!(
+            windows_to_refresh(&old, &old, vec!["a".into()], &open),
+            vec!["a".to_string()],
+            "no accent moved: only the windows with an update"
+        );
     }
 
     #[test]
