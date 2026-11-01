@@ -66,7 +66,7 @@ pub struct WindowSpec {
     pub width: f64,     // inner width in logical pixels
     pub height: f64,    // inner height in logical pixels
     pub open_tabs_section: bool, // this window's sidebar pins an "Open" section (cascade collapsed)
-    pub recoverable_tabs_section: bool, // ... and a "Recoverable" section (cascade collapsed)
+    pub background_tabs_section: bool, // ... and a "Background" section (cascade collapsed)
     pub remember_tabs: bool, // restore this window's remembered loaded + active tabs at build
     pub tabs: Vec<TabPlan>,
 }
@@ -106,7 +106,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         width: p.width as f64,
         height: p.height as f64,
         open_tabs_section: p.open_tabs_section,
-        recoverable_tabs_section: p.recoverable_tabs_section,
+        background_tabs_section: p.background_tabs_section,
         remember_tabs: p.remember_tabs,
         tabs,
     }
@@ -165,10 +165,10 @@ pub fn next_reopen_target(last_closed: &[String], entries: &[WindowEntry]) -> Op
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabOp {
     pub label: String,
-    // The window's "Open" / "Recoverable" section flags flipped — chrome-only, no
+    // The window's "Open" / "Background" section flags flipped — chrome-only, no
     // surface touched.
     pub open_tabs_section: Option<bool>,
-    pub recoverable_tabs_section: Option<bool>,
+    pub background_tabs_section: Option<bool>,
     pub add_tabs: Vec<TabPlan>,
     pub remove_tabs: Vec<String>, // tab ids (= Tab::key)
     pub order: Vec<String>,       // full new tab id order
@@ -243,7 +243,7 @@ pub fn tab_ops(
             Some(TabOp {
                 label,
                 open_tabs_section: u.open_tabs_section,
-                recoverable_tabs_section: u.recoverable_tabs_section,
+                background_tabs_section: u.background_tabs_section,
                 add_tabs: plans(&u.add_tabs),
                 remove_tabs: u.remove_tabs.clone(),
                 order: u.tab_order.clone(),
@@ -453,7 +453,7 @@ colour = "#0f8a8a"
             height: 1000,
             open_on_start: true,
             open_tabs_section: false,
-            recoverable_tabs_section: false,
+            background_tabs_section: false,
             remember_tabs: false,
             tabs: vec![Tab {
                 id: None,
@@ -519,7 +519,7 @@ title = "work zone"
     }
 
     #[test]
-    fn recoverable_tabs_section_reaches_spec_and_tab_op() {
+    fn background_tabs_section_reaches_spec_and_tab_op() {
         let base = r##"
 [[window]]
 title = "work"
@@ -528,13 +528,13 @@ colour = "#0f8a8a"
 "##;
         let old = cfg(&base.replace("{R}", ""));
         let spec = |c: &Config| window_to_spec(&c.windows[0], "work".into());
-        assert!(spec(&old).recoverable_tabs_section, "default on");
-        let new = cfg(&base.replace("{R}", "recoverable_tabs_section = false"));
-        assert!(!spec(&new).recoverable_tabs_section);
+        assert!(spec(&old).background_tabs_section, "default on");
+        let new = cfg(&base.replace("{R}", "background_tabs_section = false"));
+        assert!(!spec(&new).background_tabs_section);
         let r = reconcile(&old, &new);
         let ops = tab_ops(&r, &new, |t| Some(t.to_string()));
         assert_eq!(ops.len(), 1);
-        assert_eq!(ops[0].recoverable_tabs_section, Some(false));
+        assert_eq!(ops[0].background_tabs_section, Some(false));
         assert_eq!(ops[0].open_tabs_section, None);
     }
 
@@ -608,7 +608,7 @@ colour = "#0f8a8a"
                 title: "dev".into(),
                 colour: None,
                 open_tabs_section: None,
-                recoverable_tabs_section: None,
+                background_tabs_section: None,
                 add_tabs: vec![added],
                 remove_tabs: Vec::new(),
                 tab_order: vec!["/r/Dev/gh/lockyc/warden".into()],
@@ -625,7 +625,7 @@ colour = "#0f8a8a"
                 height: 1000,
                 open_on_start: true,
                 open_tabs_section: false,
-                recoverable_tabs_section: false,
+                background_tabs_section: false,
                 remember_tabs: false,
                 tabs: Vec::new(),
                 roots: vec![Root {
@@ -693,7 +693,7 @@ colour = "#0f8a8a"
             height: 1000,
             open_on_start: true,
             open_tabs_section: false,
-            recoverable_tabs_section: false,
+            background_tabs_section: false,
             remember_tabs: false,
             tabs,
             roots: vec![root.clone()],

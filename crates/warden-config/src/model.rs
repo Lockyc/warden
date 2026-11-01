@@ -67,7 +67,7 @@ pub struct Window {
     pub open_tabs_section: bool,
     /// Whether THIS window's sidebar pins a section listing its unloaded tabs whose
     /// session is running or recoverable. Resolved window-else-global, defaulting to true.
-    pub recoverable_tabs_section: bool,
+    pub background_tabs_section: bool,
     /// Whether this window respawns the tabs it last had loaded, and reselects its last
     /// active tab, whenever it is built. Resolved window-else-global, default false. Not
     /// diffed by `reconcile`: the app reads it from its current config at build and
