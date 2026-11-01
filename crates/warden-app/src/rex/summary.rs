@@ -471,9 +471,20 @@ fn land(app: &tauri::AppHandle, record_id: &str, result: Option<RefreshResult>) 
             super::lifecycle::emit_agents(app, &project);
             if let (Some(hub), Some(window)) = (app.try_state::<super::RexHub>(), window) {
                 let hub = hub.inner().clone();
+                let app = app.clone();
+                let id = record_id.to_owned();
                 let spawned = std::thread::Builder::new()
                     .name("warden-summary-label".into())
                     .spawn(move || {
+                        // A user rename that landed since is the name; `agents::reconcile` keeps
+                        // it should this relabel still reach Rex after the user's.
+                        let renamed = app
+                            .try_state::<std::sync::Mutex<super::agents::AgentStore>>()
+                            .and_then(|s| super::lock(&s).record(&id))
+                            .is_none_or(|r| r.user_named);
+                        if renamed {
+                            return;
+                        }
                         if let Err(e) = hub.label_agent_window(&project, &window, &name) {
                             eprintln!("warden: agent tab label not updated: {e:?}");
                         }

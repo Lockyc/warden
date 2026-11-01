@@ -481,7 +481,7 @@ pub fn in_list_order(records: &[AgentRecord]) -> Vec<AgentRecord> {
 }
 
 /// Merge `project`'s `records` with its session's current `windows`. Live records follow their
-/// window (label as name, block); a vanished window closes a resumable record (stamped `now`)
+/// window (label as name — except a user-named record's own subject — and block); a vanished window closes a resumable record (stamped `now`)
 /// and drops the rest; an unknown window is appended live, ungrouped, last. A dead session
 /// sleeps resumable live records and drops the rest, ignoring `windows`. Asleep and Closed pass
 /// through unchanged.
@@ -508,7 +508,13 @@ pub fn reconcile(
         let mut r = r.clone();
         match win {
             Some(w) => {
-                r.name = w.label.clone();
+                // A user-named record's window can carry its subject: a summary relabel that
+                // raced the user's rename to Rex (`summary.rs::land`). That label isn't a
+                // rename, so the user's name stays.
+                let summary_label = r.user_named && r.subject.as_deref() == Some(&w.label);
+                if !summary_label {
+                    r.name = w.label.clone();
+                }
                 r.block_id = w.block_id.clone();
             }
             None if r.resume.is_none() => continue,
@@ -745,6 +751,23 @@ mod tests {
         assert_eq!(n.window_id.as_deref(), Some("w2"));
         assert_eq!(n.block_id.as_deref(), Some("b-w2"));
         assert_eq!(n.project, "p");
+    }
+
+    #[test]
+    fn a_user_named_record_never_adopts_its_subject_label() {
+        // A summary relabel that raced a user rename to Rex leaves the subject on the window.
+        let mut a = rec("a", RecordState::Live, Some("w1"), None);
+        a.name = "mine".into();
+        a.user_named = true;
+        a.subject = Some("auth flow".into());
+        let out = reconcile("p", &[a.clone()], &[win("w1", "auth flow")], true, 1);
+        assert_eq!(out[0].name, "mine");
+        // Any other label is still Rex's to give.
+        let out = reconcile("p", &[a.clone()], &[win("w1", "renamed")], true, 1);
+        assert_eq!(out[0].name, "renamed");
+        a.user_named = false;
+        let out = reconcile("p", &[a], &[win("w1", "auth flow")], true, 1);
+        assert_eq!(out[0].name, "auth flow", "an unnamed record takes it");
     }
 
     #[test]
