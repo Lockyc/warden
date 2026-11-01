@@ -147,7 +147,7 @@ Every trigger pushes a window into a fast burst via a `bump`, and **none** call
 `bump`/`bump_all` (whole window — `probe_now`, window focus, hot-reload, `rescan_root`);
 `bump_tab(label, id)` (a specific tab, no definite expected transition — a warm tab-switch),
 which names the tab to probe first that pass (see the priority-first note above); and
-`bump_tab_await(label, id, want_present)` (below), which does the same **and** arms a
+`bump_tab_await(label, id, want)` (below), which does the same **and** arms a
 directional await. Burst state (`WindowSchedule` in `probe.rs`) is tracked **per window,
 deliberately** — one window's flapping probe shouldn't force every other window's dots into
 fast polling too. `CAP` bounds a burst that never settles (a flapping/nondeterministic probe,
@@ -160,22 +160,22 @@ read a `0` floor as disabling presence checks.
 
 ### A directional await keeps the burst hot until the expected transition lands
 
-`bump_tab_await(label, id, want_present)` fixes the case a plain burst mishandles: a trigger
-that expects a **specific async transition** — a kill (session should go *down*) or a session
-start (a cold-`activate` of a probe-enabled tab, or `start_session` re-typing `cmd` — should
-come *up*). The transition is asynchronous: `amux --kill` returns before tmux teardown fully
+`bump_tab_await(label, id, want)` fixes the case a plain burst mishandles: a trigger
+that expects a **specific async transition** (`probe::Await`) — a suspend (leave `Present`), a
+destroy (reach `Absent`, so a ☠ on a ghost waits for the ghost to clear), or a session start (a
+cold-`activate` of a probe-enabled tab, or `start_session` re-typing `cmd` — reach `Present`). The transition is asynchronous: `amux --kill` returns before tmux teardown fully
 lands, and a started session takes a second or two to spin up. A plain burst treats each "still
 the old state" pass as *agreement*, so ~`AGREE_TARGET`×`FAST` (~1.2s) of the transition-not-yet-
 landed **settles** the window onto the pre-transition state and drops it to the slow floor
 (`probe_interval`, default 5s) — the real change is then only caught on the next slow poll.
 
-The await closes that: it stashes `(id, want_present)` on the `WindowSchedule`, and the settle
+The await closes that: it stashes `(id, want)` on the `WindowSchedule`, and the settle
 logic (`advance`, gated by `await_pending`) refuses to settle while that tab is still on the old
 side — the burst stays `Fast`, agreement reset, until the tab reaches the expected side (then it
 resumes normal fast-until-stable settling) **or** `CAP` fires (the backstop for a transition that
 never arrives — a failed kill, a session that never comes up — after which it settles normally so
 a stuck await can't burst forever). The await is **directional, not leave-baseline**, which is
-what makes it self-satisfying: an `activate` of an already-live tab arms `want_present = true` and
+what makes it self-satisfying: an `activate` of an already-live tab arms `Await::Up` and
 `await_pending` returns false on the first pass (already `Present`), so a plain tab-switch never
 bursts to `CAP`. It is a **polling-duration heuristic only** — dots are always driven by the
 per-tab changed-only emit, so a mis-judged await can at worst poll `Fast` a bit longer, never

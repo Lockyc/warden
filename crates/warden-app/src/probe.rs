@@ -116,21 +116,32 @@ pub(crate) enum Cadence {
     Idle,
 }
 
+/// The transition a directional tab-bump expects its tab's presence to make.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Await {
+    /// The session should come **up** (start / cold-activate): reach `Present`.
+    Up,
+    /// The session should stop running (⏻ suspend): leave `Present` — a suspend lands on the ghost.
+    Down,
+    /// The session should be gone outright (☠ destroy): reach `Absent`. A ☠ on a ghost discards the
+    /// restorable session, so it starts off `Present` and must still wait for the ghost to clear.
+    Gone,
+}
+
 /// Whether an *armed* tab-bump's expected transition still hasn't landed, given this pass's probed
-/// presence for the awaited tab. `want_present` is the direction the trigger expects:
-/// `true` = the session should come **up** (start / cold-activate), `false` = it should go **down**
-/// (kill). Pending (`true`) means "the transition we're waiting for hasn't happened — keep bursting".
+/// presence for the awaited tab. Pending (`true`) means "the transition we're waiting for hasn't
+/// happened — keep bursting".
 ///
 /// **Directional, not leave-baseline, so it self-satisfies when there's nothing to wait for.**
-/// Activating a tab whose session is already live arms `want_present = true`, and this returns
-/// `false` immediately (already `Present`) — so a plain tab-switch never bursts to [`CAP`]. A kill
-/// that finds the session already gone likewise disarms at once. The dot is still driven by the
+/// Activating a tab whose session is already live arms [`Await::Up`], and this returns `false`
+/// immediately (already `Present`) — so a plain tab-switch never bursts to [`CAP`]. A kill that
+/// finds the session already gone likewise disarms at once. The dot is still driven by the
 /// per-tab changed-only emit regardless; this only governs how long the *burst* stays hot.
-fn await_pending(now: Presence, want_present: bool) -> bool {
-    if want_present {
-        now != Presence::Present
-    } else {
-        now == Presence::Present
+fn await_pending(now: Presence, want: Await) -> bool {
+    match want {
+        Await::Up => now != Presence::Present,
+        Await::Down => now == Presence::Present,
+        Await::Gone => now != Presence::Absent,
     }
 }
 
@@ -185,11 +196,11 @@ struct WindowSchedule {
     /// Set by such a bump, `take`n when the window is probed (applies to that one pass only). A
     /// whole-window bump (hot-reload/rescan/focus) leaves it unset — natural list order.
     priority: Option<String>,
-    /// An *armed* await: `(tab id, want_present)`. Set by a directional tab-bump (kill →
-    /// `false`, start / cold-activate → `true`) so the burst can't settle onto the pre-transition
-    /// state — it stays Fast until that tab reaches the expected side (or [`CAP`] fires), then is
-    /// cleared. See `advance`/`await_pending`. `None` = ordinary fast-until-stable settling.
-    awaiting: Option<(String, bool)>,
+    /// An *armed* await: `(tab id, expected transition)`. Set by a directional tab-bump (kill /
+    /// suspend / start / cold-activate) so the burst can't settle onto the pre-transition state —
+    /// it stays Fast until that tab reaches the expected side (or [`CAP`] fires), then is cleared.
+    /// See `advance`/`await_pending`. `None` = ordinary fast-until-stable settling.
+    awaiting: Option<(String, Await)>,
 }
 
 /// A `next_due` far enough in the future to mean "Idle — only a bump wakes this window".
@@ -242,12 +253,7 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
         let slow = interval.load(Ordering::Relaxed);
 
         // Apply bumps: window goes hot (probe immediately, fresh burst).
-        for Bump {
-            label,
-            tab,
-            await_present,
-        } in bumps
-        {
+        for Bump { label, tab, want } in bumps {
             let s = sched.entry(label).or_insert_with(|| WindowSchedule {
                 next_due: now,
                 prev: BTreeMap::new(),
@@ -265,8 +271,8 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
                 // A directional bump (kill/start/cold-activate) also arms an await so the burst
                 // holds until that tab's expected transition lands; a plain tab-bump (warm
                 // activate) leaves any existing await alone (CAP still bounds it).
-                if let Some(want_present) = await_present {
-                    s.awaiting = Some((id.clone(), want_present));
+                if let Some(want) = want {
+                    s.awaiting = Some((id.clone(), want));
                 }
                 s.priority = tab;
             }
@@ -317,9 +323,9 @@ pub fn run_scheduler(app: AppHandle, interval: Arc<AtomicU64>) {
             let changed = new != s.prev;
             // Is an armed tab-bump still waiting for its expected transition? (A tab that dropped
             // out of the work-list reads as Absent, which resolves the await one way or the other.)
-            let awaiting_pending = s.awaiting.as_ref().is_some_and(|(id, want_present)| {
+            let awaiting_pending = s.awaiting.as_ref().is_some_and(|(id, want)| {
                 let now_p = new.get(id).copied().unwrap_or(Presence::Absent);
-                await_pending(now_p, *want_present)
+                await_pending(now_p, *want)
             });
             let elapsed = pass_end.duration_since(s.burst_start);
             let (agree, cadence) = advance(changed, s.agree, elapsed, slow, awaiting_pending);
@@ -697,12 +703,12 @@ fn observe(
 
 /// A fast-burst request for one window. `tab` names the tab that triggered it (kill/start/activate)
 /// so the scheduler probes that tab first; `None` is a whole-window bump (hot-reload/rescan/focus).
-/// `await_present`, when set on a tab-bump, arms a directional await so the burst holds until that
-/// tab's expected transition lands (`true` = session should come up, `false` = go down).
+/// `want`, when set on a tab-bump, arms a directional await so the burst holds until that tab's
+/// expected transition ([`Await`]) lands.
 struct Bump {
     label: String,
     tab: Option<String>,
-    await_present: Option<bool>,
+    want: Option<Await>,
 }
 
 /// Scheduler bump channel sender, set once by `run_scheduler` at startup. Commands/events call
@@ -730,19 +736,18 @@ pub fn bump_tab(label: &str, tab: &str) {
 
 /// Like `bump_tab`, but also arms a **directional await** so the burst holds Fast until the tab's
 /// expected transition lands (bounded by [`CAP`]), instead of settling on the pre-transition state.
-/// `want_present`: the session should come **up** (`true` — start / cold-activate) or go **down**
-/// (`false` — kill). Without it, an async transition
-/// slower than the ~[`AGREE_TARGET`]×[`FAST`] settle window drops the window to the slow poll first.
-pub fn bump_tab_await(label: &str, tab: &str, want_present: bool) {
-    send_bump(label, Some(tab.to_string()), Some(want_present));
+/// Without it, an async transition slower than the ~[`AGREE_TARGET`]×[`FAST`] settle window drops
+/// the window to the slow poll first.
+pub fn bump_tab_await(label: &str, tab: &str, want: Await) {
+    send_bump(label, Some(tab.to_string()), Some(want));
 }
 
-fn send_bump(label: &str, tab: Option<String>, await_present: Option<bool>) {
+fn send_bump(label: &str, tab: Option<String>, want: Option<Await>) {
     if let Some(tx) = BUMP_TX.get() {
         let _ = tx.send(Bump {
             label: label.to_string(),
             tab,
-            await_present,
+            want,
         });
     }
 }
@@ -1024,31 +1029,44 @@ mod tests {
 
     #[test]
     fn await_pending_is_directional_and_self_satisfying() {
-        // want_present (start / cold-activate): pending until the session is actually Present.
+        // Up (start / cold-activate): pending until the session is actually Present.
         assert!(
-            await_pending(Presence::Absent, true),
+            await_pending(Presence::Absent, Await::Up),
             "no session yet → keep waiting"
         );
         assert!(
-            await_pending(Presence::Recoverable, true),
+            await_pending(Presence::Recoverable, Await::Up),
             "a ghost is not the live session a start awaits → keep waiting"
         );
         assert!(
-            !await_pending(Presence::Present, true),
+            !await_pending(Presence::Present, Await::Up),
             "session up → satisfied (so a warm tab-switch never bursts to CAP)"
         );
-        // !want_present (kill): pending only while the session is still Present.
+        // Down (suspend): pending only while the session is still Present.
         assert!(
-            await_pending(Presence::Present, false),
+            await_pending(Presence::Present, Await::Down),
             "still live → keep waiting for teardown"
         );
         assert!(
-            !await_pending(Presence::Absent, false),
-            "gone → satisfied (a kill of an already-dead session disarms at once)"
+            !await_pending(Presence::Recoverable, Await::Down),
+            "suspended to a ghost → satisfied"
         );
         assert!(
-            !await_pending(Presence::Recoverable, false),
-            "left Present (crashed to a ghost) → the kill's leave-Present await is satisfied"
+            !await_pending(Presence::Absent, Await::Down),
+            "gone → satisfied"
+        );
+        // Gone (destroy): pending until nothing is left — a ghost included.
+        assert!(
+            await_pending(Presence::Present, Await::Gone),
+            "still live → keep waiting for teardown"
+        );
+        assert!(
+            await_pending(Presence::Recoverable, Await::Gone),
+            "☠ on a ghost discards it → keep waiting until the ghost clears"
+        );
+        assert!(
+            !await_pending(Presence::Absent, Await::Gone),
+            "gone → satisfied (a kill of an already-dead session disarms at once)"
         );
     }
 

@@ -286,7 +286,7 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
                 }
             }
             hub_changed(&app, None);
-            crate::probe::bump_tab_await(&label, &id, false);
+            crate::probe::bump_tab_await(&label, &id, crate::probe::Await::Gone);
         });
     if let Err(e) = spawned {
         eprintln!("warden: couldn't start ending a tab's Rex sessions: {e}");

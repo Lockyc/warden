@@ -471,7 +471,7 @@ fn activate_tab(
     // ~AGREE_TARGET×FAST window and only catching the session on the next slow poll. A warm switch
     // (or a probe-less tab) has no expected transition, so it's a plain priority bump.
     if spawned_fresh && has_probe {
-        probe::bump_tab_await(window.label(), &id, true);
+        probe::bump_tab_await(window.label(), &id, probe::Await::Up);
     } else {
         probe::bump_tab(window.label(), &id);
     }
@@ -1192,18 +1192,23 @@ fn end_session(
         Some(registry::EndTarget::Command(dir, title, cmd)) => (dir, title, cmd),
     };
     // Run the kill fire-and-forget off the UI thread, then bump this window so the scheduler's fast
-    // burst catches the leave-Present transition the moment teardown lands. `bump_tab_await(false)`
-    // arms a directional await (session should go DOWN) so the burst holds Fast until it does rather
-    // than settling on the still-Present state and dropping to the slow poll — the fix for the
-    // ~5s-lingering dot when `amux --kill` returns before tmux teardown fully lands. No optimistic
-    // drop and no suppression flag: the dot tracks `warden:session-state` and converges
-    // monotonically (no off→on→off flicker). A genuinely-failed kill leaves the session present, so
-    // the await simply rides to CAP and the dot correctly stays lit.
+    // burst catches the transition the moment teardown lands. `bump_tab_await` arms a directional
+    // await — a suspend should leave Present (onto the ghost), a destroy should reach Absent (a ☠ on
+    // a ghost discards it) — so the burst holds Fast until it does rather than settling on the old
+    // state and dropping to the slow poll — the fix for the ~5s-lingering dot when `amux --kill`
+    // returns before tmux teardown fully lands. No optimistic drop and no suppression flag: the dot
+    // tracks `warden:session-state` and converges monotonically (no off→on→off flicker). A
+    // genuinely-failed kill leaves the session where it was, so the await simply rides to CAP and
+    // the dot correctly stays lit.
+    let want = match how {
+        registry::EndSession::Suspend => probe::Await::Down,
+        registry::EndSession::Destroy => probe::Await::Gone,
+    };
     std::thread::spawn(move || {
         probe::run_end(&cmd, &dir, &title);
         // Probe THIS tab first in the burst so its dot clears within one probe, not after every
         // other tab in a wide window's sweep.
-        probe::bump_tab_await(&label, &id, false);
+        probe::bump_tab_await(&label, &id, want);
     });
 }
 
@@ -1211,7 +1216,7 @@ fn end_session(
 /// (see `Registry::start_session` — the runtime twin of spawn-time `initial_input`). No-op if the
 /// tab is cold or has no `cmd`. The started session appears **asynchronously** — the shell has to
 /// run the typed command — so a single ordinary burst can settle "absent" before it comes up. A
-/// directional await (`bump_tab_await(true)`, session should come UP) holds the burst Fast until the
+/// directional await (`bump_tab_await(Await::Up)`, session should come UP) holds the burst Fast until the
 /// session is actually `Present` (bounded by CAP), so the dot lights within a probe of the session
 /// landing rather than up to a slow poll later. Same minimal-env PATH footgun as probes.
 #[cfg(target_os = "macos")]
@@ -1229,7 +1234,7 @@ fn start_session(window: tauri::WebviewWindow, state: tauri::State<ManagerState>
     }
     // Probe this tab first in the burst so its dot lights as soon as the session comes up, not after
     // the rest of a wide window's sweep; the await keeps the burst alive across the async start.
-    probe::bump_tab_await(window.label(), &id, true);
+    probe::bump_tab_await(window.label(), &id, probe::Await::Up);
 }
 
 // The agent tab list's commands (`rex::lifecycle`). Each answers a refusal at once; Rex work runs
