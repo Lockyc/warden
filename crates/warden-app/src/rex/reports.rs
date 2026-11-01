@@ -13,17 +13,23 @@ use std::thread;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-/// The socket's file name in the app config dir.
-const SOCKET_NAME: &str = "agent-reports.sock";
+/// Filename stem handed to `shell_core::config_scoped_filename`.
+const SOCKET_STEM: &str = "agent-reports";
 
-/// Where warden-app listens for reports, `None` without an app config dir. The path stays under
-/// macOS's 104-byte `sun_path` limit only for short home paths; a longer one can't be bound or
-/// connected to, so panes then report nowhere.
+/// Where warden-app listens for reports, `None` without an app config dir. Scoped to the config
+/// like every other per-instance store, so a second instance (`just run` beside the installed
+/// app, same bundle id) binds its own socket instead of unlinking and taking over this one's.
+/// The path stays under macOS's 104-byte `sun_path` limit only for short home paths; a longer one
+/// can't be bound or connected to, so panes then report nowhere.
 pub fn socket_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|d| d.join(SOCKET_NAME))
+    let dir = app.path().app_config_dir().ok()?;
+    Some(scoped_socket(&dir, &warden_config::config_path()))
+}
+
+/// `dir`'s report socket for the config at `config` (the scoped name, as a `.sock`).
+fn scoped_socket(dir: &Path, config: &Path) -> PathBuf {
+    dir.join(shell_core::config_scoped_filename(SOCKET_STEM, config))
+        .with_extension("sock")
 }
 
 /// A block's program reporting the command that resumes it.
@@ -84,6 +90,20 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::Duration;
+
+    #[test]
+    fn each_config_gets_its_own_socket_within_sun_path() {
+        let dir = Path::new("/Users/someone/Library/Application Support/au.lsjc.warden");
+        let a = scoped_socket(dir, Path::new("/Users/someone/.config/warden/config.toml"));
+        let b = scoped_socket(dir, Path::new("/repo/examples/config.toml"));
+        assert_ne!(a, b, "two configs must not share a socket");
+        assert_eq!(a.extension().and_then(|e| e.to_str()), Some("sock"));
+        assert!(
+            a.as_os_str().len() < 104,
+            "{} exceeds sun_path",
+            a.display()
+        );
+    }
 
     const WAIT: Duration = Duration::from_secs(5);
 
