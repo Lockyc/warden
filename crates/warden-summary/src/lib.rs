@@ -8,7 +8,7 @@ mod prompt;
 mod refresh;
 mod rows;
 
-pub use claude::Claude;
+pub use claude::{Claude, DigestCursor};
 pub use gate::strip_unbacked_done;
 pub use model::{HttpModel, Model};
 pub use prompt::{label, stand};
@@ -38,9 +38,16 @@ pub enum CtxMode {
 pub trait Transcript {
     /// Up to `max_msgs` prose turns (each cut to `percap` chars) joined by `" / "`.
     fn context(&self, path: &Path, max_msgs: usize, percap: usize, mode: CtxMode) -> String;
-    /// A chronological digest of the transcript from 1-based `start_line` to the end, trimmed to
-    /// `char_budget` by dropping the oldest prose first.
-    fn digest(&self, path: &Path, start_line: usize, char_budget: usize) -> String;
-    /// Newline count, the cursor a later `digest` resumes from.
-    fn line_count(&self, path: &Path) -> usize;
+    /// A chronological digest of the transcript from byte offset `anchor` to the end, trimmed to
+    /// `char_budget` by dropping the oldest prose first. `cursor` carries what earlier calls read,
+    /// so a refresh reads only the bytes appended since.
+    fn digest(
+        &self,
+        path: &Path,
+        anchor: u64,
+        cursor: &mut DigestCursor,
+        char_budget: usize,
+    ) -> String;
+    /// The byte offset of the last complete line: where a digest re-anchored now starts.
+    fn anchor(&self, path: &Path) -> u64;
 }

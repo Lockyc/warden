@@ -3,7 +3,8 @@
 //! in `docs/summary.md`.
 
 use crate::{
-    label, parse_stand, stand, strip_unbacked_done, CtxMode, Model, StandRows, Transcript,
+    label, parse_stand, stand, strip_unbacked_done, CtxMode, DigestCursor, Model, StandRows,
+    Transcript,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -30,8 +31,11 @@ pub struct SummaryState {
     pub subject: Option<String>,
     /// Consecutive ticks the recent work shared no content word with `subject`.
     pub drift: u32,
-    /// 1-based transcript line the stand digest starts from; 0 (default) reads as 1.
-    pub start_line: usize,
+    /// Byte offset of the transcript line the stand digest starts from: 0 until a pivot moves it.
+    pub anchor: u64,
+    /// How far the digest has read from `anchor`. In memory only: after a restart the first
+    /// refresh reads from `anchor` again.
+    pub digest: DigestCursor,
     /// Bumped by the caller when the transcript is replaced; results of an older generation are
     /// discarded.
     pub generation: u64,
@@ -47,7 +51,8 @@ pub struct RefreshResult {
     pub generation: u64,
     pub subject: Option<String>,
     pub drift: u32,
-    pub start_line: usize,
+    pub anchor: u64,
+    pub digest: DigestCursor,
     /// The new stand rows, or `None` when the stand failed and the old rows stand.
     pub rows: Option<StandRows>,
 }
@@ -67,7 +72,8 @@ pub fn apply(state: &mut SummaryState, result: RefreshResult) -> bool {
     }
     state.subject = result.subject;
     state.drift = result.drift;
-    state.start_line = result.start_line;
+    state.anchor = result.anchor;
+    state.digest = result.digest;
     if result.rows.is_some() {
         state.rows = result.rows;
     }
@@ -107,7 +113,8 @@ pub fn refresh(
         generation: state.generation,
         subject: state.subject.clone(),
         drift: state.drift,
-        start_line: state.start_line,
+        anchor: state.anchor,
+        digest: state.digest.clone(),
         rows: None,
     };
     let blob = tx.context(path, 6, 400, CtxMode::Tail);
@@ -149,7 +156,7 @@ pub fn refresh(
                     if let Some(new) = label(model, &goal, LABEL_WORDS) {
                         if new != subj {
                             r.subject = Some(new);
-                            r.start_line = tx.line_count(path);
+                            r.anchor = tx.anchor(path);
                         }
                         r.drift = 0;
                     }
@@ -160,8 +167,7 @@ pub fn refresh(
         }
     }
 
-    let start = if r.start_line == 0 { 1 } else { r.start_line };
-    let mut digest = tx.digest(path, start, DIGEST_BUDGET);
+    let mut digest = tx.digest(path, r.anchor, &mut r.digest, DIGEST_BUDGET);
     if digest.is_empty() {
         digest = blob;
     }
@@ -186,7 +192,7 @@ mod tests {
         tail: String,
         todos: String,
         digest: String,
-        lines: usize,
+        end: u64,
     }
 
     impl Transcript for Fix {
@@ -197,11 +203,11 @@ mod tests {
                 CtxMode::Todos => self.todos.clone(),
             }
         }
-        fn digest(&self, _: &Path, _: usize, _: usize) -> String {
+        fn digest(&self, _: &Path, _: u64, _: &mut DigestCursor, _: usize) -> String {
             self.digest.clone()
         }
-        fn line_count(&self, _: &Path) -> usize {
-            self.lines
+        fn anchor(&self, _: &Path) -> u64 {
+            self.end
         }
     }
 
@@ -243,7 +249,7 @@ mod tests {
             tail: "fixing the cache layer".into(),
             todos: String::new(),
             digest: "edited a.rs / ran: cargo test".into(),
-            lines: 77,
+            end: 7700,
         }
     }
 
@@ -254,7 +260,6 @@ mod tests {
     fn with_subject(s: &str) -> SummaryState {
         SummaryState {
             subject: Some(s.into()),
-            start_line: 1,
             ..Default::default()
         }
     }
@@ -301,29 +306,29 @@ mod tests {
     }
 
     #[test]
-    fn sustained_drift_same_subject_keeps_start_line() {
+    fn sustained_drift_same_subject_keeps_anchor() {
         let s = SummaryState {
             drift: 2,
-            start_line: 5,
+            anchor: 500,
             ..with_subject("auth token flow")
         };
         let m = Script::new(&[Some("cache layer"), Some("auth token flow"), Some("x")]);
         let r = refresh(&s, &fix(8), &m, p());
         assert_eq!(r.subject.as_deref(), Some("auth token flow"));
-        assert_eq!((r.start_line, r.drift), (5, 0));
+        assert_eq!((r.anchor, r.drift), (500, 0));
     }
 
     #[test]
-    fn pivot_replaces_subject_and_reanchors_start_line() {
+    fn pivot_replaces_subject_and_reanchors() {
         let s = SummaryState {
             drift: 2,
-            start_line: 5,
+            anchor: 500,
             ..with_subject("auth token flow")
         };
         let m = Script::new(&[Some("cache layer"), Some("billing export"), Some("x")]);
         let r = refresh(&s, &fix(8), &m, p());
         assert_eq!(r.subject.as_deref(), Some("billing export"));
-        assert_eq!((r.start_line, r.drift), (77, 0));
+        assert_eq!((r.anchor, r.drift), (7700, 0));
     }
 
     #[test]

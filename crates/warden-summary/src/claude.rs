@@ -53,12 +53,21 @@ impl Transcript for Claude {
         }
     }
 
-    fn digest(&self, path: &Path, start_line: usize, char_budget: usize) -> String {
-        digest_file(path, start_line.max(1), char_budget).unwrap_or_default()
+    fn digest(
+        &self,
+        path: &Path,
+        anchor: u64,
+        cursor: &mut DigestCursor,
+        char_budget: usize,
+    ) -> String {
+        File::open(path)
+            .ok()
+            .and_then(|f| digest_from(f, anchor, cursor, char_budget))
+            .unwrap_or_default()
     }
 
-    fn line_count(&self, path: &Path) -> usize {
-        count_newlines(path).unwrap_or(0)
+    fn anchor(&self, path: &Path) -> u64 {
+        File::open(path).ok().and_then(last_line_start).unwrap_or(0)
     }
 }
 
@@ -313,31 +322,42 @@ fn todo_snapshot(v: &Value) -> Option<Value> {
 
 // ---- digest (digest.sh) ----
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum Tag {
     Prose,
     Tool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct Entry {
     tag: Tag,
     len: usize,
     text: String,
     removed: bool,
+    /// A tool line's `tool_use` id, for marking it failed when its result arrives.
+    tool_id: Option<String>,
 }
+
+/// Appended to a tool line whose `tool_result` errored.
+const FAILED: &str = " (failed)";
+/// Dropped entries kept before [`Budgeted::compact`] sweeps them out.
+const COMPACT_AFTER: usize = 1024;
 
 /// The digest body under a char budget. The oldest prose is dropped first, tool lines never;
 /// trimming as entries arrive reaches the same result as trimming at the end, because totals only
-/// grow, and keeps memory to the budget plus the tool lines.
+/// grow (a tool line marked failed later grows too), and keeps memory to the budget plus the tool
+/// lines.
+#[derive(Debug, Clone, PartialEq, Default)]
 struct Budgeted {
     budget: i64,
     entries: Vec<Entry>,
     total: i64,
     cursor: usize,
+    removed: usize,
 }
 
 impl Budgeted {
-    fn push(&mut self, tag: Tag, text: String) {
+    fn push(&mut self, tag: Tag, text: String, tool_id: Option<String>) {
         let len = text.chars().count();
         self.total += len as i64 + if self.entries.is_empty() { 0 } else { 3 };
         self.entries.push(Entry {
@@ -345,7 +365,22 @@ impl Budgeted {
             len,
             text,
             removed: false,
+            tool_id,
         });
+        self.trim();
+    }
+
+    /// Mark every tool line of `id` failed.
+    fn fail(&mut self, id: &str) {
+        let n = FAILED.chars().count();
+        for e in self.entries.iter_mut().rev() {
+            if e.tag == Tag::Tool && e.tool_id.as_deref() == Some(id) {
+                e.tool_id = None;
+                e.text.push_str(FAILED);
+                e.len += n;
+                self.total += n as i64;
+            }
+        }
         self.trim();
     }
 
@@ -359,12 +394,25 @@ impl Budgeted {
                 self.cursor += 1;
             }
             let Some(e) = self.entries.get_mut(self.cursor) else {
-                return;
+                break;
             };
             e.removed = true;
             e.text = String::new();
             self.total -= e.len as i64 + 3;
+            self.removed += 1;
         }
+        self.compact();
+    }
+
+    /// Sweep out dropped entries once they outnumber the live ones, so a cursor kept across a
+    /// long session holds the budget plus its tool lines, not every turn it ever saw.
+    fn compact(&mut self) {
+        if self.removed < COMPACT_AFTER || self.removed * 2 < self.entries.len() {
+            return;
+        }
+        self.entries.retain(|e| !e.removed);
+        self.cursor = 0;
+        self.removed = 0;
     }
 
     fn render(&self) -> String {
@@ -377,85 +425,140 @@ impl Budgeted {
     }
 }
 
-/// Feeds each line from 1-based `start` to the end to `f`; the file is not held in memory.
-fn for_each_line(path: &Path, start: usize, mut f: impl FnMut(&[u8])) -> Option<()> {
-    let mut r = BufReader::new(File::open(path).ok()?);
-    let mut skipped = 1;
-    while skipped < start {
-        let buf = r.fill_buf().ok()?;
-        if buf.is_empty() {
-            return Some(());
-        }
-        match buf.iter().position(|&b| b == b'\n') {
-            Some(i) => {
-                r.consume(i + 1);
-                skipped += 1;
-            }
-            None => {
-                let n = buf.len();
-                r.consume(n);
-            }
-        }
-    }
-    let mut buf = Vec::new();
-    loop {
-        buf.clear();
-        if r.read_until(b'\n', &mut buf).ok()? == 0 {
-            return Some(());
-        }
-        f(&buf);
-    }
+/// How far a digest has read a transcript, so the next one reads only what was appended since.
+/// Kept by the caller across refreshes ([`crate::SummaryState::digest`]); a cursor for another
+/// anchor or budget, or a file now shorter than it has read, starts over from the anchor.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DigestCursor {
+    /// Byte offset the digest starts from.
+    anchor: u64,
+    /// Bytes read so far (an offset at a line start).
+    read: u64,
+    budget: usize,
+    /// `tool_use` ids whose `tool_result` errored.
+    failed: HashSet<String>,
+    body: Budgeted,
+    /// The latest `TodoWrite` snapshot.
+    todos: Option<Value>,
 }
 
-fn digest_file(path: &Path, start: usize, budget: usize) -> Option<String> {
-    // Pass 1: tool_use ids whose paired tool_result errored.
-    let mut failed: HashSet<String> = HashSet::new();
-    for_each_line(path, start, |line| {
-        if !contains(line, b"is_error") {
-            return;
+impl DigestCursor {
+    fn new(anchor: u64, budget: usize) -> Self {
+        DigestCursor {
+            anchor,
+            read: anchor,
+            budget,
+            body: Budgeted {
+                budget: i64::try_from(budget).unwrap_or(i64::MAX),
+                ..Budgeted::default()
+            },
+            ..DigestCursor::default()
         }
-        let Some(v) = parse(line) else { return };
-        if v.get("type").and_then(Value::as_str) != Some("user") {
-            return;
-        }
-        for b in content_blocks(&v) {
-            if b.get("type").and_then(Value::as_str) == Some("tool_result")
-                && b.get("is_error") == Some(&Value::Bool(true))
-            {
-                if let Some(id) = str_of(b, "tool_use_id") {
-                    failed.insert(id);
+    }
+
+    /// One transcript line: errored results mark their tool lines, then the prose, the mutating
+    /// tool one-liners and the task list it carries.
+    fn feed(&mut self, v: &Value) {
+        if v.get("type").and_then(Value::as_str) == Some("user") {
+            for b in content_blocks(v) {
+                if b.get("type").and_then(Value::as_str) == Some("tool_result")
+                    && b.get("is_error") == Some(&Value::Bool(true))
+                {
+                    if let Some(id) = str_of(b, "tool_use_id") {
+                        if self.failed.insert(id.clone()) {
+                            self.body.fail(&id);
+                        }
+                    }
                 }
             }
         }
-    })?;
-
-    // Pass 2: prose and mutating tool one-liners, plus the latest TodoWrite snapshot.
-    let mut body = Budgeted {
-        budget: i64::try_from(budget).unwrap_or(i64::MAX),
-        entries: Vec::new(),
-        total: 0,
-        cursor: 0,
-    };
-    let mut todos: Option<Value> = None;
-    for_each_line(path, start, |line| {
-        let Some(v) = parse(line) else { return };
-        if let Some(t) = todo_snapshot(&v) {
-            todos = Some(t);
+        if let Some(t) = todo_snapshot(v) {
+            self.todos = Some(t);
         }
-        digest_entries(&v, &failed, &mut body);
-    })?;
+        digest_entries(v, &self.failed, &mut self.body);
+    }
 
-    let main = body.render();
-    let seg = todos.as_ref().and_then(todo_segments).unwrap_or_default();
-    Some(match (main.is_empty(), seg.is_empty()) {
-        (false, false) => format!("{main}{SEP}{seg}"),
-        (false, true) => main,
-        _ => seg,
-    })
+    fn render(&self) -> String {
+        let main = self.body.render();
+        let seg = self
+            .todos
+            .as_ref()
+            .and_then(todo_segments)
+            .unwrap_or_default();
+        match (main.is_empty(), seg.is_empty()) {
+            (false, false) => format!("{main}{SEP}{seg}"),
+            (false, true) => main,
+            _ => seg,
+        }
+    }
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+/// The digest of `src` from byte `anchor` to its end, reading only past what `cursor` has seen.
+/// Each line is parsed once. A last line with no newline that doesn't parse is still being
+/// written: it is left for the next read. `None` on an I/O error, leaving `cursor` as it was.
+pub(crate) fn digest_from<R: Read + Seek>(
+    mut src: R,
+    anchor: u64,
+    cursor: &mut DigestCursor,
+    budget: usize,
+) -> Option<String> {
+    let len = src.seek(SeekFrom::End(0)).ok()?;
+    let mut c = if cursor.anchor == anchor && cursor.budget == budget && cursor.read <= len {
+        std::mem::take(cursor)
+    } else {
+        DigestCursor::new(anchor, budget)
+    };
+    if c.read < len {
+        if src.seek(SeekFrom::Start(c.read)).is_err() {
+            *cursor = c;
+            return None;
+        }
+        let mut r = BufReader::new(&mut src);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match r.read_until(b'\n', &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let v = parse(&buf);
+                    if v.is_none() && buf.last() != Some(&b'\n') {
+                        break;
+                    }
+                    c.read += n as u64;
+                    if let Some(v) = v {
+                        c.feed(&v);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    let out = c.render();
+    *cursor = c;
+    Some(out)
+}
+
+/// The byte offset where the last complete line starts (0 with fewer than two newlines), read
+/// backward from the end.
+pub(crate) fn last_line_start<R: Read + Seek>(mut src: R) -> Option<u64> {
+    let mut pos = src.seek(SeekFrom::End(0)).ok()?;
+    let mut newlines = 0;
+    while pos > 0 {
+        let start = pos.saturating_sub(CHUNK);
+        let mut chunk = vec![0u8; usize::try_from(pos - start).ok()?];
+        src.seek(SeekFrom::Start(start)).ok()?;
+        src.read_exact(&mut chunk).ok()?;
+        for (i, &b) in chunk.iter().enumerate().rev() {
+            if b == b'\n' {
+                newlines += 1;
+                if newlines == 2 {
+                    return Some(start + i as u64 + 1);
+                }
+            }
+        }
+        pos = start;
+    }
+    Some(0)
 }
 
 fn digest_entries(v: &Value, failed: &HashSet<String>, out: &mut Budgeted) {
@@ -487,10 +590,12 @@ fn digest_entries(v: &Value, failed: &HashSet<String>, out: &mut Budgeted) {
                     }
                     Some("tool_use") => {
                         if let Some(mut line) = tool_line(b) {
-                            if str_of(b, "id").is_some_and(|id| failed.contains(&id)) {
-                                line.push_str(" (failed)");
+                            let mut id = str_of(b, "id");
+                            if id.as_ref().is_some_and(|id| failed.contains(id)) {
+                                line.push_str(FAILED);
+                                id = None;
                             }
-                            out.push(Tag::Tool, line);
+                            out.push(Tag::Tool, line, id);
                         }
                     }
                     _ => {}
@@ -505,7 +610,7 @@ fn push_prose(out: &mut Budgeted, text: String) {
     if text.is_empty() || is_filler(&text, DIGEST_FILLER) || !is_prose(&text) {
         return;
     }
-    out.push(Tag::Prose, take_chars(&text, DIGEST_PROSE_CAP));
+    out.push(Tag::Prose, take_chars(&text, DIGEST_PROSE_CAP), None);
 }
 
 /// `edited <file>` / `wrote <file>` / `ran: <command>` for the mutating tools; every other tool,
@@ -565,20 +670,6 @@ fn todo_segments(todos: &Value) -> Option<String> {
 }
 
 // ---- file plumbing ----
-
-fn count_newlines(path: &Path) -> Option<usize> {
-    let mut r = BufReader::new(File::open(path).ok()?);
-    let mut n = 0;
-    loop {
-        let buf = r.fill_buf().ok()?;
-        if buf.is_empty() {
-            return Some(n);
-        }
-        n += buf.iter().filter(|&&b| b == b'\n').count();
-        let len = buf.len();
-        r.consume(len);
-    }
-}
 
 /// Lines of a seekable source, newest first, read backward in [`CHUNK`]s so only the tail is
 /// touched. A trailing newline ends the last line rather than starting an empty one.
@@ -659,8 +750,27 @@ mod tests {
         Claude.context(&fx(name), n, pc, mode)
     }
 
-    fn digest(name: &str, start: usize, budget: usize) -> String {
-        Claude.digest(&fx(name), start, budget)
+    fn digest(name: &str, anchor: u64, budget: usize) -> String {
+        fresh_digest(&fx(name), anchor, budget)
+    }
+
+    fn fresh_digest(p: &Path, anchor: u64, budget: usize) -> String {
+        Claude.digest(p, anchor, &mut DigestCursor::default(), budget)
+    }
+
+    /// Byte offset of 1-based line `n` of `p`.
+    fn line_offset(p: &Path, n: usize) -> u64 {
+        let bytes = fs::read(p).unwrap();
+        let mut seen = 1;
+        for (i, &b) in bytes.iter().enumerate() {
+            if seen == n {
+                return i as u64;
+            }
+            if b == b'\n' {
+                seen += 1;
+            }
+        }
+        bytes.len() as u64
     }
 
     /// A scratch file removed on drop.
@@ -800,7 +910,7 @@ mod tests {
 
     #[test]
     fn digest1_to_5_9_and_todo_snapshot() {
-        let out = digest("digest_mixed.jsonl", 1, 10000);
+        let out = digest("digest_mixed.jsonl", 0, 10000);
         assert_eq!(out, FULL_DIGEST);
         // selftest1 user prose, 2 edited, 3 ran+failed, 4 Read leaked, 5 filler kept,
         // 9 bare line from an empty-input tool, todo1..4 are all pinned by the full string.
@@ -810,7 +920,7 @@ mod tests {
     #[test]
     fn digest6_7_budget_trims_prose_keeps_tools() {
         assert_eq!(
-            digest("digest_mixed.jsonl", 1, 30),
+            digest("digest_mixed.jsonl", 0, 30),
             "edited auth.py / ran: pytest -q tests/test_auth.py (failed) / \
              todo-done: Write backfill / todo-now: Adding proration tests / \
              todo-next: Run migration"
@@ -818,9 +928,10 @@ mod tests {
     }
 
     #[test]
-    fn digest8_start_line_skips_earlier_turns() {
+    fn digest8_anchor_skips_earlier_turns() {
+        let from_line_5 = line_offset(&fx("digest_mixed.jsonl"), 5);
         assert_eq!(
-            digest("digest_mixed.jsonl", 5, 10000),
+            digest("digest_mixed.jsonl", from_line_5, 10000),
             "ran: pytest -q tests/test_auth.py (failed) / todo-done: Write backfill / \
              todo-now: Adding proration tests / todo-next: Run migration"
         );
@@ -830,7 +941,7 @@ mod tests {
     fn digest10_11_huge_line_bounded() {
         let s = Scratch::new("digest-huge");
         fs::write(&s.0, user_line(&"alpha beta gamma ".repeat(20000))).unwrap();
-        let out = Claude.digest(&s.0, 1, 10000);
+        let out = fresh_digest(&s.0, 0, 10000);
         assert!(out.contains("alpha beta gamma"), "selftest10");
         assert!(
             out.chars().count() <= 244,
@@ -870,17 +981,130 @@ mod tests {
             for mode in [CtxMode::Head, CtxMode::Tail, CtxMode::Todos] {
                 assert_eq!(Claude.context(p, 5, 240, mode), "");
             }
-            assert_eq!(Claude.digest(p, 1, 10000), "");
-            assert_eq!(Claude.line_count(p), 0);
+            assert_eq!(fresh_digest(p, 0, 10000), "");
+            assert_eq!(Claude.anchor(p), 0);
         }
     }
 
     #[test]
-    fn line_count_counts_newlines() {
-        assert_eq!(Claude.line_count(&fx("ctx_mixed.jsonl")), 13);
-        let s = Scratch::new("lc");
+    fn anchor_is_the_last_complete_lines_start() {
+        let mixed = fx("ctx_mixed.jsonl");
+        assert_eq!(Claude.anchor(&mixed), line_offset(&mixed, 13));
+        let s = Scratch::new("anchor");
         fs::write(&s.0, "a\nb").unwrap();
-        assert_eq!(Claude.line_count(&s.0), 1);
+        assert_eq!(Claude.anchor(&s.0), 0, "one complete line");
+        fs::write(&s.0, "a\nbb\ncc").unwrap();
+        assert_eq!(Claude.anchor(&s.0), 2, "the partial last line isn't one");
+        fs::write(&s.0, "").unwrap();
+        assert_eq!(Claude.anchor(&s.0), 0);
+    }
+
+    fn tool_use(id: &str, cmd: &str) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\
+             \"id\":\"{id}\",\"name\":\"Bash\",\"input\":{{\"command\":\"{cmd}\"}}}}]}}}}\n"
+        )
+    }
+
+    fn tool_error(id: &str) -> String {
+        format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\
+             \"tool_use_id\":\"{id}\",\"is_error\":true,\"content\":\"boom\"}}]}}}}\n"
+        )
+    }
+
+    fn append(p: &Path, s: &str) {
+        let mut f = fs::OpenOptions::new().append(true).open(p).unwrap();
+        f.write_all(s.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn a_kept_cursor_reads_on_to_the_same_digest() {
+        let s = Scratch::new("cursor");
+        fs::write(&s.0, user_line("build the invoicing exporter please")).unwrap();
+        append(&s.0, &tool_use("t1", "cargo test"));
+        let mut c = DigestCursor::default();
+        assert_eq!(
+            Claude.digest(&s.0, 0, &mut c, 10000),
+            "build the invoicing exporter please / ran: cargo test"
+        );
+
+        // The result arrives in a later read, a line is mid-write, and the budget drops prose.
+        append(&s.0, &tool_error("t1"));
+        append(
+            &s.0,
+            &user_line("now wire the exporter into the nightly job"),
+        );
+        append(&s.0, "{\"type\":\"user\",\"mess");
+        let kept = Claude.digest(&s.0, 0, &mut c, 10000);
+        assert_eq!(
+            kept,
+            "build the invoicing exporter please / ran: cargo test (failed) / now wire the \
+             exporter into the nightly job"
+        );
+        append(
+            &s.0,
+            "age\":{\"content\":\"and add a retry for the failed exports\"}}\n",
+        );
+        let kept = Claude.digest(&s.0, 0, &mut c, 10000);
+        assert_eq!(
+            kept,
+            fresh_digest(&s.0, 0, 10000),
+            "the finished line is read once"
+        );
+        assert!(kept.ends_with("and add a retry for the failed exports"));
+        assert_eq!(
+            Claude.digest(&s.0, 0, &mut c, 40),
+            fresh_digest(&s.0, 0, 40),
+            "a new budget starts over"
+        );
+        let from_2 = line_offset(&s.0, 2);
+        assert_eq!(
+            Claude.digest(&s.0, from_2, &mut c, 10000),
+            fresh_digest(&s.0, from_2, 10000),
+            "so does a new anchor"
+        );
+    }
+
+    #[test]
+    fn digest_reads_only_what_was_appended() {
+        let s = Scratch::new("digest-fifty-mb");
+        let mut f = io::BufWriter::new(fs::File::create(&s.0).unwrap());
+        let mut written = 0u64;
+        let mut i = 0u64;
+        while written < 50 * 1024 * 1024 {
+            let l = if i % 5000 == 0 {
+                tool_use(&format!("t{i}"), &format!("cargo test step {i}"))
+            } else {
+                user_line(&format!(
+                    "filler turn number {i} describing some routine progress on the parser module"
+                ))
+            };
+            f.write_all(l.as_bytes()).unwrap();
+            written += l.len() as u64;
+            i += 1;
+        }
+        f.flush().unwrap();
+        drop(f);
+
+        let mut c = DigestCursor::default();
+        let first = Claude.digest(&s.0, 0, &mut c, 10000);
+        assert!(first.contains("ran: cargo test step 0"));
+
+        append(&s.0, &tool_error("t0"));
+        append(&s.0, &user_line("the very last message about shipping"));
+        let mut r = Counting {
+            inner: fs::File::open(&s.0).unwrap(),
+            read: 0,
+        };
+        let next = digest_from(&mut r, 0, &mut c, 10000).unwrap();
+        assert!(
+            r.read < 1024 * 1024,
+            "read {} bytes of a {written} byte file",
+            r.read
+        );
+        assert!(next.contains("ran: cargo test step 0 (failed)"));
+        assert!(next.ends_with("the very last message about shipping"));
     }
 
     struct Counting<R> {

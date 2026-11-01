@@ -393,7 +393,7 @@ pub(crate) mod tests {
             user_named: false,
             summary: None,
             subject: None,
-            digest_start: 0,
+            digest_anchor: 0,
             drift: 0,
         }
     }

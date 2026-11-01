@@ -56,7 +56,7 @@ struct Entry {
 pub struct Summary {
     pub rows: Option<StandRows>,
     pub subject: Option<String>,
-    pub start_line: usize,
+    pub anchor: u64,
     pub drift: u32,
 }
 
@@ -65,7 +65,7 @@ impl Summary {
     fn held_by(&self, record: &AgentRecord) -> bool {
         record.summary == self.rows
             && record.subject == self.subject
-            && record.digest_start == self.start_line
+            && record.digest_anchor == self.anchor
             && record.drift == self.drift
     }
 
@@ -73,7 +73,7 @@ impl Summary {
     fn write(self, record: &mut AgentRecord) {
         record.summary = self.rows;
         record.subject = self.subject;
-        record.digest_start = self.start_line;
+        record.digest_anchor = self.anchor;
         record.drift = self.drift;
     }
 }
@@ -180,7 +180,7 @@ impl SummaryDriver {
         Some(Summary {
             rows: s.rows.clone(),
             subject: s.subject.clone(),
-            start_line: s.start_line,
+            anchor: s.anchor,
             drift: s.drift,
         })
     }
@@ -195,7 +195,7 @@ fn entry_for<'a>(entries: &'a mut HashMap<String, Entry>, record: &AgentRecord) 
         state: SummaryState {
             subject: record.subject.clone(),
             rows: record.summary.clone(),
-            start_line: record.digest_start,
+            anchor: record.digest_anchor,
             drift: record.drift,
             ..SummaryState::default()
         },
@@ -526,7 +526,8 @@ mod tests {
             generation: job.state.generation,
             subject: Some("auth flow".into()),
             drift: 0,
-            start_line: 0,
+            anchor: 0,
+            digest: Default::default(),
             rows: Some(StandRows {
                 now: Some(now.into()),
                 ..Default::default()
@@ -688,14 +689,14 @@ mod tests {
         let mut r = agent("claude --resume abc");
         r.subject = Some("kept subject".into());
         r.summary = Some(StandRows::default());
-        r.digest_start = 120;
+        r.digest_anchor = 120;
         r.drift = 2;
         assert!(d.consider(&r, Some(AgentState::Working), true, Instant::now()));
         let job = rx.try_recv().unwrap();
         assert_eq!(job.state.subject.as_deref(), Some("kept subject"));
         assert_eq!(job.state.rows, Some(StandRows::default()));
         // A pivoted conversation keeps its digest window across a restart.
-        assert_eq!((job.state.start_line, job.state.drift), (120, 2));
+        assert_eq!((job.state.anchor, job.state.drift), (120, 2));
     }
 
     #[test]
@@ -705,10 +706,10 @@ mod tests {
         assert!(d.consider(&r, Some(AgentState::Working), true, Instant::now()));
         let job = rx.try_recv().unwrap();
         let mut res = result_for(&job, "x");
-        res.start_line = 77;
+        res.anchor = 77;
         res.drift = 1;
         let s = d.accept(&job.record_id, Some(&r), Some(res)).unwrap();
-        assert_eq!((s.start_line, s.drift), (77, 1));
+        assert_eq!((s.anchor, s.drift), (77, 1));
         assert_eq!(s.subject.as_deref(), Some("auth flow"));
     }
 
@@ -759,11 +760,17 @@ mod tests {
         fn context(&self, _: &std::path::Path, _: usize, _: usize, _: CtxMode) -> String {
             "edit the strip".into()
         }
-        fn digest(&self, _: &std::path::Path, _: usize, _: usize) -> String {
+        fn digest(
+            &self,
+            _: &std::path::Path,
+            _: u64,
+            _: &mut warden_summary::DigestCursor,
+            _: usize,
+        ) -> String {
             "edited strip.rs".into()
         }
-        fn line_count(&self, _: &std::path::Path) -> usize {
-            1
+        fn anchor(&self, _: &std::path::Path) -> u64 {
+            0
         }
     }
 

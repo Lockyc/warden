@@ -297,7 +297,9 @@ fn main() {
     let claude = Claude;
     let mut all: Vec<(String, Vec<Cut>)> = Vec::new();
     for (ti, f) in files.iter().enumerate() {
-        let total = claude.line_count(f);
+        let total = std::fs::read(f)
+            .map(|b| b.iter().filter(|&&c| c == b'\n').count())
+            .unwrap_or(0);
         let name = format!("T{}", ti + 1);
         eprintln!("{name}: {total} lines");
         let mut state = SummaryState::default();
@@ -312,8 +314,8 @@ fn main() {
             }
             let goal = claude.context(&tp, 1, CELL_MAX, CtxMode::Head);
             let w_stand = state.rows.as_ref().map(rows_line).unwrap_or_default();
-            let start = state.start_line.max(1);
-            let w_digest = claude.digest(&tp, start, DIGEST_BUDGET);
+            let w_digest =
+                claude.digest(&tp, state.anchor, &mut state.digest.clone(), DIGEST_BUDGET);
             let a = amux.as_ref().map(|a| a.run(&tp));
             let (a_subj, a_stand, a_digest) = a
                 .map(|c| (c.subject, c.stand, c.digest))
