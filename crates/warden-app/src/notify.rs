@@ -180,14 +180,16 @@ fn click_route(get: impl Fn(&str) -> Option<String>) -> Option<ClickRoute> {
     })
 }
 
+/// Whether `signal` raises nothing at all: an OSC 9/777 from an agent tab's surface. A Rex
+/// agent's attention is its reported status (`rex::lifecycle::attend`), so an escape it also
+/// prints must not badge or banner a second time. Its bell still badges.
+fn ignored(signal: &SurfaceSignal, agent_surface: bool) -> bool {
+    agent_surface && matches!(signal, SurfaceSignal::Notification { .. })
+}
+
 /// The banner an OSC 9/777 desktop notification raises: its title (`warden` when blank) and body.
-/// None from an agent tab's surface: a Rex agent's attention is its reported status
-/// (`rex::lifecycle::attend`), so an escape it also prints must not raise a second one. Bells
-/// and every non-notification signal give none.
-fn osc_banner(signal: SurfaceSignal, agent_surface: bool) -> Option<(String, String)> {
-    if agent_surface {
-        return None;
-    }
+/// Bells and every non-notification signal give none.
+fn osc_banner(signal: SurfaceSignal) -> Option<(String, String)> {
     match signal {
         SurfaceSignal::Notification { title, body } if title.trim().is_empty() => {
             Some(("warden".to_string(), body))
@@ -198,7 +200,8 @@ fn osc_banner(signal: SurfaceSignal, agent_surface: bool) -> Option<(String, Str
 }
 
 /// The banner for agent tab `name` of project `project` reaching `state`: the program's own `msg`
-/// when it sent one, else `<name> needs you` (blocked) or `<name> finished` (done, error alike).
+/// when it sent one, else `<name> needs you` (blocked), `<name> stopped with an error` (error) or
+/// `<name> finished` (done).
 pub fn agent_banner(
     project: &str,
     name: &str,
@@ -210,6 +213,7 @@ pub fn agent_banner(
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| match state {
             AgentState::Blocked => format!("{name} needs you"),
+            AgentState::Error => format!("{name} stopped with an error"),
             _ => format!("{name} finished"),
         });
     (format!("{project} · {name}"), body)
@@ -381,9 +385,13 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         dbglog("handle: surface not located (unloaded?) -> dropped");
         return; // surface not found (e.g. just unloaded) — drop the signal
     };
+    if ignored(&event.signal, is_agent_surface(app, event.surface_id)) {
+        dbglog("handle: OSC 9/777 from an agent tab's surface -> dropped");
+        return;
+    }
     // A desktop notification (OSC 9/777) additionally raises a macOS banner; a bare bell only
     // badges (no text to show, and bells are frequent enough that banners would be noise).
-    let banner = osc_banner(event.signal, is_agent_surface(app, event.surface_id));
+    let banner = osc_banner(event.signal);
     raise(app, &label, &tab, visible, banner, None);
 }
 
@@ -525,7 +533,10 @@ mod tests {
         let (_, body) = agent_banner("proj", "fix-bug", AgentState::Done, None);
         assert_eq!(body, "fix-bug finished");
         let (_, body) = agent_banner("proj", "fix-bug", AgentState::Error, None);
-        assert_eq!(body, "fix-bug finished", "error reads as done");
+        assert_eq!(
+            body, "fix-bug stopped with an error",
+            "an error isn't a finish"
+        );
         let (_, body) = agent_banner(
             "proj",
             "fix-bug",
@@ -537,8 +548,12 @@ mod tests {
 
     #[test]
     fn osc777_from_rex_agent_surface_ignored() {
-        assert_eq!(osc_banner(notification("t", "b"), true), None);
-        assert_eq!(osc_banner(SurfaceSignal::Bell, true), None);
+        assert!(
+            ignored(&notification("t", "b"), true),
+            "no badge, no banner"
+        );
+        assert!(!ignored(&SurfaceSignal::Bell, true), "a bell still badges");
+        assert!(!ignored(&notification("t", "b"), false));
         assert!(crate::registry::is_agent_key(&crate::registry::agent_key(
             "t", "r1"
         )));
@@ -549,14 +564,14 @@ mod tests {
     #[test]
     fn osc777_from_plain_tab_still_banners() {
         assert_eq!(
-            osc_banner(notification("t", "b"), false),
+            osc_banner(notification("t", "b")),
             Some(("t".into(), "b".into()))
         );
         assert_eq!(
-            osc_banner(notification(" ", "b"), false),
+            osc_banner(notification(" ", "b")),
             Some(("warden".into(), "b".into()))
         );
-        assert_eq!(osc_banner(SurfaceSignal::Bell, false), None);
+        assert_eq!(osc_banner(SurfaceSignal::Bell), None);
     }
 
     #[test]
