@@ -234,6 +234,7 @@ fn build_app_menu(
         shell_core::menu::SpineConfig {
             app_name: "warden",
             windows: &window_entries,
+            toggle_sidebar: false,
         },
         env!("CARGO_PKG_VERSION"),
         env!("BUILD_GIT_SHA"),
@@ -652,6 +653,8 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
             }
             emit("warden:find-in-sidebar");
         }
+        // Not offered: the spine is built with `toggle_sidebar: false`.
+        SpineAction::ToggleSidebar => {}
         // The chrome runs a manual check whatever auto_update says.
         SpineAction::CheckUpdates => emit("warden:check-update"),
     }
