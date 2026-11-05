@@ -180,6 +180,10 @@
       #terminal-hole.split:not(.secondary-left) #pane-primary { --c-tr: 0px; --c-br: 0px; }
       #terminal-hole.split:not(.secondary-left) #pane-secondary {
         --c-tr: var(--pane-radius); --c-br: var(--pane-radius); }
+      /* A collapsed sidebar's strip (chrome-core's `cc-hole-collapsed`) sits above the hole, so the
+         top-right corner is no longer a window corner. Two classes, to outrank the split rules. */
+      #terminal-hole.cc-hole.cc-hole-collapsed #pane-primary,
+      #terminal-hole.cc-hole.cc-hole-collapsed #pane-secondary { --c-tr: 0px; }
       #terminal-hole.split .pane.focused::before {
         background: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
       #pane-primary { flex: 1 1 0; }
@@ -1532,6 +1536,9 @@
               document.getElementById("sidebar").style.width = width + "px";
               reportRect();
             },
+            // Collapse and peek move the hole; a peek only by a transform, which the
+            // ResizeObserver misses.
+            onLayout: reportRect,
             onRescan() {
               // Refresh control on a [[window.root]] section header: re-scan the
               // window's roots so projects added/removed on disk appear/vanish.
@@ -1551,6 +1558,7 @@
           },
           {
             appName: "warden",
+            hole: document.getElementById("terminal-hole"),
             storageKey: "warden:sidebar-width:" + myLabel,
             defaultWidth: sidebarDefault(),
             minWidth: 120,
@@ -1648,6 +1656,11 @@
       listen("warden:find-in-sidebar", (e) => {
         if (!forMe(e) || !sb) return;
         sb.focusSearch();
+      });
+      // ⌃⌘S (shell-core's Toggle Sidebar).
+      listen("warden:toggle-sidebar", (e) => {
+        if (!forMe(e) || !sb) return;
+        sb.toggleSidebar();
       });
 
       // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).
