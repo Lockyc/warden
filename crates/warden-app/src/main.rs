@@ -985,9 +985,11 @@ fn pop_out_tab(
                 }
             }
             m.record_session(&app, &origin_label);
+            log::error!("couldn't pop out tab {:?}: {e}", spec.title);
             return Err(format!("couldn't pop out tab: {e}"));
         }
     };
+    log::info!("tab {:?}: popped out of {origin_label:?}", spec.title);
 
     // Phase 3 — re-lock to store the (now reparented) surfaces + wire the return.
     let surface = surface_opt.take().expect("surface reparented on success");
@@ -1141,6 +1143,14 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
     else {
         return; // already redocked (double-close) — nothing to do
     };
+    log::info!(
+        "{detached_label:?} docked back into {origin_label:?}{}",
+        if dropped.is_some() {
+            " (tab left the config while out; dropped)"
+        } else {
+            ""
+        }
+    );
     // A tab dropped on arrival (it left the config while out) goes through the chrome's unload
     // tail BEFORE the refresh removes its row, so the selection lands on the neighbour the
     // registry leaned to rather than chrome-core's first-tab fallback.
@@ -1190,6 +1200,9 @@ fn end_session(
             .and_then(|ws| ws.registry.end_target(&id, how))
     };
     let label = window.label().to_string();
+    if target.is_some() {
+        log::info!("{how:?} tab {id:?} in {label:?}");
+    }
     let (dir, title, cmd) = match target {
         None => return false, // unknown tab or no command configured for `how`
         Some(registry::EndTarget::Rex(pane_keys)) => {
@@ -1785,6 +1798,44 @@ fn extract_sentinel_path(output: &str) -> Option<String> {
     Some(inner.trim().to_string())
 }
 
+fn log_config_warnings(warnings: &[warden_config::Warning]) {
+    for w in warnings {
+        log::warn!("config [{}]: {}", w.window, w.message);
+    }
+}
+
+/// One line for a reload's reconcile: what opens, closes and changes per window.
+fn describe_reconcile(r: &warden_config::Reconciliation) -> String {
+    let mut parts = Vec::new();
+    if !r.open.is_empty() {
+        let titles: Vec<_> = r.open.iter().map(|w| w.title.as_str()).collect();
+        parts.push(format!("open {titles:?}"));
+    }
+    if !r.close.is_empty() {
+        parts.push(format!("close {:?}", r.close));
+    }
+    for u in &r.update {
+        let n = |v: usize, what: &str| (v > 0).then(|| format!("{v} {what}"));
+        let changes: Vec<_> = [
+            n(u.add_tabs.len(), "added"),
+            n(u.remove_tabs.len(), "removed"),
+            n(u.respawn_tabs.len(), "respawned"),
+            n(u.set_meta.len(), "relabelled"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !changes.is_empty() {
+            parts.push(format!("{:?}: {}", u.title, changes.join(", ")));
+        }
+    }
+    if parts.is_empty() {
+        "no window or tab changes".into()
+    } else {
+        parts.join("; ")
+    }
+}
+
 fn main() {
     #[cfg(target_os = "macos")]
     logging::init();
@@ -2055,12 +2106,17 @@ fn main() {
                     &warden_config::login_shell(),
                 ) {
                     Ok(loaded) => {
+                        log_config_warnings(&loaded.warnings);
+                        log::info!("config loaded: {} window(s)", loaded.config.windows.len());
                         notify_debug = loaded.config.notify_debug;
                         materialize(&handle, loaded.config);
                     }
-                    Err(e) => handle
-                        .state::<WindowSet>()
-                        .set_load_error(&handle, Some(e.to_string())),
+                    Err(e) => {
+                        log::warn!("config didn't load: {e}");
+                        handle
+                            .state::<WindowSet>()
+                            .set_load_error(&handle, Some(e.to_string()))
+                    }
                 }
 
                 // Route terminal attention signals (bell / OSC 9/777 desktop notification) from
@@ -2132,6 +2188,7 @@ fn main() {
                             use tauri::{Emitter, Manager};
                             match res {
                                 Ok(loaded) => {
+                                    log_config_warnings(&loaded.warnings);
                                     // Expand `[[window.root]]`s into the EFFECTIVE config
                                     // (recursive git-project scan) BEFORE taking the lock —
                                     // the walk is slow and must never run under the
@@ -2186,6 +2243,10 @@ fn main() {
                                         // Recovery: no reconcile baseline. Materialize from the
                                         // already-scanned effective config rather than reconciling
                                         // against an empty last_good.
+                                        log::info!(
+                                            "config reloaded: materializing {} window(s)",
+                                            new_eff.windows.len()
+                                        );
                                         drop(m);
                                         materialize_effective(&wh, loaded.config.clone(), new_eff);
                                     } else {
@@ -2194,6 +2255,10 @@ fn main() {
                                         // surfaces as a tab add/remove. Re-scans on every reload.
                                         let recon =
                                             warden_config::reconcile(&m.last_good, &new_eff);
+                                        log::info!(
+                                            "config reloaded: {}",
+                                            describe_reconcile(&recon)
+                                        );
                                         let decls = plan::decls(&new_eff);
                                         // Advances the reconcile baseline — this branch is
                                         // only reached on a valid load.
@@ -2235,6 +2300,9 @@ fn main() {
                                     // a separate concern (a parse error mid-edit while windows are
                                     // open needs its own sidebar notice).
                                     let msg = e.to_string();
+                                    log::warn!(
+                                        "config reload failed, keeping the last good one: {msg}"
+                                    );
                                     let set = wh.state::<WindowSet>();
                                     set.set_load_error(&wh, Some(msg.clone()));
                                     if set.has_open() {

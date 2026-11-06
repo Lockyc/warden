@@ -1376,6 +1376,7 @@ impl Registry {
                 };
                 let token = self.next_rex_token;
                 self.next_rex_token += 1;
+                log::info!("{label:?}: opening Rex session on {server}");
                 let started = open(RexOpen {
                     pane_key: pane.spec.id.clone(),
                     server,
@@ -1399,6 +1400,7 @@ impl Registry {
         // rect would render at the wrong width for one frame.
         let rect = self.rect_for(which);
         let s = GhosttySurface::new(self.ns_window, rect, &spec)?;
+        log::info!("tab {:?}: spawned {which:?} terminal", self.tabs[idx].title);
         self.tabs[idx]
             .pane_mut(which)
             .expect("pane existed above")
@@ -1421,6 +1423,10 @@ impl Registry {
         spec.id = agent_key(&t.id, record_id);
         let spec = crate::rex::spawn::effective_spec(&spec, target, self.report_socket.as_deref());
         let s = GhosttySurface::new(self.ns_window, self.rect_for(PaneIdx::Primary), &spec)?;
+        log::info!(
+            "tab {:?}: spawned agent {record_id:?} terminal",
+            self.tabs[idx].title
+        );
         match self.tabs[idx].primary.agent_mut(record_id) {
             Some(a) => a.slot = TabSlot::Spawned(s),
             None => s.close(),
@@ -1462,6 +1468,7 @@ impl Registry {
         if !any_closed {
             return None;
         }
+        log::info!("tab {:?}: unloaded", self.tabs[idx].title);
         if self.active.as_deref() == Some(id) {
             return self.lean_to_live_neighbour(idx);
         }
@@ -2049,6 +2056,7 @@ impl Registry {
     pub fn remove(&mut self, id: &str) {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
             let mut entry = self.tabs.remove(pos);
+            log::info!("tab {:?}: removed", entry.title);
             for pane in entry.panes_mut() {
                 pane.close_live();
             }

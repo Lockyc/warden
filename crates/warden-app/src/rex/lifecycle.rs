@@ -492,6 +492,10 @@ impl RexHub {
         }
         let (client, _) = self.inner.current(server).ok_or(RexError::Unreachable)?;
         self.inner.lock().stopping.insert(server.to_owned());
+        log::info!(
+            "Rex {server}: sleeping server ({} agent(s))",
+            plan.sleep.len()
+        );
         match client.call("server.stop", serde_json::json!({})) {
             Ok(_) => {
                 drop(client);
@@ -531,6 +535,11 @@ impl RexHub {
                 self.inner.forget(key);
             }
         }
+        log::info!(
+            "Rex {server}: project slept ({} agent(s), {} pane(s))",
+            plan.sleep.len(),
+            panes.len()
+        );
         Ok(Slept::Done)
     }
 
@@ -1116,6 +1125,7 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
         if let Some(why) = refusal(&op, &lock(&store).records(tab_id)) {
             return Err(why.to_owned());
         }
+        log::info!("tab {tab_id:?}: agent {op:?}");
         if let AgentOp::Sleep(id) | AgentOp::Close { id, .. } = &op {
             ws.registry.release_agent(tab_id, id);
         }

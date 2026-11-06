@@ -462,6 +462,11 @@ impl WindowManager {
                 .hidden_title(true)
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .build()?;
+        log::info!(
+            "window {:?} opened ({} tab(s))",
+            spec.title,
+            spec.tabs.len()
+        );
 
         // FOOTGUN: do NOT restore geometry by hand here. This window is built at runtime, not
         // from `tauri.conf.json`, so a manual restore looks needed — but shell-core's geometry
@@ -569,6 +574,7 @@ impl WindowManager {
     /// config — the latter skipped at reopen time). Idempotent.
     pub fn closed(&mut self, label: &str) {
         if let Some(mut ws) = self.windows.remove(label) {
+            log::info!("window {:?} closed", ws.title);
             ws.registry.close_all();
             self.last_closed.retain(|t| *t != ws.title);
             self.last_closed.push(ws.title);

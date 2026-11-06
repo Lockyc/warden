@@ -419,6 +419,10 @@ impl Inner {
             match inner.attach(server, &client, &rec.session_id, Some(deadline)) {
                 Ok(view) => {
                     if let Some(block_id) = terminal_block(&view) {
+                        log::info!(
+                            "Rex {server}: reattached session {} ({pane_key})",
+                            rec.session_id
+                        );
                         inner
                             .lock()
                             .blocks
@@ -461,6 +465,7 @@ impl Inner {
             &created["initial_windows"][0]["block_ids"][0],
             "session.create block id",
         )?;
+        log::info!("Rex {server}: created session {session_id} ({pane_key})");
         {
             let mut st = inner.lock();
             if let Some(prev) = &previous {
@@ -493,6 +498,11 @@ impl Inner {
             return Ok(());
         };
         let (client, _) = self.conn(&rec.server)?;
+        log::info!(
+            "Rex {}: destroying session {} ({pane_key})",
+            rec.server,
+            rec.session_id
+        );
         match client.call("session.destroy", json!({ "session_id": rec.session_id })) {
             Ok(_) => Ok(()),
             Err(RexError::Api { code, .. }) if code == "session_not_found" => Ok(()),
@@ -895,6 +905,7 @@ impl Inner {
                 if left < AUTOSTART_MIN {
                     return Err(RexError::Unreachable);
                 }
+                log::info!("Rex {server}: not running; starting it");
                 start(left)?;
                 connect()?
             }
@@ -948,6 +959,11 @@ impl Inner {
             );
             gen
         };
+        log::info!(
+            "Rex {server}: connected ({} session(s){})",
+            list["sessions"].as_array().map_or(0, Vec::len),
+            if client.resumed() { ", resumed" } else { "" }
+        );
         let attached: Vec<String> = self
             .lock()
             .attached
@@ -1114,6 +1130,7 @@ impl Inner {
     /// list it as heard with no sessions, so its tabs read as gone and no unclaimed rows remain.
     /// It stays `stopping` — not reconnected — until a caller connects again.
     fn forget_server(&self, server: &str) {
+        log::info!("Rex {server}: stopped by warden");
         {
             let mut st = self.lock();
             st.conns.remove(server);
@@ -1196,6 +1213,9 @@ fn watch(
         if !removed {
             return;
         }
+        if !stopping {
+            log::warn!("Rex {server}: connection lost; reconnecting");
+        }
         inner.emit([HubEvent::Disconnected {
             server: server.clone(),
         }]);
@@ -1214,6 +1234,7 @@ fn watch(
         }
         match inner.reconnect(&server, &endpoint, token.as_deref()) {
             Ok(true) => {
+                log::info!("Rex {server}: reconnected");
                 inner.emit([
                     HubEvent::Reconnected {
                         server: server.clone(),
@@ -1223,7 +1244,7 @@ fn watch(
                 return;
             }
             Ok(false) => return,
-            Err(_) => {}
+            Err(e) => log::debug!("Rex {server}: reconnect failed: {e}"),
         }
         delay = (delay * 2).clamp(RECONNECT_FIRST, RECONNECT_MAX);
     }
