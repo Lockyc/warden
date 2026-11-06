@@ -355,8 +355,8 @@
       #agents.narrow .a-closed-head { justify-content: center; padding: 4px 0; }
       #agents.narrow .a-closed-head .a-label, #agents.narrow .a-closed-head .a-clear,
       #agents.narrow .a-closed-list { display: none; }
-      /* Sleep Server's confirm (`warden:server-sleep-confirm`): over the foot of the sidebar —
-         the one column a native terminal never covers — at the sidebar's width (`placeServerSleep`). */
+      /* The sleep confirm (`warden:sleep-confirm`, Sleep Server or a Rex tab's ⏻): over the foot of
+         the sidebar — the one column a native terminal never covers — at its width (`placeSleepConfirm`). */
       #server-sleep { position: fixed; left: 8px; bottom: 8px; z-index: 20; box-sizing: border-box;
         color: #ffd; background: #4a1f1f; border: 1px solid #6b2a2a; border-radius: 6px;
         padding: 8px; font-size: 12px; line-height: 1.35; display: flex; flex-direction: column;
@@ -388,7 +388,7 @@
         <ul id="server-sleep-list"></ul>
         <div class="ss-btns">
           <button id="server-sleep-cancel">Cancel</button>
-          <button id="server-sleep-go" class="danger">Sleep server</button>
+          <button id="server-sleep-go" class="danger">Sleep</button>
         </div>
       </div>
       <div id="terminal-hole">
@@ -1837,43 +1837,48 @@
         agentLists.set(p.tabId, p);
         if (agentsTab() === p.tabId) refreshAgents();
       });
-      // Tab ▸ Sleep Server with something it can't bring back: confirm, listing every loss by
-      // name. Confirming sends those names back (`server_sleep`); a loss the backend finds that
-      // isn't among them asks again. Cancel does nothing.
+      // Tab ▸ Sleep Server, or ⏻ on a Rex tab, with something it can't bring back
+      // (`warden:sleep-confirm`): confirm, listing every loss by name. Confirming sends those names
+      // back (`server_sleep` for a server, `project_sleep` for a tab); a loss the backend finds
+      // that isn't among them asks again. Cancel does nothing.
       const SS_KIND = { shell: "terminal", agent: "agent tab", session: "session" };
-      let serverSleep = null; // { server, names } while the confirm shows
-      function placeServerSleep() {
+      let sleepConfirm = null; // { server, tabId, names } while the confirm shows
+      function placeSleepConfirm() {
         const box = document.getElementById("server-sleep");
         const side = document.getElementById("sidebar").getBoundingClientRect();
         box.style.left = side.left + 8 + "px";
         box.style.width = Math.max(160, side.width - 16) + "px";
       }
-      function showServerSleep(server, losses) {
-        serverSleep = { server, names: losses.map((l) => l.name) };
-        document.getElementById("server-sleep-head").textContent = "Sleep Rex server " + server + "?";
+      function showSleepConfirm(p) {
+        const losses = p.losses || [];
+        sleepConfirm = { server: p.server, tabId: p.tabId, names: losses.map((l) => l.name) };
+        document.getElementById("server-sleep-head").textContent = p.head;
         const list = document.getElementById("server-sleep-list");
         list.replaceChildren(...losses.map((l) => {
           const li = agentEl("li");
           li.append(agentEl("span", "ss-name", l.name), agentEl("span", "ss-kind", SS_KIND[l.kind] || l.kind));
           return li;
         }));
-        placeServerSleep();
+        placeSleepConfirm();
         document.getElementById("server-sleep").hidden = false;
       }
-      function hideServerSleep() {
-        serverSleep = null;
+      function hideSleepConfirm() {
+        sleepConfirm = null;
         document.getElementById("server-sleep").hidden = true;
       }
-      document.getElementById("server-sleep-cancel").addEventListener("click", hideServerSleep);
+      document.getElementById("server-sleep-cancel").addEventListener("click", hideSleepConfirm);
       document.getElementById("server-sleep-go").addEventListener("click", () => {
-        const s = serverSleep;
-        hideServerSleep();
-        if (s) agentCall("server_sleep", { server: s.server, accepted: s.names });
+        const s = sleepConfirm;
+        hideSleepConfirm();
+        if (!s) return;
+        if (s.server) agentCall("server_sleep", { server: s.server, accepted: s.names });
+        else agentCall("project_sleep", { id: s.tabId, accepted: s.names });
       });
-      window.addEventListener("resize", () => { if (serverSleep) placeServerSleep(); });
-      listen("warden:server-sleep-confirm", (e) => {
-        if (!forMe(e) || !e.payload || !e.payload.server) return;
-        showServerSleep(e.payload.server, e.payload.losses || []);
+      window.addEventListener("resize", () => { if (sleepConfirm) placeSleepConfirm(); });
+      listen("warden:sleep-confirm", (e) => {
+        const p = e.payload;
+        if (!forMe(e) || !p || !p.head || !(p.server || p.tabId)) return;
+        showSleepConfirm(p);
       });
 
       // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane: the backend names the tab, the active one here. Sleep acts

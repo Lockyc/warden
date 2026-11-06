@@ -9,12 +9,13 @@ use std::path::PathBuf;
 pub type ProbeTarget = (String, std::path::PathBuf, String, String);
 
 /// How a tab's session ends: a configured command to run (`dir`, `title`, `cmd` — the caller
-/// substitutes `{dir}`/`{title}` and runs it with cwd = dir), or the Rex sessions of these pane
-/// keys to destroy.
+/// substitutes `{dir}`/`{title}` and runs it with cwd = dir), the Rex sessions of these pane
+/// keys to destroy (☠), or the project on `server` with these pane keys to sleep (⏻).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EndTarget {
     Command(PathBuf, String, String),
     Rex(Vec<String>),
+    RexSleep { server: String, panes: Vec<String> },
 }
 
 /// A Rex pane's session to find or create — `RexHub::ensure_session`'s arguments — and the token
@@ -451,10 +452,10 @@ fn runs_probe(spec: &TabSpec) -> bool {
     spec.probe.is_some() && spec.server.is_none()
 }
 
-/// The `suspend` command a tab offers ⏻ with. It runs here, with cwd = the tab's `dir`, so a
-/// remote Rex tab — whose `dir` is a path on its server — offers none.
+/// The `suspend` command a plain tab offers ⏻ with. A Rex tab's ⏻ sleeps its project through
+/// Rex instead (`EndTarget::RexSleep`), so its command is never run.
 fn suspend_cmd(spec: &TabSpec) -> Option<&String> {
-    spec.suspend.as_ref().filter(|_| !is_remote(spec))
+    spec.suspend.as_ref().filter(|_| spec.server.is_none())
 }
 
 /// The command ▶ start types into a tab's live shell. A Rex tab has none: its pane runs the
@@ -1068,7 +1069,8 @@ impl Registry {
                 group: t.primary.spec.group.clone(),
                 has_probe: t.primary.spec.probe.is_some() || t.primary.spec.server.is_some(),
                 has_kill: t.primary.spec.kill.is_some() || t.primary.spec.server.is_some(),
-                has_suspend: suspend_cmd(&t.primary.spec).is_some(),
+                has_suspend: suspend_cmd(&t.primary.spec).is_some()
+                    || t.primary.spec.server.is_some(),
                 has_cmd: start_cmd(&t.primary.spec).is_some(),
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
@@ -1122,13 +1124,17 @@ impl Registry {
     pub fn end_target(&self, id: &str, how: EndSession) -> Option<EndTarget> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         let spec = &t.primary.spec;
+        if let Some(server) = &spec.server {
+            let panes = vec![spec.id.clone(), secondary_spec(spec, id).id];
+            return Some(match how {
+                EndSession::Destroy => EndTarget::Rex(panes),
+                EndSession::Suspend => EndTarget::RexSleep {
+                    server: server.clone(),
+                    panes,
+                },
+            });
+        }
         let cmd = match how {
-            EndSession::Destroy if spec.server.is_some() => {
-                return Some(EndTarget::Rex(vec![
-                    spec.id.clone(),
-                    secondary_spec(spec, id).id,
-                ]));
-            }
             EndSession::Suspend => suspend_cmd(spec),
             EndSession::Destroy => spec.kill.as_ref(),
         };
@@ -3098,8 +3104,11 @@ mod tests {
         );
         assert_eq!(
             r.end_target("rex", EndSession::Suspend),
-            Some(EndTarget::Command("/tmp".into(), "rex".into(), "s".into())),
-            "a local Rex tab keeps its suspend command"
+            Some(EndTarget::RexSleep {
+                server: "local".into(),
+                panes: vec!["rex".into(), "rex::2".into()],
+            }),
+            "⏻ sleeps the project through Rex; its suspend command is not run"
         );
         assert!(r.tab_dtos()[0].has_suspend);
         assert_eq!(
@@ -3113,13 +3122,17 @@ mod tests {
     }
 
     #[test]
-    fn remote_rex_tab_offers_no_suspend() {
+    fn remote_rex_tab_sleeps_through_rex() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let mut remote = rex_spec("remote", "remote-host");
-        remote.suspend = Some("s".into());
-        r.add(&remote, false).unwrap();
-        assert!(!r.tab_dtos()[0].has_suspend);
-        assert_eq!(r.end_target("remote", EndSession::Suspend), None);
+        r.add(&rex_spec("remote", "remote-host"), false).unwrap();
+        assert!(r.tab_dtos()[0].has_suspend, "no suspend command needed");
+        assert_eq!(
+            r.end_target("remote", EndSession::Suspend),
+            Some(EndTarget::RexSleep {
+                server: "remote-host".into(),
+                panes: vec!["remote".into(), "remote::2".into()],
+            })
+        );
     }
 
     #[test]

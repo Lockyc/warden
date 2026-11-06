@@ -779,7 +779,7 @@ pub fn current_list(app: &AppHandle, tab_id: &str) -> Option<AgentListDto> {
 /// Sleep Rex server `server` from window `label` (main thread). A worker plans it
 /// ([`RexHub::plan_server_sleep`], which reads Rex). With a loss not among `accepted` (the names
 /// the user confirmed), nothing happens yet: window `label` is asked to confirm
-/// (`warden:server-sleep-confirm`, every loss by name) and answers with this again. Otherwise
+/// (`warden:sleep-confirm`, every loss by name) and answers with this again. Otherwise
 /// every pane on the server lets go of its surface ([`let_go`]) and a worker sleeps the server
 /// ([`RexHub::sleep_server`]). A failure goes to `label`'s error banner; after the sleep the
 /// server's agent lists and presence repaint.
@@ -825,23 +825,140 @@ pub fn sleep_server(
                 &format!("couldn't sleep Rex server {server}: {e}"),
             ),
             Ok(plan) if !plan.unconfirmed(&accepted).is_empty() => {
-                confirm(&main, &label, &server, &plan)
+                confirm(&main, &label, Asleep::Server(&server), &plan)
             }
             Ok(plan) => {
-                let projects = let_go(&main, &server);
+                let projects = let_go(&main, |_, s| s == server);
                 stop_server(&main, label, server, plan, titles, projects);
             }
         });
     })
 }
 
-/// Ask window `label` to confirm sleeping `server`, listing `plan`'s losses (main thread).
-fn confirm(app: &AppHandle, label: &str, server: &str, plan: &SleepPlan) {
-    let _ = app.emit_to(
-        label,
-        "warden:server-sleep-confirm",
-        serde_json::json!({ "label": label, "server": server, "losses": plan.lose }),
-    );
+/// Sleep project tab `tab_id` of window `label` (main thread): Sleep Server's flow narrowed to
+/// one tab — plan on a worker ([`RexHub::plan_project_sleep`]); a loss not among `accepted` asks
+/// `label` to confirm and nothing happens yet; otherwise the tab lets go of its surfaces in every
+/// window ([`let_go`]) and a worker sleeps it ([`RexHub::sleep_project`]), then its list and dot
+/// repaint (the ghost, while it holds asleep agents). A failure goes to `label`'s error banner.
+pub fn sleep_project(
+    app: &AppHandle,
+    label: &str,
+    tab_id: &str,
+    accepted: &[String],
+) -> Result<(), String> {
+    let (server, panes, title) = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        let reg = &m.windows.get(label).ok_or(NO_AGENT)?.registry;
+        let title = reg.tab_title(tab_id).unwrap_or_else(|| tab_id.to_owned());
+        match reg.end_target(tab_id, crate::registry::EndSession::Suspend) {
+            Some(crate::registry::EndTarget::RexSleep { server, panes }) => (server, panes, title),
+            _ => return Err("that tab isn't on a Rex server".into()),
+        }
+    };
+    let (app, label, tab_id) = (app.clone(), label.to_owned(), tab_id.to_owned());
+    let accepted = accepted.to_vec();
+    worker("warden-project-sleep", move || {
+        let named = |k: &str| (k == tab_id).then(|| title.clone());
+        let planned = match (
+            app.try_state::<RexHub>(),
+            app.try_state::<Mutex<AgentStore>>(),
+        ) {
+            (Some(hub), Some(store)) => hub.plan_project_sleep(&store, &server, &panes, &named),
+            _ => Err(RexError::Unreachable),
+        };
+        let main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let what = Asleep::Project {
+                tab_id: &tab_id,
+                title: &title,
+            };
+            match planned {
+                Err(e) => fail(&main, &label, &format!("couldn't sleep {title}: {e}")),
+                Ok(plan) if !plan.unconfirmed(&accepted).is_empty() => {
+                    confirm(&main, &label, what, &plan)
+                }
+                Ok(plan) => {
+                    let_go(&main, |id, _| id == tab_id);
+                    end_project(&main, label, tab_id, title, server, panes, plan);
+                }
+            }
+        });
+    })
+}
+
+/// Sleep project `tab_id` as `plan` says on a worker, then repaint its list, its presence and the
+/// agent menu (main thread). A failure goes to window `label`'s banner; a loss found just before
+/// its sessions end asks `label` to confirm again.
+fn end_project(
+    app: &AppHandle,
+    label: String,
+    tab_id: String,
+    title: String,
+    server: String,
+    panes: Vec<String>,
+    plan: SleepPlan,
+) {
+    let started = worker("warden-project-end", {
+        let (app, label) = (app.clone(), label.clone());
+        move || {
+            let named = |k: &str| (k == tab_id).then(|| title.clone());
+            let result = match (
+                app.try_state::<RexHub>(),
+                app.try_state::<Mutex<AgentStore>>(),
+            ) {
+                (Some(hub), Some(store)) => {
+                    hub.sleep_project(&store, &server, &panes, &plan, &named)
+                }
+                _ => Err(RexError::Unreachable),
+            };
+            let main = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                match result {
+                    Ok(Slept::Done) => {}
+                    Ok(Slept::Unconfirmed(now)) => confirm(
+                        &main,
+                        &label,
+                        Asleep::Project {
+                            tab_id: &tab_id,
+                            title: &title,
+                        },
+                        &now,
+                    ),
+                    Err(e) => fail(&main, &label, &format!("couldn't sleep {title}: {e}")),
+                }
+                emit_agents(&main, &tab_id);
+                super::spawn::hub_changed(&main, Some(&server));
+                crate::sync_agent_menu(&main);
+                crate::probe::bump_tab_await(&label, &tab_id, crate::probe::Await::Down);
+            });
+        }
+    });
+    if let Err(e) = started {
+        fail(app, &label, &e);
+    }
+}
+
+/// What a sleep confirm answers to: Rex server `server`, or project tab `tab_id` titled `title`.
+enum Asleep<'a> {
+    Server(&'a str),
+    Project { tab_id: &'a str, title: &'a str },
+}
+
+/// Ask window `label` to confirm a sleep, listing `plan`'s losses (main thread). The chrome
+/// answers with `server_sleep` or `project_sleep`, whichever key the payload carries.
+fn confirm(app: &AppHandle, label: &str, what: Asleep, plan: &SleepPlan) {
+    let payload = match what {
+        Asleep::Server(server) => serde_json::json!({
+            "label": label, "server": server, "losses": plan.lose,
+            "head": format!("Sleep Rex server {server}?"),
+        }),
+        Asleep::Project { tab_id, title } => serde_json::json!({
+            "label": label, "tabId": tab_id, "losses": plan.lose,
+            "head": format!("Sleep {title}?"),
+        }),
+    };
+    let _ = app.emit_to(label, "warden:sleep-confirm", payload);
 }
 
 /// Run `f` on a named worker thread; `Err` says it couldn't start.
@@ -860,7 +977,7 @@ fn fail(app: &AppHandle, label: &str, message: &str) {
 }
 
 /// Show `message` in window `label`'s error banner (`warden:error`).
-pub(super) fn banner(app: &AppHandle, label: &str, message: &str) {
+pub(crate) fn banner(app: &AppHandle, label: &str, message: &str) {
     let _ = app.emit_to(
         label,
         "warden:error",
@@ -868,11 +985,11 @@ pub(super) fn banner(app: &AppHandle, label: &str, message: &str) {
     );
 }
 
-/// Every pane on `server` lets go of its surface (main thread), so no relay sees its stream die
-/// and reads it as an exit: every docked tab on it goes cold, as an unload, then a popped-out tab
-/// on it ends whole, as when its program exits
+/// Every Rex tab `pick` (tab id, server) chooses lets go of its surfaces (main thread), so no
+/// relay sees its stream die and reads it as an exit: every docked one goes cold, as an unload,
+/// then a popped-out one ends whole, as when its program exits
 /// ([`WindowManager::end_detached`](crate::manager::WindowManager::end_detached)). Returns the tabs, for their lists to repaint.
-fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
+fn let_go(app: &AppHandle, pick: impl Fn(&str, &str) -> bool) -> Vec<String> {
     let st = app.state::<ManagerState>();
     let mut projects = Vec::new();
     let mut exited = Vec::new();
@@ -891,7 +1008,7 @@ fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
                 .registry
                 .rex_tabs()
                 .into_iter()
-                .filter(|(_, s)| s == server)
+                .filter(|(id, s)| pick(id, s))
             {
                 let new_active = ws.registry.unload(&id);
                 exited.push((l.clone(), id.clone(), new_active));
@@ -902,7 +1019,7 @@ fn let_go(app: &AppHandle, server: &str) -> Vec<String> {
         let popped: Vec<String> = m
             .detached
             .iter()
-            .filter(|(_, d)| d.spec.server.as_deref() == Some(server))
+            .filter(|(_, d)| d.spec.server.as_deref().is_some_and(|s| pick(&d.tab_id, s)))
             .map(|(l, _)| l.clone())
             .collect();
         for dlabel in popped {
@@ -953,7 +1070,9 @@ fn stop_server(
             let _ = app.run_on_main_thread(move || {
                 match result {
                     Ok(Slept::Done) => {}
-                    Ok(Slept::Unconfirmed(now)) => confirm(&main, &label, &server, &now),
+                    Ok(Slept::Unconfirmed(now)) => {
+                        confirm(&main, &label, Asleep::Server(&server), &now)
+                    }
                     Err(e) => fail(
                         &main,
                         &label,

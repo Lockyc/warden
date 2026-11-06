@@ -1191,6 +1191,13 @@ fn end_session(
             rex::spawn::destroy(window.app_handle(), label, id, pane_keys);
             return;
         }
+        Some(registry::EndTarget::RexSleep { .. }) => {
+            use tauri::Manager;
+            if let Err(e) = rex::lifecycle::sleep_project(window.app_handle(), &label, &id, &[]) {
+                rex::lifecycle::banner(window.app_handle(), &label, &e);
+            }
+            return;
+        }
         Some(registry::EndTarget::Command(dir, title, cmd)) => (dir, title, cmd),
     };
     // Run the kill fire-and-forget off the UI thread, then bump this window so the scheduler's fast
@@ -1408,6 +1415,19 @@ fn server_sleep(
 ) -> Result<(), String> {
     use tauri::Manager;
     rex::lifecycle::sleep_server(window.app_handle(), window.label(), &server, &accepted)
+}
+
+/// Sleep Rex tab `id`'s project (its ⏻), the user having confirmed losing `accepted` (by name).
+/// A loss not among them asks again; ⏻ starts here with none, through `end_session`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn project_sleep(
+    window: tauri::WebviewWindow,
+    id: String,
+    accepted: Vec<String>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::sleep_project(window.app_handle(), window.label(), &id, &accepted)
 }
 
 /// Re-scan every project-tree root of the focused window's config and reconcile:
@@ -1954,7 +1974,8 @@ fn main() {
             agent_group,
             agent_fold,
             agent_clear_closed,
-            server_sleep
+            server_sleep,
+            project_sleep
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
