@@ -929,8 +929,10 @@ pub(super) mod tests {
         windows.push(("window:9", "block:9", "someone's"));
         let (f, hub, _dir) = restored(windows);
         let s = before_restart();
-        hub.open_agents(&s, &open(true, None), 7).expect("auto open");
-        hub.open_agents(&s, &open(false, None), 8).expect("user open");
+        hub.open_agents(&s, &open(true, None), 7)
+            .expect("auto open");
+        hub.open_agents(&s, &open(false, None), 8)
+            .expect("user open");
         assert!(!closed_windows(&f).contains(&"window:9".to_owned()));
         assert!(f.requests_for("session.destroy").is_empty());
     }
