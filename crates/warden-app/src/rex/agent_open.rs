@@ -86,7 +86,7 @@ impl RexHub {
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
         let mut session = self.find_session_until(project, server, deadline)?;
         if let Some((_, sid)) = session.as_ref().filter(|_| self.is_restored(project)) {
-            if self.retire_restored(store, project, server, &sid.clone(), now)? {
+            if self.retire_restored(store, project, server, &sid.clone(), now, deadline)? {
                 session = None;
             }
         }
@@ -135,7 +135,9 @@ impl RexHub {
     /// `project`'s session `sid` was restored by a restarted server, every terminal a bare shell:
     /// sleep its live records as a lost session would (stored before their windows close, so an
     /// exit seen for one finds it asleep), then close the windows they were on. Ends the session
-    /// when nothing else was in it and returns true; a window no record knows keeps it.
+    /// when nothing else was in it and returns true; a window no record knows keeps it, and the
+    /// record is stamped then, so a later open never mistakes that window for a restored agent's.
+    /// Every call waits only until `deadline`.
     fn retire_restored(
         &self,
         store: &Mutex<AgentStore>,
@@ -143,6 +145,7 @@ impl RexHub {
         server: &str,
         sid: &str,
         now: u64,
+        deadline: Instant,
     ) -> Result<bool, RexError> {
         let held = lock(store).records(project);
         let ours: Vec<String> = held
@@ -154,12 +157,13 @@ impl RexHub {
         let windows = self.windows(server, sid);
         log::info!("Rex {server}: restored session {sid}; its agents sleep ({project})");
         for w in windows.iter().filter(|w| ours.contains(&w.window_id)) {
-            self.close_window(server, sid, &w.window_id)?;
+            self.close_window_until(server, sid, &w.window_id, deadline)?;
         }
         if windows.iter().all(|w| ours.contains(&w.window_id)) {
-            self.inner.destroy(project)?;
+            self.inner.destroy_by(project, Some(deadline))?;
             return Ok(true);
         }
+        self.inner.lock().stamp(project);
         Ok(false)
     }
 
@@ -904,6 +908,31 @@ pub(super) mod tests {
             "claude --resume bbb\n"
         );
         assert!(hub.session_alive("t"), "opened under this instance now");
+    }
+
+    #[test]
+    fn a_restored_projects_open_keeps_to_its_budget() {
+        let (f, hub, _dir) = restored(RESTORED.to_vec());
+        f.on("session.close_window", |_, _| {
+            Reply::ok(json!({})).after(std::time::Duration::from_secs(8))
+        });
+        let s = before_restart();
+        let started = std::time::Instant::now();
+        let got = hub.open_agents(&s, &open(false, None), 7);
+        assert!(got.is_err(), "a wedged server can't finish the open");
+        assert!(started.elapsed() < std::time::Duration::from_millis(3500));
+    }
+
+    #[test]
+    fn auto_then_user_open_of_a_restored_project_keeps_a_window_it_didnt_make() {
+        let mut windows = RESTORED.to_vec();
+        windows.push(("window:9", "block:9", "someone's"));
+        let (f, hub, _dir) = restored(windows);
+        let s = before_restart();
+        hub.open_agents(&s, &open(true, None), 7).expect("auto open");
+        hub.open_agents(&s, &open(false, None), 8).expect("user open");
+        assert!(!closed_windows(&f).contains(&"window:9".to_owned()));
+        assert!(f.requests_for("session.destroy").is_empty());
     }
 
     #[test]

@@ -482,10 +482,11 @@ impl Inner {
                         if restored {
                             if let Some(s) = startup.filter(|s| !s.is_empty()) {
                                 log::info!("Rex {server}: restored session; retyping ({pane_key})");
-                                client.write_input(
+                                client.write_input_until(
                                     &rec.session_id,
                                     &block_id,
                                     format!("{s}\n").as_bytes(),
+                                    deadline,
                                 )?;
                             }
                         }
@@ -561,6 +562,15 @@ impl Inner {
 
     /// [`RexHub::destroy`]'s work, for a caller already holding `pane_key`.
     fn destroy(self: &Arc<Self>, pane_key: &str) -> Result<(), RexError> {
+        self.destroy_by(pane_key, None)
+    }
+
+    /// [`Inner::destroy`], its call waiting only until `deadline` when one is set.
+    fn destroy_by(
+        self: &Arc<Self>,
+        pane_key: &str,
+        deadline: Option<Instant>,
+    ) -> Result<(), RexError> {
         let Some(rec) = self.forget(pane_key) else {
             return Ok(());
         };
@@ -570,8 +580,13 @@ impl Inner {
             rec.server,
             rec.session_id
         );
-        match client.call("session.destroy", json!({ "session_id": rec.session_id })) {
-            Ok(_) => Ok(()),
+        let args = json!({ "session_id": rec.session_id });
+        let destroyed = match deadline {
+            Some(d) => client.call_seq_until("session.destroy", args, d).map(|_| ()),
+            None => client.call("session.destroy", args).map(|_| ()),
+        };
+        match destroyed {
+            Ok(()) => Ok(()),
             Err(RexError::Api { code, .. }) if code == "session_not_found" => Ok(()),
             Err(e) => Err(e),
         }
