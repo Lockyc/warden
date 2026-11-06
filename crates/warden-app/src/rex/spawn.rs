@@ -164,7 +164,8 @@ fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer,
 }
 
 /// Repaint the presence dot of every Rex tab on `server` (every server when `None`) from the
-/// hub's live session lists: its main pane's session alive is `Present`, anything else `Absent`.
+/// hub's live session lists: its main pane's session alive is `Present`; else asleep agents to
+/// wake (`AgentStore::has_asleep`) is `Recoverable`, the ghost; anything else `Absent`.
 /// Locks only; safe from any thread.
 pub fn refresh_presence(app: &AppHandle, server: Option<&str>) {
     let (Some(st), Some(hub)) = (app.try_state::<ManagerState>(), app.try_state::<RexHub>()) else {
@@ -183,9 +184,17 @@ pub fn refresh_presence(app: &AppHandle, server: Option<&str>) {
             })
             .collect()
     };
+    let store = app.try_state::<Mutex<AgentStore>>();
+    let asleep = |id: &str| {
+        store
+            .as_ref()
+            .is_some_and(|s| super::lock(s).has_asleep(id))
+    };
     for (label, id) in tabs {
         let p = if hub.session_alive(&id) {
             Presence::Present
+        } else if asleep(&id) {
+            Presence::Recoverable
         } else {
             Presence::Absent
         };

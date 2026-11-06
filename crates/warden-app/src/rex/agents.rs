@@ -230,6 +230,13 @@ impl AgentStore {
         removed
     }
 
+    /// Whether `project` has an asleep agent a user open can wake: the ghost on its Rex tab's dot.
+    pub fn has_asleep(&self, project: &str) -> bool {
+        self.records
+            .iter()
+            .any(|r| r.project == project && r.state == RecordState::Asleep && r.resume.is_some())
+    }
+
     /// The project whose record shows `block_id`.
     pub fn project_of_block(&self, block_id: &str) -> Option<String> {
         self.records
@@ -475,6 +482,34 @@ mod tests {
             closed_at: None,
             selected: false,
         }
+    }
+
+    #[test]
+    fn has_asleep_needs_an_asleep_resumable_record() {
+        let mut s = AgentStore::default();
+        s.upsert(rec(
+            "live",
+            RecordState::Live,
+            Some("w"),
+            Some("claude --resume a"),
+        ));
+        s.upsert(rec(
+            "closed",
+            RecordState::Closed,
+            None,
+            Some("claude --resume b"),
+        ));
+        assert!(!s.has_asleep("p"), "live and closed don't count");
+        s.upsert(rec("bare", RecordState::Asleep, None, None));
+        assert!(!s.has_asleep("p"), "nothing to resume");
+        s.upsert(rec(
+            "slept",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume c"),
+        ));
+        assert!(s.has_asleep("p"));
+        assert!(!s.has_asleep("other"));
     }
 
     fn win(id: &str, label: &str) -> AgentWindow {
