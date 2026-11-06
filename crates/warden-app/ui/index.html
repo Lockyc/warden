@@ -283,7 +283,7 @@
       .a-actions { margin: 0 2px 6px 20px; padding: 6px; border-radius: 5px; background: #1c2128;
         display: flex; flex-direction: column; gap: 5px; }
       .a-btns { display: flex; flex-wrap: wrap; gap: 4px; }
-      .a-btns button, .a-confirm button, .a-newgroup button { padding: 2px 7px;
+      .a-btns button, .a-newgroup button { padding: 2px 7px;
         border-radius: 4px; background: #2a2f37; }
       .a-btns button:not(:disabled):hover { background: #363c46; }
       .a-reason { color: #9aa4b2; font-size: 11px; line-height: 1.3; }
@@ -295,9 +295,6 @@
       .a-actions label select { flex: 1; }
       .a-newgroup { display: flex; gap: 4px; }
       .a-newgroup input { flex: 1; outline: none; user-select: text; -webkit-user-select: text; }
-      .a-confirm { color: #ffd; background: #4a1f1f; border-radius: 4px; padding: 5px 6px;
-        font-size: 11px; line-height: 1.35; display: flex; flex-direction: column; gap: 5px; }
-      .a-confirm button.danger { background: #8a2b2b; }
       .a-group { display: flex; align-items: center; gap: 5px; padding: 8px 6px 3px;
         font-size: 11px; font-weight: 600; color: #9aa4b2; cursor: default; }
       .a-group:hover { color: #c3ccd8; }
@@ -306,24 +303,14 @@
       .a-group.drop-before { box-shadow: inset 0 2px 0 #56b4e9; }
       .a-caret { width: 9px; flex: none; }
       .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .a-gdots { display: flex; flex-wrap: wrap; gap: 3px; margin-left: auto; }
-      .a-group:not(.folded) .a-gdots { display: none; }
+      .a-group .cc-attention { margin-left: auto; }
       .a-row.k { padding-left: 14px; }
       .a-empty { color: #6b7280; padding: 6px; font-size: 11px; }
       .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
         color: #7d8590; font-size: 11px; }
       .a-newdrop.over { border-color: #56b4e9; color: #c3ccd8; }
-      /* The dots: chrome-core's palette (cyan presence, green live, amber attention). */
-      .a-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-sizing: border-box; }
-      .a-dot.st-working { background: #56b4e9; animation: a-pulse 1s infinite alternate; }
-      .a-dot.st-blocked { background: #f0883e; }
-      /* The spec's dot: error = done. Read is a dim green ring; unread is solid, its name bold. */
-      .a-dot.st-done, .a-dot.st-error { border: 1.5px solid #3fb950; opacity: 0.75; }
-      .a-dot.st-done.unread, .a-dot.st-error.unread { background: #3fb950; opacity: 1; }
-      .a-row.unread .a-name { font-weight: 600; }
-      .a-dot.st-idle { border: 1.5px solid #6e7681; }
-      .a-dot.st-asleep { border: 1.5px dashed #6e7681; }
-      @keyframes a-pulse { to { opacity: 0.35; } }
+      /* A row's dots and its confirm are chrome-core's (`agentControls`); armed, ⋯ steps aside. */
+      .a-row.confirming .a-more { display: none; }
       #agents-foot { flex: none; border-top: 1px solid #313640; padding: 4px; }
       .a-foot-row { display: flex; gap: 4px; }
       #agents-new { flex: 1; text-align: left; padding: 4px 6px; border-radius: 5px;
@@ -351,7 +338,10 @@
       #agents.narrow .a-newdrop { display: none; }
       #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
         border-top: 1px solid #313640; margin: 4px 4px 0; }
-      #agents.narrow .a-gdots { margin: 0; justify-content: center; }
+      #agents.narrow .a-group .cc-attention { margin: 0; }
+      /* One mark per row — attention when set, else the session dot — and no confirm in 34px. */
+      #agents.narrow .cc-attention + .cc-presence { display: none; }
+      #agents.narrow .cc-presence { pointer-events: none; }
       #agents.narrow .a-foot-row { flex-direction: column; }
       #agents.narrow #agents-new { text-align: center; padding: 4px 0; }
       #agents.narrow #agents-rail { width: auto; padding: 4px 0; }
@@ -411,7 +401,7 @@
         </div>
         <!-- The agent tab list (a Rex tab's main pane only): rows, groups, and the foot's `+` and
              Closed fold. Rendered by `renderAgents`; shown by `syncAgentsColumn`. -->
-        <aside id="agents">
+        <aside id="agents" class="cc-ctl-host">
           <div id="agents-list"></div>
           <div id="agents-foot">
             <div class="a-foot-row">
@@ -983,8 +973,42 @@
       // window holding the tab), so it is kept for this window's own agent tabs, not `forMe`-filtered.
       const agentLists = new Map();
       // The list's own UI state, for one tab: whose actions are open under its row, which row is
-      // being renamed, which close awaits its confirm, which row is naming a new group.
-      const agentUi = { tab: null, open: null, renaming: null, confirming: null, newGroupFor: null };
+      // being renamed, which row is naming a new group.
+      const agentUi = { tab: null, open: null, renaming: null, newGroupFor: null };
+      // A row's dots and its ☠ Close / ⏻ Sleep confirm: chrome-core's, so they read as a project
+      // row's do. It holds which row is armed.
+      const agentControls = new ChromeRowControls({
+        rowsFor: (id) => [...document.querySelectorAll("#agents-list .a-row")].filter((r) => r.dataset.id === id),
+        tabOf: (id) => {
+          const dto = agentLists.get(agentsTab());
+          const r = dto && dto.rows.find((x) => x.id === id);
+          return r ? agentControlRecord(r) : undefined;
+        },
+        onDestroy: (id) => agentCall("agent_close", { tabId: agentsTab(), recordId: id, confirmed: true }),
+        onSuspend: (id) => agentCall("agent_sleep", { tabId: agentsTab(), recordId: id }),
+        onStart: (id) => agentSelect(agentsTab(), id),
+      });
+      // An agent row as chrome-core's slots read it: amber when it needs you (blocked, or finished
+      // and not yet seen), cyan for its session — pulsing while it works, the ghost while asleep.
+      function agentControlRecord(r) {
+        const reason = r.canSleep ? null : r.sleepReason;
+        return {
+          id: r.id,
+          presence: r.state === "asleep" ? "ghost" : "on",
+          busy: r.state === "working",
+          attention: r.state === "blocked" || r.unread ? true : null,
+          killable: true,
+          suspendable: true,
+          startable: true,
+          suspendReason: reason ? "Can't sleep: " + reason : null,
+          labels: {
+            end: "Close or sleep…",
+            destroy: reason ? "Close — " + reason + ", so it ends for good" : "Close",
+            suspend: "Sleep",
+            start: "Wake",
+          },
+        };
+      }
       const closedOpen = new Set(); // tab ids whose Closed fold is open
       // Below this hole width the list folds to a rail of dots, leaving the agent ~480px. The fold
       // button overrides it per window (`railKey`); choosing what the width would pick clears that.
@@ -1065,17 +1089,18 @@
         renderAgents();
         agentCall("agent_select", { tabId: tab, recordId: id });
       }
-      // Close, after a confirm when the agent can't come back from Closed (it never reported how
-      // to resume — the row's `sleepReason` says so, and so does the command's refusal).
-      function agentClose(tab, r, confirmed) {
-        if (!confirmed && r.sleepReason) {
-          agentUi.confirming = r.id;
-          renderAgents();
-          return;
-        }
-        agentUi.open = agentUi.confirming = null;
+      // Arm row `id`'s confirm (☠ Close, ⏻ Sleep), as its dot does.
+      function agentArm(id) {
+        agentUi.open = null;
         renderAgents();
-        agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: !!confirmed });
+        const row = agentControls.rowsFor(id)[0];
+        if (row) agentControls.arm(id, row);
+      }
+      // ⌥⌘W: close at once when the agent can come back from Closed; one that can't (it never
+      // reported how to resume) arms its confirm, where ☠ ends it for good.
+      function agentClose(tab, r) {
+        if (r.sleepReason) return agentArm(r.id);
+        agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: false });
       }
       function agentGroup(tab, id, group, index) {
         agentUi.open = agentUi.newGroupFor = null;
@@ -1144,25 +1169,30 @@
       }
 
       // Repaint the list for the tab on screen from its DTO. Ungrouped rows sit above the groups;
-      // a folded group shows its rows' dots in its header instead of the rows.
+      // a folded group shows an amber dot in its header when a row in it needs you.
       function renderAgents() {
         const tab = agentsTab();
         const list = document.getElementById("agents-list");
         const closedBox = document.getElementById("agents-closed");
         list.textContent = "";
         closedBox.textContent = "";
-        if (tab === null) return;
+        if (tab === null) return agentControls.disarm();
         const dto = agentLists.get(tab);
         if (!dto) return; // `agents_init` in flight
-        if (agentUi.tab !== tab) Object.assign(agentUi, { tab, open: null, renaming: null, confirming: null, newGroupFor: null });
+        if (agentUi.tab !== tab) {
+          Object.assign(agentUi, { tab, open: null, renaming: null, newGroupFor: null });
+          agentControls.disarm();
+        }
         const ids = new Set(dto.rows.map((r) => r.id));
-        for (const k of ["open", "renaming", "confirming", "newGroupFor"]) {
+        for (const k of ["open", "renaming", "newGroupFor"]) {
           if (agentUi[k] !== null && !ids.has(agentUi[k])) agentUi[k] = null;
         }
+        // The armed agent went (closed elsewhere, or by its own exit): nothing left to confirm.
+        if (agentControls.armed !== null && !ids.has(agentControls.armed)) agentControls.disarm();
         dto.rows.filter((r) => !r.group).forEach((r) => list.append(...agentRow(tab, dto, r, false)));
         dto.groups.forEach((g) => {
           const members = dto.rows.filter((r) => r.group === g.name);
-          list.append(groupHeader(tab, g, members));
+          list.append(groupHeader(tab, g));
           if (!g.folded) members.forEach((r) => list.append(...agentRow(tab, dto, r, true)));
         });
         if (!dto.rows.length) list.append(agentEl("div", "a-empty", "No agent tabs"));
@@ -1177,23 +1207,17 @@
         if (!busy || agentUi.tab !== agentsTab()) renderAgents();
       }
 
-      function agentDot(r) {
-        return agentEl("span", "a-dot st-" + r.state + (r.unread ? " unread" : ""));
-      }
-
       function agentRow(tab, dto, r, grouped) {
         const row = agentEl("div", "a-row");
         row.classList.toggle("k", grouped);
         row.classList.toggle("sel", !!r.selected);
         row.classList.toggle("asleep", r.state === "asleep");
-        row.classList.toggle("unread", !!r.unread);
         row.classList.toggle("open", agentUi.open === r.id);
         row.dataset.id = r.id;
         row.dataset.group = r.group ?? "";
         const name = r.name || "untitled";
         const ctx = r.context || (r.state === "asleep" ? "asleep" : "");
         row.title = ctx ? name + "\n" + ctx : name;
-        row.append(agentDot(r));
         const text = agentEl("span", "a-text");
         if (agentUi.renaming === r.id) {
           const stop = () => { agentUi.renaming = null; renderAgents(); };
@@ -1206,15 +1230,19 @@
         }
         if (ctx) text.append(agentEl("span", "a-ctx", ctx));
         row.append(text);
+        const rec = agentControlRecord(r);
+        if (rec.attention) row.append(agentControls.attention(true));
+        row.append(agentControls.presence(rec, true));
         const more = agentButton("⋯", () => toggleActions(r.id), "a-more");
-        more.title = "Sleep, fork, close, rename, group";
+        more.title = "Fork, close, rename, group";
         row.append(more);
+        agentControls.confirm(row, rec);
         row.addEventListener("contextmenu", (e) => {
           e.preventDefault();
           toggleActions(r.id);
         });
         row.addEventListener("dblclick", (e) => {
-          if (e.target.closest("button")) return;
+          if (e.target.closest("button, " + AGENT_CONTROLS)) return;
           cancelWake();
           startRename(r.id);
         });
@@ -1223,41 +1251,16 @@
       }
       function toggleActions(id) {
         agentUi.open = agentUi.open === id ? null : id;
-        agentUi.confirming = agentUi.newGroupFor = null;
+        agentUi.newGroupFor = null;
         renderAgents();
       }
 
-      // A row's actions, expanded in place under it. Sleep and Fork stay on screen when they can't
-      // run, disabled with the reason beneath; an asleep row offers Wake in Sleep's place.
+      // A row's actions, expanded in place under it. Fork stays on screen when it can't run,
+      // disabled with the reason beneath. Close… arms the row's own confirm, as its dot does.
       function agentActions(tab, dto, r) {
         const box = agentEl("div", "a-actions");
         box.addEventListener("mousedown", (e) => e.stopPropagation());
-        if (agentUi.confirming === r.id) {
-          const c = agentEl("div", "a-confirm");
-          const why = r.sleepReason.charAt(0).toUpperCase() + r.sleepReason.slice(1);
-          c.append(agentEl("span", null, why + ", so closing ends it for good."));
-          const btns = agentEl("div", "a-btns");
-          btns.append(
-            agentButton("Close for good", () => agentClose(tab, r, true), "danger"),
-            agentButton("Keep", () => { agentUi.confirming = null; renderAgents(); })
-          );
-          c.append(btns);
-          box.append(c);
-          return box;
-        }
         const btns = agentEl("div", "a-btns");
-        if (r.state === "asleep") {
-          btns.append(agentButton("Wake", () => agentSelect(tab, r.id)));
-        } else {
-          const sleep = agentButton("Sleep", () => {
-            agentUi.open = null;
-            renderAgents();
-            agentCall("agent_sleep", { tabId: tab, recordId: r.id });
-          });
-          sleep.disabled = !r.canSleep;
-          sleep.title = r.sleepReason || "Sleep (⌥⌘S)";
-          btns.append(sleep);
-        }
         const fork = agentButton("Fork", () => {
           agentUi.open = null;
           renderAgents();
@@ -1265,16 +1268,9 @@
         });
         fork.disabled = !r.canFork;
         fork.title = r.forkReason || "Fork (⌥⌘T)";
-        btns.append(fork, agentButton("Close", () => agentClose(tab, r, false)), agentButton("Rename", () => startRename(r.id)));
+        btns.append(fork, agentButton("Close…", () => agentArm(r.id)), agentButton("Rename", () => startRename(r.id)));
         box.append(btns);
-        const sleepWhy = r.state !== "asleep" && !r.canSleep ? r.sleepReason : null;
-        const forkWhy = r.canFork ? null : r.forkReason;
-        if (sleepWhy && sleepWhy === forkWhy) {
-          box.append(agentEl("div", "a-reason", "Can't sleep or fork: " + sleepWhy));
-        } else {
-          if (sleepWhy) box.append(agentEl("div", "a-reason", "Can't sleep: " + sleepWhy));
-          if (forkWhy) box.append(agentEl("div", "a-reason", "Can't fork: " + forkWhy));
-        }
+        if (!r.canFork) box.append(agentEl("div", "a-reason", "Can't fork: " + r.forkReason));
         const label = agentEl("label", null, "Group");
         const pick = agentEl("select");
         const opt = (value, text) => {
@@ -1300,16 +1296,14 @@
         return box;
       }
 
-      function groupHeader(tab, g, members) {
+      function groupHeader(tab, g) {
         const h = agentEl("div", "a-group");
         h.classList.toggle("folded", g.folded);
         h.classList.toggle("amber", g.folded && g.amber);
         h.dataset.group = g.name;
         h.title = g.name;
         h.append(agentEl("span", "a-caret", g.folded ? "▸" : "▾"), agentEl("span", "a-gname", g.name));
-        const dots = agentEl("span", "a-gdots");
-        members.forEach((r) => dots.append(agentDot(r)));
-        h.append(dots);
+        if (g.folded && g.amber) h.append(agentControls.attention(true));
         h.addEventListener("click", () =>
           agentCall("agent_fold", { tabId: tab, group: g.name, folded: !g.folded }));
         return h;
@@ -1358,8 +1352,10 @@
       // dragged one aside). A press that doesn't move is a click, selecting the row. Same unstick as
       // the divider: a release over the native terminal never reaches this page, so a move with no
       // button held ends the drag.
+      // A press on a row's dot or confirm glyph is theirs: it neither selects nor drags the row.
+      const AGENT_CONTROLS = ".cc-presence, .cc-confirm-destroy, .cc-confirm-suspend, .cc-confirm-cancel";
       function rowMouseDown(e, tab, r, row) {
-        if (e.button !== 0 || e.target.closest("button, input, select")) return;
+        if (e.button !== 0 || e.target.closest("button, input, select, " + AGENT_CONTROLS)) return;
         drag = { tab, id: r.id, row, startY: e.clientY, moved: false, drop: null, click: e.detail <= 1,
           asleep: r.state === "asleep" };
         window.addEventListener("mousemove", dragMove);
@@ -1923,7 +1919,7 @@
         if (!forMe(e) || !e.payload.tabId) return;
         const dto = agentLists.get(e.payload.tabId);
         const r = dto && dto.rows.find((r) => r.selected);
-        if (r) agentClose(e.payload.tabId, r, false);
+        if (r) agentClose(e.payload.tabId, r);
       });
 
       // A split's secondary process exited — the one way a split ends — collapse the layout
