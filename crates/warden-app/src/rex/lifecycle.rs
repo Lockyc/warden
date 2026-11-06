@@ -1,6 +1,6 @@
-//! The agent tab list's lifecycle: new, wake, sleep, close, reopen and rename an agent tab, and
-//! follow windows that change in Rex — each one pass over the pane's records under the pane's
-//! hold ([`RexHub::agent_op`]) — plus what the list shows ([`agent_list`]).
+//! The agent tab list's lifecycle: new, wake, sleep, close, reopen, fork and rename an agent
+//! tab, and follow windows that change in Rex — each one pass over the pane's records under the
+//! pane's hold ([`RexHub::agent_op`]) — plus what the list shows ([`agent_list`]).
 //!
 //! The commands run here: a worker does the Rex work, the answer lands on the main thread in
 //! every window holding the tab ([`Registry::sync_agents`](crate::registry::Registry::sync_agents)),
