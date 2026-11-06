@@ -317,7 +317,10 @@
       .a-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-sizing: border-box; }
       .a-dot.st-working { background: #56b4e9; animation: a-pulse 1s infinite alternate; }
       .a-dot.st-blocked { background: #f0883e; }
-      .a-dot.st-done, .a-dot.st-error { background: #3fb950; } /* the spec's dot: error = done */
+      /* The spec's dot: error = done. Read is a dim green ring; unread is solid, its name bold. */
+      .a-dot.st-done, .a-dot.st-error { border: 1.5px solid #3fb950; opacity: 0.55; }
+      .a-dot.st-done.unread, .a-dot.st-error.unread { background: #3fb950; opacity: 1; }
+      .a-row.unread .a-name { font-weight: 600; }
       .a-dot.st-idle { border: 1.5px solid #6e7681; }
       .a-dot.st-asleep { border: 1.5px dashed #6e7681; }
       @keyframes a-pulse { to { opacity: 0.35; } }
@@ -1174,18 +1177,23 @@
         if (!busy || agentUi.tab !== agentsTab()) renderAgents();
       }
 
+      function agentDot(r) {
+        return agentEl("span", "a-dot st-" + r.state + (r.unread ? " unread" : ""));
+      }
+
       function agentRow(tab, dto, r, grouped) {
         const row = agentEl("div", "a-row");
         row.classList.toggle("k", grouped);
         row.classList.toggle("sel", !!r.selected);
         row.classList.toggle("asleep", r.state === "asleep");
+        row.classList.toggle("unread", !!r.unread);
         row.classList.toggle("open", agentUi.open === r.id);
         row.dataset.id = r.id;
         row.dataset.group = r.group ?? "";
         const name = r.name || "untitled";
         const ctx = r.context || (r.state === "asleep" ? "asleep" : "");
         row.title = ctx ? name + "\n" + ctx : name;
-        row.append(agentEl("span", "a-dot st-" + r.state));
+        row.append(agentDot(r));
         const text = agentEl("span", "a-text");
         if (agentUi.renaming === r.id) {
           const stop = () => { agentUi.renaming = null; renderAgents(); };
@@ -1288,7 +1296,7 @@
         h.title = g.name;
         h.append(agentEl("span", "a-caret", g.folded ? "▸" : "▾"), agentEl("span", "a-gname", g.name));
         const dots = agentEl("span", "a-gdots");
-        members.forEach((r) => dots.append(agentEl("span", "a-dot st-" + r.state)));
+        members.forEach((r) => dots.append(agentDot(r)));
         h.append(dots);
         h.addEventListener("click", () =>
           agentCall("agent_fold", { tabId: tab, group: g.name, folded: !g.folded }));
