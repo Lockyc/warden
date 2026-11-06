@@ -474,6 +474,28 @@ impl ControlClient {
     /// in order. The protocol carries text, so invalid UTF-8 becomes U+FFFD: pass whole
     /// characters (hold back a sequence cut off at the end of a read).
     pub fn write_input(&self, session: &str, block: &str, bytes: &[u8]) -> Result<(), RexError> {
+        self.write_input_by(session, block, bytes, None)
+    }
+
+    /// [`ControlClient::write_input`], every call waiting only until `deadline` (`Timeout`
+    /// after it). For callers with a budget, such as a tab's open.
+    pub fn write_input_until(
+        &self,
+        session: &str,
+        block: &str,
+        bytes: &[u8],
+        deadline: Instant,
+    ) -> Result<(), RexError> {
+        self.write_input_by(session, block, bytes, Some(deadline))
+    }
+
+    fn write_input_by(
+        &self,
+        session: &str,
+        block: &str,
+        bytes: &[u8],
+        deadline: Option<Instant>,
+    ) -> Result<(), RexError> {
         let text = String::from_utf8_lossy(bytes);
         if text.is_empty() {
             return Ok(());
@@ -493,7 +515,16 @@ impl ControlClient {
             ));
         }
         for chunk in chunks(&text, budget) {
-            self.block_call(session, block, "write", json!({"data": chunk}))?;
+            match deadline {
+                None => {
+                    self.block_call(session, block, "write", json!({"data": chunk}))?;
+                }
+                Some(d) => {
+                    let payload =
+                        json!({"session_id": session, "block_id": block, "args": {"data": chunk}});
+                    self.call_seq_until("com.superlogical.terminal.write", payload, d)?;
+                }
+            }
         }
         Ok(())
     }
@@ -767,6 +798,24 @@ mod tests {
         let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
         let started = Instant::now();
         let r = c.call_seq_until("slow", json!({}), started + Duration::from_millis(200));
+        assert_eq!(r, Err(RexError::Timeout));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn write_input_until_stops_waiting_at_the_deadline() {
+        let fake = FakeServer::start();
+        fake.on("com.superlogical.terminal.write", |_, _| {
+            Reply::ok(json!({})).after(Duration::from_secs(2))
+        });
+        let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
+        let started = Instant::now();
+        let r = c.write_input_until(
+            "session:1",
+            "block:1",
+            b"cmd\n",
+            started + Duration::from_millis(200),
+        );
         assert_eq!(r, Err(RexError::Timeout));
         assert!(started.elapsed() < Duration::from_secs(1));
     }
