@@ -378,6 +378,7 @@ mod tests {
             Some(super::super::store::PaneRecord {
                 server: server.into(),
                 session_id: session_id.into(),
+                instance: None,
             }),
         );
     }

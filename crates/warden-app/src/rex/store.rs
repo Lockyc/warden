@@ -16,6 +16,12 @@ pub const STEM: &str = "rex-sessions";
 pub struct PaneRecord {
     pub server: String,
     pub session_id: String,
+    /// The server instance (`server.status` `instance_id`) the session was made or last opened
+    /// under. Rex restores sessions across a restart with the same ids but every terminal a bare
+    /// shell, and nothing on a block says so: a record from another instance is a restored session
+    /// (`State::restored`). `None` when the server doesn't report one, or the record predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
 }
 
 /// Every pane's record plus where they persist. `path: None` (the `Default`) keeps records in
@@ -85,6 +91,7 @@ mod tests {
         PaneRecord {
             server: server.into(),
             session_id: id.into(),
+            instance: None,
         }
     }
 

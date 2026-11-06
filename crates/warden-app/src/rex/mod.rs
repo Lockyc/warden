@@ -198,6 +198,30 @@ impl State {
         self.requested.remove(agent_key);
     }
 
+    /// Whether `rec`'s session is one its server restored after a restart: the server is
+    /// connected under an instance other than the one `rec` was made or last opened under. Its
+    /// terminals are bare shells, so it reads as gone until an open adopts it. False when either
+    /// instance is unknown.
+    fn restored(&self, rec: &PaneRecord) -> bool {
+        let now = self.conns.get(&rec.server).and_then(|c| c.instance.as_ref());
+        matches!((now, &rec.instance), (Some(now), Some(then)) if now != then)
+    }
+
+    /// Stamp `pane_key`'s stored record with its server's current instance, when known.
+    fn stamp(&mut self, pane_key: &str) {
+        let Some(rec) = self.store.get(pane_key) else {
+            return;
+        };
+        let now = self.conns.get(&rec.server).and_then(|c| c.instance.clone());
+        if now.is_some() && now != rec.instance {
+            let rec = PaneRecord {
+                instance: now,
+                ..rec.clone()
+            };
+            self.store.set(pane_key, Some(rec));
+        }
+    }
+
     /// `server`'s session list: its connection's, else the last heard while it's disconnected.
     fn sessions(&self, server: &str) -> Option<&[SessionInfo]> {
         self.conns
@@ -230,6 +254,8 @@ struct Conn {
     gen: u64,
     client: Arc<ControlClient>,
     endpoint: Endpoint,
+    /// The server's `instance_id`, new on every start; `None` when it doesn't report one.
+    instance: Option<String>,
     live: Vec<SessionInfo>,
     /// The `seq` of the response `live` came from: session events at or below it are in `live`.
     live_seq: u64,
@@ -371,9 +397,12 @@ impl RexHub {
         let st = self.inner.lock();
         let listed = |list: &[SessionInfo], id: &str| list.iter().any(|s| s.id == id);
         match st.record(pane_key) {
-            Some(rec) => st
-                .sessions(&rec.server)
-                .is_some_and(|l| listed(l, &rec.session_id)),
+            Some(rec) => {
+                !st.restored(rec)
+                    && st
+                        .sessions(&rec.server)
+                        .is_some_and(|l| listed(l, &rec.session_id))
+            }
             None => unclaimed::session_of(pane_key).is_some_and(|id| {
                 st.conns.values().any(|c| listed(&c.live, id))
                     || st.heard.values().any(|l| listed(l, id))
@@ -423,10 +452,12 @@ impl Inner {
                             "Rex {server}: reattached session {} ({pane_key})",
                             rec.session_id
                         );
-                        inner
-                            .lock()
-                            .blocks
-                            .insert(pane_key.to_owned(), block_id.clone());
+                        let mut st = inner.lock();
+                        st.blocks.insert(pane_key.to_owned(), block_id.clone());
+                        if !adopted {
+                            st.stamp(pane_key);
+                        }
+                        drop(st);
                         return Ok(PaneTarget {
                             endpoint,
                             session_id: rec.session_id.clone(),
@@ -475,11 +506,13 @@ impl Inner {
                 st.windows
                     .remove(&(prev.server.clone(), prev.session_id.clone()));
             }
+            let instance = st.conns.get(server).and_then(|c| c.instance.clone());
             st.store.set(
                 pane_key,
                 Some(PaneRecord {
                     server: server.to_owned(),
                     session_id: session_id.clone(),
+                    instance,
                 }),
             );
             st.blocks.insert(pane_key.to_owned(), block_id.clone());
@@ -743,6 +776,7 @@ impl RexHub {
             PaneRecord {
                 server: server.to_owned(),
                 session_id: session_id.to_owned(),
+                instance: None,
             },
         );
     }
@@ -935,6 +969,13 @@ impl Inner {
             let scope = json!({ "event_scope": "session" });
             call_seq(&client, "session.attach_all", scope, deadline)?
         };
+        let instance = match call_seq(&client, "server.status", json!({}), deadline) {
+            Ok((_, status)) => status["instance_id"].as_str().map(str::to_owned),
+            Err(e) => {
+                log::debug!("Rex {server}: no server.status ({e}); restores go unnoticed");
+                None
+            }
+        };
         let client = Arc::new(client);
         let token = client.reconnect_token().map(str::to_owned);
         let gen = {
@@ -952,6 +993,7 @@ impl Inner {
                     gen,
                     client: client.clone(),
                     endpoint: endpoint.clone(),
+                    instance,
                     live: parse_sessions(&list["sessions"]),
                     live_seq: seq,
                     owners: HashMap::new(),

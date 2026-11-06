@@ -311,6 +311,7 @@ pub(super) mod tests {
             Some(PaneRecord {
                 server: "local".into(),
                 session_id: session_id.into(),
+                instance: None,
             }),
         );
     }

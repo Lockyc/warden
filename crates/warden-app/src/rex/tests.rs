@@ -69,6 +69,7 @@ fn seed(path: &Path, pane: &str, server: &str, session_id: &str) {
         Some(PaneRecord {
             server: server.into(),
             session_id: session_id.into(),
+            instance: None,
         }),
     );
 }
@@ -117,7 +118,8 @@ fn ensure_session_creates_when_unmapped() {
         RexStore::load(path).get("tab-a"),
         Some(&PaneRecord {
             server: "local".into(),
-            session_id: "session:new".into()
+            session_id: "session:new".into(),
+            instance: None,
         })
     );
     assert!(hub.claimed_session_ids(["tab-a"]).contains("session:new"));
@@ -1579,4 +1581,84 @@ fn close_window_removes_it() {
     assert_eq!(set["window_id"], "window:1");
     assert_eq!(set["label"], "renamed");
     assert_eq!(hub.windows("local", "session:new")[0].label, "renamed");
+}
+
+/// The server instance a restartable fake reports from `server.status`: change it, then drop the
+/// control connection, to stand in for Rex restarting with its sessions restored.
+type Instance = std::sync::Arc<std::sync::Mutex<String>>;
+
+/// [`scripted`] whose `server.status` reports the instance in the returned handle.
+fn restartable(sessions: Value, instance: &str) -> (FakeServer, Instance) {
+    let fake = scripted(sessions.clone());
+    fake.reply("session.list", json!({ "sessions": sessions }));
+    let inst: Instance = std::sync::Arc::new(std::sync::Mutex::new(instance.to_owned()));
+    let held = inst.clone();
+    fake.on("server.status", move |_, _| {
+        Reply::ok(json!({"instance_id": held.lock().unwrap().clone()}))
+    });
+    (fake, inst)
+}
+
+/// Rex restarting as `next`: the instance changes and the connection drops; returns once the hub
+/// has reconnected.
+fn restart(fake: &FakeServer, inst: &Instance, rx: &Receiver<HubEvent>, next: &str) {
+    *inst.lock().unwrap() = next.to_owned();
+    fake.drop_control();
+    next_event(rx, |e| matches!(e, HubEvent::Reconnected { server } if server == "local"));
+}
+
+#[test]
+fn a_record_from_another_instance_is_not_alive() {
+    let (fake, inst) = restartable(json!([{"session_id": "session:new", "label": "w"}]), "a");
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert!(hub.session_alive("tab-a"));
+    restart(&fake, &inst, &rx, "b");
+    assert!(!hub.session_alive("tab-a"), "restored by a later instance");
+}
+
+#[test]
+fn a_record_from_this_instance_is_alive() {
+    let (fake, inst) = restartable(json!([{"session_id": "session:new", "label": "w"}]), "a");
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    restart(&fake, &inst, &rx, "a");
+    assert!(hub.session_alive("tab-a"));
+}
+
+#[test]
+fn an_unstamped_record_is_stamped_not_restored() {
+    let (fake, _inst) = restartable(json!([{"session_id": "session:old", "label": "w"}]), "a");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rex-sessions.json");
+    seed(&path, "tab-a", "local", "session:old");
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.connect("local").expect("connect");
+    assert!(hub.session_alive("tab-a"));
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert_eq!(
+        RexStore::load(path).get("tab-a").and_then(|r| r.instance.clone()),
+        Some("a".to_owned())
+    );
+}
+
+#[test]
+fn no_instance_id_means_nothing_is_restored() {
+    let fake = scripted(json!([{"session_id": "session:new", "label": "w"}]));
+    fake.reply("session.list", json!({"sessions": [{"session_id": "session:new", "label": "w"}]}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    fake.drop_control();
+    next_event(&rx, |e| matches!(e, HubEvent::Reconnected { server } if server == "local"));
+    assert!(hub.session_alive("tab-a"));
 }

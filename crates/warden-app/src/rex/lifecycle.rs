@@ -2025,6 +2025,7 @@ mod tests {
                 Some(crate::rex::store::PaneRecord {
                     server: "local".into(),
                     session_id: "session:split".into(),
+                    instance: None,
                 }),
             );
         }
