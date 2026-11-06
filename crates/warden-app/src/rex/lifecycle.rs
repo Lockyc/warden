@@ -171,8 +171,14 @@ impl RexHub {
             AgentOp::Refresh => {}
             AgentOp::Exited(id) => {
                 // Gone already when its window closed in a live session without a resume command.
+                // Only an agent stored live exited: one already asleep had its window closed by
+                // warden (a restored session's open), and stays asleep for a user open to wake.
+                let was_live = held
+                    .iter()
+                    .any(|r| r.id == *id && r.state == RecordState::Live);
                 let open = records
                     .iter_mut()
+                    .filter(|_| was_live)
                     .find(|r| r.id == *id && r.state != RecordState::Closed);
                 if let Some(r) = open {
                     r.window_id = None;
@@ -1667,6 +1673,25 @@ mod tests {
         assert_eq!(a.closed_at, Some(9));
         assert_eq!((a.window_id, a.block_id), (None, None));
         assert!(!a.selected);
+    }
+
+    #[test]
+    fn an_exit_seen_for_an_agent_already_asleep_leaves_it_asleep() {
+        // A restored session's open sleeps its agents before closing their windows; a relay
+        // still bound to one of those windows then reports its exit.
+        let f = fake(None, vec![]);
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let s = store(vec![record(
+            "a",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume aaa"),
+        )]);
+        hub.agent_op(&s, &open(false, None), &AgentOp::Exited("a".into()), 9)
+            .expect("exited");
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
     }
 
     #[test]
