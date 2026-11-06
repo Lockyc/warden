@@ -39,6 +39,9 @@ pub enum AgentOp {
     Close { id: String, confirmed: bool },
     /// Wake a closed agent, the most recently closed when `None`.
     Reopen(Option<String>),
+    /// A new tab below the agent, in its group, selected, resuming the same conversation as an
+    /// independent branch ([`agents::fork_command`]); the agent itself is left as it is.
+    Fork(String),
     /// Name the tab; a live one's window is relabelled in Rex.
     Rename(String, String),
     /// Follow the session's windows as they are now.
@@ -49,9 +52,22 @@ pub enum AgentOp {
     Exited(String),
 }
 
-/// Why `op` can't run on `records`: sleeping, or closing unconfirmed, an agent that never
-/// reported its resume command ([`NO_RESUME`]).
+/// Why `op` can't run on `records`: sleeping, closing unconfirmed or forking an agent that never
+/// reported its resume command ([`NO_RESUME`]); forking one whose harness can't fork
+/// ([`agents::CANT_FORK`]) or a tab the list doesn't show ([`NO_AGENT`]).
 pub fn refusal(op: &AgentOp, records: &[AgentRecord]) -> Option<&'static str> {
+    if let AgentOp::Fork(id) = op {
+        let Some(r) = records
+            .iter()
+            .find(|r| r.id == *id && r.state != RecordState::Closed)
+        else {
+            return Some(NO_AGENT);
+        };
+        return match r.resume.as_deref() {
+            None => Some(NO_RESUME),
+            Some(resume) => agents::fork_command(resume).err(),
+        };
+    }
     let id = match op {
         AgentOp::Sleep(id)
         | AgentOp::Close {
@@ -242,6 +258,38 @@ impl RexHub {
                     r.state = RecordState::Closed;
                     r.closed_at = Some(now);
                 }
+            }
+            AgentOp::Fork(id) => {
+                let src = records[at(&records, id)?].clone();
+                let cmd = src
+                    .resume
+                    .as_deref()
+                    .ok_or(Failed::Refused(NO_RESUME))
+                    .and_then(|r| agents::fork_command(r).map_err(Failed::Refused))?;
+                let cmd = warden_config::apply_resume(req.resume.as_deref(), &cmd);
+                let name = match src.name.as_str() {
+                    "" => "fork".to_owned(),
+                    n => format!("{n} fork"),
+                };
+                let w = self.open_window_until(req, &mut session, &cmd, Some(&name), deadline)?;
+                // Directly below the source: everything after it moves down one.
+                for r in records.iter_mut().filter(|r| r.position > src.position) {
+                    r.position += 1;
+                }
+                records.push(AgentRecord {
+                    id: agents::new_id(),
+                    project: project.to_owned(),
+                    name,
+                    group: src.group.clone(),
+                    position: src.position + 1,
+                    resume: None,
+                    state: RecordState::Live,
+                    window_id: Some(w.window_id),
+                    block_id: w.block_id,
+                    closed_at: None,
+                    selected: false,
+                });
+                want = Some(records.len() - 1);
             }
             AgentOp::Rename(id, name) => {
                 let i = at(&records, id)?;
@@ -1853,6 +1901,153 @@ mod tests {
         assert_eq!(got.agents[2].1.block_id, "block:woke");
     }
 
+    type Forkable = (
+        rex_client::fake::FakeServer,
+        tempfile::TempDir,
+        std::sync::Mutex<crate::rex::agents::AgentStore>,
+    );
+
+    /// Agents `a` (resumable, selected) and `b` in group `g`, then `c` ungrouped, live in
+    /// `session:old`.
+    fn forkable() -> Forkable {
+        let f = fake(
+            Some("session:old"),
+            vec![
+                ("window:1", "block:1", "a"),
+                ("window:2", "block:2", "b"),
+                ("window:3", "block:3", "c"),
+            ],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let mut a = record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        );
+        a.selected = true;
+        a.group = Some("g".into());
+        let mut b = record("b", RecordState::Live, Some("window:2"), None);
+        b.group = Some("g".into());
+        let c = record("c", RecordState::Live, Some("window:3"), None);
+        let s = store(vec![a, b, c]);
+        (f, dir, s)
+    }
+
+    #[test]
+    fn fork_types_the_fork_command_below_the_source() {
+        let (f, dir, s) = forkable();
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let before = state_of(&s, "a").unwrap();
+
+        let got = hub
+            .agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .expect("fork");
+        let made = f.requests_for("session.new_window");
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].payload["session_id"], "session:old");
+        assert_eq!(made[0].payload["window_label"], "a fork");
+        assert_eq!(
+            made[0].payload["layout"]["block"]["options"]["initial_input"],
+            "claude --resume aaa --fork-session\n"
+        );
+        let list = agent_list("t", &s.lock().unwrap(), &Attention::default(), |_| None);
+        let names: Vec<&str> = list.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["c", "a", "a fork", "b"],
+            "below its source, in its group"
+        );
+        let fork = &list.rows[2];
+        assert_eq!(fork.group.as_deref(), Some("g"));
+        assert!(fork.selected);
+        assert_eq!(got.selected.as_deref(), Some(fork.id.as_str()));
+        let rec = state_of(&s, &fork.id).unwrap();
+        assert_eq!(rec.state, RecordState::Live);
+        assert_eq!(rec.resume, None, "it reports its own session");
+        assert_eq!(rec.window_id.as_deref(), Some("window:woke"));
+        let a = state_of(&s, "a").unwrap();
+        assert_eq!(
+            (a.state, a.window_id, a.resume),
+            (before.state, before.window_id, before.resume),
+            "the source is untouched"
+        );
+        assert!(!a.selected);
+    }
+
+    #[test]
+    fn fork_applies_the_configured_resume_program() {
+        let (f, dir, s) = forkable();
+        let (hub, _) = hub(f.endpoint(), &dir);
+        hub.agent_op(
+            &s,
+            &open(false, Some("claude-work")),
+            &AgentOp::Fork("a".into()),
+            7,
+        )
+        .expect("fork");
+        assert_eq!(
+            f.requests_for("session.new_window")[0].payload["layout"]["block"]["options"]
+                ["initial_input"],
+            "claude-work --resume aaa --fork-session\n"
+        );
+    }
+
+    #[test]
+    fn fork_of_an_asleep_agent_in_a_lost_session_creates_it_leaving_the_source_asleep() {
+        let f = fake(None, vec![]);
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let s = store(vec![record(
+            "a",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume aaa"),
+        )]);
+
+        let got = hub
+            .agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .expect("fork");
+        let created = f.requests_for("session.create");
+        assert_eq!(created.len(), 1);
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+        assert_eq!(got.agents.len(), 1);
+        assert_ne!(got.selected.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn fork_refusals_make_no_window() {
+        let (f, dir, s) = forkable();
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut x = record(
+            "x",
+            RecordState::Live,
+            Some("window:4"),
+            Some("codex resume xxx"),
+        );
+        x.position = 9;
+        let mut gone = record("gone", RecordState::Closed, None, Some("claude --resume g"));
+        gone.position = 10;
+        {
+            let mut st = s.lock().unwrap();
+            st.upsert(x);
+            st.upsert(gone);
+        }
+        for (id, why) in [
+            ("b", NO_RESUME),
+            ("x", crate::rex::agents::CANT_FORK),
+            ("gone", super::NO_AGENT),
+            ("nope", super::NO_AGENT),
+        ] {
+            let got = hub.agent_op(&s, &open(false, None), &AgentOp::Fork(id.into()), 7);
+            assert_eq!(got, Err(why.to_string()), "{id}");
+        }
+        assert!(f.requests_for("session.new_window").is_empty());
+        assert!(f.requests_for("session.create").is_empty());
+    }
+
     #[test]
     fn a_new_agent_in_a_lost_session_recreates_it_typing_cmd() {
         let f = fake(None, vec![]);
@@ -1988,6 +2183,56 @@ mod tests {
             amber(&att),
             [("g".into(), true), ("h".into(), true)],
             "blocked needs you, seen or not"
+        );
+    }
+
+    #[test]
+    fn done_unseen_rows_are_unread() {
+        use crate::rex::windows::{AgentState, BlockStatus};
+        let b = record("b", RecordState::Live, Some("window:2"), None);
+        let c = record("c", RecordState::Live, Some("window:3"), None);
+        let d = record("d", RecordState::Asleep, None, None);
+        let s = store(vec![b, c, d]);
+        let state = std::cell::Cell::new(AgentState::Done);
+        let status = |_: &str| {
+            Some(BlockStatus {
+                state: state.get(),
+                msg: None,
+                title: None,
+            })
+        };
+        let mut att = Attention::default();
+        att.observe("block:2", AgentState::Working, false);
+        att.observe("block:3", AgentState::Working, false);
+        att.observe("block:2", AgentState::Done, false);
+        att.observe("block:3", AgentState::Done, true);
+        let unread = |att: &Attention| -> Vec<(String, bool)> {
+            agent_list("t", &s.lock().unwrap(), att, status)
+                .rows
+                .into_iter()
+                .map(|r| (r.id, r.unread))
+                .collect()
+        };
+        assert_eq!(
+            unread(&att),
+            [("b".into(), true), ("c".into(), false), ("d".into(), false)],
+            "b finished hidden; c on screen; d asleep"
+        );
+        att.seen("block:2");
+        assert!(unread(&att).iter().all(|(_, u)| !u), "seen clears it");
+
+        att.observe("block:2", AgentState::Working, false);
+        assert!(unread(&att).iter().all(|(_, u)| !u) || state.get() == AgentState::Done);
+        state.set(AgentState::Error);
+        att.observe("block:2", AgentState::Error, false);
+        assert_eq!(unread(&att)[0], ("b".into(), true), "error reads as done");
+
+        state.set(AgentState::Blocked);
+        att.observe("block:2", AgentState::Working, false);
+        att.observe("block:2", AgentState::Blocked, false);
+        assert!(
+            unread(&att).iter().all(|(_, u)| !u),
+            "blocked keeps its own dot"
         );
     }
 

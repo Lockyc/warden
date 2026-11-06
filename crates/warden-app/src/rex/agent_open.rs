@@ -174,19 +174,38 @@ impl RexHub {
         record: &mut AgentRecord,
         deadline: Instant,
     ) -> Result<(), RexError> {
-        let (project, server) = (req.pane_key.as_str(), req.server.as_str());
         let Some(resume) = record.resume.as_deref() else {
             return Err(api_error("no_resume", super::lifecycle::NO_RESUME, 0));
         };
         let cmd = warden_config::apply_resume(req.resume.as_deref(), resume);
         let name = Some(record.name.as_str()).filter(|n| !n.is_empty());
+        let window = self.open_window_until(req, session, &cmd, name, deadline)?;
+        record.state = RecordState::Live;
+        record.window_id = Some(window.window_id);
+        record.block_id = window.block_id;
+        record.closed_at = None;
+        Ok(())
+    }
+
+    /// A new window of `req`'s project session typing `cmd`, labelled `name` (Rex's default when
+    /// `None` in a session this creates; the tab's label in an existing one). Creates the session
+    /// when `session` is `None`, and leaves `session` naming the one the window is in.
+    pub(super) fn open_window_until(
+        &self,
+        req: &RexOpen,
+        session: &mut Option<(Endpoint, String)>,
+        cmd: &str,
+        name: Option<&str>,
+        deadline: Instant,
+    ) -> Result<AgentWindow, RexError> {
+        let (project, server) = (req.pane_key.as_str(), req.server.as_str());
         let (endpoint, sid, window) = match session.as_ref() {
             Some((endpoint, sid)) => {
                 let w = self.inner.new_window_until(
                     server,
                     sid,
                     &req.dir,
-                    Some(&cmd),
+                    Some(cmd),
                     Some(name.unwrap_or(&req.label)),
                     deadline,
                 )?;
@@ -197,7 +216,7 @@ impl RexHub {
                     project,
                     server,
                     &req.dir,
-                    Some(&cmd),
+                    Some(cmd),
                     &req.label,
                     name,
                     deadline,
@@ -206,12 +225,8 @@ impl RexHub {
                 (t.endpoint, t.session_id, w)
             }
         };
-        record.state = RecordState::Live;
-        record.window_id = Some(window.window_id);
-        record.block_id = window.block_id;
-        record.closed_at = None;
         *session = Some((endpoint, sid));
-        Ok(())
+        Ok(window)
     }
 
     /// The window of `session_id` holding `block_id`, which a session just created shows.

@@ -54,22 +54,57 @@ pub fn new_id() -> String {
     format!("{nanos:x}-{:x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
-/// The resume shapes a report may take: the fixed words (program and flags) before the one id.
-/// A closed table because a forged report must not choose the program or its flags; a new
-/// harness, or a new syntax for one, is one row.
-const RESUME_SHAPES: &[&[&str]] = &[&["claude", "--resume"], &["codex", "resume"]];
+/// One harness's resume syntax: the fixed words (program and flags) before the one id, and the
+/// words a fork appends after it, `None` where the harness has no verified fork.
+struct ResumeShape {
+    fixed: &'static [&'static str],
+    fork_suffix: Option<&'static [&'static str]>,
+}
 
-/// Whether a reported resume command is safe to store: exactly a row of `RESUME_SHAPES`, then
+/// The resume shapes a report may take. A closed table because a forged report must not choose
+/// the program or its flags; a new harness, or a new syntax for one, is one row.
+const RESUME_SHAPES: &[ResumeShape] = &[
+    ResumeShape {
+        fixed: &["claude", "--resume"],
+        fork_suffix: Some(&["--fork-session"]),
+    },
+    ResumeShape {
+        fixed: &["codex", "resume"],
+        fork_suffix: None,
+    },
+];
+
+/// Why an agent tab can't fork: its harness has no fork form in [`RESUME_SHAPES`].
+pub const CANT_FORK: &str = "this agent can't fork";
+
+/// The row of `RESUME_SHAPES` a reported resume command is exactly: the row's fixed words, then
 /// one id of `[A-Za-z0-9][A-Za-z0-9-]*` (never a leading `-`, which the CLI would read as a
 /// flag), joined by single spaces, nothing else.
-fn resume_is_safe(s: &str) -> bool {
+fn shape_of(s: &str) -> Option<&'static ResumeShape> {
     let words: Vec<&str> = s.split(' ').collect();
-    let Some((id, fixed)) = words.split_last() else {
-        return false;
-    };
-    id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && RESUME_SHAPES.contains(&fixed)
+    let (id, fixed) = words.split_last()?;
+    let id_ok = id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    RESUME_SHAPES
+        .iter()
+        .find(|shape| id_ok && shape.fixed == fixed)
+}
+
+/// Whether a reported resume command is safe to store: exactly a row of `RESUME_SHAPES`.
+fn resume_is_safe(s: &str) -> bool {
+    shape_of(s).is_some()
+}
+
+/// The command that forks the agent `resume` resumes: a new session branching from the same
+/// conversation, the original left as it is. [`CANT_FORK`] for a harness with no fork form.
+pub fn fork_command(resume: &str) -> Result<String, &'static str> {
+    let suffix = shape_of(resume)
+        .and_then(|shape| shape.fork_suffix)
+        .ok_or(CANT_FORK)?;
+    Ok(std::iter::once(resume)
+        .chain(suffix.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 /// A folded group of a project's list.
@@ -650,6 +685,24 @@ mod tests {
             "claude --resume 6f1c2d3e-aaaa-bbbb-cccc-123456789abc"
         ));
         assert!(s.report_resume("b-w1", "codex resume abc123"));
+    }
+
+    #[test]
+    fn fork_command_appends_fork_session_for_claude() {
+        assert_eq!(
+            fork_command("claude --resume abc"),
+            Ok("claude --resume abc --fork-session".to_string())
+        );
+    }
+
+    #[test]
+    fn fork_command_refuses_a_harness_without_a_fork_form() {
+        assert_eq!(fork_command("codex resume abc"), Err(CANT_FORK));
+        assert_eq!(
+            fork_command("sh -c id"),
+            Err(CANT_FORK),
+            "not a resume shape"
+        );
     }
 
     #[test]
