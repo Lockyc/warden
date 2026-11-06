@@ -2245,7 +2245,6 @@ mod tests {
         att.seen("block:2");
         assert!(unread(&att).iter().all(|(_, u)| !u), "seen clears it");
 
-        att.observe("block:2", AgentState::Done, false);
         att.observe("block:2", AgentState::Working, false);
         att.observe("block:2", AgentState::Done, false);
         assert_eq!(
@@ -2269,6 +2268,13 @@ mod tests {
         assert!(
             unread(&att).iter().all(|(_, u)| !u),
             "blocked keeps its own dot"
+        );
+        state.set(AgentState::Done);
+        att.observe("block:2", AgentState::Done, false);
+        assert_eq!(
+            unread(&att)[0],
+            ("b".into(), true),
+            "blocked then done: unread"
         );
     }
 
