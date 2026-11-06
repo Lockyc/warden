@@ -718,6 +718,8 @@ pub struct AgentRowDto {
     pub can_sleep: bool,
     /// Why a live tab can't sleep.
     pub sleep_reason: Option<String>,
+    /// Done or errored since its tab was last on screen ([`Attention::needs_you`]).
+    pub unread: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -827,6 +829,7 @@ pub fn agent_list(
             selected: r.selected,
             can_sleep: live && r.resume.is_some(),
             sleep_reason: (live && r.resume.is_none()).then(|| NO_RESUME.to_owned()),
+            unread: needs_you && matches!(state, "done" | "error"),
         });
     }
     let mut closed: Vec<&AgentRecord> = records
@@ -2127,6 +2130,21 @@ mod tests {
         assert_eq!(list.rows[0].sleep_reason.as_deref(), Some(NO_RESUME));
         assert!(list.rows[2].can_sleep && list.rows[2].sleep_reason.is_none());
         assert!(!list.rows[3].can_sleep, "already asleep");
+        let fork: Vec<(bool, Option<&str>)> = list
+            .rows
+            .iter()
+            .map(|r| (r.can_fork, r.fork_reason.as_deref()))
+            .collect();
+        assert_eq!(
+            fork,
+            [
+                (false, Some(NO_RESUME)),
+                (false, Some(NO_RESUME)),
+                (false, Some(crate::rex::agents::CANT_FORK)),
+                (true, None),
+            ],
+            "an asleep agent forks too"
+        );
         assert_eq!(list.groups.len(), 1);
         assert_eq!(list.groups[0].name, "g");
         assert!(list.groups[0].folded && !list.groups[0].amber);
@@ -2221,8 +2239,20 @@ mod tests {
         att.seen("block:2");
         assert!(unread(&att).iter().all(|(_, u)| !u), "seen clears it");
 
+        att.observe("block:2", AgentState::Done, false);
         att.observe("block:2", AgentState::Working, false);
-        assert!(unread(&att).iter().all(|(_, u)| !u) || state.get() == AgentState::Done);
+        att.observe("block:2", AgentState::Done, false);
+        assert_eq!(
+            unread(&att)[0],
+            ("b".into(), true),
+            "done again: unread again"
+        );
+        state.set(AgentState::Working);
+        att.observe("block:2", AgentState::Working, false);
+        assert!(
+            unread(&att).iter().all(|(_, u)| !u),
+            "back to working clears it"
+        );
         state.set(AgentState::Error);
         att.observe("block:2", AgentState::Error, false);
         assert_eq!(unread(&att)[0], ("b".into(), true), "error reads as done");
@@ -2802,6 +2832,7 @@ mod tests {
                     selected: *id == selected,
                     can_sleep: true,
                     sleep_reason: None,
+                    unread: false,
                 })
                 .collect(),
             groups,
