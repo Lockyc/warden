@@ -987,7 +987,19 @@
         onDestroy: (id) => agentCall("agent_close", { tabId: agentsTab(), recordId: id, confirmed: true }),
         onSuspend: (id) => agentCall("agent_sleep", { tabId: agentsTab(), recordId: id }),
         onStart: (id) => agentSelect(agentsTab(), id),
+        onDisarm: () => {
+          clearTimeout(agentArmLapse);
+          if (agentArmWidened) {
+            agentArmWidened = false;
+            if (agentsTab() !== null) syncRail();
+          }
+        },
       });
+      // An armed row needs its names-wide column for ☠ ⏻ ↩, so arming widens a folded rail until
+      // it disarms; a keyboard arm lapses, since the terminal keeps Escape and clicks from the page.
+      let agentArmWidened = false;
+      let agentArmLapse = null;
+      const AGENT_ARM_LAPSE_MS = 4000;
       // An agent row as chrome-core's slots read it: amber when it needs you (blocked, or finished
       // and not yet seen), cyan for its session — pulsing while it works, the ghost while asleep.
       function agentControlRecord(r) {
@@ -1059,7 +1071,7 @@
         return pref ? pref === "narrow" : autoNarrow();
       }
       function syncRail() {
-        const narrow = isNarrow();
+        const narrow = isNarrow() && !agentArmWidened;
         document.getElementById("agents").classList.toggle("narrow", narrow);
         const btn = document.getElementById("agents-rail");
         btn.textContent = narrow ? "«" : "»";
@@ -1089,18 +1101,32 @@
         renderAgents();
         agentCall("agent_select", { tabId: tab, recordId: id });
       }
-      // Arm row `id`'s confirm (☠ Close, ⏻ Sleep), as its dot does.
-      function agentArm(id) {
+      // Arm row `id`'s confirm (☠ Close, ⏻ Sleep), as its dot does; `lapse` for a keyboard arm.
+      function agentArm(id, lapse) {
         agentUi.open = null;
         renderAgents();
         const row = agentControls.rowsFor(id)[0];
-        if (row) agentControls.arm(id, row);
+        if (!row) return;
+        agentControls.arm(id, row);
+        if (agentControls.armed !== id) return;
+        if (isNarrow()) {
+          agentArmWidened = true;
+          syncRail();
+        }
+        if (lapse) {
+          clearTimeout(agentArmLapse);
+          agentArmLapse = setTimeout(() => {
+            if (agentControls.armed === id) agentControls.disarm();
+          }, AGENT_ARM_LAPSE_MS);
+        }
       }
       // ⌥⌘W: close at once when the agent can come back from Closed; one that can't (it never
-      // reported how to resume) arms its confirm, where ☠ ends it for good.
+      // reported how to resume) arms its confirm, where ☠ — or ⌥⌘W again — ends it for good.
       function agentClose(tab, r) {
-        if (r.sleepReason) return agentArm(r.id);
-        agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: false });
+        if (!r.sleepReason) return agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: false });
+        if (agentControls.armed !== r.id) return agentArm(r.id, true);
+        agentControls.disarm();
+        agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: true });
       }
       function agentGroup(tab, id, group, index) {
         agentUi.open = agentUi.newGroupFor = null;
