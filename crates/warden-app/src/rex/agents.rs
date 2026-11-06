@@ -230,11 +230,13 @@ impl AgentStore {
         removed
     }
 
-    /// Whether `project` has an asleep agent a user open can wake: the ghost on its Rex tab's dot.
-    pub fn has_asleep(&self, project: &str) -> bool {
+    /// Whether `project`, its session gone, has an agent a user open can wake — the ghost on its
+    /// Rex tab's dot. A `Live` record counts: after a Rex crash or reboot the store reads `Live`
+    /// until an open reconciles it asleep.
+    pub fn has_wakeable(&self, project: &str) -> bool {
         self.records
             .iter()
-            .any(|r| r.project == project && r.state == RecordState::Asleep && r.resume.is_some())
+            .any(|r| r.project == project && r.state != RecordState::Closed && r.resume.is_some())
     }
 
     /// The project whose record shows `block_id`.
@@ -485,7 +487,34 @@ mod tests {
     }
 
     #[test]
-    fn has_asleep_needs_an_asleep_resumable_record() {
+    fn has_wakeable_needs_a_resumable_record_not_closed() {
+        let mut s = AgentStore::default();
+        s.upsert(rec(
+            "closed",
+            RecordState::Closed,
+            None,
+            Some("claude --resume b"),
+        ));
+        assert!(
+            !s.has_wakeable("p"),
+            "a closed agent wakes only from the fold"
+        );
+        s.upsert(rec("bare", RecordState::Asleep, None, None));
+        assert!(!s.has_wakeable("p"), "nothing to resume");
+        s.upsert(rec(
+            "slept",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume c"),
+        ));
+        assert!(s.has_wakeable("p"));
+        assert!(!s.has_wakeable("other"));
+    }
+
+    #[test]
+    fn a_live_resumable_record_is_wakeable_once_its_session_is_gone() {
+        // After a Rex crash or reboot the store still reads Live until an open reconciles it; the
+        // dot asks only when the session is dead, and the next open wakes such a record.
         let mut s = AgentStore::default();
         s.upsert(rec(
             "live",
@@ -493,23 +522,7 @@ mod tests {
             Some("w"),
             Some("claude --resume a"),
         ));
-        s.upsert(rec(
-            "closed",
-            RecordState::Closed,
-            None,
-            Some("claude --resume b"),
-        ));
-        assert!(!s.has_asleep("p"), "live and closed don't count");
-        s.upsert(rec("bare", RecordState::Asleep, None, None));
-        assert!(!s.has_asleep("p"), "nothing to resume");
-        s.upsert(rec(
-            "slept",
-            RecordState::Asleep,
-            None,
-            Some("claude --resume c"),
-        ));
-        assert!(s.has_asleep("p"));
-        assert!(!s.has_asleep("other"));
+        assert!(s.has_wakeable("p"));
     }
 
     fn win(id: &str, label: &str) -> AgentWindow {

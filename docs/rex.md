@@ -128,7 +128,7 @@ site omits it.
 
 **Presence.** A Rex tab's dot is whether its session is in its server's session list — the
 last heard while the hub's connection is down: cyan; else a ghost while it holds asleep agents to
-wake (`AgentStore::has_asleep`); else hollow. It never offers ▶
+wake (`AgentStore::has_wakeable`); else hollow. It never offers ▶
 start, which types `cmd`: opening the tab is its start. Its `probe` is not run
 (`docs/probing.md`).
 
