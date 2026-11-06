@@ -647,10 +647,9 @@ impl Registry {
             .is_some_and(|t| t.secondary.is_some())
     }
 
-    /// Any-pane, not primary-only: a tab is "spawned" if either pane is live. This is
-    /// the check a future tab-row live dot needs (tab-level, not per-pane) — a split
-    /// tab with only its secondary live must still read as spawned.
-    #[cfg(test)]
+    /// Any-pane, not primary-only: a tab is "spawned" if either pane is live — the tab-row live
+    /// dot (`activate_tab`'s `live`), so a split tab with only its secondary live reads as
+    /// spawned.
     pub fn is_spawned(&self, id: &str) -> bool {
         self.tabs
             .iter()
