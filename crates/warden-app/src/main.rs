@@ -228,8 +228,9 @@ fn focused_tab_keys(
 
 /// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
 /// holds agent tabs, Sleep Agent Tab while its selected one can sleep, Reopen Last Closed while
-/// there is an agent tab or a window to reopen, the agent-step items while its main pane has focus
-/// and the step can act, and Focus Left / Right Pane while there's a pane that way. Runs on every
+/// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
+/// while its main pane has focus and the step can act, and Focus Left / Right Pane while there's a
+/// pane that way. Runs on every
 /// menu build, window focus, pane focus, tab activation and agent list change, so it also marks
 /// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
 /// callers must not hold it.

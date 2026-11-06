@@ -2045,6 +2045,27 @@ mod tests {
     }
 
     #[test]
+    fn fork_of_a_source_whose_window_just_closed_in_rex_is_refused() {
+        // `a`'s window is gone from Rex (closed in Rex.app), so reconcile closes it.
+        let f = fake(
+            Some("session:old"),
+            vec![("window:2", "block:2", "b"), ("window:3", "block:3", "c")],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let s = store(vec![record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        )]);
+        let got = hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7);
+        assert_eq!(got, Err(super::NO_AGENT.to_string()));
+        assert!(f.requests_for("session.new_window").is_empty());
+    }
+
+    #[test]
     fn fork_refusals_make_no_window() {
         let (f, dir, s) = forkable();
         let (hub, _) = hub(f.endpoint(), &dir);
