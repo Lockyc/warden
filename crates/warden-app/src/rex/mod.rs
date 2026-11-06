@@ -359,8 +359,9 @@ impl RexHub {
         }
     }
 
-    /// The session `pane_key` shows on `server`: its mapped session if that still exists there,
-    /// else a new one with one terminal in `dir`, typing `startup` and a newline. A new mapping
+    /// The session `pane_key` shows on `server`: its mapped session if that still exists there —
+    /// typing `startup` into it when the server restored it after a restart ([`State::restored`])
+    /// — else a new one with one terminal in `dir`, typing `startup` and a newline. A new mapping
     /// is persisted. The session is attached on the hub's connection either way.
     ///
     /// The whole call, waiting included, ends by [`OPEN_BUDGET`]: past it the answer is
@@ -1246,6 +1247,9 @@ impl Inner {
             st.conns.remove(server);
             st.heard.insert(server.to_owned(), Vec::new());
             st.attached.remove(server);
+            // Its next start is warden's own doing: the opens that start it adopt as they go,
+            // and a Restarted would let go of a tab mid-open.
+            st.last_instance.remove(server);
             st.windows.retain(|(s, _), _| s != server);
             let gone: Vec<String> = st
                 .agent_panes

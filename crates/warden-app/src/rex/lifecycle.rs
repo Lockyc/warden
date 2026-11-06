@@ -586,8 +586,9 @@ impl RexHub {
         }
         for key in panes {
             // A session no longer listed (a stopped server) has nothing to end; its stale mapping
-            // is dropped without reaching for the server.
-            if self.session_alive(key) {
+            // is dropped without reaching for the server. A restored one is listed but reads as
+            // gone; it holds only bare shells, and ends with the project.
+            if self.session_alive(key) || self.is_restored(key) {
                 self.destroy(key)?;
             } else {
                 self.inner.forget(key);
@@ -2852,6 +2853,60 @@ mod tests {
         );
         assert!(f.requests_for("session.destroy").is_empty());
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+    }
+
+    #[test]
+    fn sleep_project_ends_a_restored_session_rather_than_leaving_it_unclaimed() {
+        let f = fake(Some("session:old"), vec![("window:1", "block:1", "a")]);
+        f.reply("server.status", json!({"instance_id": "b"}));
+        let dir = tempfile::tempdir().unwrap();
+        crate::rex::store::RexStore::load(dir.path().join("rex-sessions.json")).set(
+            "t",
+            Some(crate::rex::store::PaneRecord {
+                server: "local".into(),
+                session_id: "session:old".into(),
+                instance: Some("a".into()),
+            }),
+        );
+        let (hub, _) = hub(f.endpoint(), &dir);
+        hub.connect("local").expect("connect");
+        let s = store(vec![]);
+        let plan = hub
+            .plan_project_sleep(&s, "local", &t_panes(), &title)
+            .expect("plan");
+        hub.sleep_project(&s, "local", &t_panes(), &plan, &title)
+            .expect("sleep project");
+        let destroyed = f.requests_for("session.destroy");
+        assert_eq!(destroyed.len(), 1, "its bare shells end with the project");
+        assert_eq!(destroyed[0].payload["session_id"], "session:old");
+    }
+
+    #[test]
+    fn a_server_warden_stopped_starting_again_is_no_restart() {
+        let f = fake(Some("session:old"), vec![]);
+        let instance = std::sync::Arc::new(std::sync::Mutex::new("a"));
+        let held = instance.clone();
+        f.on("server.status", move |_, _| {
+            rex_client::fake::Reply::ok(json!({"instance_id": *held.lock().unwrap()}))
+        });
+        // Replies without stopping, so the same fake can stand in for the next start.
+        f.on("server.stop", |_, _| rex_client::fake::Reply::ok(json!({})));
+        let dir = tempfile::tempdir().unwrap();
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let rx = hub.subscribe();
+        hub.connect("local").expect("connect");
+        let s = store(vec![]);
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
+        hub.sleep_server(&s, "local", &plan, &title)
+            .expect("sleep server");
+        *instance.lock().unwrap() = "b";
+        hub.connect("local").expect("start again");
+        while let Ok(ev) = rx.try_recv() {
+            assert!(
+                !matches!(ev, crate::rex::HubEvent::Restarted { .. }),
+                "warden stopped it: the opens that start it again adopt as they go"
+            );
+        }
     }
 
     #[test]
