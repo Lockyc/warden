@@ -471,6 +471,27 @@ fn is_remote(spec: &TabSpec) -> bool {
         .is_some_and(|s| s != crate::rex::server::LOCAL)
 }
 
+/// A screen side, for moving keyboard focus between a tab's panes (⌥⌘← / ⌥⌘→).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// The pane to `side` of `focused`: the other pane when a split puts it there — on the left for
+/// a `secondary_left` split's secondary, else on the right — or `None`.
+fn pane_toward(split: bool, secondary_left: bool, focused: PaneIdx, side: Side) -> Option<PaneIdx> {
+    if !split {
+        return None;
+    }
+    let other = match focused {
+        PaneIdx::Primary => PaneIdx::Secondary,
+        PaneIdx::Secondary => PaneIdx::Primary,
+    };
+    let other_is_left = (other == PaneIdx::Secondary) == secondary_left;
+    (other_is_left == (side == Side::Left)).then_some(other)
+}
+
 /// A tab owns a `primary` pane and, when split, a `secondary`.
 ///
 /// `primary`/`Option<secondary>` rather than a `Vec` so the agreed TWO-PANE CAP is
@@ -703,6 +724,32 @@ impl Registry {
             }
         }
         had
+    }
+
+    /// The pane of tab `id` lying to `side` of its focused one, on screen: a config split with
+    /// `side = "left"` draws its second pane first. `None` for an unknown or unsplit tab, or
+    /// when the focused pane is already the one on that side.
+    pub fn pane_to(&self, id: &str, side: Side) -> Option<PaneIdx> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let left = self.split_side(id) == Some(warden_config::SplitSide::Left);
+        pane_toward(t.secondary.is_some(), left, t.focused, side)
+    }
+
+    /// Give pane `which` of tab `id` keyboard focus by focusing its shown surface; its
+    /// `SurfaceSignal::Focused` then records the pane (`WindowManager::handle_surface_focused`).
+    /// False when the pane has no live surface.
+    pub fn focus_pane_surface(&self, id: &str, which: PaneIdx) -> bool {
+        let Some(s) = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.pane(which))
+            .and_then(|p| p.shown())
+        else {
+            return false;
+        };
+        s.focus();
+        true
     }
 
     /// Point keyboard focus at one of tab `id`'s panes. Returns false (and changes
@@ -2972,6 +3019,41 @@ mod tests {
         assert_eq!(PaneIdx::from_index(0), PaneIdx::Primary);
         assert_eq!(PaneIdx::from_index(1), PaneIdx::Secondary);
         assert_eq!(PaneIdx::from_index(7), PaneIdx::Primary, "never an error");
+    }
+
+    #[test]
+    fn pane_toward_is_by_screen_side() {
+        use PaneIdx::{Primary, Secondary};
+        assert_eq!(
+            pane_toward(false, false, Primary, Side::Right),
+            None,
+            "unsplit"
+        );
+        assert_eq!(
+            pane_toward(false, true, Primary, Side::Left),
+            None,
+            "unsplit"
+        );
+        // A right split: primary left, secondary right.
+        assert_eq!(
+            pane_toward(true, false, Primary, Side::Right),
+            Some(Secondary)
+        );
+        assert_eq!(pane_toward(true, false, Primary, Side::Left), None);
+        assert_eq!(
+            pane_toward(true, false, Secondary, Side::Left),
+            Some(Primary)
+        );
+        // A left split: secondary left, primary right.
+        assert_eq!(
+            pane_toward(true, true, Primary, Side::Left),
+            Some(Secondary)
+        );
+        assert_eq!(pane_toward(true, true, Primary, Side::Right), None);
+        assert_eq!(
+            pane_toward(true, true, Secondary, Side::Right),
+            Some(Primary)
+        );
     }
 
     #[test]
