@@ -861,13 +861,12 @@ fn serve_data(mut ws: WebSocket<UnixStream>, h: FakeHandle) {
             let ok = ws.send(Message::binary(welcome)).is_ok()
                 && (initial.is_empty() || ws.send(Message::binary(initial)).is_ok())
                 && ws.get_ref().set_read_timeout(Some(POLL)).is_ok();
-            if ok {
-                data_loop(&mut ws, &h, &rx);
-            }
+            let ended = ok && data_loop(&mut ws, &h, &rx);
             let mut st = h.state();
             for s in &mut st.streams {
                 if s.conn.as_ref().is_some_and(|(id, _)| *id == conn_id) {
                     s.conn = None;
+                    s.ended |= ended;
                 }
             }
         }
@@ -883,25 +882,32 @@ fn welcome_bytes(token: [u8; 16], nonce: u64) -> Vec<u8> {
     })
 }
 
-fn data_loop(ws: &mut WebSocket<UnixStream>, h: &FakeHandle, rx: &Receiver<DataOut>) {
+/// Serves one data connection until it ends. True when the client ended the stream itself with a
+/// 1000 close — as the real server, the fake then holds no RESUME for it.
+fn data_loop(ws: &mut WebSocket<UnixStream>, h: &FakeHandle, rx: &Receiver<DataOut>) -> bool {
     while !h.shared.shutdown.load(Ordering::SeqCst) {
         match ws.read() {
+            Ok(Message::Close(Some(f))) if u16::from(f.code) == 1000 => {
+                let _ = ws.flush();
+                return true;
+            }
             Ok(_) => {}
             Err(e) if is_idle(&e) => {}
-            Err(_) => return,
+            Err(_) => return false,
         }
         while let Ok(out) = rx.try_recv() {
             let sent = match out {
                 DataOut::Bytes(b) => ws.write(Message::binary(b)),
                 DataOut::Close(code, reason) => ws.close(Some(close_frame(code, reason))),
-                DataOut::Drop => return,
+                DataOut::Drop => return false,
             };
             if matches!(sent, Err(ref e) if !is_idle(e)) {
-                return;
+                return false;
             }
         }
         if matches!(ws.flush(), Err(ref e) if !is_idle(e)) {
-            return;
+            return false;
         }
     }
+    false
 }

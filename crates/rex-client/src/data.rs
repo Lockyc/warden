@@ -1,6 +1,6 @@
 //! A data connection: one block's output stream, read blocking.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tungstenite::Message;
 
@@ -10,6 +10,8 @@ use crate::{Endpoint, RexError, DATA_PROTOCOL};
 
 /// How long the WELCOME may take after the HELLO or RESUME.
 const WELCOME_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long [`DataStream::close`] waits for the server's close reply.
+const CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Status for a connection that ended without a close frame.
 const ABNORMAL: u16 = 1006;
 /// The longest a read waits with nothing arriving. The server pings data connections every
@@ -20,12 +22,26 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(
 );
 
 /// One terminal block's stream. Dropping it leaves the stream waiting on the server for a
-/// RESUME (within the welcome's resume window); the server ends it only on a 1000 close.
+/// RESUME (within the welcome's resume window); the server ends it only on a 1000 close
+/// ([`DataStream::close`]).
 pub struct DataStream {
     ws: Ws,
     welcome: wire::Welcome,
     received: u64,
     close_code: Option<u16>,
+    /// When anything last arrived, pings included: silence past `idle` is a dead connection.
+    heard: Instant,
+    idle: Duration,
+}
+
+/// What [`DataStream::read_for`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Next {
+    Data(Vec<u8>),
+    /// Nothing arrived in the wait; the stream is still open.
+    Quiet,
+    /// The connection closed; [`DataStream::close_code`] says how.
+    Closed,
 }
 
 impl DataStream {
@@ -59,12 +75,13 @@ impl DataStream {
                 Err(e) => return Err(ws_err(e)),
             }
         };
-        ws.set_read_timeout(Some(IDLE_TIMEOUT)).map_err(io_err)?;
         Ok(DataStream {
             ws,
             welcome,
             received,
             close_code: None,
+            heard: Instant::now(),
+            idle: IDLE_TIMEOUT,
         })
     }
 
@@ -72,21 +89,53 @@ impl DataStream {
     /// closed; [`DataStream::close_code`] then says how (1006 for a drop without a close frame,
     /// or for [`IDLE_TIMEOUT`] of silence, which a RESUME can continue).
     pub fn read(&mut self) -> Result<Option<Vec<u8>>, RexError> {
+        loop {
+            match self.read_for(self.idle)? {
+                Next::Data(b) => return Ok(Some(b)),
+                Next::Closed => return Ok(None),
+                Next::Quiet => {}
+            }
+        }
+    }
+
+    /// [`DataStream::read`], giving up after about `wait` with nothing arrived ([`Next::Quiet`]),
+    /// so a caller can act between reads. A timed-out read leaves the WebSocket intact: tungstenite
+    /// keeps a partly read frame and continues it on the next call.
+    pub fn read_for(&mut self, wait: Duration) -> Result<Next, RexError> {
         if self.close_code.is_some() {
-            return Ok(None);
+            return Ok(Next::Closed);
         }
         loop {
+            let left = self.idle.saturating_sub(self.heard.elapsed());
+            if left.is_zero() {
+                self.close_code = Some(ABNORMAL);
+                return Ok(Next::Closed);
+            }
+            // A zero timeout means none at all, so never pass one.
+            let t = wait.min(left).max(Duration::from_millis(1));
+            self.ws.set_read_timeout(Some(t)).map_err(io_err)?;
             match self.ws.read() {
                 Ok(Message::Binary(b)) => {
+                    self.heard = Instant::now();
                     self.received += b.len() as u64;
-                    return Ok(Some(b.to_vec()));
+                    return Ok(Next::Data(b.to_vec()));
                 }
                 Ok(Message::Close(f)) => {
                     self.close_code = Some(f.map_or(1005, |f| f.code.into()));
                     let _ = self.ws.flush(); // send the close reply tungstenite queued
-                    return Ok(None);
+                    return Ok(Next::Closed);
                 }
-                Ok(_) => {}
+                Ok(_) => self.heard = Instant::now(),
+                Err(tungstenite::Error::Io(e))
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if self.heard.elapsed() < self.idle {
+                        return Ok(Next::Quiet);
+                    }
+                }
                 Err(
                     tungstenite::Error::ConnectionClosed
                     | tungstenite::Error::AlreadyClosed
@@ -96,9 +145,33 @@ impl DataStream {
                     ),
                 ) => {
                     self.close_code = Some(ABNORMAL);
-                    return Ok(None);
+                    return Ok(Next::Closed);
                 }
                 Err(e) => return Err(RexError::Protocol(e.to_string())),
+            }
+        }
+    }
+
+    /// Ends the stream on the server (a 1000 close), so it isn't held for a RESUME that will
+    /// never come. Best effort: a connection already gone is left to the server's resume window.
+    pub fn close(mut self) {
+        if self.close_code.is_some() {
+            return;
+        }
+        let _ = self.ws.set_read_timeout(Some(CLOSE_TIMEOUT));
+        let frame = tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+            reason: "".into(),
+        };
+        if self.ws.close(Some(frame)).is_err() {
+            return;
+        }
+        // Read on to the server's close reply, so the frame is sent before the socket drops.
+        let deadline = Instant::now() + CLOSE_TIMEOUT;
+        while Instant::now() < deadline {
+            match self.ws.read() {
+                Ok(_) => {}
+                Err(_) => return,
             }
         }
     }
@@ -106,7 +179,8 @@ impl DataStream {
     /// Shortens the idle timeout so a test needn't wait minutes for it.
     #[cfg(test)]
     fn set_idle_timeout(&mut self, d: Duration) -> Result<(), RexError> {
-        self.ws.set_read_timeout(Some(d)).map_err(io_err)
+        self.idle = d;
+        Ok(())
     }
 
     /// The close status once [`DataStream::read`] has returned `None`.
@@ -303,6 +377,63 @@ mod tests {
             .expect("the read gave up on a silent stream");
         assert_eq!(r, Ok(None));
         assert_eq!(code, Some(ABNORMAL));
+    }
+
+    #[test]
+    fn read_for_returns_quiet_and_keeps_the_stream() {
+        let fake = FakeServer::start();
+        fake.on_data_open(|_| b"snap".to_vec());
+        let mut s = DataStream::open(&fake.endpoint(), &fake.mint_ticket()).expect("open");
+        let wait = Duration::from_millis(50);
+        assert_eq!(s.read_for(wait), Ok(Next::Data(b"snap".to_vec())));
+        assert_eq!(s.read_for(wait), Ok(Next::Quiet));
+        assert_eq!(s.read_for(wait), Ok(Next::Quiet));
+        fake.push_data(b"after");
+        let got = loop {
+            match s.read_for(wait).expect("read") {
+                Next::Quiet => continue,
+                other => break other,
+            }
+        };
+        assert_eq!(got, Next::Data(b"after".to_vec()));
+        assert_eq!(s.received(), 9);
+    }
+
+    #[test]
+    fn read_for_still_drops_a_silent_stream() {
+        let fake = FakeServer::start();
+        let mut s = DataStream::open(&fake.endpoint(), &fake.mint_ticket()).expect("open");
+        s.set_idle_timeout(Duration::from_millis(200))
+            .expect("knob");
+        let start = Instant::now();
+        let got = loop {
+            match s.read_for(Duration::from_millis(30)).expect("read") {
+                Next::Quiet => assert!(start.elapsed() < Duration::from_secs(3)),
+                other => break other,
+            }
+        };
+        assert_eq!(got, Next::Closed);
+        assert_eq!(s.close_code(), Some(ABNORMAL));
+    }
+
+    #[test]
+    fn close_ends_the_stream_so_it_cant_be_resumed() {
+        let fake = FakeServer::start();
+        let ep = fake.endpoint();
+        let mut s = DataStream::open(&ep, &fake.mint_ticket()).expect("open");
+        fake.push_data(b"x");
+        assert_eq!(s.read().expect("read"), Some(b"x".to_vec()));
+        let (token, received) = (s.token(), s.received());
+        s.close();
+        // The fake records the end once its connection thread sees the close.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match DataStream::resume(&ep, token, received) {
+                Err(RexError::Rejected(_)) => break,
+                Ok(_) | Err(_) => assert!(Instant::now() < deadline, "close left it resumable"),
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

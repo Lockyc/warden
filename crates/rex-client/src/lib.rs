@@ -11,7 +11,7 @@ pub mod fake;
 pub mod wire;
 
 pub use control::{ClientInfo, ControlClient, Event};
-pub use data::DataStream;
+pub use data::{DataStream, Next};
 pub use endpoint::Endpoint;
 
 /// The control connection's WebSocket subprotocol.
