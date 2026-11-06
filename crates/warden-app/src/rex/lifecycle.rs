@@ -523,7 +523,13 @@ impl RexHub {
             return Ok(Slept::Unconfirmed(now));
         }
         for key in panes {
-            self.destroy(key)?;
+            // A session no longer listed (a stopped server) has nothing to end; its stale mapping
+            // is dropped without reaching for the server.
+            if self.session_alive(key) {
+                self.destroy(key)?;
+            } else {
+                self.inner.forget(key);
+            }
         }
         Ok(Slept::Done)
     }
@@ -2439,6 +2445,33 @@ mod tests {
         );
         assert!(f.requests_for("session.destroy").is_empty());
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+    }
+
+    #[test]
+    fn sleep_project_on_a_stopped_server_ends_cleanly() {
+        let (_f, _dir, hub, s) = server_with(
+            true,
+            &[],
+            vec![record(
+                "a",
+                RecordState::Live,
+                Some("window:1"),
+                Some("claude --resume aaa"),
+            )],
+        );
+        let plan = hub.plan_server_sleep(&s, "local", &title).expect("plan");
+        hub.sleep_server(&s, "local", &plan, &title)
+            .expect("sleep server");
+
+        let plan = hub
+            .plan_project_sleep(&s, "local", &t_panes(), &title)
+            .expect("plan");
+        assert_eq!(plan, super::SleepPlan::default());
+        assert_eq!(
+            hub.sleep_project(&s, "local", &t_panes(), &plan, &title),
+            Ok(super::Slept::Done),
+            "nothing listed, so nothing to reach the server for"
+        );
     }
 
     #[test]
