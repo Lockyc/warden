@@ -337,22 +337,23 @@ pub struct LossItem {
     pub name: String,
 }
 
-/// Sleeping a server: the agent records that go asleep, and what is lost.
+/// Sleeping a server or a project: the agent records that go asleep, and what is lost.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ServerSleepPlan {
+pub struct SleepPlan {
     pub sleep: Vec<String>,
     pub lose: Vec<LossItem>,
 }
 
-/// How [`RexHub::sleep_server`] ended.
+/// How [`RexHub::sleep_server`] or [`RexHub::sleep_project`] ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerSlept {
-    Stopped,
-    /// Not stopped: the server now loses something its plan didn't list — this plan, to confirm.
-    Unconfirmed(ServerSleepPlan),
+pub enum Slept {
+    /// The server stopped, or the project's sessions ended.
+    Done,
+    /// Nothing ended: there's now a loss the plan didn't list — this plan, to confirm.
+    Unconfirmed(SleepPlan),
 }
 
-impl ServerSleepPlan {
+impl SleepPlan {
     /// The losses not among `accepted` (names the user confirmed). Empty: go ahead.
     pub fn unconfirmed(&self, accepted: &[String]) -> Vec<&LossItem> {
         self.lose
@@ -385,13 +386,42 @@ impl RexHub {
         store: &Mutex<AgentStore>,
         server: &str,
         title: &dyn Fn(&str) -> Option<String>,
-    ) -> Result<ServerSleepPlan, RexError> {
-        let (sessions, mapped) = {
+    ) -> Result<SleepPlan, RexError> {
+        self.plan_on(store, server, None, title)
+    }
+
+    /// What sleeping project `panes` (one tab's pane keys) on `server` does: as
+    /// [`RexHub::plan_server_sleep`], over only the sessions those panes map to, so no other
+    /// project's session is a loss. Empty once its sessions are gone.
+    pub fn plan_project_sleep(
+        &self,
+        store: &Mutex<AgentStore>,
+        server: &str,
+        panes: &[String],
+        title: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<SleepPlan, RexError> {
+        self.plan_on(store, server, Some(panes), title)
+    }
+
+    /// The one planner behind both sleeps: `server`'s listed sessions, narrowed to those `panes`
+    /// map to when given.
+    fn plan_on(
+        &self,
+        store: &Mutex<AgentStore>,
+        server: &str,
+        panes: Option<&[String]>,
+        title: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<SleepPlan, RexError> {
+        let (mut sessions, mut mapped) = {
             let st = self.inner.lock();
             let sessions = st.sessions(server).map(<[_]>::to_vec).unwrap_or_default();
             (sessions, st.store.panes_on(server))
         };
-        let mut plan = ServerSleepPlan::default();
+        if let Some(panes) = panes {
+            mapped.retain(|(k, _)| panes.contains(k));
+            sessions.retain(|s| mapped.iter().any(|(_, sid)| *sid == s.id));
+        }
+        let mut plan = SleepPlan::default();
         let (mut agents, mut shells, mut unowned) = (Vec::new(), Vec::new(), Vec::new());
         for s in &sessions {
             let label = || match s.label.as_str() {
@@ -452,10 +482,61 @@ impl RexHub {
         &self,
         store: &Mutex<AgentStore>,
         server: &str,
-        plan: &ServerSleepPlan,
+        plan: &SleepPlan,
         title: &dyn Fn(&str) -> Option<String>,
-    ) -> Result<ServerSlept, RexError> {
-        for id in &plan.sleep {
+    ) -> Result<Slept, RexError> {
+        self.sleep_records(store, server, &plan.sleep)?;
+        let now = self.plan_server_sleep(store, server, title)?;
+        if let Some(now) = unconfirmed_since(plan, now) {
+            return Ok(Slept::Unconfirmed(now));
+        }
+        let (client, _) = self.inner.current(server).ok_or(RexError::Unreachable)?;
+        self.inner.lock().stopping.insert(server.to_owned());
+        match client.call("server.stop", serde_json::json!({})) {
+            Ok(_) => {
+                drop(client);
+                self.inner.forget_server(server);
+                Ok(Slept::Done)
+            }
+            Err(e) => {
+                self.inner.lock().stopping.remove(server);
+                Err(e)
+            }
+        }
+    }
+
+    /// Sleep project `panes` (one tab's pane keys) on `server` as `plan` says: its records sleep
+    /// as [`RexHub::sleep_server`]'s do, then — unless planning again
+    /// ([`RexHub::plan_project_sleep`]) finds a loss `plan` didn't list — each pane's session is
+    /// destroyed. The records stay, asleep, for a user open to wake.
+    pub fn sleep_project(
+        &self,
+        store: &Mutex<AgentStore>,
+        server: &str,
+        panes: &[String],
+        plan: &SleepPlan,
+        title: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Slept, RexError> {
+        self.sleep_records(store, server, &plan.sleep)?;
+        let now = self.plan_project_sleep(store, server, panes, title)?;
+        if let Some(now) = unconfirmed_since(plan, now) {
+            return Ok(Slept::Unconfirmed(now));
+        }
+        for key in panes {
+            self.destroy(key)?;
+        }
+        Ok(Slept::Done)
+    }
+
+    /// Put records `ids` on `server` to sleep, one at a time under its pane's hold: its window
+    /// closed, stored asleep — so a sleep cut short anywhere leaves every record matching Rex.
+    fn sleep_records(
+        &self,
+        store: &Mutex<AgentStore>,
+        server: &str,
+        ids: &[String],
+    ) -> Result<(), RexError> {
+        for id in ids {
             let Some(project) = lock(store).project_of_record(id).filter(|p| {
                 self.inner
                     .lock()
@@ -490,25 +571,14 @@ impl RexHub {
             r.state = RecordState::Asleep;
             lock(store).merge(&before, after);
         }
-        let now = self.plan_server_sleep(store, server, title)?;
-        let listed: Vec<String> = plan.lose.iter().map(|l| l.name.clone()).collect();
-        if !now.unconfirmed(&listed).is_empty() {
-            return Ok(ServerSlept::Unconfirmed(now));
-        }
-        let (client, _) = self.inner.current(server).ok_or(RexError::Unreachable)?;
-        self.inner.lock().stopping.insert(server.to_owned());
-        match client.call("server.stop", serde_json::json!({})) {
-            Ok(_) => {
-                drop(client);
-                self.inner.forget_server(server);
-                Ok(ServerSlept::Stopped)
-            }
-            Err(e) => {
-                self.inner.lock().stopping.remove(server);
-                Err(e)
-            }
-        }
+        Ok(())
     }
+}
+
+/// `now` when it loses something `planned` didn't list (a window opened since), else `None`.
+fn unconfirmed_since(planned: &SleepPlan, now: SleepPlan) -> Option<SleepPlan> {
+    let listed: Vec<String> = planned.lose.iter().map(|l| l.name.clone()).collect();
+    (!now.unconfirmed(&listed).is_empty()).then_some(now)
 }
 
 /// Number `records`' positions in list order ([`agents::in_list_order`]).
@@ -766,7 +836,7 @@ pub fn sleep_server(
 }
 
 /// Ask window `label` to confirm sleeping `server`, listing `plan`'s losses (main thread).
-fn confirm(app: &AppHandle, label: &str, server: &str, plan: &ServerSleepPlan) {
+fn confirm(app: &AppHandle, label: &str, server: &str, plan: &SleepPlan) {
     let _ = app.emit_to(
         label,
         "warden:server-sleep-confirm",
@@ -862,7 +932,7 @@ fn stop_server(
     app: &AppHandle,
     label: String,
     server: String,
-    plan: ServerSleepPlan,
+    plan: SleepPlan,
     titles: std::collections::HashMap<String, String>,
     projects: Vec<String>,
 ) {
@@ -882,8 +952,8 @@ fn stop_server(
             let main = app.clone();
             let _ = app.run_on_main_thread(move || {
                 match result {
-                    Ok(ServerSlept::Stopped) => {}
-                    Ok(ServerSlept::Unconfirmed(now)) => confirm(&main, &label, &server, &now),
+                    Ok(Slept::Done) => {}
+                    Ok(Slept::Unconfirmed(now)) => confirm(&main, &label, &server, &now),
                     Err(e) => fail(
                         &main,
                         &label,
@@ -1956,7 +2026,7 @@ mod tests {
         assert_eq!(
             hub.sleep_server(&s, "local", &plan, &title)
                 .expect("sleep server"),
-            super::ServerSlept::Stopped
+            super::Slept::Done
         );
 
         assert_eq!(
@@ -2003,7 +2073,7 @@ mod tests {
         assert_eq!(
             hub.sleep_server(&s, "local", &plan, &title)
                 .expect("sleep server"),
-            super::ServerSlept::Stopped
+            super::Slept::Done
         );
         assert!(f.stopped());
         assert_eq!(f.wait_control_connections(0, Duration::from_secs(5)), 0);
@@ -2016,7 +2086,7 @@ mod tests {
 
     #[test]
     fn a_window_opened_after_the_plan_asks_again_instead_of_stopping() {
-        use super::{LossItem, LossKind, ServerSlept};
+        use super::{LossItem, LossKind, Slept};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let f = fake(Some("session:old"), vec![]);
         let reads = AtomicUsize::new(0);
@@ -2047,7 +2117,7 @@ mod tests {
 
         assert_eq!(
             got,
-            ServerSlept::Unconfirmed(super::ServerSleepPlan {
+            Slept::Unconfirmed(super::SleepPlan {
                 sleep: vec![],
                 lose: vec![LossItem {
                     kind: LossKind::Agent,
@@ -2078,6 +2148,178 @@ mod tests {
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
         assert_eq!(hub.live_sessions("local").len(), 1);
         assert_eq!(hub.stoppable("local"), Ok(()));
+    }
+
+    /// Tab `t`'s two pane keys: its main pane and its split.
+    fn t_panes() -> Vec<String> {
+        vec!["t".into(), crate::registry::secondary_id("t")]
+    }
+
+    #[test]
+    fn plan_project_lists_its_shell_and_unresumable_agents_only() {
+        use super::{LossItem, LossKind};
+        let (_f, _dir, hub, s) = server_with(
+            true,
+            &[("session:phone", "phone")],
+            vec![
+                record(
+                    "a",
+                    RecordState::Live,
+                    Some("window:1"),
+                    Some("claude --resume aaa"),
+                ),
+                record("b", RecordState::Live, Some("window:2"), None),
+            ],
+        );
+        let plan = hub
+            .plan_project_sleep(&s, "local", &t_panes(), &title)
+            .expect("plan");
+        assert_eq!(plan.sleep, ["a"]);
+        let item = |kind, name: &str| LossItem {
+            kind,
+            name: name.into(),
+        };
+        assert_eq!(
+            plan.lose,
+            [
+                item(LossKind::Agent, "Proj · b"),
+                item(LossKind::Shell, "Proj · terminal"),
+            ],
+            "another project's session is no loss of this one's"
+        );
+    }
+
+    #[test]
+    fn sleep_project_sleeps_then_destroys() {
+        use std::sync::{Arc, Mutex};
+        let (f, _dir, hub, s) = server_with(
+            false,
+            &[],
+            vec![
+                record(
+                    "a",
+                    RecordState::Live,
+                    Some("window:1"),
+                    Some("claude --resume aaa"),
+                ),
+                record(
+                    "b",
+                    RecordState::Live,
+                    Some("window:2"),
+                    Some("codex resume bbb"),
+                ),
+            ],
+        );
+        let s = Arc::new(s);
+        let at_destroy: Arc<Mutex<Option<Vec<RecordState>>>> = Arc::default();
+        let (seen, store) = (at_destroy.clone(), s.clone());
+        f.on("session.destroy", move |_, _| {
+            let states = store
+                .lock()
+                .unwrap()
+                .records("t")
+                .into_iter()
+                .map(|r| r.state)
+                .collect();
+            *seen.lock().unwrap() = Some(states);
+            rex_client::fake::Reply::ok(json!({}))
+        });
+
+        let plan = hub
+            .plan_project_sleep(&s, "local", &t_panes(), &title)
+            .expect("plan");
+        assert_eq!(
+            hub.sleep_project(&s, "local", &t_panes(), &plan, &title)
+                .expect("sleep project"),
+            super::Slept::Done
+        );
+        assert_eq!(
+            *at_destroy.lock().unwrap(),
+            Some(vec![RecordState::Asleep, RecordState::Asleep]),
+            "asleep before the session ends"
+        );
+        assert_eq!(f.requests_for("session.destroy").len(), 1);
+        assert!(f.requests_for("server.stop").is_empty());
+        let states: Vec<RecordState> = s
+            .lock()
+            .unwrap()
+            .records("t")
+            .into_iter()
+            .map(|r| r.state)
+            .collect();
+        assert_eq!(states, [RecordState::Asleep, RecordState::Asleep]);
+        assert!(!hub.session_alive("t"));
+    }
+
+    #[test]
+    fn sleep_project_new_loss_asks_again() {
+        use super::{LossItem, LossKind, SleepPlan, Slept};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let f = fake(Some("session:old"), vec![]);
+        let reads = AtomicUsize::new(0);
+        f.on("session.view", move |_, _| {
+            let windows: &[(&str, &str, &str)] = match reads.fetch_add(1, Ordering::SeqCst) {
+                0 => &[("window:1", "block:1", "a")],
+                _ => &[("window:9", "block:9", "stray")],
+            };
+            let read = crate::rex::agent_open::tests::view("session:old", windows);
+            rex_client::fake::Reply::ok(read["view"].clone())
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        hub.connect("local").expect("connect");
+        let s = store(vec![record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        )]);
+
+        let plan = hub
+            .plan_project_sleep(&s, "local", &t_panes(), &title)
+            .expect("plan");
+        assert!(plan.lose.is_empty());
+        let got = hub
+            .sleep_project(&s, "local", &t_panes(), &plan, &title)
+            .expect("sleep project");
+        assert_eq!(
+            got,
+            Slept::Unconfirmed(SleepPlan {
+                sleep: vec![],
+                lose: vec![LossItem {
+                    kind: LossKind::Agent,
+                    name: "Proj · stray".into(),
+                }],
+            })
+        );
+        assert!(f.requests_for("session.destroy").is_empty(), "nothing ends");
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+    }
+
+    #[test]
+    fn sleep_project_with_no_session_only_marks_asleep() {
+        let f = fake(None, vec![]);
+        let dir = tempfile::tempdir().unwrap();
+        let (hub, _) = hub(f.endpoint(), &dir);
+        hub.connect("local").expect("connect");
+        let s = store(vec![record(
+            "a",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume aaa"),
+        )]);
+        let plan = hub
+            .plan_project_sleep(&s, "local", &t_panes(), &title)
+            .expect("plan");
+        assert_eq!(plan, super::SleepPlan::default());
+        assert_eq!(
+            hub.sleep_project(&s, "local", &t_panes(), &plan, &title)
+                .expect("sleep project"),
+            super::Slept::Done
+        );
+        assert!(f.requests_for("session.destroy").is_empty());
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
     }
 
     #[test]
