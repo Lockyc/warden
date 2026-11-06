@@ -71,11 +71,42 @@ const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 
-/// New Agent Tab, Sleep Agent Tab and Reopen Last Closed, kept from the last menu build so their
-/// enabled state follows the focused window's active tab without a rebuild ([`sync_agent_menu`]).
+/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓) and Close
+/// Agent Tab (⌥⌘W): the selected agent tab of the focused window's active tab, enabled only while
+/// its main pane has keyboard focus and the step can act ([`sync_agent_menu`]) — a disabled item
+/// leaves its chord to the terminal, so ⌘↑ / ⌘↓ still jump between prompts in the scratch shell.
+/// Close's id doubles as the event its chrome runs the row's Close from, confirm included.
+const MENU_AGENT_PREV: &str = "warden:agent-prev";
+const MENU_AGENT_NEXT: &str = "warden:agent-next";
+const MENU_AGENT_MOVE_UP: &str = "warden:agent-move-up";
+const MENU_AGENT_MOVE_DOWN: &str = "warden:agent-move-down";
+const MENU_AGENT_CLOSE: &str = "warden:agent-close";
+
+/// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
+/// enabled while there is one ([`registry::Registry::pane_to`]).
+const MENU_PANE_LEFT: &str = "warden:pane-left";
+const MENU_PANE_RIGHT: &str = "warden:pane-right";
+
+/// The items whose enabled state follows the focused window's active tab, kept from the last menu
+/// build so [`sync_agent_menu`] can set it without a rebuild.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct AgentItems {
+    new: tauri::menu::MenuItem<tauri::Wry>,
+    sleep: tauri::menu::MenuItem<tauri::Wry>,
+    reopen: tauri::menu::MenuItem<tauri::Wry>,
+    prev: tauri::menu::MenuItem<tauri::Wry>,
+    next: tauri::menu::MenuItem<tauri::Wry>,
+    move_up: tauri::menu::MenuItem<tauri::Wry>,
+    move_down: tauri::menu::MenuItem<tauri::Wry>,
+    close: tauri::menu::MenuItem<tauri::Wry>,
+    pane_left: tauri::menu::MenuItem<tauri::Wry>,
+    pane_right: tauri::menu::MenuItem<tauri::Wry>,
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Default)]
-struct AgentMenu(std::sync::Mutex<Option<[tauri::menu::MenuItem<tauri::Wry>; 3]>>);
+struct AgentMenu(std::sync::Mutex<Option<AgentItems>>);
 
 /// Tab ▸ Sleep Server ▸ `<server>` — one item per Rex server; the id is this prefix plus the
 /// server.
@@ -155,27 +186,151 @@ fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bo
     Some((label, tab, sleep, reopen))
 }
 
+/// What the focused window's active tab offers the agent-step and pane items: `(label, tab,
+/// agent list while its main pane has keyboard focus, pane to the left, pane to the right)`.
+#[cfg(target_os = "macos")]
+#[allow(clippy::type_complexity)]
+fn focused_tab_keys(
+    app: &tauri::AppHandle,
+) -> Option<(
+    String,
+    String,
+    Option<rex::lifecycle::AgentListDto>,
+    Option<registry::PaneIdx>,
+    Option<registry::PaneIdx>,
+)> {
+    use tauri::Manager;
+    let label = app
+        .webview_windows()
+        .into_values()
+        .find(|w| w.is_focused().unwrap_or(false))?
+        .label()
+        .to_string();
+    let (tab, agents, left, right) = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        let reg = &m.windows.get(&label)?.registry;
+        let tab = reg.active_tab()?.to_owned();
+        let agents = reg.active_agent_tab() == Some(tab.as_str())
+            && reg.focused_pane(&tab) == Some(registry::PaneIdx::Primary);
+        let left = reg.pane_to(&tab, registry::Side::Left);
+        let right = reg.pane_to(&tab, registry::Side::Right);
+        (tab, agents, left, right)
+    };
+    let list = agents
+        .then(|| rex::lifecycle::current_list(app, &tab))
+        .flatten();
+    Some((label, tab, list, left, right))
+}
+
 /// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
-/// holds agent tabs, Sleep Agent Tab while its selected one can sleep, and Reopen Last Closed
-/// while there is an agent tab or a window to reopen. Runs on every menu build, window focus,
-/// tab activation and agent list change, so it also marks the agent tabs now on screen seen
-/// (`rex::lifecycle::mark_seen`); locks `ManagerState`, so callers must not hold it.
+/// holds agent tabs, Sleep Agent Tab while its selected one can sleep, Reopen Last Closed while
+/// there is an agent tab or a window to reopen, the agent-step items while its main pane has focus
+/// and the step can act, and Focus Left / Right Pane while there's a pane that way. Runs on every
+/// menu build, window focus, pane focus, tab activation and agent list change, so it also marks
+/// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
+/// callers must not hold it.
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
+    use rex::lifecycle::{agent_move, agent_step, Step};
     use tauri::Manager;
     rex::lifecycle::mark_seen(app);
     let Some(menu) = app.try_state::<AgentMenu>() else {
         return;
     };
     let agent = focused_agent_tab(app);
+    let keys = focused_tab_keys(app);
+    let list = keys.as_ref().and_then(|k| k.2.as_ref());
     let reopen_window = reopen_target(app).is_some();
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some([new, sleep, reopen]) = items {
-        let _ = new.set_enabled(agent.is_some());
-        let _ = sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
-        let _ = reopen.set_enabled(agent.as_ref().is_some_and(|a| a.3) || reopen_window);
+    if let Some(i) = items {
+        let _ = i.new.set_enabled(agent.is_some());
+        let _ = i.sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
+        let _ = i
+            .reopen
+            .set_enabled(agent.as_ref().is_some_and(|a| a.3) || reopen_window);
+        let _ = i
+            .prev
+            .set_enabled(list.is_some_and(|l| agent_step(l, Step::Prev).is_some()));
+        let _ = i
+            .next
+            .set_enabled(list.is_some_and(|l| agent_step(l, Step::Next).is_some()));
+        let _ = i
+            .move_up
+            .set_enabled(list.is_some_and(|l| agent_move(l, Step::Prev).is_some()));
+        let _ = i
+            .move_down
+            .set_enabled(list.is_some_and(|l| agent_move(l, Step::Next).is_some()));
+        let _ = i
+            .close
+            .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected)));
+        let _ = i
+            .pane_left
+            .set_enabled(keys.as_ref().is_some_and(|k| k.3.is_some()));
+        let _ = i
+            .pane_right
+            .set_enabled(keys.as_ref().is_some_and(|k| k.4.is_some()));
+    }
+}
+
+/// Run the agent-step or pane item `id` on the focused window's active tab (main thread). A step
+/// that can't act any more (the list changed since the menu was synced) does nothing.
+#[cfg(target_os = "macos")]
+fn agent_key(app: &tauri::AppHandle, id: &str) {
+    use rex::lifecycle::{agent_move, agent_step, Step};
+    use tauri::{Emitter, Manager};
+    let Some((label, tab, list, left, right)) = focused_tab_keys(app) else {
+        return;
+    };
+    let step = |up| if up { Step::Prev } else { Step::Next };
+    let done = match id {
+        MENU_PANE_LEFT | MENU_PANE_RIGHT => {
+            let pane = if id == MENU_PANE_LEFT { left } else { right };
+            if let Some(pane) = pane {
+                let st = app.state::<ManagerState>();
+                let m = st.lock();
+                if let Some(ws) = m.windows.get(&label) {
+                    ws.registry.focus_pane_surface(&tab, pane);
+                }
+            }
+            Ok(())
+        }
+        _ => {
+            let Some(list) = list else {
+                return;
+            };
+            match id {
+                MENU_AGENT_PREV | MENU_AGENT_NEXT => {
+                    match agent_step(&list, step(id == MENU_AGENT_PREV)) {
+                        Some(to) => rex::lifecycle::select(app, &label, &tab, &to),
+                        None => Ok(()),
+                    }
+                }
+                MENU_AGENT_MOVE_UP | MENU_AGENT_MOVE_DOWN => {
+                    match agent_move(&list, step(id == MENU_AGENT_MOVE_UP)) {
+                        Some((record, group, index)) => rex::lifecycle::edit(app, &tab, |s| {
+                            s.set_group(&tab, &record, group.as_deref(), Some(index))
+                        }),
+                        None => Ok(()),
+                    }
+                }
+                // The chrome runs the row's own Close, so an agent with nothing to resume asks
+                // first exactly as from its ⋯ menu.
+                _ => {
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        MENU_AGENT_CLOSE,
+                        serde_json::json!({ "label": label, "tabId": tab }),
+                    );
+                    Ok(())
+                }
+            }
+        }
+    };
+    if let Err(e) = done {
+        rex::lifecycle::banner(app, &label, &e);
     }
 }
 
@@ -263,6 +418,27 @@ fn build_app_menu(
         .accelerator("Alt+Cmd+KeyS")
         .enabled(false)
         .build(app)?;
+    let disabled = |id: &str, title: &str, accel: &str| {
+        MenuItemBuilder::with_id(id, title)
+            .accelerator(accel)
+            .enabled(false)
+            .build(app)
+    };
+    let agent_prev_item = disabled(MENU_AGENT_PREV, "Previous Agent Tab", "Cmd+ArrowUp")?;
+    let agent_next_item = disabled(MENU_AGENT_NEXT, "Next Agent Tab", "Cmd+ArrowDown")?;
+    let agent_up_item = disabled(
+        MENU_AGENT_MOVE_UP,
+        "Move Agent Tab Up",
+        "Alt+Shift+Cmd+ArrowUp",
+    )?;
+    let agent_down_item = disabled(
+        MENU_AGENT_MOVE_DOWN,
+        "Move Agent Tab Down",
+        "Alt+Shift+Cmd+ArrowDown",
+    )?;
+    let agent_close_item = disabled(MENU_AGENT_CLOSE, "Close Agent Tab", "Alt+Cmd+KeyW")?;
+    let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
+    let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
     // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
     // disabled line says so.
     let server_items = servers
@@ -290,9 +466,18 @@ fn build_app_menu(
         &spine,
         mode.is_cycle(),
         &[
-            &[&split_pane_item],
+            &[&split_pane_item, &pane_left_item, &pane_right_item],
             &[&suspend_item, &terminate_item],
-            &[&agent_new_item, &agent_sleep_item, &server_menu],
+            &[
+                &agent_new_item,
+                &agent_prev_item,
+                &agent_next_item,
+                &agent_up_item,
+                &agent_down_item,
+                &agent_sleep_item,
+                &agent_close_item,
+                &server_menu,
+            ],
         ],
     )?;
 
@@ -320,8 +505,18 @@ fn build_app_menu(
         .build()?;
     app.set_menu(menu)?;
     if let Some(keep) = tauri::Manager::try_state::<AgentMenu>(app) {
-        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some([agent_new_item, agent_sleep_item, reopen_last]);
+        *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(AgentItems {
+            new: agent_new_item,
+            sleep: agent_sleep_item,
+            reopen: reopen_last,
+            prev: agent_prev_item,
+            next: agent_next_item,
+            move_up: agent_up_item,
+            move_down: agent_down_item,
+            close: agent_close_item,
+            pane_left: pane_left_item,
+            pane_right: pane_right_item,
+        });
     }
     if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
         *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = server_items;
@@ -1962,6 +2157,23 @@ fn main() {
                 if id != MENU_WINDOW_REOPEN_LAST {
                     return;
                 }
+            }
+
+            // ⌘↑ / ⌘↓ / ⌥⇧⌘↑ / ⌥⇧⌘↓ / ⌥⌘W on the agent list, ⌥⌘← / ⌥⌘→ across the panes: each
+            // acts only when `sync_agent_menu` enabled it, so the step is read again here.
+            if [
+                MENU_AGENT_PREV,
+                MENU_AGENT_NEXT,
+                MENU_AGENT_MOVE_UP,
+                MENU_AGENT_MOVE_DOWN,
+                MENU_AGENT_CLOSE,
+                MENU_PANE_LEFT,
+                MENU_PANE_RIGHT,
+            ]
+            .contains(&id)
+            {
+                agent_key(app, id);
+                return;
             }
 
             // Window menu acts on the manager/app, not the focused window — handle it

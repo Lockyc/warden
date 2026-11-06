@@ -105,7 +105,8 @@ pub fn init(app: AppHandle, debug: bool) {
         }
         // Likewise a focus change is tab bookkeeping (which pane types), not attention.
         SurfaceSignal::Focused => {
-            crate::manager::WindowManager::handle_surface_focused(&app, event.surface_id)
+            crate::manager::WindowManager::handle_surface_focused(&app, event.surface_id);
+            crate::sync_agent_menu(&app); // the agent-step and pane items follow the focused pane
         }
         // Likewise the pointer crossing onto a surface is chrome bookkeeping (the sidebar's hover
         // state), not attention — and it fires on every boundary crossing, so it must never reach
