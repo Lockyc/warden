@@ -1142,8 +1142,16 @@ impl WardenHostView {
 /// `CSI…u` sequence (e.g. `^[[6;5u`) instead of the bare control byte (`^F`) that legacy apps —
 /// tmux, less, vim — read as the keypress. Ghostty's own macOS app omits `text` for these and
 /// lets the key encoder derive the byte from key + mods.
+///
+/// The same holds for AppKit's function-key characters (U+F700–U+F8FF: arrows, F-keys,
+/// Home/End): they are private-use, not control, chars, and in the Kitty keyboard protocol
+/// libghostty encodes that `text` instead of the key, so ↑/↓ reach a Kitty-mode program (fish's
+/// prompt, Claude Code) as nothing it recognises. Ghostty's macOS app drops the same range.
 fn is_printable_text(s: &str) -> bool {
-    !s.is_empty() && !s.chars().any(|c| c.is_control())
+    !s.is_empty()
+        && !s
+            .chars()
+            .any(|c| c.is_control() || ('\u{F700}'..='\u{F8FF}').contains(&c))
 }
 
 /// True for ⌘` / ⌘⇧` — macOS's "cycle windows of this app" chord. Matched by physical keycode
@@ -1865,5 +1873,10 @@ mod tests {
         assert!(!is_printable_text("\u{03}")); // Ctrl-C
         assert!(!is_printable_text("\u{1b}")); // Esc
         assert!(!is_printable_text("")); // no text at all
+        // AppKit's function-key characters (private use) — arrows, F-keys, Home/End.
+        assert!(!is_printable_text("\u{F700}")); // ↑
+        assert!(!is_printable_text("\u{F701}")); // ↓
+        assert!(!is_printable_text("\u{F704}")); // F1
+        assert!(!is_printable_text("\u{F8FF}")); // top of the range
     }
 }
