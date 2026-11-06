@@ -260,7 +260,11 @@ impl RexHub {
                 }
             }
             AgentOp::Fork(id) => {
+                // Refused once reconcile closed it too: its window went in Rex meanwhile.
                 let src = records[at(&records, id)?].clone();
+                if src.state == RecordState::Closed {
+                    return Err(Failed::Refused(NO_AGENT));
+                }
                 let cmd = src
                     .resume
                     .as_deref()
@@ -1106,7 +1110,7 @@ pub(crate) fn banner(app: &AppHandle, label: &str, message: &str) {
 /// relay sees its stream die and reads it as an exit: every docked one goes cold, as an unload,
 /// then a popped-out one ends whole, as when its program exits
 /// ([`WindowManager::end_detached`](crate::manager::WindowManager::end_detached)). Returns the tabs, for their lists to repaint.
-fn let_go(app: &AppHandle, pick: impl Fn(&str, &str) -> bool) -> Vec<String> {
+pub(super) fn let_go(app: &AppHandle, pick: impl Fn(&str, &str) -> bool) -> Vec<String> {
     let st = app.state::<ManagerState>();
     let mut projects = Vec::new();
     let mut exited = Vec::new();
@@ -2021,9 +2025,23 @@ mod tests {
             .expect("fork");
         let created = f.requests_for("session.create");
         assert_eq!(created.len(), 1);
+        assert_eq!(
+            created[0].payload["initial_windows"][0]["layout"]["block"]["options"]["initial_input"],
+            "claude --resume aaa --fork-session\n"
+        );
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
         assert_eq!(got.agents.len(), 1);
-        assert_ne!(got.selected.as_deref(), Some("a"));
+        let recs = s.lock().unwrap().records("t");
+        let fork = recs
+            .iter()
+            .find(|r| r.id != "a")
+            .expect("the fork's record");
+        assert_eq!(
+            (fork.name.as_str(), fork.state),
+            ("a fork", RecordState::Live)
+        );
+        assert_eq!(fork.position, 1, "below its source");
+        assert_eq!(got.selected.as_deref(), Some(fork.id.as_str()));
     }
 
     #[test]
