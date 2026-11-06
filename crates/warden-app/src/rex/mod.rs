@@ -583,7 +583,9 @@ impl Inner {
         );
         let args = json!({ "session_id": rec.session_id });
         let destroyed = match deadline {
-            Some(d) => client.call_seq_until("session.destroy", args, d).map(|_| ()),
+            Some(d) => client
+                .call_seq_until("session.destroy", args, d)
+                .map(|_| ()),
             None => client.call("session.destroy", args).map(|_| ()),
         };
         match destroyed {
