@@ -282,16 +282,18 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
     let spawned = std::thread::Builder::new()
         .name("warden-rex-destroy".into())
         .spawn(move || {
+            // Records first: the session list changing repaints the dot, and records still held
+            // then would ghost it for a moment on the way to hollow.
+            if let Some(store) = app.try_state::<Mutex<AgentStore>>() {
+                if super::lock(&store).remove_project(&id) {
+                    super::lifecycle::emit_agents(&app, &id);
+                }
+            }
             if let Some(hub) = app.try_state::<RexHub>() {
                 for key in &pane_keys {
                     if let Err(e) = hub.destroy(key) {
                         eprintln!("warden: couldn't end Rex session for {key:?}: {e}");
                     }
-                }
-            }
-            if let Some(store) = app.try_state::<Mutex<AgentStore>>() {
-                if super::lock(&store).remove_project(&id) {
-                    super::lifecycle::emit_agents(&app, &id);
                 }
             }
             hub_changed(&app, None);

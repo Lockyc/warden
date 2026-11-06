@@ -1165,10 +1165,13 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
 /// configured `suspend` or `kill` command (per `how`) via `sh -c`, cwd = the tab's dir — or, for a
 /// Rex tab's destroy, by destroying its panes' Rex sessions (`rex::spawn::destroy`) —
 /// fire-and-forget on a detached thread (exit code ignored — warden has no response to a failed
-/// end, and must not block the UI thread). Touches no surface: the chrome unloads the tab itself.
-/// No-op if the tab has no command for `how`. After the command completes, bump this window so
-/// the scheduler fast-bursts and the presence dot settles promptly once the session is actually
-/// gone. Same minimal-env PATH footgun as probes — see scrub note + CLAUDE.md.
+/// end, and must not block the UI thread). Touches no surface: the chrome unloads the tab itself —
+/// except a Rex tab's ⏻ (`rex::lifecycle::sleep_project`), which may stop at a confirm and lets
+/// the tab go only once it proceeds, so cancelling leaves the tab as it was. Returns whether warden
+/// takes the tab cold itself. No-op if the tab has no command for `how`. After the command
+/// completes, bump this window so the scheduler fast-bursts and the presence dot settles promptly
+/// once the session is actually gone. Same minimal-env PATH footgun as probes — see scrub note +
+/// CLAUDE.md.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn end_session(
@@ -1176,7 +1179,7 @@ fn end_session(
     state: tauri::State<ManagerState>,
     id: String,
     how: registry::EndSession,
-) {
+) -> bool {
     let target = {
         let m = state.lock();
         m.windows
@@ -1185,18 +1188,21 @@ fn end_session(
     };
     let label = window.label().to_string();
     let (dir, title, cmd) = match target {
-        None => return, // unknown tab or no command configured for `how`
+        None => return false, // unknown tab or no command configured for `how`
         Some(registry::EndTarget::Rex(pane_keys)) => {
             use tauri::Manager;
             rex::spawn::destroy(window.app_handle(), label, id, pane_keys);
-            return;
+            return false;
         }
         Some(registry::EndTarget::RexSleep { .. }) => {
             use tauri::Manager;
-            if let Err(e) = rex::lifecycle::sleep_project(window.app_handle(), &label, &id, &[]) {
-                rex::lifecycle::banner(window.app_handle(), &label, &e);
-            }
-            return;
+            return match rex::lifecycle::sleep_project(window.app_handle(), &label, &id, &[]) {
+                Ok(()) => true,
+                Err(e) => {
+                    rex::lifecycle::banner(window.app_handle(), &label, &e);
+                    false
+                }
+            };
         }
         Some(registry::EndTarget::Command(dir, title, cmd)) => (dir, title, cmd),
     };
@@ -1219,6 +1225,7 @@ fn end_session(
         // other tab in a wide window's sweep.
         probe::bump_tab_await(&label, &id, want);
     });
+    false
 }
 
 /// Restart the *session* tab `id` represents by re-typing its startup `cmd` into the live shell

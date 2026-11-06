@@ -904,9 +904,12 @@
       // cold tab still ends; and the command runs on a detached warden-app thread, never as a child
       // of this tab's shell, so tearing down the PTY can't cancel it. No optimistic dot drop — the
       // dot tracks `warden:session-state` alone (end_session bumps the scheduler's fast burst).
+      // A Rex tab's ⏻ answers `true`: warden takes the tab cold itself once its confirm (if any)
+      // proceeds, so a cancelled confirm leaves the tab as it was.
       function endSession(id, how) {
-        invokeSafe("end_session", { id, how });
-        unloadTab(id); // shared path with ⌘W / the ✕ dot — same cold state, same highlight follow
+        invokeSafe("end_session", { id, how }).then((owned) => {
+          if (!owned) unloadTab(id); // shared path with ⌘W / the ✕ dot — same cold state, same highlight follow
+        });
       }
 
       // ⌘D / Tab ▸ Split: give the active tab a second pane. Optimistic — `Registry::split` always
