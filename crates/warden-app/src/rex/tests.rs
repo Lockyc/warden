@@ -1604,7 +1604,10 @@ fn restartable(sessions: Value, instance: &str) -> (FakeServer, Instance) {
 fn restart(fake: &FakeServer, inst: &Instance, rx: &Receiver<HubEvent>, next: &str) {
     *inst.lock().unwrap() = next.to_owned();
     fake.drop_control();
-    next_event(rx, |e| matches!(e, HubEvent::Reconnected { server } if server == "local"));
+    next_event(
+        rx,
+        |e| matches!(e, HubEvent::Reconnected { server } if server == "local"),
+    );
 }
 
 #[test]
@@ -1644,7 +1647,9 @@ fn an_unstamped_record_is_stamped_not_restored() {
     hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
         .expect("ensure_session");
     assert_eq!(
-        RexStore::load(path).get("tab-a").and_then(|r| r.instance.clone()),
+        RexStore::load(path)
+            .get("tab-a")
+            .and_then(|r| r.instance.clone()),
         Some("a".to_owned())
     );
 }
@@ -1652,13 +1657,19 @@ fn an_unstamped_record_is_stamped_not_restored() {
 #[test]
 fn no_instance_id_means_nothing_is_restored() {
     let fake = scripted(json!([{"session_id": "session:new", "label": "w"}]));
-    fake.reply("session.list", json!({"sessions": [{"session_id": "session:new", "label": "w"}]}));
+    fake.reply(
+        "session.list",
+        json!({"sessions": [{"session_id": "session:new", "label": "w"}]}),
+    );
     let dir = tempfile::tempdir().unwrap();
     let (hub, _) = hub_on(fake.endpoint(), &dir);
     let rx = hub.subscribe();
     hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
         .expect("ensure_session");
     fake.drop_control();
-    next_event(&rx, |e| matches!(e, HubEvent::Reconnected { server } if server == "local"));
+    next_event(
+        &rx,
+        |e| matches!(e, HubEvent::Reconnected { server } if server == "local"),
+    );
     assert!(hub.session_alive("tab-a"));
 }

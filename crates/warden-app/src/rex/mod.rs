@@ -203,7 +203,10 @@ impl State {
     /// terminals are bare shells, so it reads as gone until an open adopts it. False when either
     /// instance is unknown.
     fn restored(&self, rec: &PaneRecord) -> bool {
-        let now = self.conns.get(&rec.server).and_then(|c| c.instance.as_ref());
+        let now = self
+            .conns
+            .get(&rec.server)
+            .and_then(|c| c.instance.as_ref());
         matches!((now, &rec.instance), (Some(now), Some(then)) if now != then)
     }
 
