@@ -455,12 +455,26 @@ impl Inner {
                             "Rex {server}: reattached session {} ({pane_key})",
                             rec.session_id
                         );
-                        let mut st = inner.lock();
-                        st.blocks.insert(pane_key.to_owned(), block_id.clone());
-                        if !adopted {
-                            st.stamp(pane_key);
+                        let restored = {
+                            let mut st = inner.lock();
+                            st.blocks.insert(pane_key.to_owned(), block_id.clone());
+                            !adopted && st.store.get(pane_key).is_some_and(|r| st.restored(r))
+                        };
+                        // A restored terminal is a bare shell: type what a new one would get.
+                        // Stamped only once it's typed, so a failed write retries next open.
+                        if restored {
+                            if let Some(s) = startup.filter(|s| !s.is_empty()) {
+                                log::info!("Rex {server}: restored session; retyping ({pane_key})");
+                                client.write_input(
+                                    &rec.session_id,
+                                    &block_id,
+                                    format!("{s}\n").as_bytes(),
+                                )?;
+                            }
                         }
-                        drop(st);
+                        if !adopted {
+                            inner.lock().stamp(pane_key);
+                        }
                         return Ok(PaneTarget {
                             endpoint,
                             session_id: rec.session_id.clone(),

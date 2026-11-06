@@ -1673,3 +1673,84 @@ fn no_instance_id_means_nothing_is_restored() {
     );
     assert!(hub.session_alive("tab-a"));
 }
+
+/// The text typed into terminals, in order (`terminal.write`'s `data`).
+fn typed(fake: &FakeServer) -> Vec<String> {
+    fake.requests_for("com.superlogical.terminal.write")
+        .iter()
+        .map(|r| {
+            r.payload["args"]["data"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// A hub with `tab-a` opened under instance `"a"` (making `session:new`), then Rex restarted as
+/// `"b"` with that session restored.
+fn opened_then_restarted() -> (FakeServer, RexHub, tempfile::TempDir) {
+    let (fake, inst) = restartable(json!([{"session_id": "session:new", "label": "w"}]), "a");
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session(
+        "tab-a",
+        "local",
+        Path::new("/w"),
+        Some("echo hi"),
+        "w · main",
+    )
+    .expect("first open");
+    restart(&fake, &inst, &rx, "b");
+    (fake, hub, dir)
+}
+
+#[test]
+fn a_restored_pane_reopens_its_session_typing_startup() {
+    let (fake, hub, _dir) = opened_then_restarted();
+    let t = hub
+        .ensure_session(
+            "tab-a",
+            "local",
+            Path::new("/w"),
+            Some("echo hi"),
+            "w · main",
+        )
+        .expect("reopen");
+    assert_eq!(t.session_id, "session:new", "the restored session is kept");
+    assert_eq!(
+        fake.requests_for("session.create").len(),
+        1,
+        "no second session"
+    );
+    assert_eq!(typed(&fake), ["echo hi\n"]);
+    let write = &fake.requests_for("com.superlogical.terminal.write")[0].payload;
+    assert_eq!(write["block_id"], t.block_id.as_str());
+    assert!(hub.session_alive("tab-a"));
+}
+
+#[test]
+fn a_restored_pane_without_startup_types_nothing() {
+    let (fake, hub, _dir) = opened_then_restarted();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("reopen");
+    assert!(typed(&fake).is_empty());
+    assert!(hub.session_alive("tab-a"));
+}
+
+#[test]
+fn a_second_open_of_a_restored_pane_types_once() {
+    let (fake, hub, _dir) = opened_then_restarted();
+    for _ in 0..2 {
+        hub.ensure_session(
+            "tab-a",
+            "local",
+            Path::new("/w"),
+            Some("echo hi"),
+            "w · main",
+        )
+        .expect("reopen");
+    }
+    assert_eq!(typed(&fake), ["echo hi\n"]);
+}
