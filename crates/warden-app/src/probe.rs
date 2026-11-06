@@ -453,14 +453,14 @@ enum Outcome {
 /// is usually wedged in a grandchild (the tmux client under `amux --probe`), which killing `sh` alone
 /// would orphan, one more per probe pass until the wedge clears.
 ///
-/// A spawn failure is logged (via `eprintln!`) — it is distinct from a clean non-zero exit: the
+/// A spawn failure is logged — it is distinct from a clean non-zero exit: the
 /// command itself couldn't run (bad path, missing binary, interior NUL), a misconfiguration that
 /// must be diagnosable rather than a permanently-hollow dot with no signal.
 fn run_bounded(cmd: &str, dir: &Path, title: &str, timeout: Duration) -> Outcome {
     let mut child = match tab_command(cmd, dir, title).spawn() {
         Ok(child) => child,
         Err(e) => {
-            eprintln!("warden: {cmd:?} failed to spawn in {dir:?}: {e}");
+            log::warn!("{cmd:?} failed to spawn in {dir:?}: {e}");
             return Outcome::SpawnFailed;
         }
     };
@@ -508,7 +508,7 @@ pub fn run_probe(cmd: &str, dir: &Path, title: &str) -> Presence {
 /// it leaves the session half torn down.
 pub fn run_end(cmd: &str, dir: &Path, title: &str) {
     if let Outcome::TimedOut = run_bounded(cmd, dir, title, END_TIMEOUT) {
-        eprintln!("warden: {cmd:?} in {dir:?} still running after {END_TIMEOUT:?}; killed");
+        log::warn!("{cmd:?} in {dir:?} still running after {END_TIMEOUT:?}; killed");
     }
 }
 

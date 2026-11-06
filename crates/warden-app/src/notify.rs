@@ -76,7 +76,7 @@ fn focus_window_tab(app: &AppHandle, click: &Click) {
     banner::raise(app, label);
     if let Some(agent) = click.context.as_deref() {
         if let Err(e) = crate::rex::lifecycle::select(app, label, id, agent) {
-            eprintln!("warden: {label}: {id}: {e}");
+            log::error!("{label}: {id}: {e}");
         }
     }
     let _ = app.emit_to(

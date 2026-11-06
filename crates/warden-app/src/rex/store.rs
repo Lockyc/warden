@@ -70,7 +70,7 @@ impl RexStore {
         if changed {
             if let Some(path) = &self.path {
                 if let Err(e) = crate::session::write_atomic(path, &self.records) {
-                    eprintln!("warden: couldn't save Rex sessions to {path:?}: {e}");
+                    log::error!("couldn't save Rex sessions to {path:?}: {e}");
                 }
             }
         }

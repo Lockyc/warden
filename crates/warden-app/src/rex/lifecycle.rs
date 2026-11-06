@@ -978,7 +978,7 @@ fn worker(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
 
 /// Log `message` and show it in window `label`'s error banner (main thread).
 fn fail(app: &AppHandle, label: &str, message: &str) {
-    eprintln!("warden: {label}: {message}");
+    log::error!("{label}: {message}");
     banner(app, label, message);
 }
 
@@ -1206,7 +1206,7 @@ fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<Agent
                 continue;
             }
             if let Err(e) = ws.registry.sync_agents(tab_id, found.clone()) {
-                eprintln!("warden: couldn't open an agent of tab {tab_id:?}: {e}");
+                log::error!("couldn't open an agent of tab {tab_id:?}: {e}");
             }
             refreshed.push(l.clone());
         }
@@ -1223,7 +1223,7 @@ fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<Agent
         let _ = app.emit_to(l.as_str(), "warden:refresh", dto);
     }
     if let (Err(message), Some(label)) = (&result, label) {
-        eprintln!("warden: {label}: {tab_id}: {message}");
+        log::error!("{label}: {tab_id}: {message}");
         banner(app, label, message);
     }
     emit_agents(app, tab_id);
@@ -1256,7 +1256,7 @@ pub fn watch_agents(app: AppHandle) {
             }
         });
     if let Err(e) = spawned {
-        eprintln!("warden: agent tabs won't follow Rex: {e}");
+        log::error!("agent tabs won't follow Rex: {e}");
     }
 }
 
@@ -1402,7 +1402,7 @@ fn refresh(app: &AppHandle, project: String) {
         .name("warden-agent-refresh".into())
         .spawn(move || follow(&app, &project, &AgentOp::Refresh));
     if let Err(e) = spawned {
-        eprintln!("warden: couldn't start following agent tabs: {e}");
+        log::error!("couldn't start following agent tabs: {e}");
     }
 }
 
@@ -1426,7 +1426,7 @@ pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
     };
     let result = hub.agent_op(&store, &req, op, unix_now());
     if let Err(e) = &result {
-        eprintln!("warden: couldn't follow {project:?}'s agent tabs: {e}");
+        log::error!("couldn't follow {project:?}'s agent tabs: {e}");
         return;
     }
     let (main, project) = (app.clone(), project.to_owned());
@@ -1439,7 +1439,7 @@ pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
 /// runs on.
 pub fn watch_reports(app: AppHandle) {
     let Some(path) = super::reports::socket_path(&app) else {
-        eprintln!("warden: no app config dir, so agents can't report how to resume");
+        log::error!("no app config dir, so agents can't report how to resume");
         return;
     };
     if let Some(dir) = path.parent() {
@@ -1448,8 +1448,8 @@ pub fn watch_reports(app: AppHandle) {
     let reports = match super::reports::listen(&path) {
         Ok(rx) => rx,
         Err(e) => {
-            eprintln!(
-                "warden: agents can't report how to resume ({}): {e}",
+            log::error!(
+                "agents can't report how to resume ({}): {e}",
                 path.display()
             );
             return;
@@ -1474,7 +1474,7 @@ pub fn watch_reports(app: AppHandle) {
             }
         });
     if let Err(e) = spawned {
-        eprintln!("warden: agents can't report how to resume: {e}");
+        log::error!("agents can't report how to resume: {e}");
     }
 }
 

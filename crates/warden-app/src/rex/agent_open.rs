@@ -62,13 +62,13 @@ impl RexHub {
         if windows.iter().any(|w| !shows(w)) {
             if let Some(w) = windows.iter().find(|w| shows(w)) {
                 if let Err(e) = self.close_window(&rec.server, &rec.session_id, &w.window_id) {
-                    eprintln!("warden: couldn't close Rex window for {agent_key:?}: {e}");
+                    log::error!("couldn't close Rex window for {agent_key:?}: {e}");
                 }
             }
         } else if self.inner.session_outlives_pane(agent_key) {
             self.inner.forget(&pane);
         } else if let Err(e) = self.inner.destroy(&pane) {
-            eprintln!("warden: couldn't end Rex session for {pane:?}: {e}");
+            log::error!("couldn't end Rex session for {pane:?}: {e}");
         }
         self.inner.lock().unbind_agent(agent_key);
         true

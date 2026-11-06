@@ -344,7 +344,7 @@ impl AgentStore {
                 folded: self.folded.clone(),
             };
             if let Err(e) = crate::session::write_atomic(path, &saved) {
-                eprintln!("warden: couldn't save agent tabs to {path:?}: {e}");
+                log::error!("couldn't save agent tabs to {path:?}: {e}");
             }
         }
     }

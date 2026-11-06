@@ -158,7 +158,7 @@ fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer,
         let _ = app.emit_to(label, "warden:refresh", dto);
     }
     if let Some(message) = message {
-        eprintln!("warden: {label}: {}: {message}", req.pane_key);
+        log::error!("{label}: {}: {message}", req.pane_key);
         super::lifecycle::banner(app, label, &message);
     }
 }
@@ -239,7 +239,7 @@ pub fn watch_presence(app: AppHandle) {
             }
         });
     if let Err(e) = spawned {
-        eprintln!("warden: Rex presence won't update: {e}");
+        log::error!("Rex presence won't update: {e}");
     }
 }
 
@@ -270,7 +270,7 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
             hub_changed(&app, None);
         });
     if let Err(e) = spawned {
-        eprintln!("warden: couldn't start checking whether a Rex session ended: {e}");
+        log::error!("couldn't start checking whether a Rex session ended: {e}");
     }
 }
 
@@ -292,7 +292,7 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
             if let Some(hub) = app.try_state::<RexHub>() {
                 for key in &pane_keys {
                     if let Err(e) = hub.destroy(key) {
-                        eprintln!("warden: couldn't end Rex session for {key:?}: {e}");
+                        log::error!("couldn't end Rex session for {key:?}: {e}");
                     }
                 }
             }
@@ -300,7 +300,7 @@ pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String
             crate::probe::bump_tab_await(&label, &id, crate::probe::Await::Gone);
         });
     if let Err(e) = spawned {
-        eprintln!("warden: couldn't start ending a tab's Rex sessions: {e}");
+        log::error!("couldn't start ending a tab's Rex sessions: {e}");
     }
 }
 

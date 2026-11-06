@@ -357,7 +357,7 @@ impl RexHub {
         if self.inner.session_outlives_pane(pane_key) {
             self.inner.forget(pane_key);
         } else if let Err(e) = self.inner.destroy(pane_key) {
-            eprintln!("warden: couldn't end Rex session for {pane_key:?}: {e}");
+            log::error!("couldn't end Rex session for {pane_key:?}: {e}");
         }
         true
     }

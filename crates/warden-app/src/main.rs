@@ -10,6 +10,9 @@ compile_error!(
 );
 
 #[cfg(target_os = "macos")]
+mod logging;
+
+#[cfg(target_os = "macos")]
 mod manager;
 
 #[cfg(target_os = "macos")]
@@ -451,7 +454,7 @@ fn activate_tab(
     // listening now, so push the reason to the banner.
     let live = err.is_none() && !connecting;
     if let Some(e) = err {
-        eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
+        log::error!("surface spawn failed for tab {id:?}: {e}");
         // A per-tab spawn error belongs to THIS window only. `emit` broadcasts to every
         // webview (the documented emit_to-leaks footgun), so stamp the window label into
         // the payload and let the chrome's label filter drop it in siblings — mirroring the
@@ -555,7 +558,7 @@ fn split_pane(
         ws.registry.activate_user(&id)
     };
     if let Err(e) = primary {
-        eprintln!("warden: surface spawn failed for tab {id:?}: {e}");
+        log::error!("surface spawn failed for tab {id:?}: {e}");
         let _ = window.emit(
             "warden:error",
             serde_json::json!({
@@ -1705,8 +1708,8 @@ fn configure_ghostty_resources() {
         if vendor.join("terminfo/78/xterm-ghostty").exists() {
             std::env::set_var("GHOSTTY_RESOURCES_DIR", vendor.join("ghostty"));
         } else {
-            eprintln!(
-                "warden: vendored ghostty resources missing at {} — terminals will fall back to \
+            log::warn!(
+                "vendored ghostty resources missing at {} — terminals will fall back to \
                  TERM=xterm-256color (no synchronized output). Run `just revendor-ghostty`.",
                 vendor.display()
             );
@@ -1783,6 +1786,13 @@ fn extract_sentinel_path(output: &str) -> Option<String> {
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    logging::init();
+    log::info!(
+        "warden {} ({}) starting",
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_GIT_SHA")
+    );
     // warden hosts terminals — it must not leak its own launcher's tmux membership into them
     // (breaks nested agentmux/tmux). Scrub before anything else inherits the environment.
     scrub_inherited_tmux_env();
@@ -1809,7 +1819,7 @@ fn main() {
 
         let ret = unsafe { ffi::ghostty_init(args.len(), c_argv.as_mut_ptr()) };
         if ret != 0 {
-            eprintln!("warden: ghostty_init returned {ret} (non-fatal)");
+            log::warn!("ghostty_init returned {ret} (non-fatal)");
         }
     }
 
@@ -2242,7 +2252,7 @@ fn main() {
                         app.manage(WatcherState(w));
                     }
                     Err(e) => {
-                        eprintln!("warden: failed to start config watcher (no hot-reload): {e}");
+                        log::error!("failed to start config watcher (no hot-reload): {e}");
                     }
                 }
             }
@@ -2269,7 +2279,7 @@ fn main() {
                     match label {
                         Some(label) => open_or_focus_window(app, &label),
                         None => {
-                            eprintln!("warden: warden://open names no configured window {title:?}")
+                            log::warn!("warden://open names no configured window {title:?}")
                         }
                     }
                 }

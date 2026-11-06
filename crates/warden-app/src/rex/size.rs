@@ -70,7 +70,7 @@ impl Sizer {
                 }
             });
         if let Err(e) = spawned {
-            eprintln!("warden: Rex panes won't follow warden's size: {e}");
+            log::error!("Rex panes won't follow warden's size: {e}");
         }
         Sizer { tx }
     }
@@ -94,7 +94,7 @@ fn run(hub: &RexHub, job: &SizeJob) {
         SizeAsk::IfOwner => hub.resize_if_owner(&s.pane_key, s.cols, s.rows, s.cell_px),
     };
     if let Err(e) = r {
-        eprintln!("warden: {}: couldn't size Rex terminal: {e}", s.pane_key);
+        log::error!("{}: couldn't size Rex terminal: {e}", s.pane_key);
     }
 }
 

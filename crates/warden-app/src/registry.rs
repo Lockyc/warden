@@ -611,10 +611,7 @@ impl Registry {
                             s.hide();
                         }
                     }
-                    Err(e) => eprintln!(
-                        "warden: secondary spawn failed for tab {:?}: {e}",
-                        spec.title
-                    ),
+                    Err(e) => log::error!("secondary spawn failed for tab {:?}: {e}", spec.title),
                 }
             }
         }
@@ -2025,7 +2022,7 @@ impl Registry {
         if self.active.as_deref() == Some(id) {
             if let Some(next) = self.tabs[idx].primary.selected.clone() {
                 if let Err(e) = self.spawn_agent(idx, &next) {
-                    eprintln!("warden: couldn't open agent {next:?} of tab {id:?}: {e}");
+                    log::error!("couldn't open agent {next:?} of tab {id:?}: {e}");
                 }
             }
             if !self.tabs[idx].primary.live() {

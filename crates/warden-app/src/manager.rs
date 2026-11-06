@@ -530,10 +530,7 @@ impl WindowManager {
             None
         } else {
             let joined = spawn_errors.join("; ");
-            eprintln!(
-                "warden: surface spawn failed in window {:?}: {joined}",
-                spec.title
-            );
+            log::error!("surface spawn failed in window {:?}: {joined}", spec.title);
             Some(format!("couldn't open terminal — {joined}"))
         };
 
@@ -840,7 +837,7 @@ impl WindowManager {
                 && ws.registry.active_tab() == Some(tab_id.as_str())
             {
                 if let Err(e) = ws.registry.activate(&tab_id) {
-                    eprintln!("warden: couldn't show an agent of tab {tab_id:?}: {e}");
+                    log::error!("couldn't show an agent of tab {tab_id:?}: {e}");
                 }
             }
             ended
@@ -1284,7 +1281,7 @@ impl WindowManager {
                         continue;
                     }
                     if let Err(e) = ws.registry.ensure_spawned_by_id(id) {
-                        eprintln!("warden: spawn on load_on_open failed for {id:?}: {e}");
+                        log::error!("spawn on load_on_open failed for {id:?}: {e}");
                     }
                 }
                 ws.registry.reorder(&order);
@@ -1295,7 +1292,7 @@ impl WindowManager {
                 if let Some(active) = &was_active {
                     if respawn_tabs.iter().any(|tp| &tp.spec.id == active) {
                         if let Err(e) = ws.registry.activate(active) {
-                            eprintln!("warden: reactivate after respawn failed: {e}");
+                            log::error!("reactivate after respawn failed: {e}");
                         }
                     }
                 }
@@ -1405,10 +1402,7 @@ fn apply_tab_reconcile(
         // A failed eager spawn on hot-reload leaves the tab cold (it retries on
         // focus, which surfaces the error via the banner then) — log it, never panic.
         if let Err(e) = registry.add(&tp.spec, tp.load_on_open) {
-            eprintln!(
-                "warden: surface spawn failed for tab {:?}: {e}",
-                tp.spec.title
-            );
+            log::error!("surface spawn failed for tab {:?}: {e}", tp.spec.title);
         }
     }
     // Respawn kept tabs whose terminal spec changed: tear down and rebuild by the
@@ -1424,10 +1418,7 @@ fn apply_tab_reconcile(
         }
         registry.remove(&tp.spec.id);
         if let Err(e) = registry.add(&tp.spec, tp.load_on_open) {
-            eprintln!(
-                "warden: surface respawn failed for tab {:?}: {e}",
-                tp.spec.title
-            );
+            log::error!("surface respawn failed for tab {:?}: {e}", tp.spec.title);
         }
     }
 }

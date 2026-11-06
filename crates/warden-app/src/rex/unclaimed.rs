@@ -175,7 +175,7 @@ fn connect_all(hub: &RexHub, servers: &[String], mut connected: impl FnMut(&str)
     for server in servers {
         match hub.connect(server) {
             Ok(()) => connected(server),
-            Err(e) => eprintln!("warden: Rex server {server}: {e}"),
+            Err(e) => log::error!("Rex server {server}: {e}"),
         }
     }
 }
@@ -203,7 +203,7 @@ pub fn connect(app: &AppHandle, config: &Config) {
             });
         });
     if let Err(e) = spawned {
-        eprintln!("warden: couldn't start connecting to Rex servers: {e}");
+        log::error!("couldn't start connecting to Rex servers: {e}");
     }
 }
 

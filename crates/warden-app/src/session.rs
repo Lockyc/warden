@@ -86,7 +86,7 @@ impl SessionStore {
         if changed {
             if let Some(path) = &self.path {
                 if let Err(e) = write_atomic(path, &self.records) {
-                    eprintln!("warden: couldn't save remembered tabs to {path:?}: {e}");
+                    log::error!("couldn't save remembered tabs to {path:?}: {e}");
                 }
             }
         }

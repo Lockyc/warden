@@ -1822,8 +1822,8 @@ impl Drop for GhosttySurface {
     fn drop(&mut self) {
         if !self.closed {
             #[cfg(debug_assertions)]
-            eprintln!(
-                "warden: GhosttySurface dropped without close() — tearing down in Drop (bug: a \
+            log::error!(
+                "GhosttySurface dropped without close() — tearing down in Drop (bug: a \
                  registry path bypassed close())"
             );
             self.teardown();

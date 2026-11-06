@@ -82,7 +82,7 @@ impl WindowHost for WardenHost {
 
     /// Every sidebar shows a failed window edit — the same channel as a config that failed to load.
     fn edit_failed(&self, app: &AppHandle, message: &str) {
-        eprintln!("warden: window edit failed: {message}");
+        log::error!("window edit failed: {message}");
         let _ = app.emit("warden:error", message.to_string());
     }
 
