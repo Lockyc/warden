@@ -718,6 +718,9 @@ pub struct AgentRowDto {
     pub can_sleep: bool,
     /// Why a live tab can't sleep.
     pub sleep_reason: Option<String>,
+    pub can_fork: bool,
+    /// Why the tab can't fork ([`refusal`] of [`AgentOp::Fork`]).
+    pub fork_reason: Option<String>,
     /// Done or errored since its tab was last on screen ([`Attention::needs_you`]).
     pub unread: bool,
 }
@@ -820,6 +823,7 @@ pub fn agent_list(
                 }),
             }
         }
+        let fork_reason = refusal(&AgentOp::Fork(r.id.clone()), std::slice::from_ref(r));
         rows.push(AgentRowDto {
             id: r.id.clone(),
             name: r.name.clone(),
@@ -829,6 +833,8 @@ pub fn agent_list(
             selected: r.selected,
             can_sleep: live && r.resume.is_some(),
             sleep_reason: (live && r.resume.is_none()).then(|| NO_RESUME.to_owned()),
+            can_fork: fork_reason.is_none(),
+            fork_reason: fork_reason.map(str::to_owned),
             unread: needs_you && matches!(state, "done" | "error"),
         });
     }
@@ -2832,6 +2838,8 @@ mod tests {
                     selected: *id == selected,
                     can_sleep: true,
                     sleep_reason: None,
+                    can_fork: true,
+                    fork_reason: None,
                     unread: false,
                 })
                 .collect(),

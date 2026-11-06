@@ -71,16 +71,18 @@ const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 
-/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓) and Close
-/// Agent Tab (⌥⌘W): the selected agent tab of the focused window's active tab, enabled only while
-/// its main pane has keyboard focus and the step can act ([`sync_agent_menu`]) — a disabled item
-/// leaves its chord to the terminal, so ⌘↑ / ⌘↓ still jump between prompts in the scratch shell.
-/// Close's id doubles as the event its chrome runs the row's Close from, confirm included.
+/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓), Fork
+/// Agent Tab (⌥⌘T) and Close Agent Tab (⌥⌘W): the selected agent tab of the focused window's
+/// active tab, enabled only while its main pane has keyboard focus and the step can act
+/// ([`sync_agent_menu`]) — a disabled item leaves its chord to the terminal, so ⌘↑ / ⌘↓ still
+/// jump between prompts in the scratch shell. Close's id doubles as the event its chrome runs the
+/// row's Close from, confirm included.
 const MENU_AGENT_PREV: &str = "warden:agent-prev";
 const MENU_AGENT_NEXT: &str = "warden:agent-next";
 const MENU_AGENT_MOVE_UP: &str = "warden:agent-move-up";
 const MENU_AGENT_MOVE_DOWN: &str = "warden:agent-move-down";
 const MENU_AGENT_CLOSE: &str = "warden:agent-close";
+const MENU_AGENT_FORK: &str = "warden:agent-fork";
 
 /// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
 /// enabled while there is one ([`registry::Registry::pane_to`]).
@@ -100,6 +102,7 @@ struct AgentItems {
     move_up: tauri::menu::MenuItem<tauri::Wry>,
     move_down: tauri::menu::MenuItem<tauri::Wry>,
     close: tauri::menu::MenuItem<tauri::Wry>,
+    fork: tauri::menu::MenuItem<tauri::Wry>,
     pane_left: tauri::menu::MenuItem<tauri::Wry>,
     pane_right: tauri::menu::MenuItem<tauri::Wry>,
 }
@@ -267,6 +270,9 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             .close
             .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected)));
         let _ = i
+            .fork
+            .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
+        let _ = i
             .pane_left
             .set_enabled(keys.as_ref().is_some_and(|k| k.3.is_some()));
         let _ = i
@@ -316,6 +322,15 @@ fn agent_key(app: &tauri::AppHandle, id: &str) {
                         None => Ok(()),
                     }
                 }
+                MENU_AGENT_FORK => match list.rows.iter().find(|r| r.selected && r.can_fork) {
+                    Some(r) => rex::lifecycle::run(
+                        app,
+                        &label,
+                        &tab,
+                        rex::lifecycle::AgentOp::Fork(r.id.clone()),
+                    ),
+                    None => Ok(()),
+                },
                 // The chrome runs the row's own Close, so an agent with nothing to resume asks
                 // first exactly as from its ⋯ menu.
                 _ => {
@@ -437,6 +452,7 @@ fn build_app_menu(
         "Alt+Shift+Cmd+ArrowDown",
     )?;
     let agent_close_item = disabled(MENU_AGENT_CLOSE, "Close Agent Tab", "Alt+Cmd+KeyW")?;
+    let agent_fork_item = disabled(MENU_AGENT_FORK, "Fork Agent Tab", "Alt+Cmd+KeyT")?;
     let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
     let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
     // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
@@ -474,6 +490,7 @@ fn build_app_menu(
                 &agent_next_item,
                 &agent_up_item,
                 &agent_down_item,
+                &agent_fork_item,
                 &agent_sleep_item,
                 &agent_close_item,
                 &server_menu,
@@ -514,6 +531,7 @@ fn build_app_menu(
             move_up: agent_up_item,
             move_down: agent_down_item,
             close: agent_close_item,
+            fork: agent_fork_item,
             pane_left: pane_left_item,
             pane_right: pane_right_item,
         });
@@ -1517,6 +1535,20 @@ fn agent_sleep(
     rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
 }
 
+/// Fork agent tab `record_id`: a new tab below it resuming the same conversation as a branch.
+/// Refused while it hasn't reported how to resume, or its harness can't fork.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_fork(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let op = rex::lifecycle::AgentOp::Fork(record_id);
+    rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
+}
+
 /// Wake asleep agent tab `record_id`.
 #[cfg(target_os = "macos")]
 #[tauri::command]
@@ -2167,6 +2199,7 @@ fn main() {
                 MENU_AGENT_MOVE_UP,
                 MENU_AGENT_MOVE_DOWN,
                 MENU_AGENT_CLOSE,
+                MENU_AGENT_FORK,
                 MENU_PANE_LEFT,
                 MENU_PANE_RIGHT,
             ]
@@ -2248,6 +2281,7 @@ fn main() {
             agent_select,
             agent_sleep,
             agent_wake,
+            agent_fork,
             agent_close,
             agent_reopen,
             agent_rename,
