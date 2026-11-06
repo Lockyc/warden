@@ -1754,3 +1754,31 @@ fn a_second_open_of_a_restored_pane_types_once() {
     }
     assert_eq!(typed(&fake), ["echo hi\n"]);
 }
+
+#[test]
+fn a_reconnect_to_a_new_instance_reports_a_restart() {
+    let (fake, inst) = restartable(json!([]), "a");
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.connect("local").expect("connect");
+    *inst.lock().unwrap() = "b".to_owned();
+    fake.drop_control();
+    next_event(
+        &rx,
+        |e| matches!(e, HubEvent::Restarted { server } if server == "local"),
+    );
+}
+
+#[test]
+fn a_reconnect_to_the_same_instance_reports_no_restart() {
+    let (fake, inst) = restartable(json!([]), "a");
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.connect("local").expect("connect");
+    restart(&fake, &inst, &rx, "a");
+    while let Ok(ev) = rx.try_recv() {
+        assert!(!matches!(ev, HubEvent::Restarted { .. }), "{ev:?}");
+    }
+}

@@ -107,6 +107,12 @@ pub enum HubEvent {
     Reconnected {
         server: String,
     },
+    /// The server came back as a new instance — it restarted, crashed or the Mac rebooted —
+    /// so every session it restored holds bare shells ([`RexHub::is_restored`]). Sent once per
+    /// new instance seen this run; never for the run's first connection.
+    Restarted {
+        server: String,
+    },
 }
 
 /// Starts the local server, waiting at most the given time.
@@ -180,6 +186,8 @@ struct State {
     /// Servers warden is stopping or has stopped ([`RexHub::sleep_server`]): a connection to one
     /// that ends isn't reopened, until a caller connects again.
     stopping: HashSet<String>,
+    /// Server → the instance it last connected as this run: a different one is a restart.
+    last_instance: HashMap<String, String>,
     next_gen: u64,
 }
 
@@ -415,7 +423,7 @@ impl RexHub {
 
     /// Whether `pane_key`'s stored session is one its server restored after a restart
     /// ([`State::restored`]).
-    pub(super) fn is_restored(&self, pane_key: &str) -> bool {
+    pub(crate) fn is_restored(&self, pane_key: &str) -> bool {
         let st = self.inner.lock();
         st.store.get(pane_key).is_some_and(|r| st.restored(r))
     }
@@ -1002,11 +1010,16 @@ impl Inner {
         };
         let client = Arc::new(client);
         let token = client.reconnect_token().map(str::to_owned);
-        let gen = {
+        let (gen, restarted) = {
             let mut st = self.lock();
             if let Some(c) = st.conns.get(server) {
                 return Ok((c.client.clone(), false));
             }
+            let restarted = instance.as_ref().is_some_and(|now| {
+                st.last_instance
+                    .insert(server.to_owned(), now.clone())
+                    .is_some_and(|then| then != *now)
+            });
             st.heard.remove(server);
             st.stopping.remove(server);
             st.next_gen += 1;
@@ -1023,7 +1036,7 @@ impl Inner {
                     owners: HashMap::new(),
                 },
             );
-            gen
+            (gen, restarted)
         };
         log::info!(
             "Rex {server}: connected ({} session(s){})",
@@ -1044,6 +1057,12 @@ impl Inner {
                     }
                 }
             }
+        }
+        if restarted {
+            log::info!("Rex {server}: restarted; its sessions came back as bare shells");
+            self.emit([HubEvent::Restarted {
+                server: server.to_owned(),
+            }]);
         }
         let weak = Arc::downgrade(self);
         let server = server.to_owned();

@@ -230,6 +230,11 @@ pub fn watch_presence(app: AppHandle) {
                         hub_changed(&app, Some(&server))
                     }
                     HubEvent::Disconnected { server } => refresh_presence(&app, Some(&server)),
+                    HubEvent::Restarted { server } => {
+                        let main = app.clone();
+                        let _ = app.run_on_main_thread(move || reopen_restarted(&main, &server));
+                        continue;
+                    }
                     HubEvent::OwnerChanged { .. }
                     | HubEvent::WindowsChanged { .. }
                     | HubEvent::StatusChanged { .. } => continue,
@@ -241,6 +246,58 @@ pub fn watch_presence(app: AppHandle) {
     if let Err(e) = spawned {
         log::error!("Rex presence won't update: {e}");
     }
+}
+
+/// Rex `server` restarted ([`HubEvent::Restarted`]) under open tabs, whose relays went straight
+/// back to the same blocks, now bare shells. Each such tab whose session came back restored
+/// ([`RexHub::is_restored`]) goes cold, so its next open adopts the session as an open after a
+/// restart does; the tab on screen opens again at once, as the user's open, since the user is
+/// looking at it. Main thread.
+fn reopen_restarted(app: &AppHandle, server: &str) {
+    let (Some(st), Some(hub)) = (app.try_state::<ManagerState>(), app.try_state::<RexHub>()) else {
+        return;
+    };
+    let mut refreshed = Vec::new();
+    {
+        let mut m = st.lock();
+        let labels: Vec<String> = m.windows.keys().cloned().collect();
+        for label in labels {
+            let Some(ws) = m.windows.get_mut(&label) else {
+                continue;
+            };
+            let restored: Vec<String> = ws
+                .registry
+                .rex_tabs()
+                .into_iter()
+                .filter(|(_, s)| s == server)
+                .map(|(id, _)| id)
+                .filter(|id| {
+                    hub.is_restored(id) || hub.is_restored(&crate::registry::secondary_id(id))
+                })
+                .collect();
+            if restored.is_empty() {
+                continue;
+            }
+            let active = ws.registry.active_tab().map(str::to_owned);
+            for id in &restored {
+                log::info!("{label}: {id}: Rex {server} restarted; reopening");
+                ws.registry.unload(id);
+                if active.as_deref() == Some(id.as_str()) {
+                    if let Err(e) = ws.registry.activate_user(id) {
+                        log::error!("{label}: {id}: couldn't reopen after Rex restarted: {e}");
+                    }
+                }
+            }
+            m.record_session(app, &label);
+            if let Some(dto) = m.init_dto(&label) {
+                refreshed.push((label, dto));
+            }
+        }
+    }
+    for (label, dto) in refreshed {
+        let _ = app.emit_to(&label, "warden:refresh", dto);
+    }
+    crate::sync_agent_menu(app);
 }
 
 /// A Rex pane's program exited (its relay did): let go of its session if its terminal really
