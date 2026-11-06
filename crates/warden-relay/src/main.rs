@@ -2,7 +2,8 @@
 //!
 //! It writes the block's stream to stdout — the opening snapshot replayed as VT, then the
 //! program's output with Rex's own messages removed — and types stdin into the block. It never
-//! resizes the block: warden-app owns its size.
+//! resizes the block: warden-app owns its size. When the pane or the block changes size it draws
+//! the pane again from a fresh snapshot ([`Redraw`]).
 
 mod term;
 mod vt;
@@ -15,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rex_client::wire::{strip_terminal_replies, RexMessage, StreamDemux, WardenMessage};
-use rex_client::{ClientInfo, ControlClient, DataStream, Endpoint, RexError, DATA_PROTOCOL};
+use rex_client::{ClientInfo, ControlClient, DataStream, Endpoint, Next, RexError, DATA_PROTOCOL};
 use serde_json::json;
 
 const USAGE: &str =
@@ -40,6 +41,11 @@ const BLOCK_CLOSED: u16 = 4000;
 /// A data connection's close status for "start a new stream with a new ticket".
 const RECONNECT_REQUIRED: u16 = 1013;
 
+/// The longest a stream read waits before the relay checks whether to redraw.
+const TICK: Duration = Duration::from_millis(100);
+/// How long a size must hold before the pane is redrawn at it: a window drag is one redraw.
+const SETTLE: Duration = Duration::from_millis(150);
+
 /// The longest a report may block the stream.
 const REPORT_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -60,6 +66,7 @@ fn main() {
         }
     };
     let raw = term::RawMode::enable();
+    term::watch_resizes();
     let code = run(&args);
     drop(raw);
     std::process::exit(code);
@@ -216,6 +223,7 @@ fn relay_stream(
     let mut reporter = Reporter::new(args);
     let mut restart = false;
     loop {
+        let resizes = term::resizes();
         let mut stream = match open_stream(args, link) {
             Ok(s) => s,
             Err(RexError::Api {
@@ -230,29 +238,90 @@ fn relay_stream(
             }
         };
         backoff.reset();
-        let mut feed = Feed::new(stream.nonce(), restart);
+        let mut feed = Feed::new(stream.nonce(), restart, resizes);
         restart = true;
         loop {
-            let code = loop {
-                match stream.read() {
-                    Ok(Some(chunk)) => {
+            let end = loop {
+                match stream.read_for(TICK) {
+                    Ok(Next::Data(chunk)) => {
                         if feed.push(&chunk, out, &mut reporter)? {
                             return Err(Stop(0));
                         }
                     }
-                    Ok(None) => break stream.close_code().unwrap_or(1006),
-                    Err(_) => break 1006,
+                    Ok(Next::Quiet) => {}
+                    Ok(Next::Closed) => break End::Closed(stream.close_code().unwrap_or(1006)),
+                    Err(_) => break End::Closed(1006),
+                }
+                if feed.redraw.due(term::resizes(), Instant::now()) {
+                    break End::Redraw;
                 }
             };
-            match code {
-                BLOCK_CLOSED => return Err(Stop(0)),
-                RECONNECT_REQUIRED => break,
-                _ => match resume(args, &stream, &mut backoff, out)? {
+            match end {
+                End::Redraw => {
+                    stream.close();
+                    break;
+                }
+                End::Closed(BLOCK_CLOSED) => return Err(Stop(0)),
+                End::Closed(RECONNECT_REQUIRED) => break,
+                End::Closed(_) => match resume(args, &stream, &mut backoff, out)? {
                     Some(s) => stream = s,
                     None => break,
                 },
             }
         }
+    }
+}
+
+/// Why a stream stopped being read.
+enum End {
+    /// The connection closed with this status.
+    Closed(u16),
+    /// The pane must be drawn again from a fresh snapshot ([`Redraw`]).
+    Redraw,
+}
+
+/// When a pane must be drawn again from a fresh snapshot. A stream's output is laid out for the
+/// block's size, and replaying it into a pane of another size garbles the pane (a cursor move
+/// stops at the pane's edge, and a line wraps where the program didn't wrap it). Neither side
+/// repairs that: a pane resize redraws nothing in Rex, and a program redraws only what it
+/// thinks changed. So whenever the pane or the block changes size, once the change settles, the
+/// stream is replaced by a new one, whose snapshot is Rex's own screen fitted to the pane.
+struct Redraw {
+    /// [`term::resizes`] as of this stream's snapshot.
+    resizes: u64,
+    /// The block's size as this stream last reported it.
+    block: Option<(u16, u16)>,
+    /// When to redraw: [`SETTLE`] after the latest change.
+    at: Option<Instant>,
+}
+
+impl Redraw {
+    /// For a stream opened when the pane had seen `resizes` resizes (read before the snapshot
+    /// reads the pane's size, so a resize between the two still counts).
+    fn new(resizes: u64) -> Redraw {
+        Redraw {
+            resizes,
+            block: None,
+            at: None,
+        }
+    }
+
+    /// The stream reports the block at `cols`×`rows`. Its first report is the size the stream
+    /// opened at; any change after it schedules a redraw.
+    fn block_resized(&mut self, cols: u16, rows: u16, now: Instant) {
+        let was = self.block.replace((cols, rows));
+        if was.is_some_and(|w| w != (cols, rows)) {
+            self.at = Some(now + SETTLE);
+        }
+    }
+
+    /// Whether to redraw now, given the pane's resize count; a new resize schedules one.
+    fn due(&mut self, resizes: u64, now: Instant) -> bool {
+        if resizes != self.resizes {
+            self.resizes = resizes;
+            self.at = Some(now + SETTLE);
+        }
+        self.at.is_some_and(|at| now >= at)
     }
 }
 
@@ -297,14 +366,16 @@ struct Feed {
     demux: StreamDemux,
     /// This stream replaces an earlier one in the same pane, so its redraw resets the pane first.
     restart: bool,
+    redraw: Redraw,
 }
 
 impl Feed {
-    fn new(nonce: u64, restart: bool) -> Feed {
+    fn new(nonce: u64, restart: bool, resizes: u64) -> Feed {
         Feed {
             snapshot: Some(Vec::new()),
             demux: StreamDemux::new(nonce),
             restart,
+            redraw: Redraw::new(resizes),
         }
     }
 
@@ -343,6 +414,12 @@ impl Feed {
         out.flush()?;
         for WardenMessage::Resume(command) in reports {
             reporter.resume(&command);
+        }
+        let now = Instant::now();
+        for m in &msgs {
+            if let RexMessage::Resize { cols, rows, .. } = m {
+                self.redraw.block_resized(*cols, *rows, now);
+            }
         }
         Ok(msgs
             .iter()
@@ -437,6 +514,45 @@ mod tests {
         assert_eq!(complete_utf8_len(&[0xFF]), 1);
         assert_eq!(complete_utf8_len(&[0x80, 0x80]), 2);
         assert_eq!(complete_utf8_len(b""), 0);
+    }
+
+    #[test]
+    fn a_pane_resize_redraws_once_it_settles() {
+        let t0 = Instant::now();
+        let mut r = Redraw::new(3);
+        assert!(!r.due(3, t0), "no change, no redraw");
+        assert!(!r.due(4, t0));
+        // A drag: each resize pushes the redraw out.
+        assert!(!r.due(5, t0 + SETTLE / 2));
+        assert!(!r.due(5, t0 + SETTLE));
+        assert!(r.due(5, t0 + SETTLE / 2 + SETTLE));
+    }
+
+    #[test]
+    fn a_resize_before_the_stream_opened_still_redraws() {
+        // The pane was resized after the count was read for this stream: the snapshot may have
+        // been fitted to the old size.
+        let t0 = Instant::now();
+        let mut r = Redraw::new(0);
+        assert!(!r.due(1, t0));
+        assert!(r.due(1, t0 + SETTLE));
+    }
+
+    #[test]
+    fn a_block_resize_redraws_but_its_first_report_does_not() {
+        let t0 = Instant::now();
+        let mut r = Redraw::new(0);
+        r.block_resized(123, 75, t0);
+        assert!(!r.due(0, t0 + SETTLE * 4), "the opening size is no change");
+        r.block_resized(123, 75, t0 + SETTLE * 4);
+        assert!(
+            !r.due(0, t0 + SETTLE * 8),
+            "the same size again is no change"
+        );
+        let t1 = t0 + SETTLE * 8;
+        r.block_resized(85, 34, t1);
+        assert!(!r.due(0, t1));
+        assert!(r.due(0, t1 + SETTLE));
     }
 
     #[test]

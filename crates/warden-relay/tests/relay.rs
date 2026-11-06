@@ -258,6 +258,71 @@ fn relay_restarts_stream_after_refused_resume() {
     assert!(find(&out[..first], b"\x1bc").is_none(), "{out:?}");
 }
 
+/// Waits until the relay has opened `n` streams, and returns its output by then.
+fn wait_streams(fake: &FakeServer, relay: &Relay, n: usize, needle: &[u8]) -> Vec<u8> {
+    let deadline = Instant::now() + WAIT;
+    while fake.requests_for("data.connect").len() < n {
+        assert!(Instant::now() < deadline, "never opened stream {n}");
+        thread::sleep(Duration::from_millis(10));
+    }
+    relay.wait_output(needle)
+}
+
+/// The pane redraws by resetting it (RIS) and replaying a fresh snapshot after `after`.
+fn assert_redrawn(out: &[u8], after: &[u8], snapshot: &[u8]) {
+    let from = find(out, after).expect("before") + after.len();
+    let reset = find(&out[from..], &[b"\x1bc".as_slice(), CLEAR].concat());
+    let fresh = find(&out[from..], snapshot);
+    assert!(
+        reset.zip(fresh).is_some_and(|(r, f)| r < f),
+        "no reset then {:?} after {:?} in {:?}",
+        String::from_utf8_lossy(snapshot),
+        String::from_utf8_lossy(after),
+        String::from_utf8_lossy(out)
+    );
+}
+
+#[test]
+fn relay_redraws_from_a_fresh_snapshot_when_the_pane_resizes() {
+    let fake = fake_with(|i| if i == 0 { "first" } else { "fresh" });
+    let relay = Relay::start(&fake.endpoint().to_string());
+    relay.wait_output(b"first");
+    // A window drag: several resizes, one redraw once they settle.
+    for _ in 0..3 {
+        // SAFETY: signalling our own child.
+        unsafe { libc::kill(relay.child.id() as libc::pid_t, libc::SIGWINCH) };
+        thread::sleep(Duration::from_millis(40));
+    }
+    let out = wait_streams(&fake, &relay, 2, b"fresh");
+    assert_redrawn(&out, b"first", b"fresh");
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(fake.requests_for("data.connect").len(), 2, "one redraw");
+    // Two opens and no resume: the replaced stream was let go; the new one carries live output.
+    assert_eq!(fake.data_handshakes().len(), 2);
+    fake.push_data(b"live");
+    relay.wait_output(b"live");
+}
+
+#[test]
+fn relay_redraws_when_the_block_resizes() {
+    let fake = fake_with(|i| if i == 0 { "first" } else { "fresh" });
+    let relay = Relay::start(&fake.endpoint().to_string());
+    relay.wait_output(b"first");
+    // The stream's own opening resize (80×24) is no change; another size is.
+    fake.push_data(&apc(
+        fake.nonce(),
+        r#"{"type":"resize","cols":80,"rows":24,"owner":"c"}"#,
+    ));
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(fake.requests_for("data.connect").len(), 1);
+    fake.push_data(&apc(
+        fake.nonce(),
+        r#"{"type":"resize","cols":123,"rows":75,"owner":"c"}"#,
+    ));
+    let out = wait_streams(&fake, &relay, 2, b"fresh");
+    assert_redrawn(&out, b"first", b"fresh");
+}
+
 #[test]
 fn relay_resumes_a_dropped_stream() {
     let fake = fake_with(|_| "screen");

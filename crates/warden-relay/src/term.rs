@@ -1,6 +1,8 @@
-//! Raw mode on stdin, so keys reach the block untranslated, restored however the relay ends.
+//! Raw mode on stdin, so keys reach the block untranslated, restored however the relay ends; the
+//! pane's size, and a count of its changes.
 
 use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 /// The terminal settings to restore; set once, before any handler that reads it is installed.
@@ -77,6 +79,31 @@ fn restore() {
         // SAFETY: tcsetattr is async-signal-safe; `saved` came from tcgetattr.
         unsafe { libc::tcsetattr(0, libc::TCSANOW, saved) };
     }
+}
+
+/// SIGWINCHes received: the pane's size changed once per step.
+static RESIZES: AtomicU64 = AtomicU64::new(0);
+
+/// Count every SIGWINCH from now on ([`resizes`]). `SA_RESTART`, so the signal never interrupts
+/// the stdin thread's read or a write to the pane.
+pub fn watch_resizes() {
+    // SAFETY: sigaction with a zeroed, filled-in struct; the handler only touches an atomic.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_winch as *const () as libc::sighandler_t;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+    }
+}
+
+/// How many times the pane has been resized since [`watch_resizes`].
+pub fn resizes() -> u64 {
+    RESIZES.load(Ordering::Relaxed)
+}
+
+extern "C" fn on_winch(_: libc::c_int) {
+    RESIZES.fetch_add(1, Ordering::Relaxed);
 }
 
 extern "C" fn on_fatal_signal(sig: libc::c_int) {

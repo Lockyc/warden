@@ -124,6 +124,7 @@ site omits it.
 | The server restarts, crashes, or the Mac reboots | Rex restores every session with the same ids, each terminal a bare shell. A record from an earlier server instance reads as gone (hollow, or the ghost with agents to wake) until an open adopts its session: the open types `cmd` into the restored shell; a main pane's resumable agents sleep and their windows close (the session too, if nothing else was in it), the rest drop, and a user open wakes the last-selected one. A tab open when Rex restarts goes cold, and the one on screen reopens. | `State::restored`, `RexHub::ensure_session`, `retire_restored`, `spawn::reopen_restarted` |
 | Opening an unclaimed row | A temporary tab: adopted in memory, never persisted, never creates a session, can't split. ☠ ends the session. | `RexHub::adopt`, `Registry::split` |
 | The relay's stream drops | Resumed at its exact byte count; if refused, a new ticket and a full reset + redraw from a fresh snapshot. | `warden-relay` `RESET` |
+| The pane or its block changes size | Once the size settles, the relay ends its stream and redraws from a fresh snapshot fitted to the pane — output laid out for one size garbles a pane of another. | `warden-relay` `Redraw` |
 | The hub's control connection drops | Reconnected with the reconnect token; the session list is reread and claimed sessions reattached. | the hub's watcher |
 
 **Presence.** A Rex tab's dot is whether its session is in its server's session list — the

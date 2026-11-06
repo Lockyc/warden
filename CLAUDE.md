@@ -75,7 +75,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 
 `crates/warden-app` — `plan.rs` (config → `WindowDecl`/`WindowSpec`/`TabPlan`, reconcile → `TabOp`; `derive_tree_meta`), `manager.rs` (`WindowManager`: each window's terminals, held configs, pop-outs; `effective_config` expanding roots), `windows.rs` (`WardenHost`), `scanner.rs`, `registry.rs` (per-window tab registry over surfaces), `surface/` + `ffi/` (the libghostty embed), `geometry.rs` (web-rect ↔ NSView-rect), `probe.rs`, `notify.rs`, `session.rs`, `rex/` (Rex tabs). `ui/index.html` is the page shell + controller; the home surface is shell-core's `home.html`.
 
-`crates/rex-client` — `control.rs` (`ControlClient`), `data.rs` (`DataStream`), `wire.rs` (codecs, `StreamDemux`, `strip_terminal_replies`), `endpoint.rs`, `fake.rs`. `crates/warden-relay` — `main.rs` (stream + stdin loops, resume/restart), `vt.rs` (libghostty-vt FFI: snapshot → VT), `term.rs` (raw mode); vendored libghostty-vt in its `vendor/`.
+`crates/rex-client` — `control.rs` (`ControlClient`), `data.rs` (`DataStream`), `wire.rs` (codecs, `StreamDemux`, `strip_terminal_replies`), `endpoint.rs`, `fake.rs`. `crates/warden-relay` — `main.rs` (stream + stdin loops, resume/restart, redraw on a size change), `vt.rs` (libghostty-vt FFI: snapshot → VT), `term.rs` (raw mode, SIGWINCH count); vendored libghostty-vt in its `vendor/`.
 
 ## Config schema (`~/.config/warden/config.toml`; override with `WARDEN_CONFIG`)
 
