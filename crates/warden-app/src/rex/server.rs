@@ -72,8 +72,9 @@ fn host_endpoint(s: &str) -> Option<Endpoint> {
     }
 }
 
-/// Start this Mac's Rex server by running `rex server status` from Rex.app's bundle: the CLI
-/// starts a missing local server by default. Bounded by [`AUTOSTART_DEADLINE`].
+/// Start this Mac's Rex server by running `rex server start` from Rex.app's bundle — idempotent,
+/// and it returns once the server accepts connections. `rex server status` only reports a
+/// stopped server. Bounded by [`AUTOSTART_DEADLINE`].
 #[cfg(test)]
 pub fn autostart_local() -> Result<(), RexError> {
     autostart_local_within(AUTOSTART_DEADLINE)
@@ -87,7 +88,7 @@ pub fn autostart_local_within(limit: Duration) -> Result<(), RexError> {
         return Err(not_installed());
     }
     let child = Command::new(&cli)
-        .args(["server", "status"])
+        .args(["server", "start"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -167,12 +168,18 @@ mod tests {
         assert_eq!(host_endpoint("ssh://remote-host"), None);
     }
 
-    /// Manual: finds Rex.app through Launch Services and runs its CLI (`cargo test -p warden-app
-    /// autostart -- --ignored`). Against a running server this only reports its status.
+    /// Manual: finds Rex.app through Launch Services, starts its server, and connects to it
+    /// (`cargo test -p warden-app autostart -- --ignored`). Leaves the server running.
     #[test]
     #[ignore = "needs Rex installed"]
     fn autostart_finds_rex() {
         assert!(rex_app().is_ok());
         assert_eq!(autostart_local(), Ok(()));
+        let client = rex_client::ClientInfo {
+            kind: "other",
+            name: "warden-test".into(),
+            version: "0".into(),
+        };
+        assert!(ControlClient::connect(&Endpoint::local(), &client).is_ok());
     }
 }
