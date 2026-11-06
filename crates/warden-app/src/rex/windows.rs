@@ -12,6 +12,11 @@
 //! view. Events and pulls are facts tagged with their connection's seq, so an older one never
 //! overwrites a newer. Every block of a watched session is tracked, shown on screen or not.
 //!
+//! A window still on Rex's own label takes its block's title as its label once that block's
+//! program reports a status and a title that isn't just the program's name
+//! ([`Inner::name_windows`]) — so an agent tab is named for its conversation, and a name it was
+//! given, by warden or the user, is never replaced.
+//!
 //! Views and pulls are read on their own worker threads, never under the state lock.
 
 use std::collections::HashMap;
@@ -105,20 +110,37 @@ impl<T> Fact<T> {
     }
 }
 
-/// A block's root status record (`state`, `msg`) and its title.
+/// A block's root OSC 7501 record: its `state`, `msg`, and the `app` and process (`pid`) that
+/// reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Record {
+    state: AgentState,
+    msg: Option<String>,
+    app: Option<String>,
+    pid: Option<u64>,
+}
+
+/// A block's title and the process (`pid`) that set it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Title {
+    text: String,
+    pid: Option<u64>,
+}
+
+/// A block's root status record and its title.
 #[derive(Debug, Default)]
 pub(super) struct Tracked {
-    record: Fact<Option<(AgentState, Option<String>)>>,
-    title: Fact<Option<String>>,
+    record: Fact<Option<Record>>,
+    title: Fact<Option<Title>>,
 }
 
 impl Tracked {
     fn status(&self) -> Option<BlockStatus> {
-        let title = self.title.value.clone();
+        let title = self.title.value.as_ref().map(|t| t.text.clone());
         match &self.record.value {
-            Some((state, msg)) => Some(BlockStatus {
-                state: *state,
-                msg: msg.clone(),
+            Some(r) => Some(BlockStatus {
+                state: r.state,
+                msg: r.msg.clone(),
                 title,
             }),
             None => title.map(|t| BlockStatus {
@@ -128,6 +150,29 @@ impl Tracked {
             }),
         }
     }
+
+    /// The title a window still on Rex's label should take: one set by the process that reported
+    /// the status record — not the shell that ran it — other than the program's own name
+    /// ("Claude Code" from `claude-code`).
+    fn name(&self) -> Option<&str> {
+        let record = self.record.value.as_ref()?;
+        let title = self.title.value.as_ref()?;
+        if record.pid.is_none() || title.pid != record.pid {
+            return None;
+        }
+        let text = title.text.trim();
+        let own = record
+            .app
+            .as_deref()
+            .is_some_and(|app| text.to_lowercase().replace(' ', "-") == app.to_lowercase());
+        (!text.is_empty() && !own).then_some(text)
+    }
+}
+
+/// Rex's own label for a window it named: `Window` and the last 8 digits of its id.
+fn rex_label(window_id: &str) -> Option<String> {
+    let tail = window_id.get(window_id.len().checked_sub(8)?..)?;
+    Some(format!("Window {tail}"))
 }
 
 impl RexHub {
@@ -192,9 +237,36 @@ impl RexHub {
         session_id: &str,
         window_id: &str,
     ) -> Result<(), RexError> {
+        self.close_window_by(server, session_id, window_id, None)
+    }
+
+    /// [`RexHub::close_window`] waiting only until `deadline`, for a caller with a budget.
+    pub(super) fn close_window_until(
+        &self,
+        server: &str,
+        session_id: &str,
+        window_id: &str,
+        deadline: Instant,
+    ) -> Result<(), RexError> {
+        self.close_window_by(server, session_id, window_id, Some(deadline))
+    }
+
+    fn close_window_by(
+        &self,
+        server: &str,
+        session_id: &str,
+        window_id: &str,
+        deadline: Option<Instant>,
+    ) -> Result<(), RexError> {
         let (client, _) = self.inner.conn(server)?;
         let args = json!({ "session_id": session_id, "window_id": window_id });
-        match client.call("session.close_window", args) {
+        let closed = match deadline {
+            Some(d) => client
+                .call_seq_until("session.close_window", args, d)
+                .map(|_| ()),
+            None => client.call("session.close_window", args).map(|_| ()),
+        };
+        match closed {
             Ok(_) => {}
             Err(e) if matches!(api_code(&e), Some("not_found" | "session_not_found")) => {}
             Err(e) => return Err(e),
@@ -216,21 +288,77 @@ impl RexHub {
         window_id: &str,
         label: &str,
     ) -> Result<(), RexError> {
-        let (client, _) = self.inner.conn(server)?;
+        self.inner
+            .set_window_label(server, session_id, window_id, label)
+    }
+}
+
+impl Inner {
+    /// [`RexHub::set_window_label`]'s work.
+    fn set_window_label(
+        self: &Arc<Self>,
+        server: &str,
+        session_id: &str,
+        window_id: &str,
+        label: &str,
+    ) -> Result<(), RexError> {
+        let (client, _) = self.conn(server)?;
         client.call(
             "session.set_window_label",
             json!({ "session_id": session_id, "window_id": window_id, "label": label }),
         )?;
         let label = label.trim();
         if !label.is_empty() {
-            self.inner
-                .edit_windows(server, session_id, |list| relabel(list, window_id, label));
+            self.edit_windows(server, session_id, |list| relabel(list, window_id, label));
         }
         Ok(())
     }
-}
 
-impl Inner {
+    /// Relabel each of `server`'s windows still on Rex's own label whose block has a name to
+    /// give it ([`Tracked::name`]), each on its own worker. A failed relabel is tried again at
+    /// the block's next status change.
+    pub(super) fn name_windows(self: &Arc<Self>, server: &str) {
+        let due: Vec<(String, String, String)> = {
+            let mut guard = self.lock();
+            let st = &mut *guard;
+            let mut due = Vec::new();
+            for ((s, session), w) in &st.windows {
+                if s != server {
+                    continue;
+                }
+                for win in &w.list {
+                    if rex_label(&win.window_id).as_deref() != Some(win.label.as_str())
+                        || st.naming.contains(&win.window_id)
+                    {
+                        continue;
+                    }
+                    let name = win
+                        .block_id
+                        .as_ref()
+                        .and_then(|b| st.statuses.get(b)?.name());
+                    if let Some(name) = name {
+                        due.push((session.clone(), win.window_id.clone(), name.to_owned()));
+                    }
+                }
+            }
+            st.naming.extend(due.iter().map(|(_, w, _)| w.clone()));
+            due
+        };
+        for (session, window, name) in due {
+            let weak = Arc::downgrade(self);
+            let server = server.to_owned();
+            thread::spawn(move || {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                if let Err(e) = inner.set_window_label(&server, &session, &window, &name) {
+                    log::warn!("Rex {server}: couldn't name {window} {name:?}: {e}");
+                }
+                inner.lock().naming.remove(&window);
+            });
+        }
+    }
+
     /// [`RexHub::new_window`]'s work, every call waiting until `deadline`. Without a `label` Rex
     /// names the window, and the list shows that name once Rex reports it.
     pub(super) fn new_window_until(
@@ -367,6 +495,7 @@ impl Inner {
         };
         if changed {
             self.emit([windows_changed(server, session_id)]);
+            self.name_windows(server);
         }
         if refresh {
             self.spawn_refresh(server, client, session_id);
@@ -409,7 +538,7 @@ impl Inner {
 
     /// Record a pulled fact for `block`, if `client` is still `server`'s connection.
     fn record_pulled(
-        &self,
+        self: &Arc<Self>,
         server: &str,
         client: &Arc<ControlClient>,
         block: &str,
@@ -427,12 +556,20 @@ impl Inner {
             };
             let tracked = st.statuses.entry(block.to_owned()).or_default();
             let before = tracked.status();
-            set(tracked, gen) && tracked.status() != before
+            let named = tracked.name().map(str::to_owned);
+            let taken = set(tracked, gen);
+            (
+                taken && tracked.status() != before,
+                taken && tracked.name() != named.as_deref(),
+            )
         };
-        if changed {
+        if changed.0 {
             self.emit([HubEvent::StatusChanged {
                 block_id: block.to_owned(),
             }]);
+        }
+        if changed.0 || changed.1 {
+            self.name_windows(server);
         }
     }
 }
@@ -460,7 +597,7 @@ fn pull_status(
             });
         }
         if let Ok((seq, r)) = call_seq(&client, TITLE, args, None) {
-            let title = non_empty(&r["title"]);
+            let title = parse_title(&r);
             let Some(inner) = hub.upgrade() else {
                 return;
             };
@@ -553,7 +690,7 @@ pub(super) fn apply_event(
                     tracked.record.set(gen, ev.seq, None);
                 }
                 "title_changed" => {
-                    tracked.title.set(gen, ev.seq, non_empty(&own["title"]));
+                    tracked.title.set(gen, ev.seq, parse_title(own));
                 }
                 _ => {}
             }
@@ -625,9 +762,21 @@ fn is_root(id: &Value) -> bool {
     id.as_str().is_none_or(str::is_empty)
 }
 
-fn parse_record(record: &Value) -> (AgentState, Option<String>) {
-    let state = AgentState::parse(record["state"].as_str().unwrap_or_default());
-    (state, non_empty(&record["msg"]))
+fn parse_record(record: &Value) -> Record {
+    Record {
+        state: AgentState::parse(record["state"].as_str().unwrap_or_default()),
+        msg: non_empty(&record["msg"]),
+        app: non_empty(&record["app"]),
+        pid: record["owner"]["pid"].as_u64(),
+    }
+}
+
+/// A `title_changed` payload's or a title pull's title, if it isn't empty.
+fn parse_title(v: &Value) -> Option<Title> {
+    Some(Title {
+        text: non_empty(&v["title"])?,
+        pid: v["owner"]["pid"].as_u64(),
+    })
 }
 
 fn api_code(e: &RexError) -> Option<&str> {

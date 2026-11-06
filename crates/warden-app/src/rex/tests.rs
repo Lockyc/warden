@@ -1583,6 +1583,67 @@ fn close_window_removes_it() {
     assert_eq!(hub.windows("local", "session:new")[0].label, "renamed");
 }
 
+#[test]
+fn a_window_on_rex_label_takes_its_programs_title_once() {
+    const W: &str = "window:01a1b04c-d382-7f26-a1fa-2118273b5815";
+    let (fake, _) = windowed(&[
+        (W, "Window 273b5815", "block:new"),
+        ("window:2", "main", "block:2"),
+    ]);
+    fake.reply("session.set_window_label", json!({"revision": 4}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    // The agent is pid 1; its shell, pid 7.
+    let titled = |block: &str, title: &str, pid: u64| {
+        fake.push_block_event(
+            "session:new",
+            block,
+            "title_changed",
+            json!({"title": title, "owner": {"pid": pid, "name": "x"}}),
+        );
+    };
+    let title = |block: &str, title: &str| titled(block, title, 1);
+    let status = |block: &str| {
+        fake.push_block_event(
+            "session:new",
+            block,
+            "program_status_changed",
+            json!({"id": "", "record": {"state": "working", "app": "claude-code",
+                   "updated_at": "2026-11-06T00:00:00Z", "owner": {"pid": 1, "name": "x"}},
+                   "reason": "report"}),
+        );
+    };
+
+    // The shell's title names nothing, even once the agent reports; nor does the agent's own
+    // name.
+    titled("block:new", "~/w", 7);
+    status("block:new");
+    title("block:new", "Claude Code");
+    eventually("the program's name as title", || {
+        hub.block_status("block:new").and_then(|s| s.title) == Some("Claude Code".into())
+    });
+    // A window someone named keeps its name.
+    title("block:2", "fix the parser");
+    status("block:2");
+    title("block:new", "refactor auth");
+    eventually("the window named for its conversation", || {
+        hub.windows("local", "session:new")[0].label == "refactor auth"
+    });
+    let set = fake.requests_for("session.set_window_label");
+    assert_eq!(set.len(), 1, "only the Rex-labelled window, once");
+    assert_eq!(set[0].payload["window_id"], W);
+    assert_eq!(set[0].payload["label"], "refactor auth");
+
+    // A later title leaves the name it was given.
+    title("block:new", "something else");
+    eventually("the later title", || {
+        hub.block_status("block:new").and_then(|s| s.title) == Some("something else".into())
+    });
+    assert_eq!(fake.requests_for("session.set_window_label").len(), 1);
+}
+
 /// The server instance a restartable fake reports from `server.status`: change it, then drop the
 /// control connection, to stand in for Rex restarting with its sessions restored.
 type Instance = std::sync::Arc<std::sync::Mutex<String>>;

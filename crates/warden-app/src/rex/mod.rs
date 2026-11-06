@@ -177,6 +177,8 @@ struct State {
     windows: HashMap<(String, String), windows::SessionWindows>,
     /// Block → what its program last reported ([`windows`]).
     statuses: HashMap<String, windows::Tracked>,
+    /// Windows being relabelled from their program's title ([`Inner::name_windows`]).
+    naming: HashSet<String>,
     /// Agent key → the main pane whose session holds that agent's window, bound by
     /// [`RexHub::open_agents`]; the agent's block is in `blocks` under the agent key.
     agents: HashMap<String, String>,
@@ -1205,7 +1207,15 @@ impl Inner {
             }
             refresh
         };
+        // A title's owner can change with its text unchanged, which no event reports.
+        let name = matches!(
+            ev.kind.as_str(),
+            "title_changed" | "program_status_changed" | "window_created" | "window_label_changed"
+        );
         self.emit(out);
+        if name {
+            self.name_windows(server);
+        }
         if let Some((client, session)) = refresh {
             self.spawn_refresh(server, &client, &session);
         }
