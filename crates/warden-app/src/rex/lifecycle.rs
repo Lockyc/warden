@@ -688,6 +688,51 @@ pub struct ClosedAgentDto {
     pub closed_at: u64,
 }
 
+/// A step through an agent tab list, as the menu's Previous / Next and Move Up / Down take it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Prev,
+    Next,
+}
+
+/// The rows `list` shows: every row but those inside a folded group.
+fn visible_rows(list: &AgentListDto) -> Vec<&AgentRowDto> {
+    let folded = |g: &Option<String>| {
+        g.as_ref()
+            .is_some_and(|g| list.groups.iter().any(|x| x.name == *g && x.folded))
+    };
+    list.rows.iter().filter(|r| !folded(&r.group)).collect()
+}
+
+/// The record id of the shown row before or after the selected one, wrapping at the ends, as
+/// Next / Previous Tab do; `None` with fewer than two shown rows or none of them selected.
+pub fn agent_step(list: &AgentListDto, step: Step) -> Option<String> {
+    let rows = visible_rows(list);
+    if rows.len() < 2 {
+        return None;
+    }
+    let at = rows.iter().position(|r| r.selected)?;
+    let to = match step {
+        Step::Next => (at + 1) % rows.len(),
+        Step::Prev => (at + rows.len() - 1) % rows.len(),
+    };
+    Some(rows[to].id.clone())
+}
+
+/// The selected row moved one place within its group, as `AgentStore::set_group` takes it:
+/// `(record id, its group, index among the group's other rows)`. `None` at the group's edge
+/// (crossing groups is a drag onto one), or with nothing selected.
+pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, Option<String>, usize)> {
+    let sel = list.rows.iter().find(|r| r.selected)?;
+    let members: Vec<&AgentRowDto> = list.rows.iter().filter(|r| r.group == sel.group).collect();
+    let at = members.iter().position(|r| r.id == sel.id)?;
+    let to = match step {
+        Step::Prev => at.checked_sub(1)?,
+        Step::Next => Some(at + 1).filter(|&i| i < members.len())?,
+    };
+    Some((sel.id.clone(), sel.group.clone(), to))
+}
+
 /// Project `tab_id`'s list from `store`, a live row's state and context from `status` (the hub's
 /// [`RexHub::block_status`]), and a group amber when a row in it needs you ([`Attention`]).
 pub fn agent_list(
@@ -2482,6 +2527,108 @@ mod tests {
             Ok(super::Slept::Done),
             "nothing listed, so nothing to reach the server for"
         );
+    }
+
+    /// A list of rows `(id, group)` in list order, `selected` selected, `folded` groups folded.
+    fn list(rows: &[(&str, Option<&str>)], selected: &str, folded: &[&str]) -> super::AgentListDto {
+        let mut groups: Vec<super::AgentGroupDto> = Vec::new();
+        for (_, g) in rows {
+            if let Some(g) = g {
+                if !groups.iter().any(|x| x.name == *g) {
+                    groups.push(super::AgentGroupDto {
+                        name: (*g).into(),
+                        folded: folded.contains(g),
+                        amber: false,
+                    });
+                }
+            }
+        }
+        super::AgentListDto {
+            tab_id: "t".into(),
+            rows: rows
+                .iter()
+                .map(|(id, g)| super::AgentRowDto {
+                    id: (*id).into(),
+                    name: (*id).into(),
+                    group: g.map(Into::into),
+                    state: "idle",
+                    context: None,
+                    selected: *id == selected,
+                    can_sleep: true,
+                    sleep_reason: None,
+                })
+                .collect(),
+            groups,
+            closed: vec![],
+        }
+    }
+
+    const ROWS: &[(&str, Option<&str>)] = &[
+        ("a", None),
+        ("b", None),
+        ("c", None),
+        ("d", Some("g")),
+        ("e", Some("g")),
+    ];
+
+    #[test]
+    fn step_wraps_through_visible_rows() {
+        use super::{agent_step, Step};
+        assert_eq!(
+            agent_step(&list(ROWS, "c", &[]), Step::Next).as_deref(),
+            Some("d")
+        );
+        assert_eq!(
+            agent_step(&list(ROWS, "e", &[]), Step::Next).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            agent_step(&list(ROWS, "a", &[]), Step::Prev).as_deref(),
+            Some("e")
+        );
+        assert_eq!(
+            agent_step(&list(ROWS, "b", &[]), Step::Prev).as_deref(),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn step_skips_folded_groups() {
+        use super::{agent_step, Step};
+        assert_eq!(
+            agent_step(&list(ROWS, "c", &["g"]), Step::Next).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            agent_step(&list(ROWS, "a", &["g"]), Step::Prev).as_deref(),
+            Some("c")
+        );
+    }
+
+    #[test]
+    fn step_needs_two_visible_rows() {
+        use super::{agent_step, Step};
+        let rows = &[("a", None), ("d", Some("g")), ("e", Some("g"))];
+        assert_eq!(agent_step(&list(rows, "a", &["g"]), Step::Next), None);
+        assert_eq!(agent_step(&list(rows, "a", &["g"]), Step::Prev), None);
+        assert_eq!(
+            agent_step(&list(ROWS, "nobody", &[]), Step::Next),
+            None,
+            "no selection"
+        );
+    }
+
+    #[test]
+    fn move_stays_in_group() {
+        use super::{agent_move, Step};
+        let at = |sel, step| agent_move(&list(ROWS, sel, &[]), step);
+        assert_eq!(at("b", Step::Prev), Some(("b".into(), None, 0)));
+        assert_eq!(at("b", Step::Next), Some(("b".into(), None, 2)));
+        assert_eq!(at("a", Step::Prev), None, "top of its group");
+        assert_eq!(at("c", Step::Next), None, "bottom of its group");
+        assert_eq!(at("d", Step::Prev), None);
+        assert_eq!(at("d", Step::Next), Some(("d".into(), Some("g".into()), 1)));
+        assert_eq!(at("e", Step::Next), None);
     }
 
     #[test]
