@@ -93,7 +93,8 @@ site omits it.
   (`initial_input`); a woken agent's window types its resume command instead. Reattaching types
   nothing (`spawn::effective_spec` clears `startup`).
 - **Only a user open wakes an agent** (`RexOpen.auto`): one warden makes itself (launch,
-  `load_on_open`, `remember_tabs`, hot reload) attaches what is live and creates nothing.
+  `load_on_open`, `remember_tabs`, hot reload) attaches what is live, and leaves a pane holding a
+  wakeable agent for the user's click; a pane with nothing live and nothing to wake it loads.
 - **Size has one writer: warden-app.** A block's size is its owner's. warden-app claims
   (`own_block take`, then `resize`) when the user turns to a pane — focus gained in the key window,
   the window becoming key, a key or mouse press — taken from AppKit (`SurfaceSignal::UserInput`,

@@ -4,9 +4,10 @@
 //! An open reconciles the pane's records (`agents::reconcile`) with its session's windows, or with
 //! a lost session, which puts every resumable agent to sleep. A session Rex restored after a
 //! restart, crash or reboot holds only bare shells, so it counts as lost: its agents' windows
-//! close first (`retire_restored`). An automatic open stops there: it creates no session and no window and types nothing. A
-//! user open shows the last-selected agent, waking it first when it is asleep, and a pane with
-//! nothing live and nothing to wake gets a session typing `cmd`, as a plain Rex pane does. Each
+//! close first (`retire_restored`). An automatic open never wakes: a pane holding a wakeable
+//! agent stops there. A user open shows the last-selected agent, waking it first when it is
+//! asleep, and a pane with nothing live and nothing to wake — on either open — gets a session
+//! typing `cmd`, as a plain Rex pane does. Each
 //! live agent's key (`registry::agent_key`) is bound to its block, so size claims and exit checks
 //! resolve per agent; the main pane's own key shows no block.
 
@@ -99,9 +100,15 @@ impl RexHub {
         };
         let choice = last_selected(&records);
         let mut woken = None;
-        if !req.auto && !choice.is_some_and(|i| records[i].state == RecordState::Live) {
-            let asleep = choice.filter(|&i| records[i].state == RecordState::Asleep);
-            match asleep.filter(|&i| records[i].resume.is_some()) {
+        let wakeable = |r: &AgentRecord| r.state == RecordState::Asleep && r.resume.is_some();
+        let nothing_live = !records.iter().any(|r| r.state == RecordState::Live);
+        let to_wake = choice.filter(|&i| wakeable(&records[i]));
+        // An automatic open never wakes, so it leaves a pane holding a wakeable agent to the
+        // user's click; any other pane with nothing live it loads, as a user open would.
+        let creates = nothing_live && !records.iter().any(wakeable);
+        if (!req.auto || creates) && !choice.is_some_and(|i| records[i].state == RecordState::Live)
+        {
+            match to_wake.filter(|_| !req.auto) {
                 Some(i) => {
                     self.wake_until(req, &mut session, &mut records[i], deadline)?;
                     woken = Some(i);
@@ -712,15 +719,20 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_auto_open_never_creates_a_session_for_a_new_tab() {
+    fn an_auto_open_with_nothing_to_wake_creates_the_session() {
         let f = fake(None, vec![]);
         let dir = tempfile::tempdir().unwrap();
         let (hub, _) = hub(f.endpoint(), &dir);
-        let got = hub
-            .open_agents(&store(vec![]), &open(true, None), 7)
-            .expect("open");
-        assert!(got.agents.is_empty());
-        assert!(f.requests_for("session.create").is_empty());
+        let s = store(vec![record("gone", RecordState::Closed, None, None)]);
+        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
+        let creates = f.requests_for("session.create");
+        assert_eq!(creates.len(), 1, "the pane loads with its window");
+        assert_eq!(
+            creates[0].payload["initial_windows"][0]["layout"]["block"]["options"]["initial_input"],
+            "agent\n"
+        );
+        assert_eq!(got.agents.len(), 1);
+        assert!(got.selected.is_some());
     }
 
     #[test]

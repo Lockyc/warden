@@ -611,9 +611,10 @@ struct ActivateResult {
 /// spawn leaves the tab cold **but still selected**, and the chrome cannot see that from the
 /// `warden:error` banner alone — so if this returned nothing, the chrome would keep the placeholder
 /// hidden (it keys on "a tab is selected") and the uncovered hole would leak the wallpaper: exactly
-/// the leak the placeholder exists to stop. Report liveness so the chrome paints it. A Rex tab
-/// still opening its session is cold too: `live` is false until the `warden:refresh` its landing
-/// sends (`rex::spawn`).
+/// the leak the placeholder exists to stop. Report liveness so the chrome paints it: a surface
+/// standing (`Registry::is_spawned`), so a Rex tab still opening its session, or one an automatic
+/// open left with nothing to show, is cold until the `warden:refresh` its landing sends
+/// (`rex::spawn`).
 ///
 /// `user` is false when the chrome selected the tab on warden's behalf (window init, the
 /// component's fallback after a snapshot): an agent pane then opens as warden's own and wakes
@@ -632,7 +633,7 @@ fn activate_tab(
     // decide whether to arm a session-start await below. `split`/`focused` are this tab's OWN
     // layout, read under the SAME lock so they can't race a concurrent split/close. Both read
     // under the one lock.
-    let (spawned_fresh, has_probe, err, connecting, split, focused) = {
+    let (spawned_fresh, has_probe, err, live, split, focused) = {
         let mut m = state.lock();
         let out = match m.windows.get_mut(window.label()) {
             Some(ws) => {
@@ -646,7 +647,7 @@ fn activate_tab(
                     Ok(fresh) => (fresh, None),
                     Err(e) => (false, Some(e)),
                 };
-                let connecting = ws.registry.is_connecting(&id);
+                let live = err.is_none() && ws.registry.is_spawned(&id);
                 let split = ws.registry.is_split(&id);
                 // Trivially always the primary when unsplit — no need to ask `focused_pane` at all.
                 let focused = if split {
@@ -656,7 +657,7 @@ fn activate_tab(
                 } else {
                     0
                 };
-                (fresh, has_probe, err, connecting, split, focused)
+                (fresh, has_probe, err, live, split, focused)
             }
             None => (false, false, None, false, false, 0),
         };
@@ -666,7 +667,6 @@ fn activate_tab(
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
     // empty-state placeholder over the uncovered hole) instead of panicking. The chrome is
     // listening now, so push the reason to the banner.
-    let live = err.is_none() && !connecting;
     if let Some(e) = err {
         log::error!("surface spawn failed for tab {id:?}: {e}");
         // A per-tab spawn error belongs to THIS window only. `emit` broadcasts to every
