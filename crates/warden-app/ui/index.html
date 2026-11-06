@@ -1207,7 +1207,7 @@
         if (ctx) text.append(agentEl("span", "a-ctx", ctx));
         row.append(text);
         const more = agentButton("⋯", () => toggleActions(r.id), "a-more");
-        more.title = "Sleep, close, rename, group";
+        more.title = "Sleep, fork, close, rename, group";
         row.append(more);
         row.addEventListener("contextmenu", (e) => {
           e.preventDefault();
@@ -1227,8 +1227,8 @@
         renderAgents();
       }
 
-      // A row's actions, expanded in place under it. Sleep stays on screen when it can't run,
-      // disabled with the reason beneath; an asleep row offers Wake in its place.
+      // A row's actions, expanded in place under it. Sleep and Fork stay on screen when they can't
+      // run, disabled with the reason beneath; an asleep row offers Wake in Sleep's place.
       function agentActions(tab, dto, r) {
         const box = agentEl("div", "a-actions");
         box.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -1258,10 +1258,22 @@
           sleep.title = r.sleepReason || "Sleep (⌥⌘S)";
           btns.append(sleep);
         }
-        btns.append(agentButton("Close", () => agentClose(tab, r, false)), agentButton("Rename", () => startRename(r.id)));
+        const fork = agentButton("Fork", () => {
+          agentUi.open = null;
+          renderAgents();
+          agentCall("agent_fork", { tabId: tab, recordId: r.id });
+        });
+        fork.disabled = !r.canFork;
+        fork.title = r.forkReason || "Fork (⌥⌘T)";
+        btns.append(fork, agentButton("Close", () => agentClose(tab, r, false)), agentButton("Rename", () => startRename(r.id)));
         box.append(btns);
-        if (r.state !== "asleep" && !r.canSleep && r.sleepReason) {
-          box.append(agentEl("div", "a-reason", "Can't sleep: " + r.sleepReason));
+        const sleepWhy = r.state !== "asleep" && !r.canSleep ? r.sleepReason : null;
+        const forkWhy = r.canFork ? null : r.forkReason;
+        if (sleepWhy && sleepWhy === forkWhy) {
+          box.append(agentEl("div", "a-reason", "Can't sleep or fork: " + sleepWhy));
+        } else {
+          if (sleepWhy) box.append(agentEl("div", "a-reason", "Can't sleep: " + sleepWhy));
+          if (forkWhy) box.append(agentEl("div", "a-reason", "Can't fork: " + forkWhy));
         }
         const label = agentEl("label", null, "Group");
         const pick = agentEl("select");
