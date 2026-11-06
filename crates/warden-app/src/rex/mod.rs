@@ -413,6 +413,13 @@ impl RexHub {
         }
     }
 
+    /// Whether `pane_key`'s stored session is one its server restored after a restart
+    /// ([`State::restored`]).
+    pub(super) fn is_restored(&self, pane_key: &str) -> bool {
+        let st = self.inner.lock();
+        st.store.get(pane_key).is_some_and(|r| st.restored(r))
+    }
+
     /// End `pane_key`'s session and forget its mapping. The mapping goes even if the server
     /// can't be told, so the pane never reattaches a session it was asked to end; a session that
     /// survives that shows as unclaimed. An unmapped pane is a no-op.

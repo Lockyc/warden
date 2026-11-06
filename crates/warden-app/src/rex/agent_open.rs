@@ -2,8 +2,9 @@
 //! live, which one to show, and — only when the user opens the pane — waking it.
 //!
 //! An open reconciles the pane's records (`agents::reconcile`) with its session's windows, or with
-//! a lost session (Rex restarted, crashed, the Mac rebooted), which puts every resumable agent to
-//! sleep. An automatic open stops there: it creates no session and no window and types nothing. A
+//! a lost session, which puts every resumable agent to sleep. A session Rex restored after a
+//! restart, crash or reboot holds only bare shells, so it counts as lost: its agents' windows
+//! close first (`retire_restored`). An automatic open stops there: it creates no session and no window and types nothing. A
 //! user open shows the last-selected agent, waking it first when it is asleep, and a pane with
 //! nothing live and nothing to wake gets a session typing `cmd`, as a plain Rex pane does. Each
 //! live agent's key (`registry::agent_key`) is bound to its block, so size claims and exit checks
@@ -83,8 +84,13 @@ impl RexHub {
         deadline: Instant,
     ) -> Result<AgentsOpened, RexError> {
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
-        let held = lock(store).records(project);
         let mut session = self.find_session_until(project, server, deadline)?;
+        if let Some((_, sid)) = session.as_ref().filter(|_| self.is_restored(project)) {
+            if self.retire_restored(store, project, server, &sid.clone(), now)? {
+                session = None;
+            }
+        }
+        let held = lock(store).records(project);
         let mut records = match &session {
             Some((_, sid)) => {
                 agents::reconcile(project, &held, &self.windows(server, sid), true, now)
@@ -120,7 +126,41 @@ impl RexHub {
         let shown = settle(&mut records, woken, req.auto);
         let opened = self.bind_agents(project, session.as_ref(), &records, shown);
         lock(store).merge(&held, records);
+        if !req.auto {
+            self.inner.lock().stamp(project);
+        }
         Ok(opened)
+    }
+
+    /// `project`'s session `sid` was restored by a restarted server, every terminal a bare shell:
+    /// sleep its live records as a lost session would (stored before their windows close, so an
+    /// exit seen for one finds it asleep), then close the windows they were on. Ends the session
+    /// when nothing else was in it and returns true; a window no record knows keeps it.
+    fn retire_restored(
+        &self,
+        store: &Mutex<AgentStore>,
+        project: &str,
+        server: &str,
+        sid: &str,
+        now: u64,
+    ) -> Result<bool, RexError> {
+        let held = lock(store).records(project);
+        let ours: Vec<String> = held
+            .iter()
+            .filter(|r| r.state == RecordState::Live)
+            .filter_map(|r| r.window_id.clone())
+            .collect();
+        lock(store).merge(&held, agents::reconcile(project, &held, &[], false, now));
+        let windows = self.windows(server, sid);
+        log::info!("Rex {server}: restored session {sid}; its agents sleep ({project})");
+        for w in windows.iter().filter(|w| ours.contains(&w.window_id)) {
+            self.close_window(server, sid, &w.window_id)?;
+        }
+        if windows.iter().all(|w| ours.contains(&w.window_id)) {
+            self.inner.destroy(project)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Wake `record` (asleep or closed, with a resume command) in `req`'s pane: a window typing
@@ -766,5 +806,118 @@ pub(super) mod tests {
         assert!(hub.windows("local", "session:old").is_empty());
         assert_eq!(f.requests_for("session.destroy").len(), 1);
         assert!(!hub.session_alive("t"));
+    }
+
+    /// [`fake`] reporting server instance `"b"`, with `t` mapped to `session:old` as made under
+    /// `"a"`: Rex restarted and restored the session with `windows`, each a bare shell.
+    fn restored(
+        windows: Vec<(&'static str, &'static str, &'static str)>,
+    ) -> (FakeServer, RexHub, tempfile::TempDir) {
+        let f = fake(Some("session:old"), windows);
+        f.reply("server.status", json!({"instance_id": "b"}));
+        let dir = tempfile::tempdir().unwrap();
+        RexStore::load(dir.path().join("rex-sessions.json")).set(
+            "t",
+            Some(PaneRecord {
+                server: "local".into(),
+                session_id: "session:old".into(),
+                instance: Some("a".into()),
+            }),
+        );
+        let (hub, _) = hub(f.endpoint(), &dir);
+        (f, hub, dir)
+    }
+
+    fn closed_windows(f: &FakeServer) -> Vec<String> {
+        f.requests_for("session.close_window")
+            .iter()
+            .map(|r| {
+                r.payload["window_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    const RESTORED: [(&str, &str, &str); 3] = [
+        ("window:1", "block:1", "a"),
+        ("window:2", "block:2", "b"),
+        ("window:3", "block:3", "c"),
+    ];
+
+    #[test]
+    fn a_restored_project_sleeps_then_wakes_its_selected_agent() {
+        let (f, hub, _dir) = restored(RESTORED.to_vec());
+        let s = before_restart();
+        let got = hub.open_agents(&s, &open(false, None), 7).expect("open");
+        assert_eq!(closed_windows(&f), ["window:1", "window:2", "window:3"]);
+        let destroyed = f.requests_for("session.destroy");
+        assert_eq!(destroyed.len(), 1, "nothing but bare shells was left");
+        assert_eq!(destroyed[0].payload["session_id"], "session:old");
+        let creates = f.requests_for("session.create");
+        assert_eq!(creates.len(), 1);
+        assert_eq!(
+            creates[0].payload["initial_windows"][0]["layout"]["block"]["options"]["initial_input"],
+            "claude --resume bbb\n"
+        );
+        assert_eq!(got.selected.as_deref(), Some("b"));
+        assert_eq!(state_of(&s, "b").unwrap().state, RecordState::Live);
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+        assert_eq!(
+            state_of(&s, "c"),
+            None,
+            "no resume: gone, as after a lost session"
+        );
+    }
+
+    #[test]
+    fn a_restored_project_keeps_a_window_it_didnt_make() {
+        let mut windows = RESTORED.to_vec();
+        windows.push(("window:9", "block:9", "someone's"));
+        let (f, hub, _dir) = restored(windows);
+        let s = before_restart();
+        hub.open_agents(&s, &open(false, None), 7).expect("open");
+        assert_eq!(closed_windows(&f), ["window:1", "window:2", "window:3"]);
+        assert!(f.requests_for("session.destroy").is_empty());
+        assert!(f.requests_for("session.create").is_empty());
+        let made = f.requests_for("session.new_window");
+        assert_eq!(made.len(), 1);
+        assert_eq!(made[0].payload["session_id"], "session:old");
+        assert_eq!(
+            made[0].payload["layout"]["block"]["options"]["initial_input"],
+            "claude --resume bbb\n"
+        );
+        assert!(hub.session_alive("t"), "opened under this instance now");
+    }
+
+    #[test]
+    fn an_auto_open_of_a_restored_project_wakes_nothing() {
+        let (f, hub, _dir) = restored(RESTORED.to_vec());
+        let s = before_restart();
+        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
+        assert!(got.agents.is_empty());
+        assert!(f.requests_for("session.create").is_empty());
+        assert!(f.requests_for("session.new_window").is_empty());
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+        assert_eq!(state_of(&s, "b").unwrap().state, RecordState::Asleep);
+    }
+
+    #[test]
+    fn a_restored_agent_window_closing_leaves_its_record_asleep() {
+        let (f, hub, _dir) = restored(RESTORED.to_vec());
+        let s = before_restart();
+        hub.open_agents(&s, &open(false, None), 7).expect("open");
+        f.push_block_event(
+            "session:old",
+            "block:1",
+            "child_exited",
+            json!({"exit_code": 0}),
+        );
+        assert!(
+            !hub.end_agent_if_exited(&agent_key("t", "a")),
+            "a was never rebound"
+        );
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
     }
 }
