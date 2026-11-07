@@ -126,8 +126,8 @@ thread (never on it), and due windows are serviced one after another within a sc
 Each probe is bounded by a per-probe timeout (`probe.rs::PROBE_TIMEOUT`, a few seconds): a
 wedged probe (e.g. a hung tmux) is killed and reported absent rather than tying up its pool
 slot forever — but enough slow-but-under-timeout probes can still starve the pool and stall
-that tick's pass, so keep probe commands fast. A **spawn/exec failure** (broken command — wrong path, missing binary)
-is distinguished from a clean non-zero exit and logged as a warning (still "no dot", just
+that tick's pass, so keep probe commands fast. A **command that can't run** (`sh` failing to spawn, or its exit 126/127 — wrong path, missing
+binary) is distinguished from a clean non-zero exit and logged as a warning, once per command and dir (still "no dot", just
 diagnosable) so a misconfigured probe isn't a silent permanently-hollow dot. Keep warden
 tmux/amux-agnostic — the command is the user's, warden only reads its exit code.
 

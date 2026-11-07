@@ -367,43 +367,67 @@ const TITLE_VAR: &str = "WARDEN_TITLE";
 /// Each reference is double-quoted for the quoting context it lands in — `"${VAR}"` unquoted, bare
 /// `${VAR}` inside an existing `"…"`, and `'"${VAR}"'` (close, quote, reopen) inside `'…'` — so a
 /// bare `{dir}`, a `"{dir}"` and a `'{dir}'` all expand to the exact value with no word splitting.
-/// Other text is left verbatim.
+/// A `$(…)` or backtick substitution opens a fresh unquoted context, even inside `"…"`, so its
+/// tokens are quoted as bare ones. Other text is left verbatim.
 pub fn substitute(cmd: &str) -> String {
-    #[derive(PartialEq)]
-    enum Quote {
-        None,
+    /// One open quoting context; the command's top level is unquoted, so it has none.
+    enum Ctx {
         Single,
         Double,
+        /// `$(…)`, with the depth of plain `(` open inside it.
+        Subst(u32),
+        Tick,
     }
     let mut out = String::with_capacity(cmd.len());
-    let mut quote = Quote::None;
+    let mut stack: Vec<Ctx> = Vec::new();
     let mut rest = cmd;
     while let Some(c) = rest.chars().next() {
         let var = [("{dir}", DIR_VAR), ("{title}", TITLE_VAR)]
             .into_iter()
             .find(|(token, _)| rest.starts_with(token));
         if let Some((token, var)) = var {
-            match quote {
-                Quote::None => out.push_str(&format!("\"${{{var}}}\"")),
-                Quote::Double => out.push_str(&format!("${{{var}}}")),
-                Quote::Single => out.push_str(&format!("'\"${{{var}}}\"'")),
+            match stack.last() {
+                Some(Ctx::Double) => out.push_str(&format!("${{{var}}}")),
+                Some(Ctx::Single) => out.push_str(&format!("'\"${{{var}}}\"'")),
+                _ => out.push_str(&format!("\"${{{var}}}\"")),
             }
             rest = &rest[token.len()..];
             continue;
         }
         out.push(c);
         rest = &rest[c.len_utf8()..];
-        match (&quote, c) {
+        match (stack.last_mut(), c) {
+            (Some(Ctx::Single), '\'') => {
+                stack.pop();
+            }
+            (Some(Ctx::Single), _) => {}
             // A backslash outside single quotes escapes the next character, quote marks included.
-            (Quote::None | Quote::Double, '\\') => {
+            (_, '\\') => {
                 if let Some(next) = rest.chars().next() {
                     out.push(next);
                     rest = &rest[next.len_utf8()..];
                 }
             }
-            (Quote::None, '\'') => quote = Quote::Single,
-            (Quote::None, '"') => quote = Quote::Double,
-            (Quote::Single, '\'') | (Quote::Double, '"') => quote = Quote::None,
+            (_, '$') if rest.starts_with('(') => {
+                out.push('(');
+                rest = &rest[1..];
+                stack.push(Ctx::Subst(0));
+            }
+            (Some(Ctx::Tick), '`') => {
+                stack.pop();
+            }
+            (_, '`') => stack.push(Ctx::Tick),
+            (Some(Ctx::Double), '"') => {
+                stack.pop();
+            }
+            (Some(Ctx::Double), _) => {}
+            (_, '\'') => stack.push(Ctx::Single),
+            (_, '"') => stack.push(Ctx::Double),
+            (Some(Ctx::Subst(depth)), '(') => *depth += 1,
+            (Some(Ctx::Subst(0)), ')') => {
+                stack.pop();
+            }
+            (Some(Ctx::Subst(depth)), ')') => *depth -= 1,
             _ => {}
         }
     }
@@ -453,10 +477,33 @@ enum Outcome {
 /// is usually wedged in a grandchild (the tmux client under `amux --probe`), which killing `sh` alone
 /// would orphan, one more per probe pass until the wedge clears.
 ///
-/// A spawn failure is logged — it is distinct from a clean non-zero exit: the
-/// command itself couldn't run (bad path, missing binary, interior NUL), a misconfiguration that
-/// must be diagnosable rather than a permanently-hollow dot with no signal.
+/// A command that couldn't run is logged — distinct from a clean non-zero exit, a misconfiguration
+/// that must be diagnosable rather than a permanently-hollow dot with no signal. `sh` itself
+/// failing to spawn (missing dir, interior NUL) is [`Outcome::SpawnFailed`]; a missing binary or
+/// bad path inside the command is `sh`'s exit 127 (126: not executable), logged once per
+/// command and dir ([`warn_unrunnable`]) since it recurs every pass.
 fn run_bounded(cmd: &str, dir: &Path, title: &str, timeout: Duration) -> Outcome {
+    let outcome = run_bounded_inner(cmd, dir, title, timeout);
+    if let Outcome::Exited(Some(code @ (126 | 127))) = outcome {
+        warn_unrunnable(cmd, dir, code);
+    }
+    outcome
+}
+
+/// Log that `cmd` in `dir` exited `code` (126/127: the shell couldn't run it), the first time only.
+fn warn_unrunnable(cmd: &str, dir: &Path, code: i32) {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<(String, PathBuf)>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    let first = seen
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((cmd.to_owned(), dir.to_owned()));
+    if first {
+        log::warn!("{cmd:?} in {dir:?} couldn't run (exit {code}: command not found or not executable)");
+    }
+}
+
+fn run_bounded_inner(cmd: &str, dir: &Path, title: &str, timeout: Duration) -> Outcome {
     let mut child = match tab_command(cmd, dir, title).spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -792,6 +839,35 @@ mod tests {
         assert_eq!(substitute("x '{dir}' y"), r#"x ''"${WARDEN_DIR}"'' y"#);
         // An escaped quote mark doesn't open a quoting context.
         assert_eq!(substitute(r#"x \" {dir}"#), r#"x \" "${WARDEN_DIR}""#);
+    }
+
+    #[test]
+    fn substitute_quotes_tokens_inside_a_command_substitution_as_unquoted() {
+        assert_eq!(
+            substitute(r#""$(f {dir})""#),
+            r#""$(f "${WARDEN_DIR}")""#
+        );
+        assert_eq!(substitute(r#""`f {dir}`""#), r#""`f "${WARDEN_DIR}"`""#);
+        // A paren inside the substitution doesn't close it; its `)` returns to the `"…"`.
+        assert_eq!(
+            substitute(r#""$(f (g) {dir}) {title}""#),
+            r#""$(f (g) "${WARDEN_DIR}") ${WARDEN_TITLE}""#
+        );
+        assert_eq!(
+            substitute(r#"'$(x) {dir}'"#),
+            r#"'$(x) '"${WARDEN_DIR}"''"#
+        );
+    }
+
+    #[test]
+    fn substituted_values_survive_a_command_substitution_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let spaced = dir.path().join("My Project");
+        std::fs::create_dir(&spaced).unwrap();
+        let out = tab_command(r#"test "$(printf %s {dir})" = "$PWD""#, &spaced, "t")
+            .status()
+            .unwrap();
+        assert!(out.success());
     }
 
     #[test]
