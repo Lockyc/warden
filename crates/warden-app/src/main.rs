@@ -20,6 +20,7 @@ mod notify;
 
 #[cfg(target_os = "macos")]
 mod probe;
+mod project_colour;
 
 #[cfg(target_os = "macos")]
 mod registry;
