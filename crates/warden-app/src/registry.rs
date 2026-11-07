@@ -700,6 +700,33 @@ impl Column {
             .as_deref()
     }
 
+    /// Retire the blocks that left with a pop-out and ended while out (`Detached`, the tab back
+    /// without them): a scratch tab holding nothing else goes, the selection leaning as
+    /// [`remove_block`](Self::remove_block)'s does; one beside live blocks waits cold for the
+    /// session's next view. Returns whether the column still has a tab — a Rex session can hold
+    /// other windows, made in Rex.app while the tab was out.
+    fn retire_detached(&mut self) -> bool {
+        let mut i = 0;
+        while i < self.tabs.len() {
+            let blocks = &mut self.tabs[i].blocks;
+            if blocks.iter().all(|b| matches!(b.slot, TabSlot::Detached)) {
+                self.tabs.remove(i);
+                if self.selected > i {
+                    self.selected -= 1;
+                }
+                continue;
+            }
+            for b in blocks.iter_mut() {
+                if matches!(b.slot, TabSlot::Detached) {
+                    b.slot = TabSlot::Cold;
+                }
+            }
+            i += 1;
+        }
+        self.selected = self.selected.min(self.tabs.len().saturating_sub(1));
+        !self.tabs.is_empty()
+    }
+
     /// Drop block `i` of the selected scratch tab, closing its surface; a tab left with no block
     /// goes, and the selection leans to the tab now in its place. Returns whether there was one.
     fn remove_block(&mut self, i: usize) -> bool {
@@ -2840,16 +2867,18 @@ impl Registry {
             None => {
                 // A block that left with the tab (`Detached`) and didn't come back ended while it
                 // was out — its child exited in the detached window and `handle_child_exited`
-                // closed it. Retire the column, or the tab reads as split forever around a
-                // placeholder no `attach` will ever fill. A `Cold` block never left and stays: it
-                // respawns on the next `activate`. (Needs a live surface to exercise, so it is
-                // pinned by inspection only — the same test-double gap `docs/FOLLOWUPS.md`
-                // records for `activate`'s gate.)
-                if t.column
-                    .as_ref()
-                    .is_some_and(|c| c.slots().any(|b| matches!(b.slot, TabSlot::Detached)))
+                // closed it. Retire it ([`Column::retire_detached`]), and the column with it when
+                // nothing else is left, or the tab reads as split forever around a placeholder no
+                // `attach` will ever fill. A `Cold` block never left and stays: it respawns on the
+                // next `activate`.
+                if let Some(c) = t
+                    .column
+                    .as_mut()
+                    .filter(|c| c.slots().any(|b| matches!(b.slot, TabSlot::Detached)))
                 {
-                    t.column = None;
+                    if !c.retire_detached() {
+                        t.column = None;
+                    }
                     t.focused = PaneIdx::Primary;
                 }
             }
@@ -4938,6 +4967,26 @@ mod tests {
         r.focus_block("t", "ghost");
         r.unload("t");
         assert_eq!(pending(&r), None);
+    }
+
+    #[test]
+    fn a_block_that_ended_while_popped_out_leaves_the_rest_of_its_column() {
+        let mut r = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b", "c"])]);
+        let column = r.tabs[0].column.as_mut().unwrap();
+        column.tabs[0].blocks[0].slot = TabSlot::Detached;
+        column.tabs[1].blocks[1].slot = TabSlot::Detached;
+        assert!(column.retire_detached(), "w2 still holds a block");
+        assert_eq!(column.tabs.len(), 1, "w1 held only the ended block");
+        assert_eq!(column.tabs[0].window_id.as_deref(), Some("w2"));
+        assert_eq!(column.selected, 0);
+        assert!(
+            matches!(column.tabs[0].blocks[1].slot, TabSlot::Cold),
+            "a block beside live ones waits cold for the next view"
+        );
+        // A plain tab's one block: nothing is left.
+        let mut plain = Column::new(spec("p", "/tmp/p"));
+        plain.tabs[0].blocks[0].slot = TabSlot::Detached;
+        assert!(!plain.retire_detached());
     }
 
     #[test]

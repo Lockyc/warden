@@ -218,20 +218,23 @@ pub struct WindowState {
 /// The chrome half of retiring a popped-out tab's second pane, run with the lock RELEASED after
 /// [`WindowManager::close_detached_secondary`]: the detached page collapses to one hole (the
 /// surface is already gone, so its immediate re-report for pane 0 lands on the primary, and a
-/// stale pane-1 rect is dropped by `set_detached_frame`), and the origin's chrome gets the same
-/// `warden:pane-closed` a docked exit sends, so its persisted ratio goes too.
+/// stale pane-1 rect is dropped by `set_detached_frame`), and the origin's chrome, when
+/// `origin_label` names it, gets the same `warden:pane-closed` a docked exit sends, so its
+/// persisted ratio goes too.
 pub fn announce_detached_secondary_closed(
     app: &AppHandle,
     dlabel: &str,
-    origin_label: &str,
+    origin_label: Option<&str>,
     tab_id: &str,
 ) {
     let _ = shell_core::detach::set_panes(app, dlabel, &[]);
-    let _ = app.emit_to(
-        origin_label,
-        "warden:pane-closed",
-        serde_json::json!({ "label": origin_label, "id": tab_id }),
-    );
+    if let Some(origin_label) = origin_label {
+        let _ = app.emit_to(
+            origin_label,
+            "warden:pane-closed",
+            serde_json::json!({ "label": origin_label, "id": tab_id }),
+        );
+    }
 }
 
 /// A popped-out tab [`WindowManager::end_detached`] ended, for [`announce_detached_ended`].
@@ -726,7 +729,8 @@ impl WindowManager {
     /// up in `detached` — the same two outcomes, reached from the detached window: a secondary
     /// exit closes that surface and asks the shared detach page to relayout to one hole
     /// (`shell_core::detach::set_panes`), telling the origin's chrome the same `warden:pane-closed`
-    /// the docked path would (so its persisted ratio goes too); a primary exit ends the tab — both
+    /// the docked path would (so its persisted ratio goes too) — for a Rex block only once its
+    /// session ends, as docked; a primary exit ends the tab — both
     /// surfaces closed, the origin's `Detached` placeholders retired to `Cold`
     /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told
     /// `warden:tab-exited` exactly as if the exit had happened docked — never a "Process exited"
@@ -825,8 +829,10 @@ impl WindowManager {
         let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
             return; // already gone (redocked or closed) — drop the signal
         };
+        let mut rex = false;
         if let Some(d) = lock.detached.get(&dlabel) {
             if let Some(key) = d.rex_key(which) {
+                rex = true;
                 let owner = d
                     .agent
                     .clone()
@@ -841,7 +847,10 @@ impl WindowManager {
                     return;
                 };
                 drop(lock);
-                announce_detached_secondary_closed(app, &dlabel, &origin_label, &tab_id);
+                // A Rex block's column outlives it while its session holds other windows; the
+                // session's end collapses the origin's split itself (`rex::spawn::column_ended`).
+                let origin = (!rex).then_some(origin_label.as_str());
+                announce_detached_secondary_closed(app, &dlabel, origin, &tab_id);
             }
             crate::registry::PaneIdx::Primary => {
                 if let Some(ended) = lock.end_detached(app, &dlabel) {
