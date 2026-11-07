@@ -19,7 +19,7 @@ use super::lifecycle::AgentOp;
 use super::server::LOCAL;
 use super::{unclaimed, HubEvent, PaneTarget, RexHub};
 use crate::probe::Presence;
-use crate::registry::{RexAnswer, RexLanded, RexOpen, RexOpener};
+use crate::registry::{tab_of_secondary, RexAnswer, RexLanded, RexOpen, RexOpener};
 use crate::surface::TabSpec;
 use crate::ManagerState;
 
@@ -86,7 +86,8 @@ pub fn open_error(server: &str, e: &RexError) -> String {
 /// The [`RexOpener`] for window `label`: each open runs on its own worker thread and lands back
 /// on the main thread through [`landed`]. The answer's own presence refresh runs on the worker, so
 /// a connection a caller (not the hub's watcher) restored still repaints the dots. An agent
-/// pane's open is [`RexHub::open_agents`], over the app's [`AgentStore`].
+/// pane's open is [`RexHub::open_agents`], over the app's [`AgentStore`]; a split pane's is its
+/// scratch column's, [`RexHub::open_column`].
 pub fn opener(app: AppHandle, label: String) -> RexOpener {
     Box::new(move |req: RexOpen| {
         let (app, label) = (app.clone(), label.clone());
@@ -105,6 +106,10 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
                             .map_err(|e| open_error(&req.server, &e)),
                         None => Err(format!("Rex server {}: no agent tabs store", req.server)),
                     },
+                    Some(hub) if tab_of_secondary(&req.pane_key).is_some() => hub
+                        .open_column(&req)
+                        .map(RexAnswer::Column)
+                        .map_err(|e| open_error(&req.server, &e)),
                     Some(hub) => {
                         // An unclaimed session's pane attaches the session it lists.
                         if unclaimed::is_unclaimed(&req.pane_key, &req.dir, Some(&req.server)) {

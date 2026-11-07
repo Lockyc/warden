@@ -25,6 +25,7 @@
 pub mod agent_open;
 pub mod agents;
 pub mod attention;
+pub mod column;
 pub mod layout;
 pub mod lifecycle;
 pub mod reports;
@@ -164,7 +165,8 @@ struct State {
     /// Sessions `session.attach`ed per server. Outlives a connection so its replacement attaches
     /// them again.
     attached: HashMap<String, HashSet<String>>,
-    /// Pane key → the block it shows, learned when its session was found or created.
+    /// Pane key → the block it shows, learned when its session was found or created; for a scratch
+    /// column, each of its blocks under [`column::block_key`] ([`State::bind_columns`]).
     blocks: HashMap<String, String>,
     /// Pane key → the last size warden asked for: by which client, for which block.
     requested: HashMap<String, Requested>,
@@ -196,10 +198,12 @@ struct State {
 
 impl State {
     /// Where `pane_key`'s session lives: its stored mapping, else its adoption; for an agent key,
-    /// its main pane's.
+    /// its main pane's; for a column block's key, its column's.
     fn record(&self, pane_key: &str) -> Option<&PaneRecord> {
         let own = |k: &str| self.store.get(k).or_else(|| self.adopted.get(k));
-        own(pane_key).or_else(|| own(self.agents.get(pane_key)?))
+        own(pane_key)
+            .or_else(|| own(self.agents.get(pane_key)?))
+            .or_else(|| own(column::column_of(pane_key)?))
     }
 
     /// Forget agent `agent_key`'s binding, block and size.
@@ -534,32 +538,45 @@ impl Inner {
             "session.create block id",
         )?;
         log::info!("Rex {server}: created session {session_id} ({pane_key})");
-        {
-            let mut st = inner.lock();
-            if let Some(prev) = &previous {
-                if let Some(a) = st.attached.get_mut(&prev.server) {
-                    a.remove(&prev.session_id);
-                }
-                st.windows
-                    .remove(&(prev.server.clone(), prev.session_id.clone()));
-            }
-            let instance = st.conns.get(server).and_then(|c| c.instance.clone());
-            st.store.set(
-                pane_key,
-                Some(PaneRecord {
-                    server: server.to_owned(),
-                    session_id: session_id.clone(),
-                    instance,
-                }),
-            );
-            st.blocks.insert(pane_key.to_owned(), block_id.clone());
-        }
+        inner.map_created(pane_key, server, &session_id, previous.as_ref());
+        inner
+            .lock()
+            .blocks
+            .insert(pane_key.to_owned(), block_id.clone());
         inner.attach(server, &client, &session_id, Some(deadline))?;
         Ok(PaneTarget {
             endpoint,
             session_id,
             block_id,
         })
+    }
+
+    /// Map `pane_key` to `session_id`, just created on `server` under its current instance, in
+    /// place of `previous`, which stops being attached and watched.
+    fn map_created(
+        &self,
+        pane_key: &str,
+        server: &str,
+        session_id: &str,
+        previous: Option<&PaneRecord>,
+    ) {
+        let mut st = self.lock();
+        if let Some(prev) = previous {
+            if let Some(a) = st.attached.get_mut(&prev.server) {
+                a.remove(&prev.session_id);
+            }
+            st.windows
+                .remove(&(prev.server.clone(), prev.session_id.clone()));
+        }
+        let instance = st.conns.get(server).and_then(|c| c.instance.clone());
+        st.store.set(
+            pane_key,
+            Some(PaneRecord {
+                server: server.to_owned(),
+                session_id: session_id.to_owned(),
+                instance,
+            }),
+        );
     }
 
     /// [`RexHub::destroy`]'s work, for a caller already holding `pane_key`.
@@ -605,6 +622,9 @@ impl Inner {
         st.adopted.remove(pane_key);
         st.blocks.remove(pane_key);
         st.requested.remove(pane_key);
+        let column = |k: &String| column::column_of(k) == Some(pane_key);
+        st.blocks.retain(|k, _| !column(k));
+        st.requested.retain(|k, _| !column(k));
         st.agent_panes.remove(pane_key);
         let agents: Vec<String> = st
             .agents
@@ -623,9 +643,8 @@ impl Inner {
         Some(rec)
     }
 
-    /// Whether `pane_key`'s session holds a block besides the pane's own — placed or detached,
-    /// made by anyone — per `session.list_blocks`. True when it can't be told, so an uncertain
-    /// answer never destroys another client's work; false once the session is gone.
+    /// Whether `pane_key`'s session holds a block besides the pane's own
+    /// ([`Inner::holds_other_block`]); true for a pane with no block known.
     fn session_outlives_pane(self: &Arc<Self>, pane_key: &str) -> bool {
         let (rec, block) = {
             let st = self.lock();
@@ -634,16 +653,21 @@ impl Inner {
                 _ => return true,
             }
         };
+        self.holds_other_block(&rec, &block)
+    }
+
+    /// Whether `rec`'s session holds a block besides `block` — placed or detached, made by anyone
+    /// — per `session.list_blocks`. True when it can't be told, so an uncertain answer never
+    /// destroys another client's work; false once the session is gone.
+    fn holds_other_block(self: &Arc<Self>, rec: &PaneRecord, block: &str) -> bool {
         let Ok((client, _)) = self.conn(&rec.server) else {
             return true;
         };
         let args = json!({ "session_id": rec.session_id });
         match client.call("session.list_blocks", args) {
-            Ok(v) => v["blocks"].as_array().is_none_or(|blocks| {
-                blocks
-                    .iter()
-                    .any(|b| b["block_id"].as_str() != Some(block.as_str()))
-            }),
+            Ok(v) => v["blocks"]
+                .as_array()
+                .is_none_or(|blocks| blocks.iter().any(|b| b["block_id"].as_str() != Some(block))),
             Err(RexError::Api { code, .. }) => code != "session_not_found",
             Err(_) => true,
         }

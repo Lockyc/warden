@@ -478,6 +478,7 @@ pub(super) mod tests {
             auto,
             agents: true,
             resume: resume.map(Into::into),
+            stack: Vec::new(),
         }
     }
 

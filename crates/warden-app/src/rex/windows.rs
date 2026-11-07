@@ -91,7 +91,7 @@ pub struct BlockStatus {
 #[derive(Debug, Default)]
 pub(super) struct SessionWindows {
     /// Whether a view has been applied; until then the entry only collects revisions heard.
-    viewed: bool,
+    pub(super) viewed: bool,
     /// The view's revision, and the highest a `session.view` has been asked for.
     revision: u64,
     asked: u64,
@@ -100,7 +100,9 @@ pub(super) struct SessionWindows {
     /// The connection and response seq the view came from: window events at or below it are in it.
     gen: u64,
     seq: u64,
-    list: Vec<AgentWindow>,
+    pub(super) list: Vec<AgentWindow>,
+    /// The view's `active_window_id`.
+    pub(super) active: Option<String>,
 }
 
 /// A value as of an event or response `seq` on connection `gen`.
@@ -450,7 +452,11 @@ impl Inner {
         let changed = {
             let mut st = self.lock();
             let key = (server.to_owned(), session_id.to_owned());
-            st.windows.get_mut(&key).is_some_and(|w| edit(&mut w.list))
+            let changed = st.windows.get_mut(&key).is_some_and(|w| edit(&mut w.list));
+            if changed {
+                st.bind_columns(server, session_id);
+            }
+            changed
         };
         if changed {
             self.emit([windows_changed(server, session_id)]);
@@ -497,6 +503,7 @@ impl Inner {
     ) {
         let revision = view["revision"].as_u64().unwrap_or(0);
         let list = parse_windows(view);
+        let active = view["active_window_id"].as_str().map(str::to_owned);
         let mut refresh = false;
         let mut pull = Vec::new();
         let changed = {
@@ -517,13 +524,14 @@ impl Inner {
             let changed = if entry.viewed && revision < entry.revision {
                 false
             } else {
-                let changed = !entry.viewed || entry.list != list;
+                let changed = !entry.viewed || entry.list != list || entry.active != active;
                 entry.viewed = true;
                 entry.revision = revision;
                 entry.asked = entry.asked.max(revision);
                 entry.gen = gen;
                 entry.seq = seq;
                 entry.list = list;
+                entry.active = active;
                 changed
             };
             if entry.heard > entry.asked {
@@ -535,6 +543,9 @@ impl Inner {
                 if pull_all || !tracked {
                     pull.push(block);
                 }
+            }
+            if changed {
+                st.bind_columns(server, session_id);
             }
             changed
         };

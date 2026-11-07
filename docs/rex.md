@@ -42,6 +42,7 @@ public. Rex is chosen per tab.
 | `rex/size.rs` | The size worker (`Sizer`) behind every claim and resize. |
 | `rex/unclaimed.rs` | Sessions no tab claims, as sidebar rows under `Rex · <server>`. |
 | `rex/windows.rs` | Each attached session's windows (new, close, relabel) and every terminal block's status: its root OSC 7501 record and its title, from Rex's events. |
+| `rex/column.rs` | A split pane's scratch column: one session whose windows are scratch tabs and whose split trees are the stacked panes — opening it (created from the config stack, retyped when restored), new tab, split, divider resize, a block's exit, each block's size key. |
 | `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live, waking on a user open. |
 | `rex/lifecycle.rs` | The agent tab list: new, wake, sleep, close, reopen, fork, rename (`RexHub::agent_op`), which agent shows (`settle`, an open's too), following a pane's windows and statuses, storing reported resume commands, and the list `warden:agents` carries. |
 | `rex/attention.rs` | Which agent tabs need you (blocked, or done and unseen): a group's amber, an agent row's unread, and the row badge and banner a hidden one raises (`notify::raise`). |

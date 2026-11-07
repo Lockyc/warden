@@ -2031,3 +2031,360 @@ fn windows_carry_their_layout() {
     assert_eq!(windows[0].block_id.as_deref(), Some("b1"));
     assert_eq!(windows[0].layout.as_ref().unwrap().blocks(), ["b1", "b2"]);
 }
+
+// ── the scratch column ──
+
+/// A column's three-pane stack as Rex lays it out: `b1` over `b2` over `b3`.
+fn three_stack() -> Value {
+    json!({"rect": [0, 0, 1, 1], "split": {
+        "split_id": "s1", "direction": "vertical", "ratio": 0.2,
+        "before": {"rect": [0, 0, 1, 0.2], "block_id": "b1"},
+        "after": {"rect": [0, 0.2, 1, 0.8], "split": {
+            "split_id": "s2", "direction": "vertical", "ratio": 0.375,
+            "before": {"rect": [0, 0.2, 1, 0.3], "block_id": "b2"},
+            "after": {"rect": [0, 0.5, 1, 0.5], "block_id": "b3"},
+        }},
+    }})
+}
+
+/// The view a column fake serves, held so a test can change the session.
+type HeldView = std::sync::Arc<std::sync::Mutex<Value>>;
+
+/// [`restartable`] (instance `"a"`, listing `session:new`) whose `session.attach` and
+/// `session.view` serve the returned view, first `view`.
+fn column_fake(view: Value) -> (FakeServer, Instance, HeldView) {
+    let (fake, inst) = restartable(json!([{"session_id": "session:new", "label": "w"}]), "a");
+    let held: HeldView = std::sync::Arc::new(std::sync::Mutex::new(view));
+    let h = held.clone();
+    fake.on("session.attach", move |_, _| {
+        Reply::ok(json!({"client_id": "client:fake-1", "view": h.lock().unwrap().clone()}))
+    });
+    let h = held.clone();
+    fake.on("session.view", move |_, _| {
+        Reply::ok(h.lock().unwrap().clone())
+    });
+    (fake, inst, held)
+}
+
+/// One window holding `layout` over terminal `blocks`, the session's active window.
+fn column_view(revision: u64, layout: Value, blocks: &[&str]) -> Value {
+    let mut v = windows_view_with_layout("session:new", revision, layout, blocks);
+    v["active_window_id"] = json!("window:1");
+    v
+}
+
+fn stack_pane(size: f64, startup: Option<&str>) -> warden_config::StackPane {
+    warden_config::StackPane {
+        size,
+        startup: startup.map(str::to_owned),
+    }
+}
+
+/// Tab `t`'s column open, with `stack`.
+fn column_req(stack: Vec<warden_config::StackPane>) -> crate::registry::RexOpen {
+    crate::registry::RexOpen {
+        pane_key: crate::registry::secondary_id("t"),
+        server: "local".into(),
+        dir: PathBuf::from("/work/t"),
+        startup: None,
+        label: "t · split".into(),
+        token: 0,
+        auto: false,
+        agents: false,
+        resume: None,
+        stack,
+    }
+}
+
+fn abc_stack() -> Vec<warden_config::StackPane> {
+    vec![
+        stack_pane(0.2, Some("a")),
+        stack_pane(0.3, None),
+        stack_pane(0.5, Some("c")),
+    ]
+}
+
+fn block_bound(hub: &RexHub, block: &str) -> bool {
+    let key = super::column::block_key("t::2", block);
+    hub.inner.lock().blocks.get(&key).map(String::as_str) == Some(block)
+}
+
+#[test]
+fn column_creates_session_with_stack() {
+    let (fake, _inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, path) = hub_on(fake.endpoint(), &dir);
+    let req = column_req(abc_stack());
+
+    let opened = hub.open_column(&req).expect("open_column");
+    let creates = fake.requests_for("session.create");
+    assert_eq!(creates.len(), 1);
+    let p = &creates[0].payload;
+    assert_eq!(p["label"], "t · split");
+    assert_eq!(
+        p["initial_windows"][0]["layout"],
+        super::layout::stack_layout(&req.stack, &req.dir)
+    );
+    assert_eq!(opened.session_id, "session:new");
+    assert_eq!(opened.windows.len(), 1);
+    assert_eq!(opened.windows[0].window_id, "window:1");
+    assert_eq!(opened.windows[0].layout.tiles().len(), 3);
+    assert_eq!(opened.active.as_deref(), Some("window:1"));
+    assert_eq!(
+        RexStore::load(path)
+            .get("t::2")
+            .map(|r| r.session_id.clone()),
+        Some("session:new".into()),
+        "the column's pane key keeps its mapping"
+    );
+    for b in ["b1", "b2", "b3"] {
+        assert!(block_bound(&hub, b), "{b} bound for size claims");
+    }
+    assert!(
+        typed(&fake).is_empty(),
+        "a new session types through its layout"
+    );
+}
+
+#[test]
+fn column_reattaches_without_creating() {
+    let (fake, _inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rex-sessions.json");
+    seed(&path, "t::2", "local", "session:new");
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+
+    let opened = hub
+        .open_column(&column_req(abc_stack()))
+        .expect("open_column");
+    assert!(fake.requests_for("session.create").is_empty());
+    assert_eq!(opened.session_id, "session:new");
+    assert_eq!(opened.windows[0].layout.blocks(), ["b1", "b2", "b3"]);
+    assert_eq!(hub.column("local", "session:new"), Some(opened));
+    assert!(typed(&fake).is_empty(), "reattaching types nothing");
+}
+
+#[test]
+fn column_restored_retypes_stack_cmds() {
+    let (fake, inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.open_column(&column_req(abc_stack()))
+        .expect("first open");
+    restart(&fake, &inst, &rx, "b");
+
+    hub.open_column(&column_req(abc_stack())).expect("reopen");
+    assert_eq!(
+        fake.requests_for("session.create").len(),
+        1,
+        "no second session"
+    );
+    let writes: Vec<(String, String)> = fake
+        .requests_for("com.superlogical.terminal.write")
+        .iter()
+        .map(|r| {
+            (
+                r.payload["block_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                r.payload["args"]["data"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        writes,
+        [("b1".into(), "a\n".into()), ("b3".into(), "c\n".into())]
+    );
+    hub.open_column(&column_req(abc_stack()))
+        .expect("third open");
+    assert_eq!(typed(&fake).len(), 2, "typed once per restore");
+}
+
+#[test]
+fn column_restored_with_another_shape_types_nothing() {
+    let (fake, inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.open_column(&column_req(abc_stack()))
+        .expect("first open");
+    restart(&fake, &inst, &rx, "b");
+
+    // The stack was edited to two panes; Rex still holds three blocks.
+    let two = vec![stack_pane(0.5, Some("a")), stack_pane(0.5, Some("c"))];
+    hub.open_column(&column_req(two)).expect("reopen");
+    assert!(typed(&fake).is_empty());
+}
+
+/// A column opened on a one-block view, for the drive tests.
+fn opened_column() -> (FakeServer, RexHub, HeldView, tempfile::TempDir) {
+    let (fake, _inst, held) = column_fake(column_view(
+        1,
+        json!({"rect": [0, 0, 1, 1], "block_id": "b1"}),
+        &["b1"],
+    ));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.open_column(&column_req(Vec::new()))
+        .expect("open_column");
+    (fake, hub, held, dir)
+}
+
+#[test]
+fn column_new_tab_makes_one_shell_window() {
+    let (fake, hub, _, _dir) = opened_column();
+    fake.reply(
+        "session.new_window",
+        json!({"window_id": "window:9", "block_ids": ["b9"], "revision": 2}),
+    );
+    let w = hub
+        .column_new_tab("t::2", Path::new("/work/t"))
+        .expect("column_new_tab");
+    assert_eq!(w, "window:9");
+    let calls = fake.requests_for("session.new_window");
+    assert_eq!(calls.len(), 1);
+    let p = &calls[0].payload;
+    assert_eq!(p["session_id"], "session:new");
+    assert_eq!(
+        p["layout"],
+        super::layout::stack_layout(&[], Path::new("/work/t"))
+    );
+    assert!(p.get("window_label").is_none(), "Rex names it: {p}");
+    assert!(block_bound(&hub, "b9"));
+}
+
+#[test]
+fn column_split_is_vertical_after() {
+    let (fake, hub, _, _dir) = opened_column();
+    fake.reply(
+        "session.new_split",
+        json!({"anchor_id": "b1", "block_ids": ["b2"], "split_ids": ["s1"], "revision": 2}),
+    );
+    let b = hub
+        .column_split("t::2", "b1", Path::new("/work/t"))
+        .expect("column_split");
+    assert_eq!(b, "b2");
+    let p = &fake.requests_for("session.new_split")[0].payload;
+    assert_eq!(p["session_id"], "session:new");
+    assert_eq!(p["anchor_id"], "b1");
+    assert_eq!(p["direction"], "vertical");
+    assert_eq!(p["side"], "after");
+    assert_eq!(p["ratio"], 0.5);
+    assert_eq!(p["focus"], true);
+    assert_eq!(
+        p["layout"],
+        super::layout::stack_layout(&[], Path::new("/work/t"))
+    );
+    assert!(block_bound(&hub, "b2"));
+}
+
+#[test]
+fn column_resize_names_first_leaves() {
+    let (fake, _inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
+    fake.reply("session.resize_pane", json!({"revision": 2}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let opened = hub
+        .open_column(&column_req(abc_stack()))
+        .expect("open_column");
+    let d = &opened.windows[0].layout.dividers()[0];
+
+    hub.column_resize("t::2", d, 0.4).expect("column_resize");
+    let p = &fake.requests_for("session.resize_pane")[0].payload;
+    assert_eq!(
+        *p,
+        json!({"session_id": "session:new", "direction": "vertical",
+               "before_block_id": "b1", "after_block_id": "b2", "ratio": 0.4})
+    );
+}
+
+#[test]
+fn column_exit_closes_block() {
+    let (fake, _inst, _) = column_fake(column_view(
+        1,
+        json!({"rect": [0, 0, 1, 1], "split": {
+            "split_id": "s1", "direction": "vertical", "ratio": 0.5,
+            "before": {"rect": [0, 0, 1, 0.5], "block_id": "b1"},
+            "after": {"rect": [0, 0.5, 1, 0.5], "block_id": "b2"},
+        }}),
+        &["b1", "b2"],
+    ));
+    fake.reply("session.list_blocks", blocks(&["b1", "b2"]));
+    fake.reply("block.close", json!({"revision": 2}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, path) = hub_on(fake.endpoint(), &dir);
+    hub.open_column(&column_req(Vec::new()))
+        .expect("open_column");
+
+    let exit = hub.column_block_exited("t::2", "b2").expect("exit");
+    assert_eq!(exit, super::column::ColumnExit::Closed);
+    let p = &fake.requests_for("block.close")[0].payload;
+    assert_eq!(*p, json!({"session_id": "session:new", "block_id": "b2"}));
+    assert!(fake.requests_for("session.destroy").is_empty());
+    assert!(!block_bound(&hub, "b2"), "the closed block's key goes");
+    assert!(
+        RexStore::load(path).get("t::2").is_some(),
+        "the column stays mapped"
+    );
+}
+
+#[test]
+fn column_exit_of_a_windows_last_block_closes_only_it() {
+    let (fake, hub, _, _dir) = opened_column();
+    // Another scratch tab holds b9.
+    fake.reply("session.list_blocks", blocks(&["b1", "b9"]));
+    fake.reply("block.close", json!({"revision": 2}));
+    let exit = hub.column_block_exited("t::2", "b1").expect("exit");
+    assert_eq!(exit, super::column::ColumnExit::Closed);
+    assert_eq!(fake.requests_for("block.close").len(), 1);
+    assert!(fake.requests_for("session.destroy").is_empty());
+}
+
+#[test]
+fn column_exit_of_last_block_ends_session() {
+    let (fake, hub, _, dir) = opened_column();
+    fake.reply("session.list_blocks", blocks(&["b1"]));
+    fake.reply("session.destroy", json!({}));
+    let exit = hub.column_block_exited("t::2", "b1").expect("exit");
+    assert_eq!(exit, super::column::ColumnExit::SessionEnded);
+    assert!(fake.requests_for("block.close").is_empty());
+    assert_eq!(fake.requests_for("session.destroy").len(), 1);
+    let path = dir.path().join("rex-sessions.json");
+    assert!(RexStore::load(path).get("t::2").is_none(), "forgotten");
+    assert!(!block_bound(&hub, "b1"));
+}
+
+#[test]
+fn column_follows_rex_app_split() {
+    let (fake, hub, held, _dir) = opened_column();
+    let rx = hub.subscribe();
+    *held.lock().unwrap() = column_view(
+        2,
+        json!({"rect": [0, 0, 1, 1], "split": {
+            "split_id": "s1", "direction": "vertical", "ratio": 0.5,
+            "before": {"rect": [0, 0, 1, 0.5], "block_id": "b1"},
+            "after": {"rect": [0, 0.5, 1, 0.5], "block_id": "b2"},
+        }}),
+        &["b1", "b2"],
+    );
+    fake.push_session_event(
+        "session:new",
+        "session_view_changed",
+        json!({"revision": 2}),
+    );
+    next_event(&rx, |e| {
+        matches!(e, HubEvent::WindowsChanged { server, session_id }
+            if server == "local" && session_id == "session:new")
+    });
+    let column = hub.column("local", "session:new").expect("column");
+    assert_eq!(column.windows[0].layout.tiles().len(), 2);
+    assert!(
+        block_bound(&hub, "b2"),
+        "a block made in Rex.app is bound too"
+    );
+}

@@ -2,7 +2,8 @@
 //! dividers for the page, and the inverse direction — a config pane stack as the layout a
 //! new Rex session is created with.
 
-// No caller yet: the column wiring lands in the following tasks, which remove this allow.
+// Dividers have no caller yet: the column wiring lands in the following tasks, which remove this
+// allow.
 #![allow(dead_code)]
 
 use std::path::Path;

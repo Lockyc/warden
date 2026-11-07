@@ -1,9 +1,11 @@
+use crate::rex::column::ColumnOpened;
 use crate::rex::size::PaneSize;
 use crate::rex::PaneTarget;
 use crate::surface::{ghostty::GhosttySurface, PixelRect, SurfaceError, TabSpec, TerminalSurface};
 use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::path::PathBuf;
+use warden_config::StackPane;
 
 /// One probe-enabled tab's work item: `(id, dir, title, probe_cmd)`. The probe
 /// runner substitutes `{dir}`/`{title}` into `probe_cmd` and runs it with cwd = dir.
@@ -21,8 +23,9 @@ pub enum EndTarget {
 
 /// A Rex pane's session to find or create — `RexHub::ensure_session`'s arguments — and the token
 /// its answer carries back to [`Registry::rex_opened`]. A main pane holding agents (`agents`) is
-/// opened by `RexHub::open_agents` instead, which reads `auto` and `resume`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// opened by `RexHub::open_agents` instead, which reads `auto` and `resume`; a split pane by
+/// `RexHub::open_column`, which reads `stack`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct RexOpen {
     pub pane_key: String,
     pub server: String,
@@ -37,6 +40,17 @@ pub struct RexOpen {
     pub agents: bool,
     /// The tab's `resume` program as configured now.
     pub resume: Option<String>,
+    /// The tab's configured split stack ([`stack_of`]): the panes a column session is created with.
+    pub stack: Vec<StackPane>,
+}
+
+/// The pane stack tab `primary`'s split declares, empty when it declares none.
+fn stack_of(primary: &TabSpec) -> Vec<StackPane> {
+    primary
+        .split
+        .as_ref()
+        .map(|s| s.panes.clone())
+        .unwrap_or_default()
 }
 
 /// What an agent pane's open found: each live agent tab's terminal, in list order, and the one
@@ -47,11 +61,13 @@ pub struct AgentsOpened {
     pub selected: Option<String>,
 }
 
-/// A Rex open's answer: the one terminal a pane shows, or an agent pane's agents.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A Rex open's answer: the one terminal a pane shows, an agent pane's agents, or a split pane's
+/// scratch column.
+#[derive(Debug, Clone, PartialEq)]
 pub enum RexAnswer {
     Pane(PaneTarget),
     Agents(AgentsOpened),
+    Column(ColumnOpened),
 }
 
 /// The Rex pane key and surface id of agent `record_id` in tab `tab_id`'s main pane. The one
@@ -1004,6 +1020,7 @@ impl Registry {
             auto: false,
             agents: true,
             resume: spec.resume.clone(),
+            stack: stack_of(spec),
         })
     }
 
@@ -1403,6 +1420,7 @@ impl Registry {
         auto: bool,
     ) -> Result<bool, SurfaceError> {
         let agents = hosts_agents(&self.tabs[idx].primary.spec, which);
+        let stack = stack_of(&self.tabs[idx].primary.spec);
         let tab = &mut self.tabs[idx];
         let label = session_label(&tab.title, which);
         let Some(pane) = tab.pane_mut(which) else {
@@ -1460,6 +1478,7 @@ impl Registry {
                     auto,
                     agents,
                     resume: pane.spec.resume.clone(),
+                    stack,
                 });
                 match started {
                     Ok(()) => pane.rex = RexState::Opening { token, wake: false },
@@ -1586,6 +1605,11 @@ impl Registry {
             Ok(answer) => {
                 match answer {
                     RexAnswer::Pane(target) => pane.rex = RexState::Ready(target),
+                    RexAnswer::Column(_) => {
+                        pane.rex = RexState::Idle;
+                        tab.rex_error = Some("column not yet supported".to_owned());
+                        return RexLanded::Failed;
+                    }
                     RexAnswer::Agents(found) => {
                         pane.agents = found
                             .agents
@@ -3509,6 +3533,37 @@ mod tests {
         );
         let _ = r.activate("t");
         assert_eq!(asked.lock().unwrap().len(), 2, "activating again retries");
+    }
+
+    #[test]
+    fn a_column_answer_lands_as_a_failure_for_now() {
+        let (mut r, asked) = rex_registry();
+        let mut spec = rex_spec("t", "local");
+        let panes = vec![warden_config::StackPane {
+            size: 1.0,
+            startup: Some("make watch".into()),
+        }];
+        spec.split = Some(warden_config::Split {
+            side: warden_config::SplitSide::Right,
+            size: 0.4,
+            panes: panes.clone(),
+        });
+        r.add(&spec, false).unwrap();
+        let _ = r.activate("t");
+        let req = asked.lock().unwrap()[0].clone();
+        assert_eq!(req.stack, panes, "the open carries the tab's stack");
+        let column = crate::rex::column::ColumnOpened {
+            endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
+            session_id: "session:s".into(),
+            windows: Vec::new(),
+            active: None,
+        };
+        let landed = r.rex_opened(&req.pane_key, req.token, Ok(RexAnswer::Column(column)));
+        assert!(matches!(landed, RexLanded::Failed));
+        assert_eq!(
+            r.tab_dtos()[0].warn.as_deref(),
+            Some("column not yet supported")
+        );
     }
 
     #[test]
