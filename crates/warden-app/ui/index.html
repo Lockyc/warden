@@ -832,7 +832,7 @@
             applySplitShape(id, split);
             byShape.set(shape, {
               primary: contentRect(prim),
-              secondary: split ? contentRect(sec) : null,
+              blocks: split ? [contentRect(sec)] : [],
             });
           }
           rects[id] = byShape.get(shape);
@@ -2100,7 +2100,7 @@
         showSleepConfirm(p);
       });
 
-      // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane: the backend names the tab, the active one here. Sleep acts
+      // ⌘T / ⌥⌘S / ⌘⇧T in a tab with agent tabs: the backend names the tab, the active one here. Sleep acts
       // on the selected agent tab; its refusal shows in the error bar like a row's.
       listen("warden:agent-new", (e) => {
         if (forMe(e) && e.payload.tabId) agentCall("agent_new", { tabId: e.payload.tabId });
@@ -2114,7 +2114,7 @@
         const r = dto && dto.rows.find((r) => r.selected);
         if (r) agentCall("agent_sleep", { tabId: e.payload.tabId, recordId: r.id });
       });
-      // ⌘W in an agent pane: the selected agent tab's own Close, so one with nothing to resume asks first.
+      // ⌘W in a tab with agent tabs: the selected agent tab's own Close, so one with nothing to resume asks first.
       listen("warden:agent-close", (e) => {
         if (!forMe(e) || !e.payload.tabId) return;
         const dto = agentLists.get(e.payload.tabId);

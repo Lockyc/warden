@@ -72,12 +72,15 @@ const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 
-/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓, and ⌘K / ⌘J), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓) and Fork
-/// Agent Tab (⌥⌘T): the selected agent tab of the focused window's active tab, enabled only while
-/// its main pane has keyboard focus and the step can act ([`sync_agent_menu`]) — a disabled item
-/// leaves its chord to the terminal, so ⌘↑ / ⌘↓ still jump between prompts in the scratch shell.
+/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓) and Fork
+/// Agent Tab (⌥⌘T): the selected agent tab of the focused window's active tab, from any of its
+/// panes, enabled only while the step can act ([`sync_agent_menu`]) — a disabled item leaves its
+/// chord to the terminal.
 const MENU_AGENT_PREV: &str = "warden:agent-prev";
 const MENU_AGENT_NEXT: &str = "warden:agent-next";
+const MENU_AGENT_MOVE_UP: &str = "warden:agent-move-up";
+const MENU_AGENT_MOVE_DOWN: &str = "warden:agent-move-down";
+const MENU_AGENT_FORK: &str = "warden:agent-fork";
 
 /// ⌘K / ⌘J: Previous / Next Agent Tab's second chords, each its own menu item (a menu item carries
 /// one key equivalent) kept off screen by [`hide_alias_items`], which finds them by these titles.
@@ -85,17 +88,14 @@ const MENU_AGENT_NEXT: &str = "warden:agent-next";
 const MENU_AGENT_PREV_ALIAS: &str = "warden:agent-prev-alias";
 const MENU_AGENT_NEXT_ALIAS: &str = "warden:agent-next-alias";
 const ALIAS_TITLES: [&str; 2] = ["Previous Agent Tab (⌘K)", "Next Agent Tab (⌘J)"];
-const MENU_AGENT_MOVE_UP: &str = "warden:agent-move-up";
-const MENU_AGENT_MOVE_DOWN: &str = "warden:agent-move-down";
-const MENU_AGENT_FORK: &str = "warden:agent-fork";
 
-/// ⌘W in an agent pane with a selected agent tab: the spine's Close Tab, retitled Close Agent Tab
-/// by [`sync_agent_menu`], closes that agent instead of unloading the project tab. The event the
-/// chrome runs the row's own Close from, confirm included.
+/// ⌘W in a Rex tab with a selected agent tab, from any of its panes: the spine's Close Tab,
+/// retitled Close Agent Tab by [`sync_agent_menu`], closes that agent instead of unloading the
+/// project tab. The event the chrome runs the row's own Close from, confirm included.
 const EVENT_AGENT_CLOSE: &str = "warden:agent-close";
 
-/// Tab ▸ Close Project Tab (⌥⌘W): ⌘W's unload, kept on a key while an agent pane holds ⌘W —
-/// enabled only there.
+/// Tab ▸ Close Project Tab (⌥⌘W): ⌘W's unload, kept on a key while a Rex tab with agent tabs
+/// holds ⌘W — enabled only there.
 const MENU_TAB_CLOSE_PROJECT: &str = "warden:close-project-tab";
 
 /// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
@@ -207,7 +207,9 @@ fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bo
 }
 
 /// What the focused window's active tab offers the agent-step and pane items: `(label, tab,
-/// agent list while its main pane has keyboard focus, pane to the left, pane to the right)`.
+/// agent list when it holds agent tabs, pane to the left, pane to the right)`. The agent list
+/// answers from any of the tab's panes, so the agent keys beat libghostty's defaults for the same
+/// chords (⌘↑ / ⌘↓ / ⌘K / ⌘J) in a scratch shell too.
 #[cfg(target_os = "macos")]
 #[allow(clippy::type_complexity)]
 fn focused_tab_keys(
@@ -231,8 +233,7 @@ fn focused_tab_keys(
         let m = st.lock();
         let reg = &m.windows.get(&label)?.registry;
         let tab = reg.active_tab()?.to_owned();
-        let agents = reg.active_agent_tab() == Some(tab.as_str())
-            && reg.focused_pane(&tab) == Some(registry::PaneIdx::Primary);
+        let agents = reg.active_agent_tab() == Some(tab.as_str());
         let left = reg.pane_to(&tab, registry::Side::Left);
         let right = reg.pane_to(&tab, registry::Side::Right);
         (tab, agents, left, right)
@@ -246,8 +247,7 @@ fn focused_tab_keys(
 /// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
 /// holds agent tabs, Sleep Agent Tab while its selected one can sleep, Reopen Last Closed while
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
-/// while its main pane has focus and the step can act, and Focus Left / Right Pane while there's a
-/// pane that way. Runs on every
+/// while the step can act, and Focus Left / Right Pane while there's a pane that way. Runs on every
 /// menu build, window focus, pane focus, tab activation and agent list change, so it also marks
 /// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
 /// callers must not hold it.
@@ -2280,7 +2280,7 @@ fn main() {
                 return;
             }
 
-            // ⌘T / ⌥⌘S / ⌘⇧T in an agent pane act on its agent tab list: the focused window's
+            // ⌘T / ⌥⌘S / ⌘⇧T in a tab with agent tabs act on its agent tab list: the focused window's
             // chrome gets the active tab's id. ⌘T and ⌥⌘S are disabled elsewhere (`sync_agent_menu`);
             // ⌘⇧T falls through to reopening a window.
             if id == MENU_AGENT_NEW || id == MENU_AGENT_SLEEP || id == MENU_WINDOW_REOPEN_LAST {
@@ -2307,7 +2307,7 @@ fn main() {
                 }
             }
 
-            // ⌘W in an agent pane with a selected agent tab closes that, not the project tab.
+            // ⌘W in a tab with a selected agent tab closes that, not the project tab.
             if id == shell_core::menu::ids::CLOSE_TAB
                 && focused_tab_keys(app).is_some_and(|k| k.2.as_ref().is_some_and(agent_closable))
             {
@@ -2366,7 +2366,7 @@ fn main() {
                 }
                 return;
             }
-            // ⌥⌘W: ⌘W's unload, from an agent pane.
+            // ⌥⌘W: ⌘W's unload, from a tab with agent tabs.
             if id == MENU_TAB_CLOSE_PROJECT {
                 let _ = app.emit_to(
                     label.as_str(),
