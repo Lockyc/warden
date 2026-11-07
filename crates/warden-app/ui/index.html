@@ -266,6 +266,7 @@
       #summary > div { height: 18px; line-height: 18px; padding: 0 10px; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
       #summary .s-row { background: var(--s-shade); }
+      #summary .s-k { display: inline-block; width: 42px; opacity: 0.6; }
       #summary .s-title { background: var(--s-bar); font-weight: 600; }
       :root { --agents-w: 220px; --agents-narrow-w: 34px; }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
@@ -432,12 +433,12 @@
           </div>
         </aside>
         </div>
-        <!-- The summary block (a Rex tab's main pane only, with the agent list): three summary
-             rows, then the tab's title. Coloured by `summarySync`. -->
+        <!-- The summary block (a Rex tab's main pane only, with the agent list): the selected
+             agent's three rows, then the tab's title. Filled by `summarySync`. -->
         <div id="summary">
-          <div class="s-row"></div>
-          <div class="s-row"></div>
-          <div class="s-row"></div>
+          <div class="s-row" data-key="asked"><span class="s-k">asked</span><span class="s-v"></span></div>
+          <div class="s-row" data-key="doing"><span class="s-k">doing</span><span class="s-v"></span></div>
+          <div class="s-row" data-key="said"><span class="s-k">said</span><span class="s-v"></span></div>
           <div class="s-title"></div>
         </div>
         </div>
@@ -1076,16 +1077,25 @@
 
       // tab id → { title, colour } for the summary block, rebuilt on every snapshot.
       const summaryById = new Map();
-      // Paint the summary block for the agents tab: its title and `TabDto.colour`. Shown by the
-      // same `.agents` class as the column; runs on every column sync and every snapshot.
+      // Paint the summary block for the agents tab: its selected agent's asked / doing / said
+      // (`AgentRowDto`), its title and `TabDto.colour`. Shown by the same `.agents` class as the
+      // column; runs on every column sync, list render, `warden:agents` and snapshot.
       function summarySync() {
-        const s = summaryById.get(agentsTab());
+        const tab = agentsTab();
+        const s = summaryById.get(tab);
         if (!s) return;
         const el = document.getElementById("summary");
         el.style.setProperty("--s-bar", s.colour.bar_bg);
         el.style.setProperty("--s-shade", s.colour.shade_bg);
         el.style.setProperty("--s-fg", s.colour.fg);
         el.querySelector(".s-title").textContent = s.title;
+        const dto = agentLists.get(tab);
+        const sel = dto && dto.rows.find((r) => r.selected);
+        el.querySelectorAll(".s-row").forEach((row) => {
+          const text = (sel && sel[row.dataset.key]) || "";
+          row.querySelector(".s-v").textContent = text;
+          row.title = text; // the whole line, past the ellipsis
+        });
       }
 
       // The one toggle for the column (`#terminal-hole.agents`). Runs inside every `setActiveId`,
@@ -1247,6 +1257,7 @@
       // a folded group shows an amber dot in its header when a row in it needs you.
       function renderAgents() {
         const tab = agentsTab();
+        summarySync(); // the selected row's words
         const list = document.getElementById("agents-list");
         const closedBox = document.getElementById("agents-closed");
         list.textContent = "";
@@ -1929,7 +1940,9 @@
         const p = e.payload;
         if (!p || !p.tabId || !agentsById.has(p.tabId)) return;
         agentLists.set(p.tabId, p);
-        if (agentsTab() === p.tabId) refreshAgents();
+        if (agentsTab() !== p.tabId) return;
+        summarySync(); // even while a drag or rename holds the list still
+        refreshAgents();
       });
       // Tab ▸ Sleep Server, or ⏻ on a Rex tab, with something it can't bring back
       // (`warden:sleep-confirm`): confirm, listing every loss by name. Confirming sends those names
