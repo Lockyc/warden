@@ -217,6 +217,8 @@ pub struct TabDto {
     pub split_layout: Option<SplitLayoutDto>,
     /// The scratch column's tabs and blocks; `None` for an unsplit tab.
     pub column: Option<ColumnDto>,
+    /// Why the tab can't be popped out (`Registry::pop_out_blocked`), or `None`.
+    pub pop_out_blocked: Option<String>,
     /// The main pane holds agent tabs, so the chrome shows the agent tab list beside it.
     pub agents: bool,
     /// The project's colours for the agent pane's summary block and identity tile
@@ -535,10 +537,16 @@ impl Column {
         self.surfaces().next().is_some()
     }
 
+    /// How many panes a pop-out would have to carry: the blocks across every scratch tab, or the
+    /// tabs when they outnumber them.
+    fn pop_out_load(&self) -> usize {
+        self.slots().count().max(self.tabs.len())
+    }
+
     /// Whether a pop-out can carry this column: the detached window lays out one block beside
     /// the primary, so at most one scratch tab holding at most one block.
     fn fits_pop_out(&self) -> bool {
-        self.tabs.len() <= 1 && self.slots().count() <= 1
+        self.pop_out_load() <= 1
     }
 
     /// Close every live block, leaving `Detached` placeholders in place. Returns whether one was
@@ -1242,8 +1250,21 @@ impl Registry {
         true
     }
 
+    /// Why tab `id` can't be popped out, or `None`: its scratch column holds more than a pop-out
+    /// carries (`Column::fits_pop_out`, which [`detach`](Self::detach) enforces).
+    pub fn pop_out_blocked(&self, id: &str) -> Option<String> {
+        let column = self.tabs.iter().find(|t| t.id == id)?.column.as_ref()?;
+        (!column.fits_pop_out()).then(|| {
+            format!(
+                "Pop out carries one scratch pane; this tab has {}",
+                column.pop_out_load()
+            )
+        })
+    }
+
     /// Point keyboard focus at one of tab `id`'s panes. Returns false (and changes
-    /// nothing) if that pane does not exist.
+    /// nothing) if that pane does not exist. Focus given here supersedes a block still waiting
+    /// for it ([`focus_block`](Self::focus_block)).
     pub fn focus_pane(&mut self, id: &str, which: PaneIdx) -> bool {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
@@ -1252,6 +1273,9 @@ impl Registry {
             return false;
         }
         t.focused = which;
+        if let Some(c) = t.column.as_mut() {
+            c.pending_focus = None;
+        }
         true
     }
 
@@ -1644,6 +1668,7 @@ impl Registry {
                     size: s.size,
                 }),
                 column: t.column.as_ref().map(Column::dto),
+                pop_out_blocked: self.pop_out_blocked(&t.id),
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
                 colour: crate::project_colour::project_colour(&t.title, t.primary.spec.colour),
                 server: t.primary.spec.server.clone(),
@@ -2094,6 +2119,7 @@ impl Registry {
         if let Some(c) = t.column.as_mut().filter(|c| c.is_rex()) {
             c.rex = RexState::Idle;
             c.session = None;
+            c.pending_focus = None;
             c.tabs.retain(|tab| {
                 tab.blocks
                     .iter()
@@ -4708,6 +4734,40 @@ mod tests {
         assert_eq!(r.scratch_block_keys("t"), ["t::2#c"]);
         assert!(r.close_block("t", 0), "the last block: the column goes");
         assert!(!r.is_split("t"));
+    }
+
+    #[test]
+    fn pop_out_blocked_names_the_count() {
+        let three = landed_column(vec![scratch("w1", &["a", "b", "c"])]);
+        assert_eq!(
+            three.pop_out_blocked("t").as_deref(),
+            Some("Pop out carries one scratch pane; this tab has 3")
+        );
+        let one = landed_column(vec![scratch("w1", &["a"])]);
+        assert_eq!(one.pop_out_blocked("t"), None);
+        let two_tabs = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b"])]);
+        assert_eq!(
+            two_tabs.pop_out_blocked("t").as_deref(),
+            Some("Pop out carries one scratch pane; this tab has 2")
+        );
+        assert_eq!(one.pop_out_blocked("nope"), None);
+        assert_eq!(
+            three.tab_dtos()[0].pop_out_blocked.as_deref(),
+            three.pop_out_blocked("t").as_deref()
+        );
+    }
+
+    #[test]
+    fn a_pending_focus_dies_with_the_users_own_focus_and_the_unload() {
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
+        let pending = |r: &Registry| r.tabs[0].column.as_ref().unwrap().pending_focus.clone();
+        r.focus_block("t", "ghost");
+        assert_eq!(pending(&r).as_deref(), Some("ghost"));
+        assert!(r.focus_pane("t", PaneIdx::Block(0)));
+        assert_eq!(pending(&r), None);
+        r.focus_block("t", "ghost");
+        r.unload("t");
+        assert_eq!(pending(&r), None);
     }
 
     #[test]

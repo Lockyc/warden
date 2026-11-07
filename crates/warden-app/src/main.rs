@@ -127,6 +127,8 @@ struct AgentItems {
     pane_left: tauri::menu::MenuItem<tauri::Wry>,
     pane_right: tauri::menu::MenuItem<tauri::Wry>,
     scratch_new: tauri::menu::MenuItem<tauri::Wry>,
+    /// The spine's Pop Out Tab, disabled with its reason while the column is too full to carry.
+    pop_out: tauri::menu::MenuItem<tauri::Wry>,
 }
 
 #[cfg(target_os = "macos")]
@@ -267,7 +269,8 @@ fn focused_tab_keys(
 /// holds agent tabs, Sleep Agent Tab while its selected one can sleep, Reopen Last Closed while
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
-/// Tab while it has a Rex scratch column. Runs on every
+/// Tab while it has a Rex scratch column, and Pop Out Tab (titled with the reason) unless the
+/// column is too full to carry. Runs on every
 /// menu build, window focus, pane focus, tab activation and agent list change, so it also marks
 /// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
 /// callers must not hold it.
@@ -284,6 +287,12 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     let list = keys.as_ref().and_then(|k| k.2.as_ref());
     let reopen_window = reopen_target(app).is_some();
     let scratch = focused_scratch_column(app).is_some();
+    let pop_out_blocked = focused_label(app).and_then(|label| {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        let reg = &m.windows.get(&label)?.registry;
+        reg.pop_out_blocked(reg.active_tab()?)
+    });
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -323,6 +332,11 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             .pane_right
             .set_enabled(keys.as_ref().is_some_and(|k| k.4.is_some()));
         let _ = i.scratch_new.set_enabled(scratch);
+        let _ = i.pop_out.set_enabled(pop_out_blocked.is_none());
+        let _ = i.pop_out.set_text(match &pop_out_blocked {
+            Some(reason) => format!("Pop Out Tab ({reason})"),
+            None => "Pop Out Tab".to_owned(),
+        });
     }
 }
 
@@ -603,6 +617,7 @@ fn build_app_menu(
             pane_left: pane_left_item,
             pane_right: pane_right_item,
             scratch_new: scratch_new_item,
+            pop_out: spine.pop_out_tab.clone(),
         });
     }
     if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
@@ -1103,6 +1118,10 @@ fn pop_out_tab(
             .windows
             .get_mut(&origin_label)
             .ok_or_else(|| "window not found".to_string())?;
+        // Before the open below: a refused column shouldn't wake a cold tab first.
+        if let Some(reason) = ws.registry.pop_out_blocked(&id) {
+            return Err(reason);
+        }
         // Bring a never-opened (cold) tab live first, so popping the ⤢ affordance — which the
         // sidebar shows on EVERY row, not just loaded ones — works from any tab rather than
         // erroring on a cold one. Spawning happens in the origin window; `detach` then extracts

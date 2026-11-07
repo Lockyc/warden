@@ -1785,6 +1785,7 @@ mod tests {
             split: false,
             split_layout: None,
             column: None,
+            pop_out_blocked: None,
             agents: false,
             colour: crate::project_colour::project_colour(id, None),
             server: None,

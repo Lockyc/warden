@@ -1225,6 +1225,7 @@
             suspendable: !!t.has_suspend,
             startable: !!t.has_cmd, // presence dot can restart a dead session by re-running `cmd`
             warn: t.warn || false, // the reason the tab can't open: the ⚠'s hover text
+            popOutBlocked: t.pop_out_blocked || null, // why ⤢ can't carry the column; chrome-core ignores it for now (docs/FOLLOWUPS.md)
           })),
         };
       }

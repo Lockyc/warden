@@ -124,3 +124,8 @@ asserts the gate but passes identically against un-gated code: in the test proce
 `Registry::new(null_mut(), …)` does not segfault — and `is_spawned` is therefore false either way. **The gate is
 correct by inspection only.** Pinning it needs a fake surface behind the `TerminalSurface` seam; that seam exists
 precisely for this, and a test double is the unlock.
+
+## Pop-out of a stacked scratch column
+
+- **A tab whose scratch column holds more than one pane or scratch tab can't be popped out** (`Registry::detach` refuses; Tab ▸ Pop Out Tab is disabled with the reason). Unlock: shell-core's `DetachSpec` taking a layout instead of `panes: Vec<f64>`, so the detached window can lay out a stack. Deferred because the detach page only knows one hole beside the primary.
+- **The ⤢ control stays clickable on such a tab** — chrome-core's row renders it without a disabled state or tooltip reason. `TabDto.pop_out_blocked` already reaches the chrome as `popOutBlocked`; the unlock is chrome-core disabling ⤢ with that reason as its title. Until then the click returns the reason as the command's error.
