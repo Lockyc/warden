@@ -105,6 +105,13 @@ pub(super) struct SessionWindows {
     pub(super) active: Option<String>,
 }
 
+impl SessionWindows {
+    /// The held view's `(connection gen, revision)` — ordered across reconnects.
+    pub(super) fn revision(&self) -> (u64, u64) {
+        (self.gen, self.revision)
+    }
+}
+
 /// A value as of an event or response `seq` on connection `gen`.
 #[derive(Debug, Default)]
 struct Fact<T> {

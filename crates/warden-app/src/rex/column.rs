@@ -35,6 +35,9 @@ pub struct ColumnOpened {
     pub session_id: String,
     pub windows: Vec<ScratchWindow>,
     pub active: Option<String>,
+    /// The view it was read from, as `(connection gen, view revision)`: ordered, so a snapshot
+    /// read before a newer one can be told apart when it lands after it.
+    pub revision: (u64, u64),
 }
 
 /// What a block's exit did to its column.
@@ -149,6 +152,7 @@ impl RexHub {
             session_id: session_id.to_owned(),
             windows: scratch_windows(&w.list),
             active: w.active.clone(),
+            revision: w.revision(),
         })
     }
 

@@ -464,6 +464,8 @@ struct Column {
     /// A Rex column's open in flight (`Idle` / `Opening` only: the answer lands in `session`).
     rex: RexState,
     session: Option<(rex_client::Endpoint, String)>,
+    /// The revision of the snapshot `tabs` follows ([`ColumnOpened::revision`]).
+    revision: (u64, u64),
     tabs: Vec<ScratchTab>,
     selected: usize,
     /// A Rex block to take focus once the shown scratch tab holds it ([`Registry::focus_block`]).
@@ -488,6 +490,7 @@ impl Column {
             spec,
             rex: RexState::Idle,
             session: None,
+            revision: (0, 0),
             tabs,
             selected: 0,
             pending_focus: None,
@@ -581,6 +584,7 @@ impl Column {
             .flat_map(|t| t.blocks)
             .collect();
         self.session = Some((opened.endpoint, opened.session_id));
+        self.revision = opened.revision;
         for w in opened.windows {
             let blocks = w
                 .layout
@@ -2344,7 +2348,8 @@ impl Registry {
     /// surviving blocks keep their surfaces, gone ones close, new ones come up cold — and spawn
     /// at once when the tab is on screen — and the selection stays on its window or leans to its
     /// neighbour ([`Column::sync`]). A tab with no Rex column, or whose column's open is still in
-    /// flight or not yet made, is left for that open to land.
+    /// flight or not yet made, is left for that open to land; a snapshot older than the one the
+    /// column follows — read on a worker before it, posted after — is ignored.
     pub fn sync_column(&mut self, id: &str, opened: ColumnOpened) {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return;
@@ -2352,7 +2357,7 @@ impl Registry {
         let Some(column) = self.tabs[idx].column.as_mut() else {
             return;
         };
-        if !column.is_rex() || column.session.is_none() {
+        if !column.is_rex() || column.session.is_none() || opened.revision < column.revision {
             return;
         }
         column.sync(opened);
@@ -4492,6 +4497,7 @@ mod tests {
             session_id: "session:col".into(),
             windows,
             active: None,
+            revision: (0, 0),
         }
     }
 
@@ -4558,6 +4564,24 @@ mod tests {
             r.locate_key("t::2#b"),
             Some(("t".to_string(), PaneIdx::Block(1), None))
         );
+    }
+
+    #[test]
+    fn sync_column_ignores_a_snapshot_older_than_the_one_it_holds() {
+        let at = |revision, windows| ColumnOpened {
+            revision,
+            ..opened(windows)
+        };
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
+        r.sync_column("t", at((1, 5), vec![scratch("w1", &["a", "n"])]));
+        // A worker's read from before that view lands after it.
+        r.sync_column("t", at((1, 4), vec![scratch("w1", &["a"])]));
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#a", "t::2#n"]);
+        // The same view again applies; so does any from a newer connection.
+        r.sync_column("t", at((1, 5), vec![scratch("w1", &["a", "n", "m"])]));
+        assert_eq!(r.scratch_block_keys("t").len(), 3);
+        r.sync_column("t", at((2, 1), vec![scratch("w1", &["a"])]));
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#a"]);
     }
 
     #[test]
