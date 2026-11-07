@@ -71,18 +71,24 @@ const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 
-/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓), Fork
-/// Agent Tab (⌥⌘T) and Close Agent Tab (⌥⌘W): the selected agent tab of the focused window's
-/// active tab, enabled only while its main pane has keyboard focus and the step can act
-/// ([`sync_agent_menu`]) — a disabled item leaves its chord to the terminal, so ⌘↑ / ⌘↓ still
-/// jump between prompts in the scratch shell. Close's id doubles as the event its chrome runs the
-/// row's Close from, confirm included.
+/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓) and Fork
+/// Agent Tab (⌥⌘T): the selected agent tab of the focused window's active tab, enabled only while
+/// its main pane has keyboard focus and the step can act ([`sync_agent_menu`]) — a disabled item
+/// leaves its chord to the terminal, so ⌘↑ / ⌘↓ still jump between prompts in the scratch shell.
 const MENU_AGENT_PREV: &str = "warden:agent-prev";
 const MENU_AGENT_NEXT: &str = "warden:agent-next";
 const MENU_AGENT_MOVE_UP: &str = "warden:agent-move-up";
 const MENU_AGENT_MOVE_DOWN: &str = "warden:agent-move-down";
-const MENU_AGENT_CLOSE: &str = "warden:agent-close";
 const MENU_AGENT_FORK: &str = "warden:agent-fork";
+
+/// ⌘W in an agent pane with a selected agent tab: the spine's Close Tab, retitled Close Agent Tab
+/// by [`sync_agent_menu`], closes that agent instead of unloading the project tab. The event the
+/// chrome runs the row's own Close from, confirm included.
+const EVENT_AGENT_CLOSE: &str = "warden:agent-close";
+
+/// Tab ▸ Close Project Tab (⌥⌘W): ⌘W's unload, kept on a key while an agent pane holds ⌘W —
+/// enabled only there.
+const MENU_TAB_CLOSE_PROJECT: &str = "warden:close-project-tab";
 
 /// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
 /// enabled while there is one ([`registry::Registry::pane_to`]).
@@ -101,7 +107,9 @@ struct AgentItems {
     next: tauri::menu::MenuItem<tauri::Wry>,
     move_up: tauri::menu::MenuItem<tauri::Wry>,
     move_down: tauri::menu::MenuItem<tauri::Wry>,
-    close: tauri::menu::MenuItem<tauri::Wry>,
+    /// The spine's Close Tab (⌘W), retitled while it closes an agent tab.
+    close_tab: tauri::menu::MenuItem<tauri::Wry>,
+    close_project: tauri::menu::MenuItem<tauri::Wry>,
     fork: tauri::menu::MenuItem<tauri::Wry>,
     pane_left: tauri::menu::MenuItem<tauri::Wry>,
     pane_right: tauri::menu::MenuItem<tauri::Wry>,
@@ -267,9 +275,12 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let _ = i
             .move_down
             .set_enabled(list.is_some_and(|l| agent_move(l, Step::Next).is_some()));
-        let _ = i
-            .close
-            .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected)));
+        let _ = i.close_tab.set_text(if list.is_some_and(agent_closable) {
+            "Close Agent Tab"
+        } else {
+            "Close Tab"
+        });
+        let _ = i.close_project.set_enabled(list.is_some());
         let _ = i
             .fork
             .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
@@ -280,6 +291,12 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             .pane_right
             .set_enabled(keys.as_ref().is_some_and(|k| k.4.is_some()));
     }
+}
+
+/// Whether ⌘W closes an agent tab in this list: one is selected.
+#[cfg(target_os = "macos")]
+fn agent_closable(list: &rex::lifecycle::AgentListDto) -> bool {
+    list.rows.iter().any(|r| r.selected)
 }
 
 /// Run the agent-step or pane item `id` on the focused window's active tab (main thread). A step
@@ -332,12 +349,12 @@ fn agent_key(app: &tauri::AppHandle, id: &str) {
                     ),
                     None => Ok(()),
                 },
-                // The chrome runs the row's own Close, so an agent with nothing to resume asks
+                // ⌘W: the chrome runs the row's own Close, so an agent with nothing to resume asks
                 // first exactly as from its ⋯ menu.
                 _ => {
                     let _ = app.emit_to(
                         label.as_str(),
-                        MENU_AGENT_CLOSE,
+                        EVENT_AGENT_CLOSE,
                         serde_json::json!({ "label": label, "tabId": tab }),
                     );
                     Ok(())
@@ -452,7 +469,7 @@ fn build_app_menu(
         "Move Agent Tab Down",
         "Alt+Shift+Cmd+ArrowDown",
     )?;
-    let agent_close_item = disabled(MENU_AGENT_CLOSE, "Close Agent Tab", "Alt+Cmd+KeyW")?;
+    let close_project_item = disabled(MENU_TAB_CLOSE_PROJECT, "Close Project Tab", "Alt+Cmd+KeyW")?;
     let agent_fork_item = disabled(MENU_AGENT_FORK, "Fork Agent Tab", "Alt+Cmd+KeyT")?;
     let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
     let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
@@ -493,7 +510,7 @@ fn build_app_menu(
                 &agent_down_item,
                 &agent_fork_item,
                 &agent_sleep_item,
-                &agent_close_item,
+                &close_project_item,
                 &server_menu,
             ],
         ],
@@ -531,7 +548,8 @@ fn build_app_menu(
             next: agent_next_item,
             move_up: agent_up_item,
             move_down: agent_down_item,
-            close: agent_close_item,
+            close_tab: spine.close_tab.clone(),
+            close_project: close_project_item,
             fork: agent_fork_item,
             pane_left: pane_left_item,
             pane_right: pane_right_item,
@@ -2192,14 +2210,21 @@ fn main() {
                 }
             }
 
-            // ⌘↑ / ⌘↓ / ⌥⇧⌘↑ / ⌥⇧⌘↓ / ⌥⌘W on the agent list, ⌥⌘← / ⌥⌘→ across the panes: each
+            // ⌘W in an agent pane with a selected agent tab closes that, not the project tab.
+            if id == shell_core::menu::ids::CLOSE_TAB
+                && focused_tab_keys(app).is_some_and(|k| k.2.as_ref().is_some_and(agent_closable))
+            {
+                agent_key(app, EVENT_AGENT_CLOSE);
+                return;
+            }
+
+            // ⌘↑ / ⌘↓ / ⌥⇧⌘↑ / ⌥⇧⌘↓ / ⌥⌘T on the agent list, ⌥⌘← / ⌥⌘→ across the panes: each
             // acts only when `sync_agent_menu` enabled it, so the step is read again here.
             if [
                 MENU_AGENT_PREV,
                 MENU_AGENT_NEXT,
                 MENU_AGENT_MOVE_UP,
                 MENU_AGENT_MOVE_DOWN,
-                MENU_AGENT_CLOSE,
                 MENU_AGENT_FORK,
                 MENU_PANE_LEFT,
                 MENU_PANE_RIGHT,
@@ -2240,6 +2265,15 @@ fn main() {
                         serde_json::json!({ "label": label, "message": message }),
                     );
                 }
+                return;
+            }
+            // ⌥⌘W: ⌘W's unload, from an agent pane.
+            if id == MENU_TAB_CLOSE_PROJECT {
+                let _ = app.emit_to(
+                    label.as_str(),
+                    "warden:unload-tab",
+                    serde_json::json!({ "label": label }),
+                );
                 return;
             }
             if id == MENU_TAB_SPLIT || id == MENU_TAB_SUSPEND || id == MENU_TAB_TERMINATE {

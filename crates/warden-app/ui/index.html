@@ -1120,8 +1120,8 @@
           }, AGENT_ARM_LAPSE_MS);
         }
       }
-      // ⌥⌘W: close at once when the agent can come back from Closed; one that can't (it never
-      // reported how to resume) arms its confirm, where ☠ — or ⌥⌘W again — ends it for good.
+      // ⌘W: close at once when the agent can come back from Closed; one that can't (it never
+      // reported how to resume) arms its confirm, where ☠ — or ⌘W again — ends it for good.
       function agentClose(tab, r) {
         if (!r.sleepReason) return agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: false });
         if (agentControls.armed !== r.id) return agentArm(r.id, true);
@@ -1940,7 +1940,7 @@
         const r = dto && dto.rows.find((r) => r.selected);
         if (r) agentCall("agent_sleep", { tabId: e.payload.tabId, recordId: r.id });
       });
-      // ⌥⌘W: the selected agent tab's own Close, so one with nothing to resume asks first.
+      // ⌘W in an agent pane: the selected agent tab's own Close, so one with nothing to resume asks first.
       listen("warden:agent-close", (e) => {
         if (!forMe(e) || !e.payload.tabId) return;
         const dto = agentLists.get(e.payload.tabId);
