@@ -766,7 +766,7 @@ impl WindowManager {
                         }
                     }
                 }
-                (crate::registry::PaneIdx::Secondary, _) => {
+                (crate::registry::PaneIdx::Block(_), _) => {
                     ws.registry.close_secondary(&tab_id);
                     drop(lock);
                     // `warden:tab-exited` means "the whole tab went cold" to the chrome
@@ -810,7 +810,7 @@ impl WindowManager {
             }
         }
         match which {
-            crate::registry::PaneIdx::Secondary => {
+            crate::registry::PaneIdx::Block(_) => {
                 let Some((origin_label, tab_id)) = lock.close_detached_secondary(&dlabel) else {
                     return;
                 };
@@ -954,7 +954,7 @@ impl WindowManager {
             if ds.surface.id() == surface_id {
                 Some((label.clone(), crate::registry::PaneIdx::Primary))
             } else if ds.secondary.as_ref().is_some_and(|s| s.id() == surface_id) {
-                Some((label.clone(), crate::registry::PaneIdx::Secondary))
+                Some((label.clone(), crate::registry::PaneIdx::Block(0)))
             } else {
                 None
             }
@@ -994,7 +994,7 @@ impl WindowManager {
     /// left-side split's first hole lands on the SECONDARY. A single-hole detached window's
     /// page omits `pane` entirely, which `set_hole_rect` reads as hole 0 — the primary, once
     /// the secondary is gone — so an unsplit pop-out lands here exactly as it did before there
-    /// were panes at all. A rect resolving to `Secondary` for a window that carries no second
+    /// were panes at all. A rect resolving to `Block(0)` for a window that carries no second
     /// surface is dropped rather than applied to the primary: it can only mean the page and
     /// this map disagree about how many panes there are, and re-pointing the one live
     /// surface at the other hole would move the terminal the user is typing in. (Between
@@ -1013,7 +1013,7 @@ impl WindowManager {
         let which = crate::registry::PaneIdx::from_hole(hole, ds.mirrored());
         let s = match which {
             crate::registry::PaneIdx::Primary => &ds.surface,
-            crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
+            crate::registry::PaneIdx::Block(_) => ds.secondary.as_ref()?,
         };
         s.set_frame(rect);
         crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
@@ -1033,7 +1033,7 @@ impl WindowManager {
         let ds = self.detached.get(&label)?;
         let s = match which {
             crate::registry::PaneIdx::Primary => &ds.surface,
-            crate::registry::PaneIdx::Secondary => ds.secondary.as_ref()?,
+            crate::registry::PaneIdx::Block(_) => ds.secondary.as_ref()?,
         };
         crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
     }

@@ -1143,7 +1143,7 @@ fn pop_out_tab(
                 use crate::registry::PaneIdx;
                 (
                     hole_rects[PaneIdx::Primary.hole(secondary_left)],
-                    Some(hole_rects[PaneIdx::Secondary.hole(secondary_left)]),
+                    Some(hole_rects[PaneIdx::Block(0).hole(secondary_left)]),
                 )
             }
         };
@@ -2747,7 +2747,7 @@ mod tests {
             // The primary's own hole carries the primary's share, whichever side it sits.
             use crate::registry::PaneIdx;
             assert_eq!(v[PaneIdx::Primary.hole(mirrored)], 0.42);
-            assert_eq!(v[PaneIdx::Secondary.hole(mirrored)], 1.0 - 0.42);
+            assert_eq!(v[PaneIdx::Block(0).hole(mirrored)], 1.0 - 0.42);
         }
     }
 

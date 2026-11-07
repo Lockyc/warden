@@ -237,28 +237,29 @@ enum TabSlot {
     Detached,
 }
 
-/// Which of a tab's (at most two) panes an operation means.
+/// Which of a tab's panes an operation means: its main pane, or block `i` (layout order) of its
+/// column's selected scratch tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneIdx {
     Primary,
-    Secondary,
+    Block(usize),
 }
 
 impl PaneIdx {
-    /// The wire index the chrome and `set_hole_rect` use: 0 = primary, 1 = secondary. The one
-    /// home for that mapping in both directions — every command and event that carries a pane
+    /// The wire index the chrome and `set_hole_rect` use: 0 = primary, `1 + i` = block `i`. The
+    /// one home for that mapping in both directions — every command and event that carries a pane
     /// number goes through these two.
     pub fn index(self) -> usize {
         match self {
             PaneIdx::Primary => 0,
-            PaneIdx::Secondary => 1,
+            PaneIdx::Block(i) => 1 + i,
         }
     }
     /// Inverse of [`index`](Self::index). Anything that isn't `1` is the primary rather than an
     /// error: a bad index must never leave a hole unpositioned or a click unrouted.
     pub fn from_index(i: usize) -> Self {
         if i == 1 {
-            PaneIdx::Secondary
+            PaneIdx::Block(0)
         } else {
             PaneIdx::Primary
         }
@@ -277,20 +278,18 @@ impl PaneIdx {
     pub fn hole(self, mirrored: bool) -> usize {
         match (self, mirrored) {
             (PaneIdx::Primary, true) => 1,
-            (PaneIdx::Secondary, true) => 0,
+            (PaneIdx::Block(_), true) => 0,
             (which, false) => which.index(),
         }
     }
-    /// Inverse of [`hole`](Self::hole): which pane a detached window's hole `i` reports for.
-    /// Same floor as [`from_index`](Self::from_index) — anything past the second hole is the
-    /// primary, never an error — so a stale rect for a hole that has since collapsed can't
-    /// leave a surface unpositioned.
+    /// Inverse of [`hole`](Self::hole): which pane a detached window's hole `i` reports for. A
+    /// pop-out carries at most one block, so anything past the second hole is the primary, never
+    /// an error — a stale rect for a hole that has since collapsed can't leave a surface
+    /// unpositioned.
     pub fn from_hole(i: usize, mirrored: bool) -> Self {
         match (i, mirrored) {
-            (0, true) => PaneIdx::Secondary,
-            (1, true) => PaneIdx::Primary,
-            (i, false) => PaneIdx::from_index(i),
-            (_, true) => PaneIdx::Primary,
+            (0, true) | (1, false) => PaneIdx::Block(0),
+            _ => PaneIdx::Primary,
         }
     }
 }
@@ -437,7 +436,7 @@ pub(crate) fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> 
     primary.server.as_ref()?;
     Some(match which {
         PaneIdx::Primary => primary.id.clone(),
-        PaneIdx::Secondary => secondary_spec(primary, &primary.id).id,
+        PaneIdx::Block(_) => secondary_spec(primary, &primary.id).id,
     })
 }
 
@@ -473,7 +472,7 @@ fn hosts_agents(primary: &TabSpec, which: PaneIdx) -> bool {
 fn session_label(title: &str, which: PaneIdx) -> String {
     let suffix = match which {
         PaneIdx::Primary => " · main",
-        PaneIdx::Secondary => " · split",
+        PaneIdx::Block(_) => " · split",
     };
     let room = crate::rex::SESSION_LABEL_MAX.saturating_sub(suffix.chars().count());
     title.chars().take(room).chain(suffix.chars()).collect()
@@ -517,10 +516,10 @@ fn pane_toward(split: bool, secondary_left: bool, focused: PaneIdx, side: Side) 
         return None;
     }
     let other = match focused {
-        PaneIdx::Primary => PaneIdx::Secondary,
-        PaneIdx::Secondary => PaneIdx::Primary,
+        PaneIdx::Primary => PaneIdx::Block(0),
+        PaneIdx::Block(_) => PaneIdx::Primary,
     };
-    let other_is_left = (other == PaneIdx::Secondary) == secondary_left;
+    let other_is_left = (other == PaneIdx::Block(0)) == secondary_left;
     (other_is_left == (side == Side::Left)).then_some(other)
 }
 
@@ -546,13 +545,15 @@ impl TabEntry {
     fn pane(&self, which: PaneIdx) -> Option<&Pane> {
         match which {
             PaneIdx::Primary => Some(&self.primary),
-            PaneIdx::Secondary => self.secondary.as_ref(),
+            PaneIdx::Block(0) => self.secondary.as_ref(),
+            PaneIdx::Block(_) => None,
         }
     }
     fn pane_mut(&mut self, which: PaneIdx) -> Option<&mut Pane> {
         match which {
             PaneIdx::Primary => Some(&mut self.primary),
-            PaneIdx::Secondary => self.secondary.as_mut(),
+            PaneIdx::Block(0) => self.secondary.as_mut(),
+            PaneIdx::Block(_) => None,
         }
     }
     /// Every live pane, primary first. The iteration order is load-bearing for teardown:
@@ -569,7 +570,7 @@ impl TabEntry {
     /// resulting `.focus()` call) is what this file's null-window tests can pin.
     fn panes_indexed(&self) -> impl Iterator<Item = (PaneIdx, &Pane)> {
         std::iter::once((PaneIdx::Primary, &self.primary))
-            .chain(self.secondary.as_ref().map(|p| (PaneIdx::Secondary, p)))
+            .chain(self.secondary.as_ref().map(|p| (PaneIdx::Block(0), p)))
     }
 }
 
@@ -656,7 +657,7 @@ impl Registry {
             let idx = self.tabs.len() - 1;
             self.split(&spec.id);
             if self.tabs[idx].primary.live() {
-                match self.ensure_spawned(idx, PaneIdx::Secondary, true) {
+                match self.ensure_spawned(idx, PaneIdx::Block(0), true) {
                     Ok(_) => {
                         if let Some(TabSlot::Spawned(s)) =
                             self.tabs[idx].secondary.as_ref().map(|p| &p.slot)
@@ -1379,7 +1380,7 @@ impl Registry {
     fn rect_for(&self, which: PaneIdx) -> PixelRect {
         match which {
             PaneIdx::Primary => self.last_rect,
-            PaneIdx::Secondary => self.last_rect_secondary,
+            PaneIdx::Block(_) => self.last_rect_secondary,
         }
     }
 
@@ -1399,7 +1400,7 @@ impl Registry {
     /// call** (the pane was cold) — the signal `activate` forwards so a caller can arm a
     /// session-start await only when a fresh surface actually ran its `initial_input` (an
     /// already-live pane starts nothing). `Ok(false)`, never a panic, if the pane doesn't exist
-    /// (e.g. `Secondary` on an unsplit tab).
+    /// (e.g. `Block(0)` on an unsplit tab).
     ///
     /// A Rex pane (its spec names a `server`) needs its session first, and finding that is
     /// network work this (main) thread never waits on: a cold Rex pane with no session in hand
@@ -1649,7 +1650,7 @@ impl Registry {
                     Ok(())
                 };
                 if primary_live(self) {
-                    let _ = self.ensure_spawned(idx, PaneIdx::Secondary, true);
+                    let _ = self.ensure_spawned(idx, PaneIdx::Block(0), true);
                 }
                 for p in self.tabs[idx].panes() {
                     p.surfaces().for_each(|s| s.hide());
@@ -1880,7 +1881,7 @@ impl Registry {
     fn spawn_panes(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
         let primary = self.ensure_spawned(idx, PaneIdx::Primary, auto);
         if self.tabs[idx].primary.live() && self.tabs[idx].secondary.is_some() {
-            let _ = self.ensure_spawned(idx, PaneIdx::Secondary, auto);
+            let _ = self.ensure_spawned(idx, PaneIdx::Block(0), auto);
         }
         primary
     }
@@ -2068,7 +2069,7 @@ impl Registry {
     pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) -> Vec<PaneSize> {
         match which {
             PaneIdx::Primary => self.last_rect = rect,
-            PaneIdx::Secondary => self.last_rect_secondary = rect,
+            PaneIdx::Block(_) => self.last_rect_secondary = rect,
         }
         let Some(idx) = self
             .active
@@ -2100,7 +2101,7 @@ impl Registry {
             };
             for (which, rect) in [
                 (PaneIdx::Primary, Some(primary)),
-                (PaneIdx::Secondary, secondary),
+                (PaneIdx::Block(0), secondary),
             ] {
                 let t = &self.tabs[idx];
                 let Some(rect) = rect.filter(|r| t.pane(which).is_some_and(|p| p.rect != Some(*r)))
@@ -2537,7 +2538,7 @@ mod tests {
         assert!(r.detach("t0").is_none());
         assert!(!r.is_pane_detached("t0", PaneIdx::Primary));
         assert!(
-            !r.is_pane_detached("t0", PaneIdx::Secondary),
+            !r.is_pane_detached("t0", PaneIdx::Block(0)),
             "the second pane must not be marked Detached when nothing was detached"
         );
         assert!(r.is_split("t0"), "the tab is still split, just cold");
@@ -2549,14 +2550,14 @@ mod tests {
         let _ = r.add(&spec("t0", "/tmp"), false);
         r.split("t0");
         r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Secondary);
+        r.force_detached_pane("t0", PaneIdx::Block(0));
         assert!(
             r.detach("t0").is_none(),
             "nothing live here to extract a second time"
         );
         assert!(r.is_pane_detached("t0", PaneIdx::Primary));
         assert!(
-            r.is_pane_detached("t0", PaneIdx::Secondary),
+            r.is_pane_detached("t0", PaneIdx::Block(0)),
             "both placeholders must survive — their surfaces are in the popped-out window"
         );
     }
@@ -2569,7 +2570,7 @@ mod tests {
         let _ = r.add(&spec("t0", "/tmp"), false);
         r.split("t0");
         r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Secondary);
+        r.force_detached_pane("t0", PaneIdx::Block(0));
         let dto = r.tab_dtos().into_iter().find(|d| d.id == "t0").unwrap();
         assert!(dto.detached);
         assert!(!dto.spawned);
@@ -2582,11 +2583,11 @@ mod tests {
         let _ = r.add(&spec("t0", "/tmp"), false);
         r.split("t0");
         r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Secondary);
+        r.force_detached_pane("t0", PaneIdx::Block(0));
         assert_eq!(r.unload("t0"), None, "no local surfaces to kill");
         assert!(r.is_pane_detached("t0", PaneIdx::Primary));
         assert!(
-            r.is_pane_detached("t0", PaneIdx::Secondary),
+            r.is_pane_detached("t0", PaneIdx::Block(0)),
             "a Detached secondary must not fall back to Cold — that would make it look \
              locally respawnable and duplicate the popped-out surface"
         );
@@ -2710,7 +2711,7 @@ mod tests {
         r.add(&spec("t0", "/tmp"), false).unwrap();
         r.mark_detached("t0", true);
         assert!(r.is_pane_detached("t0", PaneIdx::Primary));
-        assert!(r.is_pane_detached("t0", PaneIdx::Secondary));
+        assert!(r.is_pane_detached("t0", PaneIdx::Block(0)));
         assert_eq!(
             r.secondary_spec_for_test("t0").map(|s| s.id),
             Some("t0::2".to_string())
@@ -3068,8 +3069,8 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         r.split("a");
-        assert!(r.focus_pane("a", PaneIdx::Secondary));
-        assert_eq!(r.focused_pane("a"), Some(PaneIdx::Secondary));
+        assert!(r.focus_pane("a", PaneIdx::Block(0)));
+        assert_eq!(r.focused_pane("a"), Some(PaneIdx::Block(0)));
         r.close_secondary("a");
         assert_eq!(r.focused_pane("a"), Some(PaneIdx::Primary));
     }
@@ -3090,7 +3091,7 @@ mod tests {
     fn focusing_a_missing_secondary_is_refused() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
-        assert!(!r.focus_pane("a", PaneIdx::Secondary));
+        assert!(!r.focus_pane("a", PaneIdx::Block(0)));
         assert_eq!(r.focused_pane("a"), Some(PaneIdx::Primary));
     }
 
@@ -3123,7 +3124,7 @@ mod tests {
         let idxs: Vec<PaneIdx> = t.panes_indexed().map(|(w, _)| w).collect();
         assert_eq!(
             idxs,
-            vec![PaneIdx::Primary, PaneIdx::Secondary],
+            vec![PaneIdx::Primary, PaneIdx::Block(0)],
             "split tab: primary then secondary, in that order"
         );
         for (which, pane) in t.panes_indexed() {
@@ -3169,9 +3170,9 @@ mod tests {
             height: 40.0,
         };
         r.set_pane_frame(PaneIdx::Primary, wide);
-        r.set_pane_frame(PaneIdx::Secondary, narrow);
+        r.set_pane_frame(PaneIdx::Block(0), narrow);
         assert_eq!(r.last_rect_for_test(PaneIdx::Primary), wide);
-        assert_eq!(r.last_rect_for_test(PaneIdx::Secondary), narrow);
+        assert_eq!(r.last_rect_for_test(PaneIdx::Block(0)), narrow);
     }
 
     #[test]
@@ -3233,7 +3234,7 @@ mod tests {
             "the active tab's hole is set_pane_frame's"
         );
         assert_eq!(r.tab_rect_for_test("b", PaneIdx::Primary), measured);
-        assert_eq!(r.tab_rect_for_test("b", PaneIdx::Secondary), measured);
+        assert_eq!(r.tab_rect_for_test("b", PaneIdx::Block(0)), measured);
     }
 
     // --- surface→tab routing ------------------------------------------------------
@@ -3241,15 +3242,16 @@ mod tests {
     #[test]
     fn pane_index_round_trips_and_floors_to_primary() {
         assert_eq!(PaneIdx::Primary.index(), 0);
-        assert_eq!(PaneIdx::Secondary.index(), 1);
+        assert_eq!(PaneIdx::Block(0).index(), 1);
         assert_eq!(PaneIdx::from_index(0), PaneIdx::Primary);
-        assert_eq!(PaneIdx::from_index(1), PaneIdx::Secondary);
+        assert_eq!(PaneIdx::from_index(1), PaneIdx::Block(0));
         assert_eq!(PaneIdx::from_index(7), PaneIdx::Primary, "never an error");
     }
 
     #[test]
     fn pane_toward_is_by_screen_side() {
-        use PaneIdx::{Primary, Secondary};
+        use PaneIdx::Primary;
+        const SECONDARY: PaneIdx = PaneIdx::Block(0);
         assert_eq!(
             pane_toward(false, false, Primary, Side::Right),
             None,
@@ -3263,21 +3265,21 @@ mod tests {
         // A right split: primary left, secondary right.
         assert_eq!(
             pane_toward(true, false, Primary, Side::Right),
-            Some(Secondary)
+            Some(SECONDARY)
         );
         assert_eq!(pane_toward(true, false, Primary, Side::Left), None);
         assert_eq!(
-            pane_toward(true, false, Secondary, Side::Left),
+            pane_toward(true, false, SECONDARY, Side::Left),
             Some(Primary)
         );
         // A left split: secondary left, primary right.
         assert_eq!(
             pane_toward(true, true, Primary, Side::Left),
-            Some(Secondary)
+            Some(SECONDARY)
         );
         assert_eq!(pane_toward(true, true, Primary, Side::Right), None);
         assert_eq!(
-            pane_toward(true, true, Secondary, Side::Right),
+            pane_toward(true, true, SECONDARY, Side::Right),
             Some(Primary)
         );
     }
@@ -3286,9 +3288,9 @@ mod tests {
     fn hole_mapping_is_identity_unless_mirrored() {
         // Unmirrored (secondary on the right, or one hole): hole i IS pane i.
         assert_eq!(PaneIdx::Primary.hole(false), 0);
-        assert_eq!(PaneIdx::Secondary.hole(false), 1);
+        assert_eq!(PaneIdx::Block(0).hole(false), 1);
         assert_eq!(PaneIdx::from_hole(0, false), PaneIdx::Primary);
-        assert_eq!(PaneIdx::from_hole(1, false), PaneIdx::Secondary);
+        assert_eq!(PaneIdx::from_hole(1, false), PaneIdx::Block(0));
         assert_eq!(
             PaneIdx::from_hole(7, false),
             PaneIdx::Primary,
@@ -3296,15 +3298,15 @@ mod tests {
         );
         // Mirrored (a `side = "left"` split): the secondary takes the FIRST hole.
         assert_eq!(PaneIdx::Primary.hole(true), 1);
-        assert_eq!(PaneIdx::Secondary.hole(true), 0);
-        assert_eq!(PaneIdx::from_hole(0, true), PaneIdx::Secondary);
+        assert_eq!(PaneIdx::Block(0).hole(true), 0);
+        assert_eq!(PaneIdx::from_hole(0, true), PaneIdx::Block(0));
         assert_eq!(PaneIdx::from_hole(1, true), PaneIdx::Primary);
         assert_eq!(
             PaneIdx::from_hole(7, true),
             PaneIdx::Primary,
             "never an error"
         );
-        for which in [PaneIdx::Primary, PaneIdx::Secondary] {
+        for which in [PaneIdx::Primary, PaneIdx::Block(0)] {
             for mirrored in [false, true] {
                 assert_eq!(PaneIdx::from_hole(which.hole(mirrored), mirrored), which);
             }
@@ -3328,12 +3330,12 @@ mod tests {
         let _ = r.add(&spec("t0", "/tmp"), false);
         r.split("t0");
         r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Secondary);
+        r.force_detached_pane("t0", PaneIdx::Block(0));
         assert!(r.is_detached("t0"));
         // Not the active tab, nothing live elsewhere → no neighbour to lean to.
         assert_eq!(r.clear_detached("t0"), DetachedEnded::Cold(None));
         assert!(!r.is_detached("t0"));
-        assert!(!r.is_pane_detached("t0", PaneIdx::Secondary));
+        assert!(!r.is_pane_detached("t0", PaneIdx::Block(0)));
         assert!(
             r.is_split("t0"),
             "the split structure survives; only the slots go cold"
@@ -3550,7 +3552,7 @@ mod tests {
         });
         r.add(&spec, false).unwrap();
         // The split pane opens beside a live primary, which needs AppKit: ask for it directly.
-        assert!(!r.ensure_spawned(0, PaneIdx::Secondary, false).unwrap());
+        assert!(!r.ensure_spawned(0, PaneIdx::Block(0), false).unwrap());
         let column_key = secondary_id("t");
         let req = asked
             .lock()
@@ -3645,7 +3647,7 @@ mod tests {
         r.split("t");
         assert_eq!(r.rex_pane_key("t", PaneIdx::Primary).as_deref(), Some("t"));
         assert_eq!(
-            r.rex_pane_key("t", PaneIdx::Secondary).as_deref(),
+            r.rex_pane_key("t", PaneIdx::Block(0)).as_deref(),
             Some("t::2")
         );
         assert_eq!(r.rex_pane_key("plain", PaneIdx::Primary), None);
@@ -3716,10 +3718,7 @@ mod tests {
             at(&agent_key("t", "r1")),
             Some(("t".to_string(), PaneIdx::Primary, Some("r1".to_string())))
         );
-        assert_eq!(
-            at("t::2"),
-            Some(("t".to_string(), PaneIdx::Secondary, None))
-        );
+        assert_eq!(at("t::2"), Some(("t".to_string(), PaneIdx::Block(0), None)));
         assert_eq!(at("t"), Some(("t".to_string(), PaneIdx::Primary, None)));
         assert_eq!(at(&agent_key("t", "zz")), None);
         assert_eq!(agent_key("t", "r1"), "t::agent:r1");
@@ -3850,7 +3849,7 @@ mod tests {
             Some("t::agent:r2")
         );
         assert_eq!(
-            shown_rex_key(t, PaneIdx::Secondary, agent).as_deref(),
+            shown_rex_key(t, PaneIdx::Block(0), agent).as_deref(),
             Some("t::2"),
             "a split pane is never an agent"
         );
@@ -4031,7 +4030,7 @@ mod tests {
         );
         assert_eq!(
             r.locate_key("p::2"),
-            Some(("p".to_string(), PaneIdx::Secondary, None))
+            Some(("p".to_string(), PaneIdx::Block(0), None))
         );
         // An unclaimed session's row shows the one session it lists, not agent tabs.
         let _ = r.activate_user("rex:session:x");
@@ -4044,7 +4043,7 @@ mod tests {
         r.split("t");
         r.force_agents("t", &["r1"], Some("r1"));
         assert_eq!(
-            r.rex_pane_key("t", PaneIdx::Secondary).as_deref(),
+            r.rex_pane_key("t", PaneIdx::Block(0)).as_deref(),
             Some("t::2")
         );
         assert_eq!(r.agent_keys("t"), ["t::agent:r1"]);
