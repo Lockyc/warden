@@ -186,16 +186,16 @@
       #terminal-hole.cc-hole.cc-hole-collapsed #pane-secondary { --c-tr: 0px; }
       #terminal-hole.split .pane.focused::before {
         background: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
-      /* #main-col holds the main pane's row (#pane-primary + #agents) over the summary block; it
-         takes the primary's place in the hole's row, so the split's `order` rules and the
-         divider sit against it unchanged. The split ratio is its flex-GROW (`applySplitFlex`);
+      /* #main-col holds the agent list beside #primary-col (#pane-primary over the summary
+         block); it takes the primary's place in the hole's row, so the split's `order` rules and
+         the divider sit against it unchanged. The split ratio is its flex-GROW (`applySplitFlex`);
          its basis is the agent list's width, so the ratio divides what the two panes share — the
          hole less the divider and the list — exactly as `usableWidth` measures it. */
-      #main-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+      #main-col { flex: 1 1 0; min-width: 0; display: flex; }
       #terminal-hole.agents #main-col { flex-basis: var(--agents-w); }
       #terminal-hole.agents #main-col:has(#agents.narrow) { flex-basis: var(--agents-narrow-w); }
-      #main-row { flex: 1 1 0; min-height: 0; display: flex; }
-      #pane-primary { flex: 1 1 0; }
+      #primary-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+      #pane-primary { flex: 1 1 0; min-height: 0; }
       #pane-secondary { flex: 1 1 0; display: none; }
       #terminal-hole.split #pane-secondary { display: block; }
       /* The divider is a 1px line inside a 5px grab strip: 2px of pane ground either side of
@@ -258,19 +258,28 @@
          squares it from its own frame. Opaque, like every painted surface on this transparent
          window. `.narrow` folds it to a rail of dots — automatically on a narrow hole, or by the
          fold button (`railPref`). */
-      /* The summary block: under #main-row, shown with the agent list. Fixed-height single-line
-         rows, so text never grows it; colours are the active tab's `TabDto.colour`. It and the
-         agent column set their text at the terminal's size (`--term-font`, `applyTermFont`), and
-         size everything else in `em` from it. */
-      :root { --term-font: 13px; }
+      /* The summary block: under #pane-primary, shown with the agent list. Fixed-height
+         single-line rows, so text never grows it; colours are the active tab's `TabDto.colour`
+         (`--s-*`, set on #main-col by `summarySync`). It and the agent column set their text at
+         the terminal's size (`--term-font`, `applyTermFont`), and size everything else in `em`
+         from it. */
+      :root { --term-font: 13px; --s-rows: 3; }
       #summary { display: none; flex: none; font-size: var(--term-font); user-select: none;
-        -webkit-user-select: none; color: var(--s-fg); }
+        -webkit-user-select: none; color: var(--s-fg); background: var(--s-shade); }
       #terminal-hole.agents #summary { display: block; }
       #summary > div { height: 1.5em; line-height: 1.5em; padding: 0 0.8em; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
-      #summary .s-row { background: var(--s-shade); }
       #summary .s-k { display: inline-block; width: 3.6em; opacity: 0.6; }
-      #summary .s-title { background: var(--s-bar); font-weight: 600; }
+      /* The identity tile: the agent list's foot, beside the summary block at its height and in
+         its shade, so the two read as one band; the project colour is its stripe. */
+      #agents-tile { flex: none; box-sizing: border-box; height: calc(var(--s-rows) * 1.5em);
+        background: var(--s-shade); color: var(--s-fg); box-shadow: inset 4px 0 0 var(--s-bar);
+        padding: 0 0.8em 0 calc(4px + 0.8em); display: flex; flex-direction: column;
+        justify-content: center; line-height: 1.5em; }
+      #agents-tile > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #agents-tile .t-name { font-weight: 600; }
+      #agents-tile .t-where { opacity: 0.6; font-size: 0.9em; }
+      #agents.narrow #agents-tile > div { display: none; }
       :root { --agents-w: calc(var(--term-font) * 18); --agents-narrow-w: 34px; }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
         flex-direction: column; background: #15191e; border-right: 1px solid #313640;
@@ -408,9 +417,9 @@
       </div>
       <div id="terminal-hole">
         <div id="main-col">
-        <div id="main-row">
-        <!-- The agent tab list (a Rex tab's main pane only): rows, groups, and the foot's `+` and
-             Closed fold. Rendered by `renderAgents`; shown by `syncAgentsColumn`. -->
+        <!-- The agent tab list (a Rex tab's main pane only): rows, groups, the foot's `+` and
+             Closed fold, and the identity tile. Rendered by `renderAgents` (the tile by
+             `summarySync`); shown by `syncAgentsColumn`. -->
         <aside id="agents" class="cc-ctl-host">
           <div id="agents-list"></div>
           <div id="agents-foot">
@@ -420,7 +429,9 @@
             </div>
             <div id="agents-closed"></div>
           </div>
+          <div id="agents-tile"><div class="t-name"></div><div class="t-where"></div></div>
         </aside>
+        <div id="primary-col">
         <div id="pane-primary" class="pane">
           <div id="empty-state">
             <svg id="empty-state-art" viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
@@ -435,14 +446,13 @@
             </svg>
           </div>
         </div>
-        </div>
         <!-- The summary block (a Rex tab's main pane only, with the agent list): the selected
-             agent's three rows, then the tab's title. Filled by `summarySync`. -->
+             agent's asked / doing / said. Filled by `summarySync`. -->
         <div id="summary">
           <div class="s-row" data-key="asked"><span class="s-k">asked</span><span class="s-v"></span></div>
           <div class="s-row" data-key="doing"><span class="s-k">doing</span><span class="s-v"></span></div>
           <div class="s-row" data-key="said"><span class="s-k">said</span><span class="s-v"></span></div>
-          <div class="s-title"></div>
+        </div>
         </div>
         </div>
         <!-- Hidden when unsplit — the common case, identical to the single-hole layout — via
@@ -799,7 +809,8 @@
         agentsById.clear();
         dto.tabs.forEach((t) => { if (t.agents) agentsById.set(t.id, true); });
         summaryById.clear();
-        dto.tabs.forEach((t) => summaryById.set(t.id, { title: t.title, colour: t.colour }));
+        dto.tabs.forEach((t) =>
+          summaryById.set(t.id, { title: t.title, colour: t.colour, server: t.server, presence: t.presence }));
         agentLists.forEach((_, id) => { if (!agentsById.has(id)) agentLists.delete(id); });
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
@@ -1086,20 +1097,31 @@
       const agentsTab = () =>
         activeId !== null && agentsById.get(activeId) && !detached.has(activeId) ? activeId : null;
 
-      // tab id → { title, colour } for the summary block, rebuilt on every snapshot.
+      // tab id → { title, colour, server, presence } for the summary block and identity tile,
+      // rebuilt on every snapshot.
       const summaryById = new Map();
-      // Paint the summary block for the agents tab: its selected agent's asked / doing / said
-      // (`AgentRowDto`), its title and `TabDto.colour`. Shown by the same `.agents` class as the
-      // column; runs on every column sync, list render, `warden:agents` and snapshot.
+      // The identity tile's session word, by Rex presence (`rex/spawn.rs`: a live session, only
+      // sleeping agents, nothing).
+      const TILE_STATE = { on: "live", ghost: "asleep", off: "no session" };
+      // Paint the summary block and identity tile for the agents tab: its selected agent's
+      // asked / doing / said (`AgentRowDto`), its title, server and session, in `TabDto.colour`.
+      // Shown by the same `.agents` class as the column; runs on every column sync, list render,
+      // `warden:agents`, `warden:session-state` and snapshot.
       function summarySync() {
         const tab = agentsTab();
         const s = summaryById.get(tab);
         if (!s) return;
+        const col = document.getElementById("main-col");
+        col.style.setProperty("--s-bar", s.colour.bar_bg);
+        col.style.setProperty("--s-shade", s.colour.shade_bg);
+        col.style.setProperty("--s-fg", s.colour.fg);
+        const tile = document.getElementById("agents-tile");
+        tile.title = s.title;
+        tile.querySelector(".t-name").textContent = s.title;
+        const state = TILE_STATE[session.get(tab) ?? s.presence];
+        const where = s.server === "local" ? "this Mac" : s.server;
+        tile.querySelector(".t-where").textContent = [where, state].filter(Boolean).join(" · ");
         const el = document.getElementById("summary");
-        el.style.setProperty("--s-bar", s.colour.bar_bg);
-        el.style.setProperty("--s-shade", s.colour.shade_bg);
-        el.style.setProperty("--s-fg", s.colour.fg);
-        el.querySelector(".s-title").textContent = s.title;
         const dto = agentLists.get(tab);
         const sel = dto && dto.rows.find((r) => r.selected);
         el.querySelectorAll(".s-row").forEach((row) => {
@@ -1811,6 +1833,7 @@
           session.set(id, state);
           sb.setPresence(id, state);
         }
+        summarySync(); // the identity tile's session word
       });
 
       // The terminal surfaces track their holes: re-report on any layout change, and re-clamp the

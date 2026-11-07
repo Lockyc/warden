@@ -1757,6 +1757,7 @@ mod tests {
             split_layout: None,
             agents: false,
             colour: crate::project_colour::project_colour(id, None),
+            server: None,
             presence: None,
         }
     }

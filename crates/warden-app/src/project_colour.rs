@@ -1,5 +1,5 @@
-//! A project's colours for the agent pane's summary block: the title row's bar, the summary
-//! rows' shade, and one text colour for both.
+//! A project's colours for the agent pane's summary block and identity tile: the tile's stripe
+//! (the bar), the shade both sit on, and their text colour.
 //!
 //! Derived in OKLCH so lightness is perceptual: every generated bar sits at [`BAR_L`] and every
 //! shade at [`SHADE_L`], whatever the hue, so no project's text is harder to read than another's.
@@ -16,7 +16,8 @@ const SHADE_L: f64 = 0.30;
 /// OKLab lightness of the shade under dark text — a light pinned bar keeps a light shade, or
 /// its dark text would vanish on the summary rows.
 const SHADE_L_LIGHT: f64 = 0.88;
-/// The least WCAG contrast between bar and shade, so the title row always reads as its own band.
+/// The least WCAG contrast between bar and shade, so the tile's stripe always stands out from
+/// the shade it sits on.
 const MIN_SHADE_CONTRAST: f64 = 1.4;
 /// OKLCH chroma of a generated bar, and the cap on a shade's.
 const CHROMA: f64 = 0.12;

@@ -181,8 +181,11 @@ pub struct TabDto {
     pub split_layout: Option<SplitLayoutDto>,
     /// The main pane holds agent tabs, so the chrome shows the agent tab list beside it.
     pub agents: bool,
-    /// The project's colours for the agent pane's summary block (`project_colour`).
+    /// The project's colours for the agent pane's summary block and identity tile
+    /// (`project_colour`).
     pub colour: crate::project_colour::ProjectColour,
+    /// The Rex server the tab lives on, `None` for a plain tab.
+    pub server: Option<String>,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -1136,6 +1139,7 @@ impl Registry {
                 }),
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
                 colour: crate::project_colour::project_colour(&t.title, t.primary.spec.colour),
+                server: t.primary.spec.server.clone(),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
