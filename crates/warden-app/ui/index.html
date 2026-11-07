@@ -270,12 +270,11 @@
       #summary > div { height: 1.5em; line-height: 1.5em; padding: 0 0.8em; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
       #summary .s-k { display: inline-block; width: 3.6em; opacity: 0.6; }
-      /* The identity tile: the agent list's foot, beside the summary block at its height and in
-         its shade, so the two read as one band; the project colour is its stripe. */
+      /* The identity tile: the agent list's foot, beside the summary block at its height, solid
+         in the project colour against the summary's shade. */
       #agents-tile { flex: none; box-sizing: border-box; height: calc(var(--s-rows) * 1.5em);
-        background: var(--s-shade); color: var(--s-fg); box-shadow: inset 4px 0 0 var(--s-bar);
-        padding: 0 0.8em 0 calc(4px + 0.8em); display: flex; flex-direction: column;
-        justify-content: center; line-height: 1.5em; }
+        background: var(--s-bar); color: var(--s-fg); padding: 0 0.8em; display: flex;
+        flex-direction: column; justify-content: center; line-height: 1.5em; }
       #agents-tile > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #agents-tile .t-name { font-weight: 600; }
       #agents-tile .t-where { opacity: 0.6; font-size: 0.9em; }
