@@ -1890,6 +1890,12 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                 (ScratchOp::Resize { .. }, None) => Ok(None),
             };
             let done = done.map_err(|e| rex::spawn::open_error(&server, &e));
+            // A resize that took has nothing to land: the page already shows the dragged layout,
+            // and the hub's view may not have it yet — landing that would jump the divider back
+            // until Rex's view follows (`lifecycle::follow_column`).
+            if done.is_ok() && matches!(op, ScratchOp::Resize { .. }) {
+                return;
+            }
             let opened = hub
                 .column_session(&key)
                 .and_then(|(server, sid)| hub.column(&server, &sid));

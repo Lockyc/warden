@@ -11,7 +11,7 @@
          column beside a transparent hole. The window is transparent → every painted surface here
          must stay OPAQUE or it leaks the wallpaper. */
       /* The ONE source for the pane "ground" colour — the opaque backstop colour shown wherever
-         nothing else paints. Two rules read this token (`.pane` and `#empty-state`/`#empty-state-2`,
+         nothing else paints. Two rules read this token (`.pane` and `#empty-state`/`.scratch-empty`,
          below) instead of each carrying their own literal — this repo's rule against restating a
          value that already lives somewhere. */
       :root { --pane-ground: #0e1516; }
@@ -27,7 +27,7 @@
          there instead of running square into a corner the window has already rounded off — and
          stays square everywhere else (at the divider, against the sidebar), where a curve would
          open a notch of ground the window has not rounded. Which corners qualify is a per-pane
-         rule below (`#pane-primary` / `#pane-secondary`, setting `--c-tr`/`--c-br`). The native
+         rule below (`#pane-primary` / a column `.block`, setting `--c-tr`/`--c-br`). The native
          surface's render layer carries the concentric inner curve (`SURFACE_CORNER_RADIUS` in
          surface/ghostty.rs — this less `--ring-w`, with the same continuous corner curve) and
          decides the same corners from its own frame vs the window (`apply_corner_mask`); a test
@@ -60,7 +60,7 @@
          `--ring-w`, on the padding box) are this one path at two sizes; the ring is whatever
          shows between them. Same block, same reasoning, as shell-core's `detach.html` — the two
          must stay identical. */
-      .pane, .pane::before, #empty-state, #empty-state-2 { --sq:
+      .pane, .pane::before, #empty-state, .scratch-empty { --sq:
         from 0 calc(1.528665 * var(--sq-tl)),
         curve to calc(0.074911 * var(--sq-tl)) calc(0.631494 * var(--sq-tl)) with 0 calc(1.088490 * var(--sq-tl)) / 0 calc(0.868407 * var(--sq-tl)),
         curve to calc(0.631494 * var(--sq-tl)) calc(0.074911 * var(--sq-tl)) with calc(0.169060 * var(--sq-tl)) calc(0.372824 * var(--sq-tl)) / calc(0.372824 * var(--sq-tl)) calc(0.169060 * var(--sq-tl)),
@@ -83,7 +83,7 @@
          floored at 0 so a square corner stays square. */
       .pane, .pane::before { --sq-tl: var(--c-tl, 0px); --sq-tr: var(--c-tr, 0px);
         --sq-br: var(--c-br, 0px); --sq-bl: var(--c-bl, 0px); }
-      #empty-state, #empty-state-2 { --sq-tl: max(var(--c-tl, 0px) - var(--ring-w), 0px);
+      #empty-state, .scratch-empty { --sq-tl: max(var(--c-tl, 0px) - var(--ring-w), 0px);
         --sq-tr: max(var(--c-tr, 0px) - var(--ring-w), 0px);
         --sq-br: max(var(--c-br, 0px) - var(--ring-w), 0px);
         --sq-bl: max(var(--c-bl, 0px) - var(--ring-w), 0px); }
@@ -100,7 +100,8 @@
          adds `.cc-root` (opaque flex column). Width is the density-aware token, overridden inline by
          the resize controller. */
       #sidebar { width: var(--cc-sidebar-w, 240px); flex: none; }
-      /* #terminal-hole is a flex row of at most two panes plus a divider between them. Unsplit
+      /* #terminal-hole is a flex row of the main pane and the scratch column (#pane-secondary)
+         with a divider between them. Unsplit
          (the common case), #pane-secondary and #pane-divider are `hidden` — the SOLE authority
          for that is the `.split` class on #terminal-hole (toggled by setSplitVisible, below):
          #pane-divider and #pane-secondary are NEVER given an unconditional `display` here, only
@@ -177,17 +178,18 @@
          window's top (Overlay titlebar — nothing sits above the hole), its RIGHT is the window's
          right, and its LEFT is the sidebar, so the only pane corners that are window corners are
          the two RIGHT corners of the RIGHTMOST pane. Rightmost = the primary, except when a split
-         puts the secondary on the right (`side = "right"`, i.e. `.split` without
-         `.secondary-left`) — then the secondary takes them and the primary goes square. Every
-         other corner stays 0 (the `--c-*` fallback). */
+         puts the column on the right (`side = "right"`, i.e. `.split` without
+         `.secondary-left`) — then the column's blocks on its right edge take them (`.edge-*`, set
+         by `scratchRender` from each tile: top only with no scratch strip above it) and the
+         primary goes square. Every other corner stays 0 (the `--c-*` fallback). */
       #pane-primary { --c-tr: var(--pane-radius); --c-br: var(--pane-radius); }
       #terminal-hole.split:not(.secondary-left) #pane-primary { --c-tr: 0px; --c-br: 0px; }
-      #terminal-hole.split:not(.secondary-left) #pane-secondary {
-        --c-tr: var(--pane-radius); --c-br: var(--pane-radius); }
+      #terminal-hole.split:not(.secondary-left) .block.edge-r.edge-t { --c-tr: var(--pane-radius); }
+      #terminal-hole.split:not(.secondary-left) .block.edge-r.edge-b { --c-br: var(--pane-radius); }
       /* A collapsed sidebar's strip (chrome-core's `cc-hole-collapsed`) sits above the hole, so the
-         top-right corner is no longer a window corner. Two classes, to outrank the split rules. */
+         top-right corner is no longer a window corner. Extra classes, to outrank the split rules. */
       #terminal-hole.cc-hole.cc-hole-collapsed #pane-primary,
-      #terminal-hole.cc-hole.cc-hole-collapsed #pane-secondary { --c-tr: 0px; }
+      #terminal-hole.cc-hole.cc-hole-collapsed.split .block.edge-r.edge-t { --c-tr: 0px; }
       #terminal-hole.split .pane.focused::before {
         background: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
       /* #main-col holds the agent list beside #primary-col (#pane-primary over the summary
@@ -200,8 +202,32 @@
       #terminal-hole.agents #main-col:has(#agents.narrow) { flex-basis: var(--agents-narrow-w); }
       #primary-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
       #pane-primary { flex: 1 1 0; min-height: 0; }
-      #pane-secondary { flex: 1 1 0; display: none; }
-      #terminal-hole.split #pane-secondary { display: block; }
+      /* The scratch column: the scratch tab strip (a Rex column only) over #scratch-body, where
+         each block of the shown scratch tab is a `.pane` placed from its Rex tile
+         (`scratchRender`); a plain tab's column is one block filling the body, no strip. */
+      #pane-secondary { flex: 1 1 0; min-width: 0; display: none; flex-direction: column; }
+      #terminal-hole.split #pane-secondary { display: flex; }
+      #scratch-tabs { flex: none; display: flex; align-items: center; gap: 3px; height: 26px;
+        box-sizing: border-box; padding: 0 6px; background: var(--agents-bg);
+        border-bottom: 1px solid #313640; color: #9aa4b2; font-size: 12px;
+        user-select: none; -webkit-user-select: none; }
+      #scratch-tabs[hidden] { display: none; }
+      #scratch-tabs button { font: inherit; color: inherit; background: transparent; border: 0;
+        cursor: pointer; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 4px; }
+      #scratch-tabs button:hover { background: #22272e; color: #c3ccd8; }
+      #scratch-tabs button.sel { background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.55);
+        color: #e6edf3; }
+      #scratch-body { flex: 1 1 0; min-height: 0; position: relative; }
+      #scratch-body > .block { position: absolute; }
+      /* An inner divider: the outer one's strip, turned to its split. `.divider-v` splits a
+         `vertical` (stacked) Rex split, a row-resize bar; `.divider-h` a `horizontal` one. */
+      .scratch-div { position: absolute; z-index: 1; }
+      .scratch-div.divider-v { height: 5px; cursor: row-resize;
+        background: linear-gradient(to bottom, var(--pane-ground) 2px, #393f40 2px, #393f40 3px,
+          var(--pane-ground) 3px); }
+      .scratch-div.divider-h { width: 5px; cursor: col-resize;
+        background: linear-gradient(to right, var(--pane-ground) 2px, #393f40 2px, #393f40 3px,
+          var(--pane-ground) 3px); }
       /* The divider is a 1px line inside a 5px grab strip: 2px of pane ground either side of
          the line, all OPAQUE. This column is its own box, painted directly on the (transparent)
          webview canvas — it sits BETWEEN the two panes, not over either one's backstop — so a
@@ -233,13 +259,13 @@
          doesn't, by construction. Only the ILLUSTRATION (the child svg) stays conditional, via
          paintEmptyState — an always-visible icon would flash at the hole's edge during a live
          resize, which the ground alone (a flat colour, unnoticeable) does not. #empty-state
-         backstops #pane-primary; #empty-state-2 backstops #pane-secondary. `background` reads
+         backstops #pane-primary; each column block carries its own `.scratch-empty`. `background` reads
          `--pane-ground` (declared once, at `:root`) — the SAME token `.pane`'s own background
          reads — never restate the literal in a second place. Clipped to
          the INNER continuous outline (`--sq` at the pane's radii less `--ring-w`) so its square corners
          and its svg never paint over the focus ring's curve — this is the cold-pane half of the
          ring's inner edge (the live surface's own corner curve is the other). */
-      #empty-state, #empty-state-2 {
+      #empty-state, .scratch-empty {
         position: absolute;
         inset: 0;
         display: flex;
@@ -250,7 +276,8 @@
         user-select: none;
         -webkit-user-select: none;
       }
-      #empty-state svg, #empty-state-2 svg { width: 160px; height: auto; opacity: 0.9; }
+      #empty-state svg, .scratch-empty svg { width: 160px; height: auto; opacity: 0.9; }
+      .scratch-empty svg { max-width: 60%; max-height: 60%; }
 
       /* The agent tab list: a column left of the main pane of a Rex tab, inside #terminal-hole
          but outside #pane-primary, so `reportRect` measures a primary hole narrower by its width.
@@ -467,20 +494,29 @@
              CSS comment above #terminal-hole). `split_pane` and a config split turn it on; the
              second shell exiting (`warden:pane-closed`) turns it off. -->
         <div id="pane-divider" hidden></div>
-        <div id="pane-secondary" class="pane" hidden>
-          <div id="empty-state-2">
-            <svg id="empty-state-2-art" viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="secondary pane empty">
-              <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
-                    fill="#283034"/>
-              <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M 186 126 L 270 230 L 186 334" stroke-width="18" opacity="0.3"/>
-                <path d="M 208 152 L 270 230 L 208 308" stroke-width="20" opacity="0.55"/>
-                <path d="M 230 178 L 270 230 L 230 282" stroke-width="26" opacity="1"/>
-              </g>
-              <rect x="296" y="210" width="34" height="40" rx="7" fill="#5c676c"/>
-            </svg>
-          </div>
+        <!-- The scratch column: the scratch tab strip and the shown scratch tab's blocks, both
+             built by `scratchRender`. -->
+        <div id="pane-secondary" hidden>
+          <div id="scratch-tabs" hidden></div>
+          <div id="scratch-body"></div>
         </div>
+        <!-- One column block: `scratchRender` clones it per tile. -->
+        <template id="scratch-block-tpl">
+          <div class="pane block">
+            <div class="scratch-empty">
+              <svg viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="scratch pane empty">
+                <path d="M 152 72 L 360 72 Q 384 72 384 96 L 384 256 C 384 360 330 412 256 452 C 182 412 128 360 128 256 L 128 96 Q 128 72 152 72 Z"
+                      fill="#283034"/>
+                <g fill="none" stroke="#5c676c" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M 186 126 L 270 230 L 186 334" stroke-width="18" opacity="0.3"/>
+                  <path d="M 208 152 L 270 230 L 208 308" stroke-width="20" opacity="0.55"/>
+                  <path d="M 230 178 L 270 230 L 230 282" stroke-width="26" opacity="1"/>
+                </g>
+                <rect x="296" y="210" width="34" height="40" rx="7" fill="#5c676c"/>
+              </svg>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
     <script src="chrome-core.js"></script>
@@ -525,8 +561,8 @@
       // active tab without every caller having to thread a second liveness bool through.
       const secondarySpawnedById = new Map();
       // tab id → which pane last received a focus_pane() call: 0 (primary, the default — matches
-      // the Registry's own default and what a fresh `split_pane` resets to) or 1
-      // (secondary). Read by updateFocusMarker so the visible focus marker survives a tab
+      // the Registry's own default and what a fresh `split_pane` resets to) or `1 + i`
+      // (column block `i`). Read by updateFocusMarker so the visible focus marker survives a tab
       // switch, mirroring how `secondarySpawnedById` mirrors backend liveness. This mirror is
       // written ONLY by the things that actually change `Registry`'s own `t.focused` — a pane
       // mousedown (focus_pane), a split (defaults to primary), a close (resets to primary), and
@@ -554,6 +590,9 @@
       // live pane) and when its split collapses. An app restart clears it by construction.
       const ratioOverride = new Map();
       const primaryFracFromLayout = (layout) => 1 - layout.size; // `size` is the SECOND pane's share
+      // tab id → its scratch column (`TabDto.column`: scratch tabs, the shown one's tiles and
+      // dividers), rebuilt on every snapshot.
+      const columnById = new Map();
       // tab id → 'on' | 'ghost' | 'off' (probe presence), for probe-enabled tabs. The backend
       // sends these strings verbatim (they ARE chrome-core's wire values) — do not re-derive
       // them from a boolean; presence has been 3-state since exit 3 ("recoverable") shipped.
@@ -639,7 +678,7 @@
       // over the `.focused` marker's border (see the CSS comment on `.pane`),
       // occluding it the instant a pane goes live, which is exactly when it matters. Read the
       // ACTUAL computed border width rather than hardcoding "1px" so this can never silently
-      // drift from the CSS rule that draws it. `#empty-state`/`#empty-state-2`'s `inset: 0` are
+      // drift from the CSS rule that draws it. `#empty-state`/`.scratch-empty`'s `inset: 0` are
       // unaffected — `inset` on an absolutely-positioned child is already relative to its
       // positioned ancestor's PADDING box (inside the border), so they already matched this
       // content box before the native surface did.
@@ -658,17 +697,216 @@
         };
       }
 
+      // ── The scratch column (#pane-secondary) ──
+      // What the column shows for tab `id`: a drag's live layout while one is held for it, else
+      // its snapshot's — or, before a column exists or a Rex column's session lands, one block
+      // filling it. Tile and divider rects are fractions of the column (Rex's window).
+      const SCRATCH_FULL = [{ block_id: "", rect: { x: 0, y: 0, w: 1, h: 1 } }];
+      let scratchHeld = null; // { tabId, view } — a dragged layout until the next snapshot
+      function scratchView(id) {
+        if (scratchHeld && scratchHeld.tabId === id) return scratchHeld.view;
+        const c = id !== null ? columnById.get(id) : null;
+        return {
+          rex: !!(c && c.rex),
+          tabs: c ? c.tabs : [],
+          selected: c ? c.selected : 0,
+          tiles: c && c.tiles.length ? c.tiles : SCRATCH_FULL,
+          dividers: c ? c.dividers : [],
+        };
+      }
+      const SCRATCH_EPS = 1e-6;
+      // Blocks sit 5px apart for their divider's strip: 3px off the side before the boundary,
+      // 2px off the side after it, so the strip's 1px line lands on whole pixels.
+      const SCRATCH_GAP_BEFORE = 3;
+      const SCRATCH_GAP_AFTER = 2;
+      // One axis of a tile as CSS: start, extent, inset where it meets a neighbour.
+      function scratchSpan(start, extent) {
+        const lead = start > SCRATCH_EPS ? SCRATCH_GAP_AFTER : 0;
+        const trail = start + extent < 1 - SCRATCH_EPS ? SCRATCH_GAP_BEFORE : 0;
+        return [`calc(${start * 100}% + ${lead}px)`, `calc(${extent * 100}% - ${lead + trail}px)`];
+      }
+      // Lay `view` out on #pane-secondary: the strip (a Rex column only) and one `.block` per tile
+      // and one divider per split, reusing elements by index so a re-render keeps their listeners.
+      function scratchRender(view) {
+        const strip = document.getElementById("scratch-tabs");
+        strip.hidden = !view.rex;
+        if (view.rex) {
+          const btns = view.tabs.map((t, i) => {
+            const b = document.createElement("button");
+            b.textContent = String(i + 1);
+            b.title = t.label || "Scratch tab " + (i + 1);
+            b.classList.toggle("sel", i === view.selected);
+            b.addEventListener("click", () => scratchSelect(i));
+            return b;
+          });
+          const add = document.createElement("button");
+          add.textContent = "+";
+          add.title = "New scratch tab (⌃⌘T)";
+          add.addEventListener("click", scratchNew);
+          strip.replaceChildren(...btns, add);
+        }
+        const body = document.getElementById("scratch-body");
+        const blocks = [...body.querySelectorAll(":scope > .block")];
+        while (blocks.length < view.tiles.length) {
+          const el = document.getElementById("scratch-block-tpl").content.firstElementChild.cloneNode(true);
+          el.addEventListener("mousedown", () => focusPane(1 + Number(el.dataset.i)));
+          body.append(el);
+          blocks.push(el);
+        }
+        blocks.splice(view.tiles.length).forEach((el) => el.remove());
+        view.tiles.forEach((t, i) => {
+          const el = blocks[i];
+          const r = t.rect;
+          el.dataset.i = String(i);
+          [el.style.left, el.style.width] = scratchSpan(r.x, r.w);
+          [el.style.top, el.style.height] = scratchSpan(r.y, r.h);
+          el.classList.toggle("edge-t", !view.rex && r.y <= SCRATCH_EPS);
+          el.classList.toggle("edge-r", r.x + r.w >= 1 - SCRATCH_EPS);
+          el.classList.toggle("edge-b", r.y + r.h >= 1 - SCRATCH_EPS);
+        });
+        const divs = [...body.querySelectorAll(":scope > .scratch-div")];
+        while (divs.length < view.dividers.length) {
+          const el = document.createElement("div");
+          el.className = "scratch-div";
+          el.addEventListener("mousedown", (e) => scratchDragStart(e, Number(el.dataset.i)));
+          body.append(el);
+          divs.push(el);
+        }
+        divs.splice(view.dividers.length).forEach((el) => el.remove());
+        view.dividers.forEach((d, i) => {
+          const el = divs[i];
+          const vert = d.dir === "vertical";
+          const r = d.rect;
+          const at = (vert ? r.y + d.ratio * r.h : r.x + d.ratio * r.w) * 100;
+          el.dataset.i = String(i);
+          el.classList.toggle("divider-v", vert);
+          el.classList.toggle("divider-h", !vert);
+          el.style.left = vert ? r.x * 100 + "%" : `calc(${at}% - ${SCRATCH_GAP_BEFORE}px)`;
+          el.style.top = vert ? `calc(${at}% - ${SCRATCH_GAP_BEFORE}px)` : r.y * 100 + "%";
+          el.style.width = vert ? r.w * 100 + "%" : "";
+          el.style.height = vert ? "" : r.h * 100 + "%";
+        });
+        paintEmptyState();
+        updateFocusMarker();
+      }
+      // The column's block elements, in layout order (block `i` is pane `1 + i`).
+      const scratchBlocks = () => [...document.querySelectorAll("#scratch-body > .block")];
+      // Show scratch tab `tab` of the active tab's column; the window's refresh re-renders it.
+      // Focus in the column moves to the new tab's first block, as the backend's does.
+      function scratchSelect(tab) {
+        if (!activeId) return;
+        const id = activeId;
+        if ((focusedPaneById.get(id) || 0) > 0) focusedPaneById.set(id, 1);
+        invokeSafe("scratch_select", { id, tab });
+      }
+      function scratchNew() {
+        if (!activeId) return;
+        invoke("scratch_new", { id: activeId }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
+      }
+      // The split ratio for divider `d` dragged to `pointer` (a column fraction along its axis):
+      // relative to the split's own rect, each side keeping 5% — `rex::layout::divider_ratio`.
+      function scratchDragRatio(d, pointer) {
+        const vert = d.dir === "vertical";
+        const origin = vert ? d.rect.y : d.rect.x;
+        const extent = vert ? d.rect.h : d.rect.w;
+        return extent > 0 ? Math.min(0.95, Math.max(0.05, (pointer - origin) / extent)) : 0.5;
+      }
+      // `view` with divider `di` at `ratio`: everything inside its split before the boundary
+      // scales into the new before side, everything after into the new after side; the rest
+      // (outside the split, or spanning it — the split itself and its ancestors) is untouched.
+      function scratchResized(view, di, ratio) {
+        const d = view.dividers[di];
+        const vert = d.dir === "vertical";
+        const R = d.rect;
+        const o = vert ? R.y : R.x;
+        const end = o + (vert ? R.h : R.w);
+        const b0 = o + d.ratio * (end - o);
+        const b1 = o + ratio * (end - o);
+        const inside = (r) =>
+          r.x >= R.x - SCRATCH_EPS && r.x + r.w <= R.x + R.w + SCRATCH_EPS &&
+          r.y >= R.y - SCRATCH_EPS && r.y + r.h <= R.y + R.h + SCRATCH_EPS;
+        const map = (r) => {
+          if (!inside(r)) return r;
+          const s = vert ? r.y : r.x;
+          const e = s + (vert ? r.h : r.w);
+          let ns, ne;
+          if (e <= b0 + SCRATCH_EPS && b0 > o) {
+            const k = (b1 - o) / (b0 - o);
+            [ns, ne] = [o + (s - o) * k, o + (e - o) * k];
+          } else if (s >= b0 - SCRATCH_EPS && end > b0) {
+            const k = (end - b1) / (end - b0);
+            [ns, ne] = [b1 + (s - b0) * k, b1 + (e - b0) * k];
+          } else {
+            return r;
+          }
+          return vert ? { ...r, y: ns, h: ne - ns } : { ...r, x: ns, w: ne - ns };
+        };
+        return {
+          ...view,
+          tiles: view.tiles.map((t) => ({ ...t, rect: map(t.rect) })),
+          dividers: view.dividers.map((x, i) =>
+            i === di ? { ...x, ratio } : { ...x, rect: map(x.rect) }),
+        };
+      }
+      // An inner divider drag: the two sides follow the pointer live, reported as they go; the
+      // release asks Rex to resize, and Rex's view arrives back as `warden:refresh`. The same
+      // stuck-button unstick as the outer divider's drag (the native surfaces take the mouseup).
+      let scratchDrag = null; // { tabId, base, di, ratio }
+      function scratchDragStart(e, di) {
+        const view = scratchView(activeId);
+        if (!activeId || !view.dividers[di]) return;
+        e.preventDefault();
+        e.stopPropagation();
+        scratchDrag = { tabId: activeId, base: view, di, ratio: view.dividers[di].ratio };
+        const vert = view.dividers[di].dir === "vertical";
+        document.body.style.cursor = vert ? "row-resize" : "col-resize";
+        window.addEventListener("mousemove", scratchDragMove);
+        window.addEventListener("mouseup", scratchDragEnd);
+        window.addEventListener("blur", scratchDragEnd);
+      }
+      function scratchDragMove(e) {
+        const g = scratchDrag;
+        if (!g) return;
+        if (e.buttons === 0) { scratchDragEnd(); return; }
+        if (g.tabId !== activeId) return;
+        const d = g.base.dividers[g.di];
+        const body = document.getElementById("scratch-body").getBoundingClientRect();
+        const vert = d.dir === "vertical";
+        const extent = vert ? body.height : body.width;
+        if (!(extent > 0)) return;
+        const pointer = vert ? (e.clientY - body.top) / extent : (e.clientX - body.left) / extent;
+        g.ratio = scratchDragRatio(d, pointer);
+        scratchHeld = { tabId: g.tabId, view: scratchResized(g.base, g.di, g.ratio) };
+        scratchRender(scratchHeld.view);
+        reportRect();
+      }
+      function scratchDragEnd() {
+        const g = scratchDrag;
+        if (!g) return;
+        scratchDrag = null;
+        document.body.style.cursor = "";
+        window.removeEventListener("mousemove", scratchDragMove);
+        window.removeEventListener("mouseup", scratchDragEnd);
+        window.removeEventListener("blur", scratchDragEnd);
+        const d = g.base.dividers[g.di];
+        if (Math.abs(g.ratio - d.ratio) < SCRATCH_EPS) return; // a click, not a drag
+        invoke("scratch_resize", { id: g.tabId, splitId: d.split_id, ratio: g.ratio }).catch((err) => {
+          if (sb) sb.setError("⚠ " + err);
+        });
+      }
+
       // Report each VISIBLE pane's CONTENT rect to the native layer so its libghostty surface
-      // tracks it, by pane index (0 = primary, 1 = secondary — `set_hole_rect`'s contract).
-      // The secondary is only reported while its pane is un-hidden — Rust never sees a rect for a
-      // pane the chrome isn't showing.
+      // tracks it, by pane index (0 = primary, `1 + i` = column block `i` — `set_hole_rect`'s
+      // contract). The column's blocks are only reported while it is un-hidden — Rust never sees
+      // a rect for a pane the chrome isn't showing.
       function reportRect() {
         const p = contentRect(document.getElementById("pane-primary"));
         invokeSafe("set_hole_rect", { rect: { x: p.x, y: p.y, width: p.width, height: p.height }, pane: 0 });
-        const secEl = document.getElementById("pane-secondary");
-        if (!secEl.hidden) {
-          const s = contentRect(secEl);
-          invokeSafe("set_hole_rect", { rect: { x: s.x, y: s.y, width: s.width, height: s.height }, pane: 1 });
+        if (!document.getElementById("pane-secondary").hidden) {
+          scratchBlocks().forEach((el, i) => {
+            const s = contentRect(el);
+            invokeSafe("set_hole_rect", { rect: { x: s.x, y: s.y, width: s.width, height: s.height }, pane: 1 + i });
+          });
         }
       }
 
@@ -686,8 +924,9 @@
         document.getElementById("empty-state-art").style.display = coveredP ? "none" : "";
         const secEl = document.getElementById("pane-secondary");
         const coveredS = !secEl.hidden && activeId !== null && secondaryLive;
-        document.getElementById("empty-state-2-art").style.display =
-          secEl.hidden || coveredS ? "none" : "";
+        for (const svg of document.querySelectorAll("#scratch-body .scratch-empty svg")) {
+          svg.style.display = secEl.hidden || coveredS ? "none" : "";
+        }
       }
       // `live` = does a surface cover the PRIMARY hole for this tab? Callers that can't know yet (a
       // click, before the spawn returns) pass false; the placeholder they briefly paint is invisible
@@ -727,7 +966,7 @@
         // are empty, so a ring here would point at nothing.
         const f = activeId !== null && !detached.has(activeId) ? focusedPaneById.get(activeId) || 0 : -1;
         document.getElementById("pane-primary").classList.toggle("focused", f === 0);
-        document.getElementById("pane-secondary").classList.toggle("focused", f === 1);
+        scratchBlocks().forEach((el, i) => el.classList.toggle("focused", f === 1 + i));
       }
 
       // Clears both panes' drag-set inline `flex` (see the divider-drag IIFE's `setSplit`).
@@ -779,10 +1018,11 @@
         const layout = isSplit && id !== null ? splitLayoutById.get(id) : null;
         hole.classList.toggle("secondary-left", !!layout && layout.side === "left");
         if (isSplit && id !== null) {
-          // THIS tab's own ratio, every time — the shared pane elements keep whatever flex the
-          // last split tab shown left them at.
+          // THIS tab's own ratio and column, every time — the shared pane elements keep whatever
+          // flex and blocks the last split tab shown left them at.
           const p = loadSplit(id);
           applySplitFlex(p ? p.ratio : 0.5);
+          scratchRender(scratchView(id));
         } else {
           resetSplit();
         }
@@ -825,14 +1065,16 @@
           const split = splitOf(id);
           const layout = splitLayoutById.get(id);
           const p = split ? loadSplit(id) : null;
-          const shape = [agents, split, split && layout ? layout.side : "", p ? p.ratio : ""].join("|");
+          const view = split ? scratchView(id) : null;
+          const column = view ? JSON.stringify([view.rex, view.tiles.map((t) => t.rect)]) : "";
+          const shape = [agents, split, split && layout ? layout.side : "", p ? p.ratio : "", column].join("|");
           if (!byShape.has(shape)) {
             hole.classList.toggle("agents", agents);
             if (agents) syncRail();
             applySplitShape(id, split);
             byShape.set(shape, {
               primary: contentRect(prim),
-              blocks: split ? [contentRect(sec)] : [],
+              blocks: split ? scratchBlocks().map(contentRect) : [],
             });
           }
           rects[id] = byShape.get(shape);
@@ -842,6 +1084,7 @@
         div.hidden = saved.divHidden;
         mainCol.style.flexGrow = saved.grow;
         sec.style.flex = saved.secFlex;
+        if (!saved.secHidden) scratchRender(scratchView(activeId));
         if (agentsTab() !== null) syncRail();
         if (Object.keys(rects).length) invokeSafe("set_tab_rects", { rects });
       }
@@ -882,6 +1125,10 @@
         ratioOverride.forEach((_, id) => { if (!ids.has(id)) ratioOverride.delete(id); });
         agentsById.clear();
         dto.tabs.forEach((t) => { if (t.agents) agentsById.set(t.id, true); });
+        columnById.clear();
+        dto.tabs.forEach((t) => { if (t.column) columnById.set(t.id, t.column); });
+        // The snapshot carries Rex's layout now; a drag still held goes on showing its own.
+        if (!scratchDrag) scratchHeld = null;
         summaryById.clear();
         dto.tabs.forEach((t) =>
           summaryById.set(t.id, { title: t.title, colour: t.colour, server: t.server, presence: t.presence }));
@@ -2008,7 +2255,7 @@
       //    consumes the click before the DOM sees it — that route arrives instead as
       //    `warden:pane-focused` (below), raised from the view's own `becomeFirstResponder`.
       document.getElementById("pane-primary").addEventListener("mousedown", () => focusPane(0));
-      document.getElementById("pane-secondary").addEventListener("mousedown", () => focusPane(1));
+      // Each column block binds its own (`scratchRender`).
 
       // A pane became first responder natively — a click on live terminal content, or activate's
       // own re-focus on a tab switch. The backend has already moved `Registry.focused`; mirror it
@@ -2018,7 +2265,7 @@
         if (!forMe(e)) return;
         const p = e.payload;
         if (!p || !p.id) return;
-        focusedPaneById.set(p.id, p.pane === 1 ? 1 : 0);
+        focusedPaneById.set(p.id, Number.isInteger(p.pane) && p.pane > 0 ? p.pane : 0);
         if (p.id === activeId) updateFocusMarker();
       });
 
