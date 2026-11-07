@@ -301,6 +301,12 @@ struct Pane {
     rex: RexState,
     agents: Vec<AgentSlot>,
     selected: Option<String>,
+    /// The rect this pane's hole last reported while its tab was on screen. Tabs' holes differ (an
+    /// agent list, a summary strip, a split ratio), so a tab shown again frames here rather than
+    /// at the window's latest hole: a pane framed at another tab's size and corrected one IPC
+    /// round trip later resizes twice, and a Rex pane takes both sizes into its block, making its
+    /// program reflow at the wrong size first.
+    rect: Option<PixelRect>,
 }
 
 impl Pane {
@@ -311,6 +317,7 @@ impl Pane {
             rex: RexState::Idle,
             agents: Vec::new(),
             selected: None,
+            rect: None,
         }
     }
 
@@ -1355,6 +1362,14 @@ impl Registry {
         }
     }
 
+    /// Where tab `t`'s pane `which` frames: its own hole's last rect ([`Pane::rect`]), else the
+    /// window's latest for that hole.
+    fn tab_rect(&self, t: &TabEntry, which: PaneIdx) -> PixelRect {
+        t.pane(which)
+            .and_then(|p| p.rect)
+            .unwrap_or_else(|| self.rect_for(which))
+    }
+
     /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
     /// never-opened or previously unloaded — spawns a fresh surface from its spec.
     /// A spawn failure leaves the tab cold and returns the error (the caller
@@ -1452,7 +1467,7 @@ impl Registry {
         // Born at ITS OWN hole's rect, not the primary's — see the doc comment on
         // `last_rect_secondary`. A freshly-spawned secondary that started at the primary's
         // rect would render at the wrong width for one frame.
-        let rect = self.rect_for(which);
+        let rect = self.tab_rect(&self.tabs[idx], which);
         let s = GhosttySurface::new(self.ns_window, rect, &spec)?;
         log::info!("tab {:?}: spawned {which:?} terminal", self.tabs[idx].title);
         self.tabs[idx]
@@ -1476,7 +1491,8 @@ impl Registry {
         let mut spec = t.primary.spec.clone();
         spec.id = agent_key(&t.id, record_id);
         let spec = crate::rex::spawn::effective_spec(&spec, target, self.report_socket.as_deref());
-        let s = GhosttySurface::new(self.ns_window, self.rect_for(PaneIdx::Primary), &spec)?;
+        let rect = self.tab_rect(t, PaneIdx::Primary);
+        let s = GhosttySurface::new(self.ns_window, rect, &spec)?;
         log::info!(
             "tab {:?}: spawned agent {record_id:?} terminal",
             self.tabs[idx].title
@@ -1999,11 +2015,10 @@ impl Registry {
                 };
                 for s in pane.surfaces() {
                     if shown.is_some_and(|v| std::ptr::eq(v, s)) {
-                        // Each pane gets ITS OWN hole's last-reported rect, not a shared
-                        // one — see `rect_for`'s doc comment. Applying the primary's rect
-                        // to the secondary here would immediately undo the size
-                        // `ensure_spawned` just gave a freshly-spawned secondary above.
-                        s.set_frame(self.rect_for(which));
+                        // This tab's own hole, per pane (`tab_rect`): another tab's or the
+                        // other pane's rect is a wrong size the page corrects a round trip
+                        // later, a second resize.
+                        s.set_frame(self.tab_rect(t, which));
                         s.show();
                         // Show every pane of the active tab, but focus only the one
                         // `focused` names — focusing each in turn would hand focus to
@@ -2028,7 +2043,9 @@ impl Registry {
             PaneIdx::Secondary => self.last_rect_secondary = rect,
         }
         let active = self.active.clone()?;
-        let t = self.tabs.iter().find(|t| t.id == active)?;
+        let t = self.tabs.iter_mut().find(|t| t.id == active)?;
+        t.pane_mut(which)?.rect = Some(rect);
+        let t = &*t;
         let pane = t.pane(which)?;
         let s = pane.shown()?;
         s.set_frame(rect);
@@ -2112,6 +2129,12 @@ impl Registry {
     #[cfg(test)]
     pub fn last_rect_for_test(&self, which: PaneIdx) -> PixelRect {
         self.rect_for(which)
+    }
+
+    #[cfg(test)]
+    pub fn tab_rect_for_test(&self, id: &str, which: PaneIdx) -> PixelRect {
+        let t = self.tabs.iter().find(|t| t.id == id).expect("tab");
+        self.tab_rect(t, which)
     }
 
     /// Remove a tab; close its surface if spawned.
@@ -3060,6 +3083,36 @@ mod tests {
         r.set_pane_frame(PaneIdx::Secondary, narrow);
         assert_eq!(r.last_rect_for_test(PaneIdx::Primary), wide);
         assert_eq!(r.last_rect_for_test(PaneIdx::Secondary), narrow);
+    }
+
+    #[test]
+    fn a_tab_comes_back_at_its_own_hole_not_the_last_tabs() {
+        // Tabs' holes differ (an agent list, a split): a tab shown again must frame at the rect
+        // its own hole last reported, not at the tab switched away from's.
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.add(&spec("b", "/tmp/b"), false).unwrap();
+        let full = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let half = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 600.0,
+        };
+        r.active = Some("a".into());
+        r.set_pane_frame(PaneIdx::Primary, full);
+        r.active = Some("b".into());
+        r.set_pane_frame(PaneIdx::Primary, half);
+        assert_eq!(r.tab_rect_for_test("a", PaneIdx::Primary), full);
+        assert_eq!(r.tab_rect_for_test("b", PaneIdx::Primary), half);
+        // A tab never framed yet starts at the window's latest hole.
+        r.add(&spec("c", "/tmp/c"), false).unwrap();
+        assert_eq!(r.tab_rect_for_test("c", PaneIdx::Primary), half);
     }
 
     // --- surface→tab routing ------------------------------------------------------
