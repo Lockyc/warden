@@ -664,6 +664,27 @@ impl Column {
         &mut self.tabs[t].blocks[b]
     }
 
+    /// The Rex block that takes focus when shown block `i` leaves: the one before it in its
+    /// scratch tab, else the one after, else the first of the tab the selection leans to when
+    /// this one closes ([`sync`](Self::sync)) — the next, else the previous. `None` when the
+    /// column holds no other block.
+    fn heir(&self, i: usize) -> Option<&str> {
+        let shown = self.shown();
+        let beside = i
+            .checked_sub(1)
+            .and_then(|j| shown.get(j))
+            .or_else(|| shown.get(i + 1));
+        let lean = || {
+            self.tabs
+                .get(self.selected + 1)
+                .or_else(|| self.selected.checked_sub(1).and_then(|j| self.tabs.get(j)))
+        };
+        beside
+            .or_else(|| lean()?.blocks.first())?
+            .block_id
+            .as_deref()
+    }
+
     /// Drop block `i` of the selected scratch tab, closing its surface; a tab left with no block
     /// goes, and the selection leans to the tab now in its place. Returns whether there was one.
     fn remove_block(&mut self, i: usize) -> bool {
@@ -1163,8 +1184,8 @@ impl Registry {
     /// in place: its relay exited, and whether its block did is the hub's to find out
     /// (`rex::spawn::end_if_exited`) — the session's next view then drops the block, or its end
     /// drops the column ([`close_column`](Self::close_column)); a relay that left for any other
-    /// reason reattaches when the tab is next shown. Focus on it falls back to the primary.
-    /// Returns whether a live block had that key.
+    /// reason reattaches when the tab is next shown. Focus on it stays in the column
+    /// ([`hand_off_focus`](Self::hand_off_focus)). Returns whether a live block had that key.
     pub fn release_block(&mut self, key: &str) -> bool {
         let Some((id, which, _)) = self.locate_key(key) else {
             return false;
@@ -1172,8 +1193,14 @@ impl Registry {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
         };
-        let focused = t.focused == which
-            && matches!(which, PaneIdx::Block(i) if t.block(i).is_some_and(|b| b.spec.id == key));
+        let focused = match which {
+            PaneIdx::Block(i)
+                if t.focused == which && t.block(i).is_some_and(|b| b.spec.id == key) =>
+            {
+                Some(i)
+            }
+            _ => None,
+        };
         let Some(b) = t
             .column
             .as_mut()
@@ -1187,10 +1214,34 @@ impl Registry {
         if let TabSlot::Spawned(s) = std::mem::replace(&mut b.slot, TabSlot::Cold) {
             s.close();
         }
-        if focused {
-            self.refocus(&id, PaneIdx::Primary);
+        if let Some(i) = focused {
+            self.hand_off_focus(&id, i);
         }
         true
+    }
+
+    /// Move tab `id`'s focus off its shown block `i`, which is leaving, to the column's heir
+    /// ([`Column::heir`]): at once when the shown scratch tab holds it, and pinned as the pending
+    /// focus so it holds through the view that drops `i` and shifts its neighbours. With no other
+    /// block in the column, to the primary.
+    fn hand_off_focus(&mut self, id: &str, i: usize) {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        let Some(column) = self.tabs[idx].column.as_mut() else {
+            return self.refocus(id, PaneIdx::Primary);
+        };
+        let Some(heir) = column.heir(i).map(str::to_owned) else {
+            return self.refocus(id, PaneIdx::Primary);
+        };
+        let shown = column
+            .shown()
+            .iter()
+            .position(|b| b.block_id.as_deref() == Some(heir.as_str()));
+        column.pending_focus = Some(heir);
+        if let Some(j) = shown {
+            self.refocus(id, PaneIdx::Block(j));
+        }
     }
 
     /// Drop tab `id`'s whole scratch column, freeing its surfaces — its Rex session ended.
@@ -4760,6 +4811,53 @@ mod tests {
             three.tab_dtos()[0].pop_out_blocked.as_deref(),
             three.pop_out_blocked("t").as_deref()
         );
+    }
+
+    #[test]
+    fn a_leaving_block_hands_focus_to_its_neighbour_in_the_column() {
+        // The one before it in its scratch tab, kept through the view that drops it.
+        let mut r = landed_column(vec![scratch("w1", &["a", "b", "c"])]);
+        r.focus_pane("t", PaneIdx::Block(1));
+        r.hand_off_focus("t", 1);
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(0)));
+        r.sync_column("t", opened(vec![scratch("w1", &["a", "c"])]));
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(0)));
+
+        // The first block: the one after it, which the view then moves up.
+        let mut r = landed_column(vec![scratch("w1", &["a", "b", "c"])]);
+        r.focus_pane("t", PaneIdx::Block(0));
+        r.hand_off_focus("t", 0);
+        r.sync_column("t", opened(vec![scratch("w1", &["b", "c"])]));
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(0)));
+        assert_eq!(r.focused_rex_block("t").as_deref(), Some("b"));
+
+        // A scratch tab's last block: the first block of the tab the column leans to.
+        let mut r = landed_column(vec![
+            scratch("w1", &["a"]),
+            scratch("w2", &["b"]),
+            scratch("w3", &["c", "d"]),
+        ]);
+        r.select_scratch("t", 1);
+        r.focus_pane("t", PaneIdx::Block(0));
+        r.hand_off_focus("t", 0);
+        r.sync_column(
+            "t",
+            opened(vec![scratch("w1", &["a"]), scratch("w3", &["c", "d"])]),
+        );
+        assert_eq!(r.focused_rex_block("t").as_deref(), Some("c"));
+        // …the one before it, when it was the last tab.
+        r.focus_pane("t", PaneIdx::Block(1));
+        r.sync_column(
+            "t",
+            opened(vec![scratch("w1", &["a"]), scratch("w3", &["d"])]),
+        );
+        r.hand_off_focus("t", 0);
+        r.sync_column("t", opened(vec![scratch("w1", &["a"])]));
+        assert_eq!(r.focused_rex_block("t").as_deref(), Some("a"));
+
+        // The column's only block: the primary.
+        r.hand_off_focus("t", 0);
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Primary));
     }
 
     #[test]
