@@ -7,9 +7,9 @@
 //! the view that confirms it arrives. A window's block is its first terminal block.
 //!
 //! A block's status is its root OSC 7501 record (`program_status_changed` /
-//! `program_status_removed`; child records are ignored) and its title (`title_changed`). Both are
-//! pulled for every block of a session when it is attached, and for a block first seen in a later
-//! view. Events and pulls are facts tagged with their connection's seq, so an older one never
+//! `program_status_removed`), the agent hook's two text records ([`ASKED`], [`SAID`]; any other
+//! child record is ignored) and its title (`title_changed`). All are pulled for every block of a
+//! session when it is attached, and for a block first seen in a later view. Events and pulls are facts tagged with their connection's seq, so an older one never
 //! overwrites a newer. Every block of a watched session is tracked, shown on screen or not.
 //!
 //! A window still on Rex's own label takes its block's title as its label once that block's
@@ -67,12 +67,21 @@ impl AgentState {
     }
 }
 
-/// What a block's program last reported. A block with a title and no status record is `Idle`.
+/// The child records an agent's hook (`scripts/agent-hooks/claude-hook.sh`) keeps on its block,
+/// one line each: the user's latest prompt, and the agent's latest reply.
+const ASKED: &str = "warden/asked";
+const SAID: &str = "warden/said";
+
+/// What a block's program last reported. A block with no root status record is `Idle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockStatus {
     pub state: AgentState,
     pub msg: Option<String>,
     pub title: Option<String>,
+    /// The [`ASKED`] record's text.
+    pub asked: Option<String>,
+    /// The [`SAID`] record's text.
+    pub said: Option<String>,
 }
 
 /// One attached session's windows.
@@ -127,27 +136,39 @@ struct Title {
     pid: Option<u64>,
 }
 
-/// A block's root status record and its title.
+/// A block's root status record, its title, and the hook's [`ASKED`] and [`SAID`] texts.
 #[derive(Debug, Default)]
 pub(super) struct Tracked {
     record: Fact<Option<Record>>,
     title: Fact<Option<Title>>,
+    asked: Fact<Option<String>>,
+    said: Fact<Option<String>>,
 }
 
 impl Tracked {
     fn status(&self) -> Option<BlockStatus> {
         let title = self.title.value.as_ref().map(|t| t.text.clone());
-        match &self.record.value {
-            Some(r) => Some(BlockStatus {
-                state: r.state,
-                msg: r.msg.clone(),
-                title,
-            }),
-            None => title.map(|t| BlockStatus {
-                state: AgentState::Idle,
-                msg: None,
-                title: Some(t),
-            }),
+        let (asked, said) = (self.asked.value.clone(), self.said.value.clone());
+        let (state, msg) = match &self.record.value {
+            Some(r) => (r.state, r.msg.clone()),
+            None if title.is_none() && asked.is_none() && said.is_none() => return None,
+            None => (AgentState::Idle, None),
+        };
+        Some(BlockStatus {
+            state,
+            msg,
+            title,
+            asked,
+            said,
+        })
+    }
+
+    /// The hook's text record `id` names, if it is one.
+    fn text_record(&mut self, id: &str) -> Option<&mut Fact<Option<String>>> {
+        match id {
+            ASKED => Some(&mut self.asked),
+            SAID => Some(&mut self.said),
+            _ => None,
         }
     }
 
@@ -594,7 +615,7 @@ impl Inner {
     }
 }
 
-/// Pull `blocks`' root status record and title, one block after another.
+/// Pull `blocks`' root status record, the hook's text records and title, one block after another.
 fn pull_status(
     hub: Weak<Inner>,
     server: String,
@@ -605,15 +626,25 @@ fn pull_status(
     for block in blocks {
         let args = json!({ "session_id": session, "block_id": block });
         if let Ok((seq, r)) = call_seq(&client, PROGRAM_STATUS, args.clone(), None) {
-            let root = r["records"]
+            let records = r["records"]
                 .as_array()
-                .and_then(|records| records.iter().find(|r| is_root(&r["id"])))
-                .map(parse_record);
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let root = records.iter().find(|r| is_root(&r["id"])).map(parse_record);
+            let text = |id: &str| {
+                records
+                    .iter()
+                    .find(|r| r["id"].as_str() == Some(id))
+                    .and_then(|r| non_empty(&r["msg"]))
+            };
+            let (asked, said) = (text(ASKED), text(SAID));
             let Some(inner) = hub.upgrade() else {
                 return;
             };
             inner.record_pulled(&server, &client, &block, |t, gen| {
-                t.record.set(gen, seq, root)
+                let root = t.record.set(gen, seq, root);
+                let asked = t.asked.set(gen, seq, asked);
+                t.said.set(gen, seq, said) | root | asked
             });
         }
         if let Ok((seq, r)) = call_seq(&client, TITLE, args, None) {
@@ -701,13 +732,27 @@ pub(super) fn apply_event(
                         .record
                         .set(gen, ev.seq, Some(parse_record(&own["record"])));
                 }
+                "program_status_changed" => {
+                    let text = non_empty(&own["record"]["msg"]);
+                    if let Some(fact) = own["id"].as_str().and_then(|id| tracked.text_record(id)) {
+                        fact.set(gen, ev.seq, text);
+                    }
+                }
                 // `ids` names the records removed; without it, all of them went.
-                "program_status_removed"
-                    if own["ids"]
-                        .as_array()
-                        .is_none_or(|ids| ids.iter().any(is_root)) =>
-                {
-                    tracked.record.set(gen, ev.seq, None);
+                "program_status_removed" => {
+                    let ids = own["ids"].as_array();
+                    let gone =
+                        |want: &dyn Fn(&Value) -> bool| ids.is_none_or(|ids| ids.iter().any(want));
+                    if gone(&is_root) {
+                        tracked.record.set(gen, ev.seq, None);
+                    }
+                    for id in [ASKED, SAID] {
+                        if gone(&|v| v.as_str() == Some(id)) {
+                            if let Some(fact) = tracked.text_record(id) {
+                                fact.set(gen, ev.seq, None);
+                            }
+                        }
+                    }
                 }
                 "title_changed" => {
                     tracked.title.set(gen, ev.seq, parse_title(own));

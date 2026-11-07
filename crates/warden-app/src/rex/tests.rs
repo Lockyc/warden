@@ -1366,6 +1366,8 @@ fn status_from_program_status_changed() {
             state: AgentState::Blocked,
             msg: Some("Allow edit?".into()),
             title: None,
+            asked: None,
+            said: None,
         })
     );
 
@@ -1451,12 +1453,110 @@ fn status_pulled_on_attach() {
                 state: AgentState::Done,
                 msg: Some("Tests pass".into()),
                 title: Some("fix the parser".into()),
+                asked: None,
+                said: None,
             })
     });
     assert_eq!(
         fake.requests_for(PROGRAM_STATUS)[0].payload["session_id"],
         "session:new"
     );
+}
+
+#[test]
+fn summary_from_the_hook_child_records() {
+    let (fake, _) = windowed(&[("window:1", "main", "block:new")]);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    let summary = || {
+        hub.block_status("block:new")
+            .map(|s| (s.asked, s.said))
+            .unwrap_or_default()
+    };
+    let child = |id: &str, msg: &str| {
+        json!({"id": id, "record": {"id": id, "state": "idle", "msg": msg,
+               "updated_at": "2026-11-07T00:00:00Z"}, "reason": "report"})
+    };
+
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        child("warden/asked", "fix the parser"),
+    );
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        child("warden/said", "Fixed: the parser keeps quotes."),
+    );
+    eventually("both rows", || {
+        summary()
+            == (
+                Some("fix the parser".into()),
+                Some("Fixed: the parser keeps quotes.".into()),
+            )
+    });
+    // The rows sit beside the root record without becoming its status.
+    assert_eq!(
+        hub.block_status("block:new").map(|s| (s.state, s.msg)),
+        Some((AgentState::Idle, None))
+    );
+
+    // Clearing `warden` names each child it removed.
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_removed",
+        json!({"ids": ["warden/asked", "warden/said"], "reason": "clear"}),
+    );
+    eventually("the clear", || summary() == (None, None));
+
+    // A removal without `ids` takes every record.
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        child("warden/asked", "again"),
+    );
+    eventually("the row back", || summary().0 == Some("again".into()));
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_removed",
+        json!({"reason": "reset"}),
+    );
+    eventually("the reset", || summary() == (None, None));
+}
+
+#[test]
+fn summary_pulled_on_attach() {
+    let (fake, _) = windowed(&[("window:1", "main", "block:new")]);
+    fake.on(PROGRAM_STATUS, |_, _| {
+        Reply::ok(json!({"records": [
+            {"state": "working", "msg": "Reading src/lib.rs", "updated_at": "2026-11-07T00:00:00Z"},
+            {"id": "warden/asked", "state": "idle", "msg": "fix the parser",
+             "updated_at": "2026-11-07T00:00:00Z"},
+            {"id": "warden/said", "state": "idle", "msg": "Looking now.",
+             "updated_at": "2026-11-07T00:00:00Z"},
+        ]}))
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    eventually("the pulled rows", || {
+        hub.block_status("block:new")
+            == Some(BlockStatus {
+                state: AgentState::Working,
+                msg: Some("Reading src/lib.rs".into()),
+                title: None,
+                asked: Some("fix the parser".into()),
+                said: Some("Looking now.".into()),
+            })
+    });
 }
 
 #[test]
@@ -1483,6 +1583,8 @@ fn title_change_updates_status_title() {
             state: AgentState::Idle,
             msg: None,
             title: Some("refactor auth".into()),
+            asked: None,
+            said: None,
         })
     );
     fake.push_block_event(
@@ -1497,6 +1599,8 @@ fn title_change_updates_status_title() {
                 state: AgentState::Working,
                 msg: None,
                 title: Some("refactor auth".into()),
+                asked: None,
+                said: None,
             })
     });
 }

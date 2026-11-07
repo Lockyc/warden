@@ -780,6 +780,11 @@ pub struct AgentRowDto {
     pub state: &'static str,
     /// The program's status message, else its terminal title.
     pub context: Option<String>,
+    /// The summary block's rows for a live tab: the user's latest prompt, the program's status
+    /// message (its current step), and the agent's latest reply.
+    pub asked: Option<String>,
+    pub doing: Option<String>,
+    pub said: Option<String>,
     pub selected: bool,
     pub can_sleep: bool,
     /// Why a live tab can't sleep.
@@ -890,12 +895,22 @@ pub fn agent_list(
             }
         }
         let fork_reason = refusal(&AgentOp::Fork(r.id.clone()), std::slice::from_ref(r));
+        let st = st.unwrap_or(BlockStatus {
+            state: AgentState::Idle,
+            msg: None,
+            title: None,
+            asked: None,
+            said: None,
+        });
         rows.push(AgentRowDto {
             id: r.id.clone(),
             name: r.name.clone(),
             group: r.group.clone(),
             state,
-            context: st.and_then(|s| s.msg.or(s.title)),
+            context: st.msg.clone().or(st.title),
+            asked: st.asked,
+            doing: st.msg,
+            said: st.said,
             selected: r.selected,
             can_sleep: live && r.resume.is_some(),
             sleep_reason: (live && r.resume.is_none()).then(|| NO_RESUME.to_owned()),
@@ -2317,11 +2332,15 @@ mod tests {
                 state: AgentState::Blocked,
                 msg: Some("needs you".into()),
                 title: Some("t1".into()),
+                asked: Some("fix it".into()),
+                said: Some("Fixed.".into()),
             }),
             "block:2" => Some(BlockStatus {
                 state: AgentState::Done,
                 msg: None,
                 title: Some("finished".into()),
+                asked: None,
+                said: None,
             }),
             _ => None,
         };
@@ -2341,6 +2360,21 @@ mod tests {
                 ("c", "asleep", None),
             ],
             "ungrouped above the groups"
+        );
+        let summary: Vec<[Option<&str>; 3]> = list
+            .rows
+            .iter()
+            .map(|r| [r.asked.as_deref(), r.doing.as_deref(), r.said.as_deref()])
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                [Some("fix it"), Some("needs you"), Some("Fixed.")],
+                [None; 3],
+                [None; 3],
+                [None; 3],
+            ],
+            "a live row's own words; an asleep one has none"
         );
         assert!(list.rows[0].selected);
         assert!(!list.rows[0].can_sleep);
@@ -2392,6 +2426,8 @@ mod tests {
                 state: state.get(),
                 msg: None,
                 title: None,
+                asked: None,
+                said: None,
             })
         };
         let mut att = Attention::default();
@@ -2434,6 +2470,8 @@ mod tests {
                 state: state.get(),
                 msg: None,
                 title: None,
+                asked: None,
+                said: None,
             })
         };
         let mut att = Attention::default();
@@ -3106,6 +3144,9 @@ mod tests {
                     group: g.map(Into::into),
                     state: "idle",
                     context: None,
+                    asked: None,
+                    doing: None,
+                    said: None,
                     selected: *id == selected,
                     can_sleep: true,
                     sleep_reason: None,
