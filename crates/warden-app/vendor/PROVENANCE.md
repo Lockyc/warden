@@ -16,13 +16,13 @@ directory). The library and the resources come from the **same release** — kee
 
 ## This build
 
-- **Source:** `lockyc/libghostty-build` release [`ghostty-83fb956`](https://github.com/lockyc/libghostty-build/releases/tag/ghostty-83fb956).
-- **Ghostty commit (unmodified upstream):** `83fb95624b0439ee660c2679b43b38c8b63769cd` (tag
-  `v1.4.0`, 2026-10-27).
-- **Release asset `GhosttyKit.xcframework.zip` sha256:** `63ba2c8dc9d211817d7d8a48375f0edd57712001d9a74212e22dd9ed197aed25`.
-- **Release asset `GhosttyResources.zip` sha256:** `fe41fcf256b63610019cf39d363556ec5621ad4c158c96272156c2dcb5943379`.
-- **Release asset `libghostty-vt-macos.zip` sha256:** `80b20927622a0dc0274b2e36605d10ce69519e0a8bf5c2bce96983f1bf7e4f9f` — Ghostty's standalone VT library (`-Demit-lib-vt`), universal and debug-stripped, vendored to `crates/warden-relay/vendor/libghostty-vt/` (`lib/libghostty-vt.a` sha256 `bb6004de7535f8c1170a34cfeed1f544b76b68e0402e3e5f0c2ae5211ffcebb6`, plus `include/ghostty/`).
-- **Committed `macos-arm64_x86_64/libghostty.a` sha256:** `11b7e4ceb850698a0009338b706403e836bb887a75402e6a664d44e91e5f6cdb`.
+- **Source:** `lockyc/libghostty-build` release [`ghostty-0fa3d57`](https://github.com/lockyc/libghostty-build/releases/tag/ghostty-0fa3d57).
+- **Ghostty commit (unmodified upstream):** `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec` (tag
+  `vt-1.0.0`, 2026-11-06 — the libghostty-vt 1.0 release).
+- **Release asset `GhosttyKit.xcframework.zip` sha256:** `392e653ac1e35c3a4fa8113bea5ef8f1f65a8733ab224d93546c4c9a7c8cc79f`.
+- **Release asset `GhosttyResources.zip` sha256:** `b136573cbf3c96d03a9d49337485296a2cf666707a4a475ec501dcf751840659`.
+- **Release asset `libghostty-vt-macos.zip` sha256:** `bc796969a52effe9f4b3b4d88af54a6698224b8531bd2fa55d22a7e18d94f8b7` — Ghostty's standalone VT library (`-Demit-lib-vt`), universal and debug-stripped, vendored to `crates/warden-relay/vendor/libghostty-vt/` (`lib/libghostty-vt.a` sha256 `e642851f782e2a3d345abe75f678adefc5a03ddaac026877ea453d228b9a56b9`, plus `include/ghostty/`).
+- **Committed `macos-arm64_x86_64/libghostty.a` sha256:** `f0b74183c6189dd7af94da6eba298c8ed84c6e2adb1006e17c11d3af08f103f2`.
 - **Toolchain:** Zig 0.17.0 (Ghostty's `minimum_zig_version` at that commit) on a GitHub `macos-15`
   runner (Sequoia SDK — the SDK the build is verified against). Built via Ghostty's own
   `-Demit-xcframework` target.
@@ -67,7 +67,9 @@ static archive embeds build paths/timestamps), so a revendor then churns the com
 not to "refresh" it. **libghostty's embedding C API is
 officially unstable** — after a version jump, diff `Headers/ghostty.h` against `crates/warden-app/src/ffi/mod.rs`
 (the `size_of!` guards in `ffi/mod.rs` fail the build on struct-size drift; enum discriminants are not
-guarded — eyeball the action tags).
+guarded — eyeball the action tags). libghostty-vt is the opposite: its C ABI is semver-stable from
+1.0, so within `vt-1.x` the hand-written declarations in `warden-relay/src/vt.rs` hold, and only a
+major bump needs them re-checked against `include/ghostty/vt/`.
 
 ## Security note
 

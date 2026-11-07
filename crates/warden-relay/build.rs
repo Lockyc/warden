@@ -10,6 +10,4 @@ fn main() {
     );
     println!("cargo:rustc-link-search=native={}", dir.display());
     println!("cargo:rustc-link-lib=static=ghostty-vt");
-    // simdutf and highway inside the archive are C++.
-    println!("cargo:rustc-link-lib=c++");
 }
