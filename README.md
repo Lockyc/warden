@@ -248,7 +248,7 @@ cargo run -p warden-config --bin warden -- fmt --check path/to/config.toml  # ch
 - `crates/warden-config/` — the config crate (library + `warden` CLI).
 - `crates/warden-app/` — the macOS Tauri app (windows, sidebar, libghostty terminals, hot-reload).
 - `crates/rex-client/` — the Rex protocol client; `crates/warden-relay/` — the helper a Rex-backed pane runs.
-- `scripts/agent-hooks/` — the hook an agent runs to tell warden how to resume it.
+- `scripts/agent-hooks/` — the hook an agent runs to tell warden how to resume it and what it was asked and said.
 - `assets/` — icon masters (`icon.svg`, `icon-app.svg`), rendered PNGs, the macOS `warden.icns`, and `build-icons.sh` to regenerate the rasters from the SVGs.
 - `docs/FOLLOWUPS.md` — tracked list of intentionally-deferred work.
 

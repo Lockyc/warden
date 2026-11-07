@@ -60,7 +60,7 @@ pane surface ── warden-relay ── its own control connection ─┤  (loca
 
 The relay mints its own tickets, so the stream belongs to the relay's client and lives as long as
 the relay does. The one channel between warden-app and a relay is the report socket
-(`--report`, `rex/reports.rs`). An agent's hook (`scripts/agent-hooks/claude-session-start.sh`,
+(`--report`, `rex/reports.rs`). An agent's hook (`scripts/agent-hooks/claude-hook.sh`,
 wired by `/warden:install`) writes `ESC _ warden1;resume=<base64> ESC \` to the agent's terminal;
 `StreamDemux` strips it from the output and the relay forwards it as a JSON line
 `{"session","block","resume"}`. Any program in the pane can write that sequence, and a woken agent's
@@ -85,7 +85,10 @@ site omits it.
   (`agents::reconcile`).
 - **Agent status comes from the hub, never a relay** (`program_status_changed`, `title_changed`;
   `rex/windows.rs`), so an agent tab that isn't on screen still raises its project row's badge and
-  a banner, and ambers its group while folded (`rex/attention.rs` → `notify::raise`).
+  a banner, and ambers its group while folded (`rex/attention.rs` → `notify::raise`). The summary
+  block's rows ride the same path: *doing* is the root record's `msg`, and *asked* / *said* are
+  OSC 7501 child records the hook writes straight to Rex (`warden/asked`, `warden/said`), so they
+  reach warden for an agent no relay streams, and on a remote server.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane and an unclaimed row show
   one block: the first terminal block of their session's first window.

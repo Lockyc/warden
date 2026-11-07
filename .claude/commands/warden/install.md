@@ -110,16 +110,19 @@ needed. (warden has no in-app config menu; edit the file directly.)
 ### 6. Wire the agent-tab hook
 
 An agent tab on a Rex server (a tab with `server = "local"`) can sleep and wake only once its
-agent has reported how to resume it. Claude Code reports through a `SessionStart` hook,
-`~/.local/share/warden/agent-hooks/claude-session-start.sh` (installed in step 4); it does nothing
-outside a Rex terminal. Use AskUserQuestion: **"Wire warden's agent hook into Claude Code?"**
-(Recommended; **Skip** leaves agent tabs unable to sleep).
+agent has reported how to resume it, and its summary rows show what the agent was asked and last
+said. Claude Code reports both through one hook, `~/.local/share/warden/agent-hooks/claude-hook.sh`
+(installed in step 4), run on `SessionStart`, `UserPromptSubmit` and `Stop`; it does nothing
+outside a Rex terminal, and its summary rows need `jq` on the machine running the agent. Use
+AskUserQuestion: **"Wire warden's agent hook into Claude Code?"** (Recommended; **Skip** leaves
+agent tabs unable to sleep and their summary rows empty).
 
 On confirmation, check `command -v jq` (offer `brew install jq` if missing), then run this. It
 wires every Claude Code profile in `$HOME` — `~/.claude` and each `~/.claude-*` dir — and:
 
-- **is idempotent**: an entry whose command contains `warden/agent-hooks/` (the marker) is never
-  added twice, and other tools' `SessionStart` hooks are kept;
+- **is idempotent**: per event, every entry whose command contains `warden/agent-hooks/` (the
+  marker) is replaced by the one current entry, so a re-run changes nothing and an older warden
+  hook is rewired; other tools' hooks are kept;
 - **skips a `~/.claude-*` dir with no `settings.json`** — it may not be a profile — but seeds
   `~/.claude/settings.json`, the default profile's, when absent;
 - **edits each real file once**: profiles whose `settings.json` resolves (`realpath`) to the same
@@ -127,7 +130,7 @@ wires every Claude Code profile in `$HOME` — `~/.claude` and each `~/.claude-*
 - **writes with `cat >`, never `mv`**, so a symlinked `settings.json` stays a symlink.
 
 ```bash
-HOOK='~/.local/share/warden/agent-hooks/claude-session-start.sh'
+HOOK='~/.local/share/warden/agent-hooks/claude-hook.sh'
 seen=
 for dir in "$HOME/.claude" "$HOME"/.claude-*; do
   [ -d "$dir" ] || continue
@@ -139,18 +142,20 @@ for dir in "$HOME/.claude" "$HOME"/.claude-*; do
   real=$(realpath "$f") || continue
   case "$seen" in *"|$real|"*) echo "same file as an earlier profile: $f"; continue ;; esac
   seen="$seen|$real|"
-  if jq -e 'any(.hooks.SessionStart[]?.hooks[]?; (.command // "") | contains("warden/agent-hooks/"))' \
-    "$f" > /dev/null; then echo "already wired: $f"; continue; fi
-  tmp=$(mktemp) && jq --arg cmd "$HOOK" \
-    '.hooks.SessionStart += [{"hooks": [{"type": "command", "command": $cmd}]}]' "$f" > "$tmp" \
-    && cat "$tmp" > "$f" && echo "wired: $f"
+  tmp=$(mktemp) && jq --arg cmd "$HOOK" '
+    def ours: any(.hooks[]?; (.command // "") | contains("warden/agent-hooks/"));
+    reduce ("SessionStart", "UserPromptSubmit", "Stop") as $e (.;
+      .hooks[$e] = ((.hooks[$e] // []) | map(select(ours | not)))
+        + [{"hooks": [{"type": "command", "command": $cmd}]}])' "$f" > "$tmp" || { rm -f "$tmp"; continue; }
+  if [ "$(jq -cS . "$tmp")" = "$(jq -cS . "$f")" ]; then echo "already wired: $f"
+  else cat "$tmp" > "$f" && echo "wired: $f"; fi
   rm -f "$tmp"
 done
 ```
 
 Report each line it printed. The hook takes effect at the next Claude Code session start. To
 remove it from a file, write it back (again via `cat >`) through
-`jq '.hooks.SessionStart |= map(select(any(.hooks[]?; (.command // "") | contains("warden/agent-hooks/")) | not))'`.
+`jq '.hooks |= with_entries(.value |= map(select(any(.hooks[]?; (.command // "") | contains("warden/agent-hooks/")) | not)))'`.
 
 This wires this Mac only; for a Rex server on another machine, see "The hook on a remote Rex host"
 in `docs/FOLLOWUPS.md`.
