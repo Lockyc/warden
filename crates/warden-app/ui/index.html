@@ -186,6 +186,11 @@
       #terminal-hole.cc-hole.cc-hole-collapsed #pane-secondary { --c-tr: 0px; }
       #terminal-hole.split .pane.focused::before {
         background: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
+      /* #main-col holds the main pane's row (#pane-primary + #agents) over the summary block; it
+         takes the primary's place in the hole's row, so the split's `order` rules and the
+         divider sit against it unchanged. */
+      #main-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+      #main-row { flex: 1 1 0; min-height: 0; display: flex; }
       #pane-primary { flex: 1 1 0; }
       #pane-secondary { flex: 1 1 0; display: none; }
       #terminal-hole.split #pane-secondary { display: block; }
@@ -249,6 +254,15 @@
          they go square here and the native surface squares them from its own frame. Opaque, like
          every painted surface on this transparent window. `.narrow` folds it to a rail of dots —
          automatically on a narrow hole, or by the fold button (`railPref`). */
+      /* The summary block: under #main-row, shown with the agent list. Fixed-height single-line
+         rows, so text never grows it; colours are the active tab's `TabDto.colour`. */
+      #summary { display: none; flex: none; font-size: 12px; user-select: none;
+        -webkit-user-select: none; color: var(--s-fg); }
+      #terminal-hole.agents #summary { display: block; }
+      #summary > div { height: 18px; line-height: 18px; padding: 0 10px; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; }
+      #summary .s-row { background: var(--s-shade); }
+      #summary .s-title { background: var(--s-bar); font-weight: 600; }
       :root { --agents-w: 220px; --agents-narrow-w: 34px; }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
         flex-direction: column; background: #15191e; border-left: 1px solid #313640;
@@ -385,6 +399,8 @@
         </div>
       </div>
       <div id="terminal-hole">
+        <div id="main-col">
+        <div id="main-row">
         <div id="pane-primary" class="pane">
           <div id="empty-state">
             <svg id="empty-state-art" viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
@@ -411,6 +427,16 @@
             <div id="agents-closed"></div>
           </div>
         </aside>
+        </div>
+        <!-- The summary block (a Rex tab's main pane only, with the agent list): three summary
+             rows, then the tab's title. Coloured by `summarySync`. -->
+        <div id="summary">
+          <div class="s-row"></div>
+          <div class="s-row"></div>
+          <div class="s-row"></div>
+          <div class="s-title"></div>
+        </div>
+        </div>
         <!-- Hidden when unsplit — the common case, identical to the single-hole layout — via
              setSplitVisible(false), the SOLE toggle for both `.split` and `hidden` (see the
              CSS comment above #terminal-hole). `split_pane` and a config split turn it on; the
@@ -763,6 +789,8 @@
         ratioOverride.forEach((_, id) => { if (!ids.has(id)) ratioOverride.delete(id); });
         agentsById.clear();
         dto.tabs.forEach((t) => { if (t.agents) agentsById.set(t.id, true); });
+        summaryById.clear();
+        dto.tabs.forEach((t) => summaryById.set(t.id, { title: t.title, colour: t.colour }));
         agentLists.forEach((_, id) => { if (!agentsById.has(id)) agentLists.delete(id); });
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
@@ -829,6 +857,7 @@
         splitBand = dto.split_band;
         // chrome-core's first-tab fallback fires onSelect inside `update` — warden's own open.
         wardenSelect(() => sb.update(toComponentDto(dto)));
+        summarySync(); // a relabel or recolour arrives with no tab switch
         // The window colour on the ROOT, for the pane focus ring (`.pane.focused` reads it —
         // the panes sit outside chrome-core's sidebar root, so its own tokens never reach them).
         // Hot-reload re-runs this, so a `colour` edit re-tints the ring with the banner.
@@ -1040,6 +1069,20 @@
       const agentsTab = () =>
         activeId !== null && agentsById.get(activeId) && !detached.has(activeId) ? activeId : null;
 
+      // tab id → { title, colour } for the summary block, rebuilt on every snapshot.
+      const summaryById = new Map();
+      // Paint the summary block for the agents tab: its title and `TabDto.colour`. Shown by the
+      // same `.agents` class as the column; runs on every column sync and every snapshot.
+      function summarySync() {
+        const s = summaryById.get(agentsTab());
+        if (!s) return;
+        const el = document.getElementById("summary");
+        el.style.setProperty("--s-bar", s.colour.bar_bg);
+        el.style.setProperty("--s-shade", s.colour.shade_bg);
+        el.style.setProperty("--s-fg", s.colour.fg);
+        el.querySelector(".s-title").textContent = s.title;
+      }
+
       // The one toggle for the column (`#terminal-hole.agents`). Runs inside every `setActiveId`,
       // ahead of the `reportRect` there, so the first rect reported for a tab is already the
       // narrower one. A tab with no list yet pulls it.
@@ -1047,6 +1090,7 @@
         const tab = agentsTab();
         if (pendingWake && pendingWake.tab !== tab) cancelWake(); // a held wake ends with its tab
         document.getElementById("terminal-hole").classList.toggle("agents", tab !== null);
+        summarySync();
         if (tab === null) return;
         syncRail();
         refreshAgents();
