@@ -157,7 +157,12 @@ pub struct ColumnDto {
     pub tiles: Vec<Tile>,
     pub dividers: Vec<Divider>,
     pub rex: bool,
+    /// Why the strip's `+` (New Scratch Tab) can't act yet, or `None`.
+    pub new_blocked: Option<String>,
 }
+
+/// Why a Rex column whose open hasn't landed can't take a new scratch tab or pop out yet.
+pub const COLUMN_OPENING: &str = "Scratch column is still opening";
 
 /// One scratch tab: its Rex window's label.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -501,6 +506,11 @@ impl Column {
         self.spec.server.is_some()
     }
 
+    /// Whether this is a Rex column whose open hasn't landed: no session, so no blocks yet.
+    fn opening(&self) -> bool {
+        self.is_rex() && self.session.is_none()
+    }
+
     /// Rex block `block_id`'s slot spec: the column's, under the block's own key.
     fn rex_block(&self, block_id: &str, slot: TabSlot) -> BlockSlot {
         let mut spec = self.spec.clone();
@@ -548,9 +558,10 @@ impl Column {
     }
 
     /// Whether a pop-out can carry this column: the detached window lays out one block beside
-    /// the primary, so at most one scratch tab holding at most one block.
+    /// the primary, so at most one scratch tab holding at most one block — and a Rex column must
+    /// have landed, or its blocks would come up in the origin beside a primary no longer there.
     fn fits_pop_out(&self) -> bool {
-        self.pop_out_load() <= 1
+        !self.opening() && self.pop_out_load() <= 1
     }
 
     /// Close every live block, leaving `Detached` placeholders in place. Returns whether one was
@@ -722,6 +733,7 @@ impl Column {
             tiles: tab.map(|t| t.layout.tiles()).unwrap_or_default(),
             dividers: tab.map(|t| t.layout.dividers()).unwrap_or_default(),
             rex: self.is_rex(),
+            new_blocked: self.opening().then(|| COLUMN_OPENING.to_owned()),
         }
     }
 }
@@ -1307,14 +1319,23 @@ impl Registry {
     }
 
     /// Why tab `id` can't be popped out, or `None`: its scratch column holds more than a pop-out
-    /// carries (`Column::fits_pop_out`, which [`detach`](Self::detach) enforces).
+    /// carries, or hasn't opened yet (`Column::fits_pop_out`, which [`detach`](Self::detach)
+    /// enforces). Until a Rex column lands, its configured stack is the count.
     pub fn pop_out_blocked(&self, id: &str) -> Option<String> {
-        let column = self.tabs.iter().find(|t| t.id == id)?.column.as_ref()?;
-        (!column.fits_pop_out()).then(|| {
-            format!(
-                "Pop out carries one scratch pane; this tab has {}",
-                column.pop_out_load()
-            )
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let column = t.column.as_ref()?;
+        if column.fits_pop_out() {
+            return None;
+        }
+        let load = if column.opening() {
+            stack_of(&t.primary.spec).len()
+        } else {
+            column.pop_out_load()
+        };
+        Some(if load > 1 {
+            format!("Pop out carries one scratch pane; this tab has {load}")
+        } else {
+            COLUMN_OPENING.to_owned()
         })
     }
 
@@ -2452,10 +2473,10 @@ impl Registry {
     }
 
     /// Tab `id`'s Rex column as `(pane key, dir)` — what a new scratch tab opens on — or `None`
-    /// for a tab with no column, or a plain one.
+    /// for a tab with no column, a plain one, or a Rex one whose open hasn't landed.
     pub fn rex_column(&self, id: &str) -> Option<(String, PathBuf)> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
-        let column = t.column.as_ref().filter(|c| c.is_rex())?;
+        let column = t.column.as_ref().filter(|c| c.is_rex() && !c.opening())?;
         Some((column.spec.id.clone(), column.spec.dir.clone()))
     }
 
@@ -4791,6 +4812,22 @@ mod tests {
         let col = r.tab_dtos()[0].column.clone().unwrap();
         assert!(col.rex && col.tabs.is_empty() && col.tiles.is_empty());
         assert_eq!(r.pane_to("t", Side::Right), None);
+        // Nothing to add a scratch tab to yet, and nothing a pop-out could carry.
+        assert_eq!(col.new_blocked.as_deref(), Some(COLUMN_OPENING));
+        assert_eq!(r.rex_column("t"), None);
+        assert_eq!(
+            r.pop_out_blocked("t").as_deref(),
+            Some("Pop out carries one scratch pane; this tab has 2"),
+            "the configured stack counts until Rex's own layout lands"
+        );
+        let (mut one, _) = rex_registry();
+        one.add(&split_rex_spec("t", 1), false).unwrap();
+        assert_eq!(one.pop_out_blocked("t").as_deref(), Some(COLUMN_OPENING));
+        let landed = landed_column(vec![scratch("w1", &["a"])]);
+        assert_eq!(
+            landed.tab_dtos()[0].column.as_ref().unwrap().new_blocked,
+            None
+        );
     }
 
     #[test]

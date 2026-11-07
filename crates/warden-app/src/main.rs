@@ -199,7 +199,8 @@ fn focused_label(app: &tauri::AppHandle) -> Option<String> {
     Some(w.label().to_string())
 }
 
-/// `(label, tab)` when the focused window's active tab has a Rex scratch column.
+/// `(label, tab)` when the focused window's active tab has a Rex scratch column whose open has
+/// landed.
 #[cfg(target_os = "macos")]
 fn focused_scratch_column(app: &tauri::AppHandle) -> Option<(String, String)> {
     use tauri::Manager;
