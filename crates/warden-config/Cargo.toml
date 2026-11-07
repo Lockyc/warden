@@ -6,9 +6,9 @@ edition = "2021"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-thiserror = "1"
-notify = "6"
-dirs = "5"
+thiserror = "2"
+notify = "8"
+dirs = "7"
 # Shared house-style TOML formatter + colour parsing (formerly warden's own fmt.rs/colour.rs),
 # now lifted into config-core and shared with curator and lector. Git dep so the build needs
 # no extra setup. Pinned by rev (same class as the libghostty pin) — config-core's formatter
