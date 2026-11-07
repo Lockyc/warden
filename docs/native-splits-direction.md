@@ -216,6 +216,30 @@ line of text draws straight over the image. So a multiplexer hop cannot own imag
 placement across scroll, reflow or redraw, which is why the out-of-band surface has to be
 warden's own rather than a tmux popup.
 
+## Next: the scratch column on Rex (decided, unbuilt)
+
+The design that retires amux's frame for Rex tabs. A tab's layout is **sidebar │ agent list │
+agent │ scratch column**; the scratch column is always present, sits on the right by default,
+and is the Rex tab's split pane grown up:
+
+- **The scratch column is one Rex session.** Each of its Rex windows is a **scratch tab** in a
+  `[1] [2] [+]` strip at the column's top; each window's split tree (`session.view`'s
+  `layers[0].layout`) is the stacked panes, one surface + relay per block. This is the agent
+  column's "session windows are tabs" mapping applied to the split pane — Rex owns the windows and
+  layout (the `docs/rex.md` invariant), so a split made in Rex.app shows here and vice versa.
+- **Config declares the first scratch window's panes** as a vertical stack:
+  `[[…split.pane]]` entries, each with an optional `cmd` and `size` (a fraction of the column;
+  the last pane without a `size` takes the rest), cascading like `split` today. warden creates them
+  in one `session.new_window` layout when it creates the session; after that Rex holds the layout.
+  This replaces agentmux's `[frame]` `left_vertical_split` / `left_top_panes`.
+- **Scratch tab 1 is the configured layout.** `+` (and a Tab menu item) opens a new Rex window
+  with a bare shell; `exit` closes it; scratch tabs persist as Rex sessions do.
+- **⌘D in the scratch column** is `session.new_split` beside the focused block; a divider drag is
+  `session.resize_pane`.
+
+**Plain (non-Rex) tabs keep the two-pane split.** A stack there needs a warden-owned layout
+model; unlock: a plain-tab workflow that needs more than two panes.
+
 ## Not yet
 
 **A popped-out left-side split's focus ring starts on the wrong hole.** shell-core's detach
