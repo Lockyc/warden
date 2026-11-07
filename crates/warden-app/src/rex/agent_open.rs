@@ -145,7 +145,7 @@ impl RexHub {
     /// when nothing else was in it and returns true; a window no record knows keeps it, and the
     /// record is stamped then, so a later open never mistakes that window for a restored agent's.
     /// Every call waits only until `deadline`.
-    fn retire_restored(
+    pub(super) fn retire_restored(
         &self,
         store: &Mutex<AgentStore>,
         project: &str,
@@ -900,6 +900,23 @@ pub(super) mod tests {
             None,
             "no resume: gone, as after a lost session"
         );
+    }
+
+    #[test]
+    fn an_op_on_a_restored_project_retires_it_as_an_open_would() {
+        let (f, hub, _dir) = restored(RESTORED.to_vec());
+        let s = before_restart();
+        hub.agent_op(
+            &s,
+            &open(false, None),
+            &crate::rex::lifecycle::AgentOp::Refresh,
+            7,
+        )
+        .expect("refresh");
+        assert_eq!(closed_windows(&f), ["window:1", "window:2", "window:3"]);
+        assert_eq!(f.requests_for("session.destroy").len(), 1);
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
+        assert!(!hub.session_alive("t"), "nothing left to mistake for a live agent");
     }
 
     #[test]

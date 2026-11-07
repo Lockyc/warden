@@ -125,8 +125,14 @@ pub fn opener(app: AppHandle, label: String) -> RexOpener {
                     None => Err(format!("Rex server {}: no connection to Rex", req.server)),
                 };
                 let server = req.server.clone();
+                // An agent pane's open has already merged into the store, whether or not the
+                // pane still wants the answer; the chrome learns the list only from this emit.
+                let agents = req.agents.then(|| req.pane_key.clone());
                 let main = app.clone();
                 let _ = app.run_on_main_thread(move || landed(&main, &label, &req, result));
+                if let Some(pane_key) = agents {
+                    super::lifecycle::emit_agents(&app, &pane_key);
+                }
                 hub_changed(&app, Some(&server));
             })
             .map(|_| ())

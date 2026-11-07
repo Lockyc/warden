@@ -166,11 +166,19 @@ impl RexHub {
         shown: &mut dyn FnMut(AgentsOpened),
     ) -> Result<(), Failed> {
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
-        let held = lock(store).records(project);
+        let mut held = lock(store).records(project);
         if let Some(why) = refusal(op, &held) {
             return Err(Failed::Refused(why));
         }
         let mut session = self.current_session(project, server, deadline)?;
+        // A restored session is retired here as an open retires it, so an op never adds an agent
+        // to bare shells a later open would close along with it.
+        if let Some((_, sid)) = session.as_ref().filter(|_| self.is_restored(project)) {
+            if self.retire_restored(store, project, server, &sid.clone(), now, deadline)? {
+                session = None;
+            }
+            held = lock(store).records(project);
+        }
         let windows = match &session {
             Some((_, sid)) => self.windows(server, sid),
             None => Vec::new(),
@@ -1333,6 +1341,11 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
             };
             if let Err(message) = done {
                 land_on_main(Err(message));
+                // The surface went before the worker started; a refresh re-spawns the agent the
+                // failed sleep or close left selected.
+                if matches!(op, AgentOp::Sleep(_) | AgentOp::Close { .. }) {
+                    follow(&app, &req.pane_key, &AgentOp::Refresh);
+                }
             }
         })
         .map(|_| ())
