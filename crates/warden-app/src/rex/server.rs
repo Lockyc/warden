@@ -103,12 +103,9 @@ pub fn autostart_local_within(limit: Duration) -> Result<(), RexError> {
 fn rex_app() -> Result<PathBuf, RexError> {
     use objc2_app_kit::NSWorkspace;
     use objc2_foundation::NSString;
-    // SAFETY: plain Launch Services queries; NSWorkspace is safe to use from any thread.
-    let path = unsafe {
-        NSWorkspace::sharedWorkspace()
-            .URLForApplicationWithBundleIdentifier(&NSString::from_str(REX_BUNDLE_ID))
-            .and_then(|url| url.path())
-    };
+    let path = NSWorkspace::sharedWorkspace()
+        .URLForApplicationWithBundleIdentifier(&NSString::from_str(REX_BUNDLE_ID))
+        .and_then(|url| url.path());
     path.map(|p| PathBuf::from(p.to_string()))
         .ok_or_else(not_installed)
 }

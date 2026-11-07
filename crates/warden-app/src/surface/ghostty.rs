@@ -39,7 +39,7 @@ use std::sync::{Mutex, OnceLock};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{
-    class, declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass,
+    class, define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadOnly,
 };
 use objc2_app_kit::{
     NSApplication, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSCursor,
@@ -49,8 +49,8 @@ use objc2_app_kit::{
     NSWindowDidResignKeyNotification,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSData, NSDictionary, NSNotification, NSNotificationCenter, NSPoint, NSRect,
-    NSSize, NSString,
+    MainThreadMarker, NSData, NSDictionary, NSNotification, NSNotificationCenter, NSObject,
+    NSPoint, NSRect, NSSize, NSString,
 };
 
 /// Opaque `CGColorRef`. A msg_send returning or taking one (`-[NSColor CGColor]`,
@@ -418,7 +418,7 @@ unsafe fn clipboard_image_to_temp_path(pb: &NSPasteboard) -> Option<String> {
             .open(&path)
         {
             Ok(mut f) => {
-                f.write_all(png.bytes()).ok()?;
+                f.write_all(&png.to_vec()).ok()?;
                 return Some(path.to_str()?.to_owned());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -664,7 +664,10 @@ fn cursor_for_shape(shape: u32) -> Retained<NSCursor> {
             NOT_ALLOWED => NSCursor::operationNotAllowedCursor(),
             GRAB => NSCursor::openHandCursor(),
             GRABBING => NSCursor::closedHandCursor(),
+            // Their replacements (`columnResizeCursorInDirections:` and kin) are macOS 15+.
+            #[allow(deprecated)]
             COL_RESIZE => NSCursor::resizeLeftRightCursor(),
+            #[allow(deprecated)]
             ROW_RESIZE => NSCursor::resizeUpDownCursor(),
             _ => NSCursor::arrowCursor(),
         }
@@ -672,21 +675,15 @@ fn cursor_for_shape(shape: u32) -> Retained<NSCursor> {
 }
 
 // --- Custom NSView that forwards keyboard events to libghostty --------------
-declare_class!(
+define_class!(
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "WardenHostView"]
+    #[ivars = HostIvars]
     struct WardenHostView;
 
-    unsafe impl ClassType for WardenHostView {
-        type Super = NSView;
-        type Mutability = mutability::MainThreadOnly;
-        const NAME: &'static str = "WardenHostView";
-    }
-
-    impl DeclaredClass for WardenHostView {
-        type Ivars = HostIvars;
-    }
-
-    unsafe impl WardenHostView {
-        #[method_id(initWithFrame:)]
+    impl WardenHostView {
+        #[unsafe(method_id(initWithFrame:))]
         fn init_with_frame(this: Allocated<Self>, frame: NSRect) -> Option<Retained<Self>> {
             let this = this.set_ivars(HostIvars {
                 surface: Cell::new(ptr::null_mut()),
@@ -694,11 +691,11 @@ declare_class!(
                 tracking_area: RefCell::new(None),
                 rex: Cell::new(false),
             });
-            unsafe { msg_send_id![super(this), initWithFrame: frame] }
+            unsafe { msg_send![super(this), initWithFrame: frame] }
         }
 
         // Must be true for the view to accept key events as first responder.
-        #[method(acceptsFirstResponder)]
+        #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             true
         }
@@ -713,7 +710,7 @@ declare_class!(
         // focus change funnels through (click, makeFirstResponder, key-window restore), so the
         // cursor state now tracks the real first responder. Also record it in FOCUSED_SURFACE, consistent
         // with performKeyEquivalent:.
-        #[method(becomeFirstResponder)]
+        #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> bool {
             let surface = self.ivars().surface.get();
             if !surface.is_null() {
@@ -753,7 +750,7 @@ declare_class!(
         // FOCUSED_SURFACE (when it names this surface) keeps performKeyEquivalent:'s handoff from
         // re-clearing a surface that already let go. Window key changes leave the first responder
         // alone; the key observers below cover those.
-        #[method(resignFirstResponder)]
+        #[unsafe(method(resignFirstResponder))]
         fn resign_first_responder(&self) -> bool {
             let surface = self.ivars().surface.get();
             if !surface.is_null() {
@@ -776,7 +773,7 @@ declare_class!(
         // directly. Every tab view in a window receives the notification; only the one that owns
         // the window's keys reacts (`owns_window_keys` — the same disambiguation
         // performKeyEquivalent: uses, so a split's two visible panes never both claim focus).
-        #[method(windowDidBecomeKey:)]
+        #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, _notification: &NSNotification) {
             let surface = self.ivars().surface.get();
             // SAFETY: notifications are delivered on the main thread.
@@ -788,17 +785,16 @@ declare_class!(
             self.user_input();
         }
 
-        #[method(windowDidResignKey:)]
+        #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
             let surface = self.ivars().surface.get();
-            // SAFETY: notifications are delivered on the main thread.
-            if surface.is_null() || unsafe { self.isHidden() } {
+            if surface.is_null() || self.isHidden() {
                 return;
             }
             unsafe { ffi::ghostty_surface_set_focus(surface, false) };
         }
 
-        #[method(windowDidChangeScreen:)]
+        #[unsafe(method(windowDidChangeScreen:))]
         fn window_did_change_screen(&self, _notification: &NSNotification) {
             let surface = self.ivars().surface.get();
             if surface.is_null() {
@@ -813,13 +809,13 @@ declare_class!(
             unsafe { ffi::ghostty_surface_set_display_id(surface, window_display_id(&window)) };
         }
 
-        #[method(keyDown:)]
+        #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             self.user_input();
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
         }
 
-        #[method(keyUp:)]
+        #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
         }
@@ -828,18 +824,18 @@ declare_class!(
         // (performKeyEquivalent: below), so its standard actions reach the focused terminal here
         // and run libghostty's own bindings, as Ghostty's macOS app does. Undo, Redo and Cut have
         // no responder here, so AppKit disables them while a terminal is focused.
-        #[method(copy:)]
+        #[unsafe(method(copy:))]
         fn copy(&self, _sender: Option<&AnyObject>) {
             binding_action(self, "copy_to_clipboard");
         }
 
-        #[method(paste:)]
+        #[unsafe(method(paste:))]
         fn paste(&self, _sender: Option<&AnyObject>) {
             self.user_input();
             binding_action(self, "paste_from_clipboard");
         }
 
-        #[method(selectAll:)]
+        #[unsafe(method(selectAll:))]
         fn select_all(&self, _sender: Option<&AnyObject>) {
             binding_action(self, "select_all");
         }
@@ -853,12 +849,12 @@ declare_class!(
         // to this view as copy:/paste:/selectAll:). Otherwise forward to libghostty's own
         // keybinds and return whether it consumed — if not, return NO so AppKit can still
         // route ⌘` and friends. The menu's accelerators define the reserved set (self-maintaining).
-        #[method(performKeyEquivalent:)]
+        #[unsafe(method(performKeyEquivalent:))]
         fn perform_key_equivalent(&self, event: &NSEvent) -> objc2::runtime::Bool {
             if let Some(mtm) = MainThreadMarker::new() {
-                let main_menu = unsafe { NSApplication::sharedApplication(mtm).mainMenu() };
+                let main_menu = NSApplication::sharedApplication(mtm).mainMenu();
                 if let Some(menu) = main_menu {
-                    if unsafe { menu.performKeyEquivalent(event) } {
+                    if menu.performKeyEquivalent(event) {
                         return objc2::runtime::Bool::YES;
                     }
                 }
@@ -912,7 +908,7 @@ declare_class!(
         // GHOSTTY_ACTION_OPEN_URL on click, since there was no hovered link to open. Motion needs an
         // NSTrackingArea (AppKit doesn't deliver mouseMoved: otherwise), installed in
         // `updateTrackingAreas` below.
-        #[method(mouseMoved:)]
+        #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
             unsafe { forward_mouse_pos(self, event) };
         }
@@ -924,7 +920,7 @@ declare_class!(
         // stays lit). Report it so the app layer can tell the sidebar. Emitted directly, not via
         // the `dispatch_async_f` trampoline the focus/child-exit paths use: AppKit delivers this
         // from the event loop, never re-entrantly from inside our own `ManagerState` lock.
-        #[method(mouseEntered:)]
+        #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, _event: &NSEvent) {
             let surface = self.ivars().surface.get();
             if surface.is_null() {
@@ -938,7 +934,7 @@ declare_class!(
 
         // Leaving the view must clear libghostty's hover, or the last hovered link keeps its
         // underline while the mouse sits in the sidebar.
-        #[method(mouseExited:)]
+        #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, event: &NSEvent) {
             let surface = self.ivars().surface.get();
             if surface.is_null() {
@@ -953,7 +949,7 @@ declare_class!(
         // the visible bounds, and `ActiveInKeyWindow` limits hover tracking to the focused window —
         // a click into a background window still lands correctly, because `forward_mouse_button`
         // pushes the position before the button.
-        #[method(updateTrackingAreas)]
+        #[unsafe(method(updateTrackingAreas))]
         fn update_tracking_areas(&self) {
             unsafe {
                 if let Some(old) = self.ivars().tracking_area.borrow_mut().take() {
@@ -962,10 +958,10 @@ declare_class!(
                 let area = NSTrackingArea::initWithRect_options_owner_userInfo(
                     NSTrackingArea::alloc(),
                     self.bounds(),
-                    NSTrackingAreaOptions::NSTrackingMouseEnteredAndExited
-                        | NSTrackingAreaOptions::NSTrackingMouseMoved
-                        | NSTrackingAreaOptions::NSTrackingActiveInKeyWindow
-                        | NSTrackingAreaOptions::NSTrackingInVisibleRect,
+                    NSTrackingAreaOptions::MouseEnteredAndExited
+                        | NSTrackingAreaOptions::MouseMoved
+                        | NSTrackingAreaOptions::ActiveInKeyWindow
+                        | NSTrackingAreaOptions::InVisibleRect,
                     Some(self),
                     None,
                 );
@@ -978,58 +974,58 @@ declare_class!(
         // The cursor shape libghostty asked for (I-beam over cells, hand over a link). Cursor
         // *rects* rather than a bare NSCursor::set(): AppKit re-applies these as the mouse moves,
         // so the shape sticks instead of being reset by the next motion event.
-        #[method(resetCursorRects)]
+        #[unsafe(method(resetCursorRects))]
         fn reset_cursor_rects(&self) {
             let cursor = cursor_for_shape(self.ivars().mouse_shape.get());
             self.addCursorRect_cursor(self.bounds(), &cursor);
         }
 
-        #[method(mouseDown:)]
+        #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT) };
         }
-        #[method(mouseUp:)]
+        #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT) };
         }
-        #[method(mouseDragged:)]
+        #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
             unsafe { forward_mouse_pos(self, event) };
         }
-        #[method(rightMouseDown:)]
+        #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) };
         }
-        #[method(rightMouseUp:)]
+        #[unsafe(method(rightMouseUp:))]
         fn right_mouse_up(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) };
         }
-        #[method(rightMouseDragged:)]
+        #[unsafe(method(rightMouseDragged:))]
         fn right_mouse_dragged(&self, event: &NSEvent) {
             unsafe { forward_mouse_pos(self, event) };
         }
-        #[method(otherMouseDown:)]
+        #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE) };
         }
-        #[method(otherMouseUp:)]
+        #[unsafe(method(otherMouseUp:))]
         fn other_mouse_up(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE) };
         }
-        #[method(otherMouseDragged:)]
+        #[unsafe(method(otherMouseDragged:))]
         fn other_mouse_dragged(&self, event: &NSEvent) {
             unsafe { forward_mouse_pos(self, event) };
         }
-        #[method(scrollWheel:)]
+        #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
             unsafe { forward_scroll(self, event) };
         }
@@ -1040,7 +1036,7 @@ declare_class!(
         // the surface keeps the creation-time scale and the terminal stops filling the window (and
         // a later resize scales the grid proportionally instead of reflowing). A plain window *move*
         // between same-scale displays doesn't fire this, which is correct — nothing to update.
-        #[method(viewDidChangeBackingProperties)]
+        #[unsafe(method(viewDidChangeBackingProperties))]
         fn view_did_change_backing_properties(&self) {
             let surface = self.ivars().surface.get();
             if surface.is_null() {
@@ -1161,11 +1157,11 @@ impl WardenHostView {
             return false;
         };
         match window.firstResponder() {
-            Some(fr) if fr.is_kind_of::<WardenHostView>() => {
+            Some(fr) if fr.isKindOfClass(WardenHostView::class()) => {
                 let me: &NSResponder = self;
                 ptr::eq(&*fr as *const NSResponder, me as *const NSResponder)
             }
-            Some(fr) if fr.is_kind_of::<NSView>() => false,
+            Some(fr) if fr.isKindOfClass(NSView::class()) => false,
             _ => true,
         }
     }
@@ -1452,7 +1448,7 @@ impl GhosttySurface {
             );
 
             let host_view: Retained<WardenHostView> =
-                msg_send_id![mtm.alloc::<WardenHostView>(), initWithFrame: frame];
+                msg_send![mtm.alloc::<WardenHostView>(), initWithFrame: frame];
             host_view.setWantsLayer(true);
 
             // Build the fallible CStrings up front — BEFORE wiring the view into AppKit — so an

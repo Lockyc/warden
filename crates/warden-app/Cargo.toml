@@ -41,7 +41,7 @@ libc = "0.2"
 log = { version = "0.4", features = ["std"] }
 # The unified-log handle behind `logging.rs`; its own `log` backend is replaced by ours.
 oslog = { version = "0.2", default-features = false }
-objc2 = "0.5"
-objc2-app-kit = { version = "0.2", features = ["NSView", "NSWindow", "NSResponder", "NSEvent", "NSGraphics", "NSPasteboard", "NSApplication", "NSMenu", "NSImageRep", "NSBitmapImageRep", "NSCursor", "NSTrackingArea", "NSWorkspace", "NSScreen", "NSAlert", "NSButton", "NSControl", "NSTextField", "NSFont", "NSImage", "block2"] }
-objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString", "NSThread", "NSData", "NSDictionary", "NSNotification", "NSURL", "NSArray", "NSError", "NSPathUtilities"] }
-block2 = "0.5"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow", "NSResponder", "NSEvent", "NSGraphics", "NSPasteboard", "NSApplication", "NSMenu", "NSImageRep", "NSBitmapImageRep", "NSCursor", "NSTrackingArea", "NSWorkspace", "NSScreen", "NSAlert", "NSButton", "NSControl", "NSTextField", "NSFont", "NSImage", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSThread", "NSData", "NSDictionary", "NSNotification", "NSURL", "NSArray", "NSError", "NSPathUtilities"] }
+block2 = "0.6"

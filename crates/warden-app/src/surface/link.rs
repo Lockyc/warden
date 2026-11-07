@@ -20,13 +20,13 @@ use std::os::raw::c_void;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::{msg_send, msg_send_id, ClassType};
+use objc2::{msg_send, ClassType};
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSFont, NSModalResponse, NSPasteboard,
     NSPasteboardTypeString, NSTextField, NSView, NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSCopying, NSSize, NSString, NSURLComponents, NSURLContentTypeKey,
+    MainThreadMarker, NSArray, NSSize, NSString, NSURLComponents, NSURLContentTypeKey,
     NSURLIsDirectoryKey, NSURLIsExecutableKey, NSURLIsRegularFileKey, NSURLResourceKey, NSURL,
 };
 
@@ -84,40 +84,35 @@ pub fn open(kind: u32, raw: &str) {
 /// A target libghostty produced itself. A scheme-less value is a file path (`~` expanded) —
 /// `NSURL` would otherwise accept it as a scheme-less URL that opens nowhere.
 fn open_trusted(raw: &str) {
-    unsafe {
-        let s = NSString::from_str(raw);
-        let url = match NSURL::URLWithString(&s) {
-            Some(u) if u.scheme().is_some() => u,
-            _ => NSURL::fileURLWithPath(&s.stringByStandardizingPath()),
-        };
-        NSWorkspace::sharedWorkspace().openURL(&url);
-    }
+    let s = NSString::from_str(raw);
+    let url = match NSURL::URLWithString(&s) {
+        Some(u) if u.scheme().is_some() => u,
+        _ => NSURL::fileURLWithPath(&s.stringByStandardizingPath()),
+    };
+    NSWorkspace::sharedWorkspace().openURL(&url);
 }
 
 /// An `unknown`-kind target may be a plain path (`~/notes.txt`, `src/main.rs`), which [`decide`]
 /// rejects as scheme-less, so a path becomes the file URL it names first. A value with unsafe
 /// characters passes through unchanged so `decide` rejects it before percent-encoding hides them.
 fn unknown_target(raw: &str) -> String {
-    let has_scheme = unsafe {
-        NSURL::URLWithString(&NSString::from_str(raw)).is_some_and(|u| u.scheme().is_some())
-    };
+    let has_scheme =
+        NSURL::URLWithString(&NSString::from_str(raw)).is_some_and(|u| u.scheme().is_some());
     if has_scheme || contains_unsafe_characters(raw) {
         return raw.to_owned();
     }
-    unsafe {
-        let path = NSString::from_str(raw).stringByStandardizingPath();
-        NSURL::fileURLWithPath(&path)
-            .absoluteString()
-            .map(|s| s.to_string())
-            .unwrap_or_default()
-    }
+    let path = NSString::from_str(raw).stringByStandardizingPath();
+    NSURL::fileURLWithPath(&path)
+        .absoluteString()
+        .map(|s| s.to_string())
+        .unwrap_or_default()
 }
 
 fn open_untrusted(raw: &str) {
     match decide(raw) {
-        Decision::Allow(url) => unsafe {
+        Decision::Allow(url) => {
             NSWorkspace::sharedWorkspace().openURL(&url);
-        },
+        }
         Decision::Confirm(url) => defer(Pending::Confirm {
             url,
             display: display_string(raw),
@@ -141,25 +136,24 @@ pub fn decide(s: &str) -> Decision {
     }
     // NSURL also accepts relative references; an untrusted target must carry an explicit scheme so
     // no later layer can reinterpret it as a local path.
-    let Some(url) = (unsafe { NSURL::URLWithString(&NSString::from_str(s)) }) else {
+    let Some(url) = NSURL::URLWithString(&NSString::from_str(s)) else {
         return Decision::Deny(DenialReason::MalformedUrl);
     };
-    let scheme = unsafe { url.scheme() }
+    let scheme = url
+        .scheme()
         .map(|s| s.to_string().to_ascii_lowercase())
         .unwrap_or_default();
     match scheme.as_str() {
         "" => Decision::Deny(DenialReason::MalformedUrl),
         // `https:relative` has a scheme but no authority, and consumers resolve it differently.
-        "http" | "https" => match unsafe { url.host() } {
+        "http" | "https" => match url.host() {
             Some(h) if !h.to_string().is_empty() => Decision::Allow(url),
             _ => Decision::Deny(DenialReason::InvalidWebUrl),
         },
         // The address is the components' path; a bare `mailto:` would open an empty draft.
         "mailto" => {
-            let path = unsafe {
-                NSURLComponents::componentsWithURL_resolvingAgainstBaseURL(&url, false)
-                    .and_then(|c| c.path())
-            };
+            let path = NSURLComponents::componentsWithURL_resolvingAgainstBaseURL(&url, false)
+                .and_then(|c| c.path());
             match path {
                 Some(p) if !p.to_string().is_empty() => Decision::Allow(url),
                 _ => Decision::Deny(DenialReason::MalformedUrl),
@@ -192,30 +186,33 @@ fn file_decision(url: &NSURL) -> Decision {
         else {
             return Decision::Deny(DenialReason::InaccessibleFile);
         };
-        let keys: Retained<NSArray<NSURLResourceKey>> = NSArray::from_vec(
-            [
-                NSURLContentTypeKey,
-                NSURLIsDirectoryKey,
-                NSURLIsExecutableKey,
-                NSURLIsRegularFileKey,
-            ]
-            .map(|k| k.copy())
-            .into(),
-        );
+        let keys: Retained<NSArray<NSURLResourceKey>> = NSArray::from_slice(&[
+            NSURLContentTypeKey,
+            NSURLIsDirectoryKey,
+            NSURLIsExecutableKey,
+            NSURLIsRegularFileKey,
+        ]);
         // Reading the keys also proves the canonical target exists and is accessible.
         let Ok(values) = canonical.resourceValuesForKeys_error(&keys) else {
             return Decision::Deny(DenialReason::InaccessibleFile);
         };
         let flag = |key: &NSURLResourceKey| -> bool {
-            values.get(key).is_some_and(|v| msg_send![v, boolValue])
+            values
+                .objectForKey(key)
+                .is_some_and(|v| msg_send![&*v, boolValue])
         };
         let is_dir = flag(NSURLIsDirectoryKey);
         // Devices, sockets and other special objects are refused outright.
         if !is_dir && !flag(NSURLIsRegularFileKey) {
             return Decision::Deny(DenialReason::InaccessibleFile);
         }
-        let content_type = values.get(NSURLContentTypeKey);
-        if is_unsafe_file(&canonical, content_type, is_dir, flag(NSURLIsExecutableKey)) {
+        let content_type = values.objectForKey(NSURLContentTypeKey);
+        if is_unsafe_file(
+            &canonical,
+            content_type.as_deref(),
+            is_dir,
+            flag(NSURLIsExecutableKey),
+        ) {
             return Decision::Deny(DenialReason::UnsafeFile);
         }
         Decision::Allow(canonical)
@@ -232,16 +229,17 @@ fn is_unsafe_file(
     is_dir: bool,
     is_executable: bool,
 ) -> bool {
-    let ext = unsafe { url.pathExtension() }
+    let ext = url
+        .pathExtension()
         .map(|e| e.to_string().to_ascii_lowercase())
         .unwrap_or_default();
     if UNSAFE_PATH_EXTENSIONS.contains(&ext.as_str()) {
         return true;
     }
-    if let (Some(ct), Some(cls)) = (content_type, AnyClass::get("UTType")) {
+    if let (Some(ct), Some(cls)) = (content_type, AnyClass::get(c"UTType")) {
         for id in UNSAFE_CONTENT_TYPES {
             let ty: Option<Retained<AnyObject>> =
-                unsafe { msg_send_id![cls, typeWithIdentifier: &*NSString::from_str(id)] };
+                unsafe { msg_send![cls, typeWithIdentifier: &*NSString::from_str(id)] };
             if let Some(ty) = ty {
                 let conforms: bool = unsafe { msg_send![ct, conformsToType: &*ty] };
                 if conforms {
@@ -280,7 +278,7 @@ fn contains_unsafe_characters(s: &str) -> bool {
 /// the shown and opened targets differ; other URLs stay byte-for-byte (separators can matter to a
 /// handler). Unsafe characters left after normalizing are escaped as `\u{…}` text.
 fn display_string(s: &str) -> String {
-    let normalized = unsafe {
+    let normalized = {
         let ns = NSString::from_str(s);
         match NSURL::URLWithString(&ns) {
             Some(u) if u.scheme().is_some() => {
@@ -442,7 +440,7 @@ unsafe fn target_view(mtm: MainThreadMarker, display: &str) -> Retained<NSView> 
     field.setSelectable(true);
     let size = NSFont::systemFontSize();
     let font: Retained<NSFont> =
-        msg_send_id![NSFont::class(), monospacedSystemFontOfSize: size, weight: 0.0f64];
+        msg_send![NSFont::class(), monospacedSystemFontOfSize: size, weight: 0.0f64];
     field.setFont(Some(&font));
     field.setPreferredMaxLayoutWidth(WIDTH);
     let fit: NSSize = msg_send![&field, fittingSize];
@@ -456,7 +454,7 @@ mod tests {
 
     fn allowed(d: &Decision) -> Option<String> {
         match d {
-            Decision::Allow(u) => Some(unsafe { u.absoluteString() }.unwrap().to_string()),
+            Decision::Allow(u) => Some(u.absoluteString().unwrap().to_string()),
             _ => None,
         }
     }
