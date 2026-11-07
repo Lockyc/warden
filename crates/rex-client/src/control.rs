@@ -236,7 +236,7 @@ fn would_block(e: &tungstenite::Error) -> bool {
 }
 
 impl ControlClient {
-    /// Connects as a new client: hello at API revision 7, then the welcome.
+    /// Connects as a new client: hello at [`crate::API_REVISION`], then the welcome.
     pub fn connect(endpoint: &Endpoint, client: &ClientInfo) -> Result<ControlClient, RexError> {
         Self::open(endpoint, client, None, None)
     }

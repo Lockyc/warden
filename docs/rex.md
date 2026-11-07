@@ -103,8 +103,8 @@ site omits it.
   the window becoming key, a key or mouse press — taken from AppKit (`SurfaceSignal::UserInput`,
   see `docs/surface.md`), and resends the size on a frame change only while it owns the block.
   Whoever was last used owns the size, and focus *gain* is an edge, so two clients can't
-  ping-pong. The relay never resizes and drops every terminal-generated reply
-  (`rex_client::wire::strip_terminal_replies`): the server answers terminal queries itself, so a
+  ping-pong. The relay never resizes and drops each terminal-generated reply a read
+  carries whole (`rex_client::wire::strip_terminal_replies`): the server answers terminal queries itself, so a
   forwarded reply is a doubled answer and a spurious claim trigger.
 - **AppKit's main thread never waits on the network.** Opens run on an opener worker
   (`spawn::opener`), claims on the `Sizer` worker, ☠ and exit checks on their own workers; the hub

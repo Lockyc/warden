@@ -1,6 +1,6 @@
 //! A blocking client for Rex, Superlogical's server-side terminal multiplexer: the control
 //! connection (JSON requests, responses and events) and data connections (a block's output
-//! stream), at control API revision 7. No async runtime — background work is `std::thread` plus
+//! stream), at control API revision [`API_REVISION`]. No async runtime — background work is `std::thread` plus
 //! `std::sync::mpsc`.
 
 mod control;

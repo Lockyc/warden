@@ -267,7 +267,9 @@ pub fn strip_terminal_replies(b: &[u8]) -> Vec<u8> {
                     }
                 }
                 b']' | b'P' | b'_' => {
-                    // String sequence, ended by BEL or ST (ESC \).
+                    // String sequence, ended by BEL or ST (ESC \). Only a terminated one is a
+                    // reply — the terminal writes each in one piece — so an unterminated one is
+                    // typed input (Alt+] / Alt+P / Alt+_, or Esc then a key) and passes through.
                     let mut j = i + 2;
                     while j < b.len()
                         && b[j] != 0x07
@@ -275,12 +277,10 @@ pub fn strip_terminal_replies(b: &[u8]) -> Vec<u8> {
                     {
                         j += 1;
                     }
-                    i = if j < b.len() && b[j] == 0x07 {
-                        j + 1
-                    } else {
-                        (j + 2).min(b.len())
-                    };
-                    continue;
+                    if j < b.len() {
+                        i = if b[j] == 0x07 { j + 1 } else { j + 2 };
+                        continue;
+                    }
                 }
                 _ => {}
             }
@@ -497,5 +497,12 @@ mod tests {
     fn strip_replies_keeps_keys() {
         let input = b"\x1b[A\x1b[1;5D\x1b[97;5u";
         assert_eq!(strip_terminal_replies(input), input.to_vec());
+    }
+
+    #[test]
+    fn strip_replies_keeps_an_unterminated_string_introducer() {
+        for input in [&b"\x1b]c"[..], b"\x1b_x", b"\x1bP", b"\x1b]"] {
+            assert_eq!(strip_terminal_replies(input), input.to_vec());
+        }
     }
 }
