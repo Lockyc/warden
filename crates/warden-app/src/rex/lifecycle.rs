@@ -1457,6 +1457,12 @@ pub fn watch_agents(app: AppHandle) {
                         for project in hub.agent_panes(&server, &session_id) {
                             refresh(&app, project);
                         }
+                        if let Some(opened) = hub.column(&server, &session_id) {
+                            let main = app.clone();
+                            let _ = app.run_on_main_thread(move || {
+                                follow_column(&main, &server, &session_id, opened)
+                            });
+                        }
                     }
                     HubEvent::StatusChanged { block_id } => {
                         let main = app.clone();
@@ -1468,6 +1474,40 @@ pub fn watch_agents(app: AppHandle) {
         });
     if let Err(e) = spawned {
         log::error!("agent tabs won't follow Rex: {e}");
+    }
+}
+
+/// `server`'s session `session_id` changed its windows (main thread): every tab whose scratch
+/// column it is follows it ([`crate::registry::Registry::sync_column`]) and its window's chrome
+/// repaints.
+fn follow_column(
+    app: &AppHandle,
+    server: &str,
+    session_id: &str,
+    opened: super::column::ColumnOpened,
+) {
+    let st = app.state::<ManagerState>();
+    let mut m = st.lock();
+    let mut changed = Vec::new();
+    for (label, ws) in m.windows.iter_mut() {
+        let tabs = ws.registry.columns_on(server, session_id);
+        for id in &tabs {
+            ws.registry.sync_column(id, opened.clone());
+        }
+        if !tabs.is_empty() {
+            changed.push(label.clone());
+        }
+    }
+    let dtos: Vec<_> = changed
+        .into_iter()
+        .filter_map(|label| {
+            m.record_session(app, &label);
+            Some((m.init_dto(&label)?, label))
+        })
+        .collect();
+    drop(m);
+    for (dto, label) in dtos {
+        let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
     }
 }
 

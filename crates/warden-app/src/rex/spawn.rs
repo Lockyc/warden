@@ -15,6 +15,7 @@ use rex_client::RexError;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::AgentStore;
+use super::column::{column_of, ColumnExit};
 use super::lifecycle::AgentOp;
 use super::server::LOCAL;
 use super::{unclaimed, HubEvent, PaneTarget, RexHub};
@@ -283,7 +284,12 @@ fn reopen_restarted(app: &AppHandle, server: &str) {
 ///
 /// For an agent's key (`agent` names its tab and record) only that agent's window is let go
 /// ([`RexHub::end_agent_if_exited`]), and its record closes, or drops when it can't resume, as an
-/// op on its pane ([`AgentOp::Exited`]).
+/// op on its pane ([`AgentOp::Exited`]). For a column block's key ([`block_key`]) only that block
+/// closes ([`RexHub::column_block_exited`]): its window reflows, or closes with it, and the
+/// session's next view brings the column along; when it was the session's last block the column
+/// itself goes ([`column_ended`]).
+///
+/// [`block_key`]: super::column::block_key
 pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, String)>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -291,9 +297,28 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
         .spawn(move || {
             if let Some(hub) = app.try_state::<RexHub>() {
                 match agent {
-                    None => {
-                        hub.destroy_if_exited(&pane_key);
-                    }
+                    None => match column_of(&pane_key) {
+                        Some(column) => {
+                            let block = &pane_key[column.len() + 1..];
+                            if hub.block_exited(&pane_key) {
+                                match hub.column_block_exited(column, block) {
+                                    Ok(ColumnExit::Closed) => {}
+                                    Ok(ColumnExit::SessionEnded) => {
+                                        let (main, column) = (app.clone(), column.to_owned());
+                                        let _ = app.run_on_main_thread(move || {
+                                            column_ended(&main, &column)
+                                        });
+                                    }
+                                    Err(e) => {
+                                        log::error!("couldn't close Rex block {pane_key:?}: {e}")
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            hub.destroy_if_exited(&pane_key);
+                        }
+                    },
                     Some((project, record)) => {
                         if hub.end_agent_if_exited(&pane_key) {
                             super::lifecycle::follow(&app, &project, &AgentOp::Exited(record));
@@ -305,6 +330,35 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
         });
     if let Err(e) = spawned {
         log::error!("couldn't start checking whether a Rex session ended: {e}");
+    }
+}
+
+/// Column `column_key`'s session ended with its last block (main thread): every window's tab
+/// whose column it was drops the column, and its chrome collapses the split (`warden:pane-closed`),
+/// as a plain tab's scratch shell exiting does.
+fn column_ended(app: &AppHandle, column_key: &str) {
+    let Some(tab) = tab_of_secondary(column_key) else {
+        return;
+    };
+    let Some(st) = app.try_state::<ManagerState>() else {
+        return;
+    };
+    let mut m = st.lock();
+    let labels: Vec<String> = m
+        .windows
+        .iter_mut()
+        .filter_map(|(label, ws)| ws.registry.close_column(tab).then(|| label.clone()))
+        .collect();
+    for label in &labels {
+        m.record_session(app, label);
+    }
+    drop(m);
+    for label in labels {
+        let _ = app.emit_to(
+            label.as_str(),
+            "warden:pane-closed",
+            serde_json::json!({ "label": label, "id": tab }),
+        );
     }
 }
 

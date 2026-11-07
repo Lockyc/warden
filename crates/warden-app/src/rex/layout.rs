@@ -2,10 +2,6 @@
 //! dividers for the page, and the inverse direction — a config pane stack as the layout a
 //! new Rex session is created with.
 
-// Dividers have no caller yet: the column wiring lands in the following tasks, which remove this
-// allow.
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use serde::Serialize;
@@ -200,6 +196,7 @@ pub fn stack_layout(panes: &[StackPane], dir: &Path) -> Value {
 
 /// The split ratio for a divider dragged to `pointer`, a window-fraction coordinate along
 /// the divider's direction, relative to the split's own rect.
+#[allow(dead_code)] // the column's divider drag (Task 6) computes this in its chrome
 pub fn divider_ratio(d: &Divider, pointer: f64) -> f64 {
     let (origin, extent) = match d.dir {
         Dir::Horizontal => (d.rect.x, d.rect.w),

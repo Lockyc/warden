@@ -848,7 +848,7 @@
 
       // The tail for a split ending — a secondary's process exiting on its own
       // (`warden:pane-closed`, docked or in a popped-out window) is the only way one ends.
-      // Mirrors `Registry::close_secondary` always resetting focus to the primary, so
+      // Mirrors `Registry::close_block` / `close_column` resetting focus to the primary, so
       // `focusedPaneById` can't drift from backend truth (see its own doc comment). Only touches
       // the DOM when `id` is the tab actually on screen — a background tab's split collapsing
       // must not repaint a hole showing a different tab.

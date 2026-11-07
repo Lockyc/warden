@@ -319,6 +319,10 @@ pub struct DetachedSurface {
     /// while the tab is out marks the pane from this, so the pane reads `Detached` there just as
     /// in an origin that stayed open, and `attach` retires it alike if it doesn't come back.
     pub secondary_went_out: bool,
+    /// The Rex block the travelling column block attaches (`Registry::column_block` at pop-out):
+    /// its size claims and exit name its block key, and it returns to that block's slot. `None`
+    /// for a plain tab's block and an unsplit tab.
+    pub block: Option<String>,
     /// The tab's config split declares `side = "left"` — its second pane sits BEFORE the
     /// primary, docked and popped out alike. `false` for a right-side split, a runtime (⌘D)
     /// split (no `side`, always right) and an unsplit tab. Read only through [`Self::mirrored`].
@@ -342,9 +346,15 @@ pub struct DetachedSurface {
 
 impl DetachedSurface {
     /// The Rex key pane `which`'s travelling surface answers to: the agent's own for an agent,
-    /// else the pane's (`registry::shown_rex_key`). `None` for a plain tab.
+    /// the block's for a column block, else the pane's (`registry::shown_rex_key`). `None` for a
+    /// plain tab.
     pub fn rex_key(&self, which: crate::registry::PaneIdx) -> Option<String> {
-        crate::registry::shown_rex_key(&self.spec, which, self.agent.as_deref())
+        crate::registry::shown_rex_key(
+            &self.spec,
+            which,
+            self.agent.as_deref(),
+            self.block.as_deref(),
+        )
     }
 
     /// Whether this window's holes are laid out secondary-first: a left-side split with its
@@ -495,13 +505,13 @@ impl WindowManager {
         // terminal in the detached window: it is added cold and then marked `Detached`, the
         // same placeholder `detach` leaves, so nothing here or later spawns a second one.
         // Matched by title: the window may come back under another label than the one it had.
-        let out: HashMap<String, bool> = self
+        let out: HashMap<String, (bool, Option<String>)> = self
             .detached
             .values_mut()
             .filter(|d| d.origin_title == spec.title)
             .map(|d| {
                 d.origin_label = spec.label.clone();
-                (d.tab_id.clone(), d.secondary_went_out)
+                (d.tab_id.clone(), (d.secondary_went_out, d.block.clone()))
             })
             .collect();
         for t in &spec.tabs {
@@ -511,8 +521,8 @@ impl WindowManager {
                 spawn_errors.push(format!("{}: {e}", t.spec.title));
             }
         }
-        for (id, has_secondary) in &out {
-            registry.mark_detached(id, *has_secondary);
+        for (id, (has_secondary, block)) in &out {
+            registry.mark_detached(id, *has_secondary, block.as_deref());
         }
         // The first tab shown is one with a terminal to show here — never a popped-out one,
         // whose hole in this window would sit empty.
@@ -702,13 +712,15 @@ impl WindowManager {
     /// (`warden:tab-exited` carries the id + the new active tab, and the chrome runs the identical
     /// tail it runs for the dot-✕ / ⌘W path). One dead-tab semantic, two triggers.
     ///
-    /// Child-exit is per-pane: a SECONDARY's child exiting closes just that pane — the scratch
-    /// shell is done, the tab and its agent are not. Unloading the whole tab here would kill a
-    /// live agent because a shell beside it exited. A PRIMARY exit still
+    /// Child-exit is per-pane: a plain tab's column block exiting closes just that pane — the
+    /// scratch shell is done, the tab and its agent are not. Unloading the whole tab here would
+    /// kill a live agent because a shell beside it exited. A PRIMARY exit still
     /// emits `warden:tab-exited`; that event means "the whole tab went cold" to the chrome
-    /// (`applyUnloaded`), which is wrong for a pane that merely closed — a SECONDARY exit instead
+    /// (`applyUnloaded`), which is wrong for a pane that merely closed — a block exit instead
     /// emits the narrower `warden:pane-closed`, so the chrome collapses the split without
-    /// touching the tab's own dot/highlight.
+    /// touching the tab's own dot/highlight. A Rex column's block leaves its slot cold and the
+    /// column to follow what the hub finds (`Registry::release_block`): the session's next view
+    /// drops the block, or its end drops the column with the same `warden:pane-closed`.
     ///
     /// **Popped-out surfaces route too.** A surface not found in any `windows` registry is looked
     /// up in `detached` — the same two outcomes, reached from the detached window: a secondary
@@ -744,11 +756,12 @@ impl WindowManager {
             let Some((tab_id, which, agent)) = ws.registry.locate_key(&key) else {
                 return;
             };
-            // A Rex pane's relay exited: its session (an agent's: its window) ends too if its
-            // program did.
-            if let Some(key) = ws.registry.rex_key_of_surface(surface_id) {
+            // A Rex pane's relay exited: its session (an agent's: its window; a column block's:
+            // its block) ends too if its program did.
+            let rex_key = ws.registry.rex_key_of_surface(surface_id);
+            if let Some(key) = &rex_key {
                 let owner = agent.clone().map(|r| (tab_id.clone(), r));
-                crate::rex::spawn::end_if_exited(app, key, owner);
+                crate::rex::spawn::end_if_exited(app, key.clone(), owner);
             }
             let new_active = match (which, agent) {
                 (crate::registry::PaneIdx::Primary, Some(record)) => {
@@ -766,8 +779,21 @@ impl WindowManager {
                         }
                     }
                 }
-                (crate::registry::PaneIdx::Block(_), _) => {
-                    ws.registry.close_secondary(&tab_id);
+                (crate::registry::PaneIdx::Block(_), _) if rex_key.is_some() => {
+                    // A Rex column's block: the column follows what the hub finds of its block
+                    // (`end_if_exited` above) — the session's next view drops it, or the
+                    // session's end drops the column. Until then its slot sits cold.
+                    ws.registry.release_block(&key);
+                    lock.record_session(app, &label);
+                    let dto = lock.init_dto(&label);
+                    drop(lock);
+                    if let Some(dto) = dto {
+                        let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
+                    }
+                    return;
+                }
+                (crate::registry::PaneIdx::Block(i), _) => {
+                    ws.registry.close_block(&tab_id, i);
                     drop(lock);
                     // `warden:tab-exited` means "the whole tab went cold" to the chrome
                     // (`applyUnloaded`) — wrong here, since the tab and its primary are still
@@ -1090,6 +1116,7 @@ impl WindowManager {
             origin_title,
             tab_id,
             agent,
+            block,
         } = self.detached.remove(detached_label)?;
         let at_home = self
             .windows
@@ -1122,10 +1149,13 @@ impl WindowManager {
                         let _ = s.reparent(nsw as *mut c_void, INITIAL_RECT);
                     }
                 }
-                match ws
-                    .registry
-                    .attach(&tab_id, surface, secondary, agent.as_deref())
-                {
+                match ws.registry.attach(
+                    &tab_id,
+                    surface,
+                    secondary,
+                    agent.as_deref(),
+                    block.as_deref(),
+                ) {
                     // Re-assert the origin's CURRENT selection — NOT the returned tab. The chrome
                     // owns selection (warden passes no `active`), so force-activating the returned
                     // tab here would show its terminal while the sidebar still highlights whatever
@@ -1754,6 +1784,7 @@ mod tests {
             secondary_spawned: false,
             split: false,
             split_layout: None,
+            column: None,
             agents: false,
             colour: crate::project_colour::project_colour(id, None),
             server: None,

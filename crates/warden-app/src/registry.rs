@@ -1,4 +1,5 @@
-use crate::rex::column::ColumnOpened;
+use crate::rex::column::{block_key, ColumnOpened};
+use crate::rex::layout::{Divider, Layout, Tile};
 use crate::rex::size::PaneSize;
 use crate::rex::PaneTarget;
 use crate::surface::{ghostty::GhosttySurface, PixelRect, SurfaceError, TabSpec, TerminalSurface};
@@ -146,6 +147,24 @@ pub struct SplitLayoutDto {
     pub size: f64,
 }
 
+/// The chrome-facing shape of a tab's scratch column: its scratch tabs, the selected one, and that
+/// tab's blocks (`tiles`, layout order — block `i` is pane `1 + i`) and dividers. `rex` is false
+/// for a plain tab's column, its one tab and one full-size block.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ColumnDto {
+    pub tabs: Vec<ScratchTabDto>,
+    pub selected: usize,
+    pub tiles: Vec<Tile>,
+    pub dividers: Vec<Divider>,
+    pub rex: bool,
+}
+
+/// One scratch tab: its Rex window's label.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScratchTabDto {
+    pub label: String,
+}
+
 /// How the confirm row ends a tab's session: ⏻ `suspend` (restorable) or ☠ `destroy` (the tab's
 /// `kill`). Deserialized from the chrome's `end_session` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -176,8 +195,8 @@ pub struct TabDto {
     /// (`Registry::detach`) — it is present here as a placeholder only, has no
     /// local surface, and `spawned` is always false alongside this.
     pub detached: bool,
-    /// Whether this tab's SECONDARY pane is live — `false` both when the tab is unsplit (no
-    /// secondary exists) and when a split's secondary is cold. `spawned` above is primary-only
+    /// Whether any block of this tab's scratch column is live — `false` both when the tab is
+    /// unsplit (no column exists) and when every block is cold. `spawned` above is primary-only
     /// (see `tab_dtos`), so the chrome needs this alongside it to decide the second hole's own
     /// backstop: a live primary beside a cold secondary must still cover the secondary's hole
     /// with `#empty-state-2`, or it leaks the desktop through the transparent window.
@@ -196,6 +215,8 @@ pub struct TabDto {
     /// "config split vs runtime split" behaviour (where the ratio is remembered, whether a
     /// closed pane stays closed) on this field's presence.
     pub split_layout: Option<SplitLayoutDto>,
+    /// The scratch column's tabs and blocks; `None` for an unsplit tab.
+    pub column: Option<ColumnDto>,
     /// The main pane holds agent tabs, so the chrome shows the agent tab list beside it.
     pub agents: bool,
     /// The project's colours for the agent pane's summary block and identity tile
@@ -255,13 +276,12 @@ impl PaneIdx {
             PaneIdx::Block(i) => 1 + i,
         }
     }
-    /// Inverse of [`index`](Self::index). Anything that isn't `1` is the primary rather than an
-    /// error: a bad index must never leave a hole unpositioned or a click unrouted.
+    /// Inverse of [`index`](Self::index). An index past the column's blocks names a block that
+    /// isn't there, which every pane lookup answers as missing, never an error.
     pub fn from_index(i: usize) -> Self {
-        if i == 1 {
-            PaneIdx::Block(0)
-        } else {
-            PaneIdx::Primary
+        match i {
+            0 => PaneIdx::Primary,
+            i => PaneIdx::Block(i - 1),
         }
     }
 
@@ -393,18 +413,287 @@ impl Pane {
     }
 }
 
-/// The spec a tab's SECOND pane runs: the tab's own shell, in the tab's own dir, with the
-/// config split's `cmd` as its startup (a runtime split has none — the frame's scratch
-/// terminal), under the distinct surface id `"<tab>::2"` that surface→tab routing
-/// (`locate_surface`) and the surface event sink key on — and, for a Rex tab, its Rex pane key,
-/// so a runtime (⌘D) split reattaches the same session a config split would. The tab's `server`
-/// carries over: a whole project lives on one server.
+/// One terminal of a scratch tab: its spawn recipe, live/cold/detached slot and hole.
+struct BlockSlot {
+    /// The Rex block it attaches; `None` for a plain tab's one block.
+    block_id: Option<String>,
+    /// Its `id` is the surface's key: the column's own ([`secondary_id`]) for a plain tab's block,
+    /// the block's [`block_key`] for a Rex one.
+    spec: TabSpec,
+    slot: TabSlot,
+    /// As [`Pane::rect`], for this block's hole.
+    rect: Option<PixelRect>,
+}
+
+impl BlockSlot {
+    fn new(block_id: Option<String>, spec: TabSpec, slot: TabSlot) -> BlockSlot {
+        BlockSlot {
+            block_id,
+            spec,
+            slot,
+            rect: None,
+        }
+    }
+
+    fn surface(&self) -> Option<&GhosttySurface> {
+        match &self.slot {
+            TabSlot::Spawned(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// One scratch tab: a window of the column's Rex session, or a plain tab's only one.
+struct ScratchTab {
+    window_id: Option<String>,
+    label: String,
+    layout: Layout,
+    /// One per block of `layout`, in layout order.
+    blocks: Vec<BlockSlot>,
+}
+
+/// A tab's scratch column: the split pane. A Rex tab's is one Rex session (`session`, once its
+/// open lands), whose windows are the scratch `tabs` and each window's blocks the panes stacked in
+/// it; only the `selected` tab's blocks are on screen, the others stay spawned and hidden. A plain
+/// tab's is one tab holding one block — the frame's scratch shell. `spec` is the column's own
+/// ([`secondary_spec`]): what a plain block runs, and a Rex block's spec before its key.
+struct Column {
+    spec: TabSpec,
+    /// A Rex column's open in flight (`Idle` / `Opening` only: the answer lands in `session`).
+    rex: RexState,
+    session: Option<(rex_client::Endpoint, String)>,
+    tabs: Vec<ScratchTab>,
+    selected: usize,
+}
+
+impl Column {
+    /// A column running `spec`: a plain tab's one block, cold; a Rex tab's nothing until its open
+    /// lands.
+    fn new(spec: TabSpec) -> Column {
+        let tabs = if spec.server.is_some() {
+            Vec::new()
+        } else {
+            vec![ScratchTab {
+                window_id: None,
+                label: String::new(),
+                layout: Layout::single(""),
+                blocks: vec![BlockSlot::new(None, spec.clone(), TabSlot::Cold)],
+            }]
+        };
+        Column {
+            spec,
+            rex: RexState::Idle,
+            session: None,
+            tabs,
+            selected: 0,
+        }
+    }
+
+    fn is_rex(&self) -> bool {
+        self.spec.server.is_some()
+    }
+
+    /// Rex block `block_id`'s slot spec: the column's, under the block's own key.
+    fn rex_block(&self, block_id: &str, slot: TabSlot) -> BlockSlot {
+        let mut spec = self.spec.clone();
+        spec.id = block_key(&self.spec.id, block_id);
+        BlockSlot::new(Some(block_id.to_owned()), spec, slot)
+    }
+
+    /// The selected scratch tab's blocks — what the column puts on screen.
+    fn shown(&self) -> &[BlockSlot] {
+        self.tabs
+            .get(self.selected)
+            .map_or(&[][..], |t| t.blocks.as_slice())
+    }
+
+    fn block(&self, i: usize) -> Option<&BlockSlot> {
+        self.shown().get(i)
+    }
+
+    fn block_mut(&mut self, i: usize) -> Option<&mut BlockSlot> {
+        self.tabs.get_mut(self.selected)?.blocks.get_mut(i)
+    }
+
+    /// Every block of every scratch tab.
+    fn slots(&self) -> impl Iterator<Item = &BlockSlot> {
+        self.tabs.iter().flat_map(|t| t.blocks.iter())
+    }
+
+    fn slots_mut(&mut self) -> impl Iterator<Item = &mut BlockSlot> {
+        self.tabs.iter_mut().flat_map(|t| t.blocks.iter_mut())
+    }
+
+    fn surfaces(&self) -> impl Iterator<Item = &GhosttySurface> {
+        self.slots().filter_map(BlockSlot::surface)
+    }
+
+    fn live(&self) -> bool {
+        self.surfaces().next().is_some()
+    }
+
+    /// Close every live block, leaving `Detached` placeholders in place. Returns whether one was
+    /// closed.
+    fn close_live(&mut self) -> bool {
+        let mut closed = false;
+        for b in self.slots_mut() {
+            if matches!(b.slot, TabSlot::Spawned(_)) {
+                if let TabSlot::Spawned(s) = std::mem::replace(&mut b.slot, TabSlot::Cold) {
+                    s.close();
+                    closed = true;
+                }
+            }
+        }
+        closed
+    }
+
+    /// Follow the session as Rex has it now: one scratch tab per window, each block keeping its
+    /// slot (surface, hole) when it survives and starting cold when new; a block gone from the
+    /// session has its surface closed. The selection stays on its window; when that window closed
+    /// it leans to the one now in its place (the next, else the last), and a first landing picks
+    /// Rex's active window.
+    fn sync(&mut self, opened: ColumnOpened) {
+        let was = self
+            .tabs
+            .get(self.selected)
+            .and_then(|t| t.window_id.clone());
+        let first = self.session.is_none() && self.tabs.is_empty();
+        let mut old: Vec<BlockSlot> = std::mem::take(&mut self.tabs)
+            .into_iter()
+            .flat_map(|t| t.blocks)
+            .collect();
+        self.session = Some((opened.endpoint, opened.session_id));
+        for w in opened.windows {
+            let blocks = w
+                .layout
+                .blocks()
+                .iter()
+                .map(|b| {
+                    match old
+                        .iter()
+                        .position(|s| s.block_id.as_deref() == Some(b.as_str()))
+                    {
+                        Some(i) => old.remove(i),
+                        None => self.rex_block(b, TabSlot::Cold),
+                    }
+                })
+                .collect();
+            self.tabs.push(ScratchTab {
+                window_id: Some(w.window_id),
+                label: w.label,
+                layout: w.layout,
+                blocks,
+            });
+        }
+        for b in old {
+            if let TabSlot::Spawned(s) = b.slot {
+                s.close();
+            }
+        }
+        let find = |id: &Option<String>| {
+            id.as_ref().and_then(|id| {
+                self.tabs
+                    .iter()
+                    .position(|t| t.window_id.as_ref() == Some(id))
+            })
+        };
+        self.selected = match (find(&was), first) {
+            (Some(i), _) => i,
+            (None, true) => find(&opened.active).unwrap_or(0),
+            (None, false) => self.selected.min(self.tabs.len().saturating_sub(1)),
+        };
+    }
+
+    /// The slot a popped-out block returns to or stands in for: Rex block `block`'s wherever it
+    /// is, else the selected tab's first block. A Rex block the column no longer lists gets a tab
+    /// of its own, selected, until the session's next view says where it is; a column with no
+    /// block at all gets one running its spec.
+    fn slot_for(&mut self, block: Option<&str>) -> &mut BlockSlot {
+        let at = self.tabs.iter().enumerate().find_map(|(t, tab)| {
+            let b = tab
+                .blocks
+                .iter()
+                .position(|s| block.is_some() && s.block_id.as_deref() == block)?;
+            Some((t, b))
+        });
+        let (t, b) = match (at, block) {
+            (Some(at), _) => at,
+            (None, Some(id)) if self.is_rex() => {
+                let slot = self.rex_block(id, TabSlot::Cold);
+                self.tabs.push(ScratchTab {
+                    window_id: None,
+                    label: String::new(),
+                    layout: Layout::single(id),
+                    blocks: vec![slot],
+                });
+                self.selected = self.tabs.len() - 1;
+                (self.selected, 0)
+            }
+            (None, _) => {
+                if self.block(0).is_none() {
+                    let slot = BlockSlot::new(None, self.spec.clone(), TabSlot::Cold);
+                    self.tabs.push(ScratchTab {
+                        window_id: None,
+                        label: String::new(),
+                        layout: Layout::single(""),
+                        blocks: vec![slot],
+                    });
+                    self.selected = self.tabs.len() - 1;
+                }
+                (self.selected, 0)
+            }
+        };
+        &mut self.tabs[t].blocks[b]
+    }
+
+    /// Drop block `i` of the selected scratch tab, closing its surface; a tab left with no block
+    /// goes, and the selection leans to the tab now in its place. Returns whether there was one.
+    fn remove_block(&mut self, i: usize) -> bool {
+        let Some(tab) = self.tabs.get_mut(self.selected) else {
+            return false;
+        };
+        if i >= tab.blocks.len() {
+            return false;
+        }
+        if let TabSlot::Spawned(s) = tab.blocks.remove(i).slot {
+            s.close();
+        }
+        if tab.blocks.is_empty() {
+            self.tabs.remove(self.selected);
+            self.selected = self.selected.min(self.tabs.len().saturating_sub(1));
+        }
+        true
+    }
+
+    fn dto(&self) -> ColumnDto {
+        let tab = self.tabs.get(self.selected);
+        ColumnDto {
+            tabs: self
+                .tabs
+                .iter()
+                .map(|t| ScratchTabDto {
+                    label: t.label.clone(),
+                })
+                .collect(),
+            selected: self.selected,
+            tiles: tab.map(|t| t.layout.tiles()).unwrap_or_default(),
+            dividers: tab.map(|t| t.layout.dividers()).unwrap_or_default(),
+            rex: self.is_rex(),
+        }
+    }
+}
+
+/// The spec a tab's SECOND pane — its scratch column — runs: the tab's own shell, in the tab's
+/// own dir, with the config split's `cmd` as its startup (a runtime split has none — the frame's
+/// scratch terminal), under the distinct id `"<tab>::2"`: a plain block's surface id, which
+/// surface→tab routing (`locate_surface`) and the surface event sink key on, and, for a Rex tab,
+/// its column's Rex pane key, so a runtime (⌘D) split reattaches the same session a config split
+/// would. The tab's `server` carries over: a whole project lives on one server.
 ///
-/// Every site that names the second pane goes through here — `split` (the ⌘D path), `attach`
-/// and `mark_detached` (which recreate the slot for a popped-out split whose origin was rebuilt
-/// from config), `end_target` and `rex_pane_key`. None may re-derive it: two spellings of one spec would drift
-/// the second pane's surface id, and a mismatched id routes its bell, notification and
-/// child-exit to nothing.
+/// Every site that declares the column goes through here — `split` (the ⌘D path), `attach` and
+/// `mark_detached` (which recreate it for a popped-out split whose origin was rebuilt from
+/// config). None may re-derive it: two spellings of one spec would drift the second pane's
+/// surface id, and a mismatched id routes its bell, notification and child-exit to nothing.
 fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
     spec.id = secondary_id(tab_id);
@@ -430,28 +719,32 @@ pub(crate) fn tab_of_secondary(id: &str) -> Option<&str> {
     id.strip_suffix(SECONDARY_SUFFIX)?.strip_suffix("::")
 }
 
-/// The Rex pane key of pane `which` of the tab whose primary runs `primary` — that pane's spec
-/// id — or `None` for a plain tab. Also reads a popped-out tab, whose origin registry may be gone.
+/// The Rex pane key of pane `which` of the tab whose primary runs `primary` — the main pane's
+/// spec id, or for a block its column's ([`secondary_id`]) — or `None` for a plain tab. Also
+/// reads a popped-out tab, whose origin registry may be gone.
 pub(crate) fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> {
     primary.server.as_ref()?;
     Some(match which {
         PaneIdx::Primary => primary.id.clone(),
-        PaneIdx::Block(_) => secondary_spec(primary, &primary.id).id,
+        PaneIdx::Block(_) => secondary_id(&primary.id),
     })
 }
 
-/// The Rex key of the surface pane `which` of that tab shows when it is agent `agent`'s (a
-/// popped-out agent's: its [`agent_key`]), else [`rex_pane_key`]. What a popped-out surface's
-/// size claims and exit check name.
+/// The Rex key of the surface pane `which` of that tab shows: agent `agent`'s [`agent_key`] for a
+/// main pane showing one, column block `block`'s [`block_key`] for a block, else
+/// [`rex_pane_key`]. What a popped-out surface's size claims and exit check name.
 pub(crate) fn shown_rex_key(
     primary: &TabSpec,
     which: PaneIdx,
     agent: Option<&str>,
+    block: Option<&str>,
 ) -> Option<String> {
-    match agent.filter(|_| which == PaneIdx::Primary && primary.server.is_some()) {
-        Some(record_id) => Some(agent_key(&primary.id, record_id)),
-        None => rex_pane_key(primary, which),
-    }
+    let key = rex_pane_key(primary, which)?;
+    Some(match (which, agent, block) {
+        (PaneIdx::Primary, Some(record_id), _) => agent_key(&primary.id, record_id),
+        (PaneIdx::Block(_), _, Some(block)) => block_key(&key, block),
+        _ => key,
+    })
 }
 
 /// Whether pane `which` of the tab whose primary runs `primary` holds agent tabs: the main pane of
@@ -476,6 +769,19 @@ fn session_label(title: &str, which: PaneIdx) -> String {
     };
     let room = crate::rex::SESSION_LABEL_MAX.saturating_sub(suffix.chars().count());
     title.chars().take(room).chain(suffix.chars()).collect()
+}
+
+/// Hand `req` to `opener` under the next token from `next`, returning that token, or why the
+/// open couldn't start (no opener installed, or the opener refused).
+fn start_open(opener: &Option<RexOpener>, next: &mut u64, req: RexOpen) -> Result<u64, String> {
+    let Some(open) = opener else {
+        return Err(format!("Rex server {}: no connection to Rex", req.server));
+    };
+    let token = *next;
+    *next += 1;
+    log::info!("{:?}: opening Rex session on {}", req.label, req.server);
+    open(RexOpen { token, ..req })?;
+    Ok(token)
 }
 
 /// Whether `spec`'s presence comes from its `probe` command: it has one, and isn't a Rex tab.
@@ -523,54 +829,105 @@ fn pane_toward(split: bool, secondary_left: bool, focused: PaneIdx, side: Side) 
     (other_is_left == (side == Side::Left)).then_some(other)
 }
 
-/// A tab owns a `primary` pane and, when split, a `secondary`.
+/// A tab owns a `primary` pane and, when split, a scratch `column`.
 ///
-/// `primary`/`Option<secondary>` rather than a `Vec` so the agreed TWO-PANE CAP is
-/// unrepresentable-otherwise: a third pane cannot be constructed by accident, and every
-/// method has an obvious primary path. Arbitrary nesting was considered and declined —
-/// see docs/native-splits-direction.md. If a tree is ever wanted it REPLACES this type
-/// rather than growing out of it.
+/// The column is the tab's only second pane: two columns side by side, or a split of the main
+/// pane, are not representable. Splits beyond that live inside the column, as a Rex session's
+/// layout — see docs/native-splits-direction.md.
 struct TabEntry {
     id: String,
     title: String,
     primary: Pane,
-    secondary: Option<Pane>,
-    /// Which pane has keyboard focus. Always `Primary` when `secondary` is `None`.
+    column: Option<Column>,
+    /// Which pane has keyboard focus. Always `Primary` when `column` shows no block.
     focused: PaneIdx,
     /// Why the last Rex open for one of this tab's panes failed; cleared when one succeeds.
     rex_error: Option<String>,
 }
 
 impl TabEntry {
-    fn pane(&self, which: PaneIdx) -> Option<&Pane> {
+    fn block(&self, i: usize) -> Option<&BlockSlot> {
+        self.column.as_ref()?.block(i)
+    }
+
+    /// Pane `which`'s own slot: the main pane's (not an agent's), or the block's.
+    fn slot(&self, which: PaneIdx) -> Option<&TabSlot> {
         match which {
-            PaneIdx::Primary => Some(&self.primary),
-            PaneIdx::Block(0) => self.secondary.as_ref(),
-            PaneIdx::Block(_) => None,
+            PaneIdx::Primary => Some(&self.primary.slot),
+            PaneIdx::Block(i) => Some(&self.block(i)?.slot),
         }
     }
-    fn pane_mut(&mut self, which: PaneIdx) -> Option<&mut Pane> {
+
+    fn slot_mut(&mut self, which: PaneIdx) -> Option<&mut TabSlot> {
         match which {
-            PaneIdx::Primary => Some(&mut self.primary),
-            PaneIdx::Block(0) => self.secondary.as_mut(),
-            PaneIdx::Block(_) => None,
+            PaneIdx::Primary => Some(&mut self.primary.slot),
+            PaneIdx::Block(i) => Some(&mut self.column.as_mut()?.block_mut(i)?.slot),
         }
     }
-    /// Every live pane, primary first. The iteration order is load-bearing for teardown:
-    /// callers that free surfaces rely on it being stable.
-    fn panes_mut(&mut self) -> impl Iterator<Item = &mut Pane> {
-        std::iter::once(&mut self.primary).chain(self.secondary.iter_mut())
+
+    /// Whether pane `which` exists: the primary always, a block while the selected scratch tab
+    /// has it.
+    fn has_pane(&self, which: PaneIdx) -> bool {
+        self.slot(which).is_some()
     }
-    fn panes(&self) -> impl Iterator<Item = &Pane> {
-        std::iter::once(&self.primary).chain(self.secondary.iter())
+
+    /// The hole pane `which` last reported ([`Pane::rect`]).
+    fn pane_rect(&self, which: PaneIdx) -> Option<PixelRect> {
+        match which {
+            PaneIdx::Primary => self.primary.rect,
+            PaneIdx::Block(i) => self.block(i)?.rect,
+        }
     }
-    /// Every live pane paired with its own `PaneIdx`, primary first. `activate`'s
-    /// show/focus loop iterates this to compare each pane against `focused` — see the
-    /// carried-finding note on `Registry::activate` for why the pairing (not the
-    /// resulting `.focus()` call) is what this file's null-window tests can pin.
-    fn panes_indexed(&self) -> impl Iterator<Item = (PaneIdx, &Pane)> {
-        std::iter::once((PaneIdx::Primary, &self.primary))
-            .chain(self.secondary.as_ref().map(|p| (PaneIdx::Block(0), p)))
+
+    /// The live surface pane `which` puts on screen, if any.
+    fn shown(&self, which: PaneIdx) -> Option<&GhosttySurface> {
+        match which {
+            PaneIdx::Primary => self.primary.shown(),
+            PaneIdx::Block(i) => self.block(i)?.surface(),
+        }
+    }
+
+    /// Every live surface of this tab: the main pane's, then every scratch tab's blocks'.
+    fn surfaces(&self) -> impl Iterator<Item = &GhosttySurface> {
+        self.primary
+            .surfaces()
+            .chain(self.column.iter().flat_map(Column::surfaces))
+    }
+
+    /// Whether any surface of this tab is live.
+    fn live(&self) -> bool {
+        self.surfaces().next().is_some()
+    }
+
+    /// Close every live surface, leaving `Detached` placeholders. Returns whether one was closed.
+    fn close_live(&mut self) -> bool {
+        let primary = self.primary.close_live();
+        let column = self.column.as_mut().is_some_and(Column::close_live);
+        primary || column
+    }
+
+    /// Every live surface's key ([`Registry::surface_key`]) and pane: the main pane's own and its
+    /// agents', then every block of every scratch tab, each as `Block(i)` of its own tab.
+    fn keyed(&self) -> Vec<(String, PaneIdx, Option<&str>, &TabSlot)> {
+        let main = std::iter::once((self.primary.spec.id.clone(), None, &self.primary.slot)).chain(
+            self.primary.agents.iter().map(|a| {
+                (
+                    agent_key(&self.id, &a.record_id),
+                    Some(a.record_id.as_str()),
+                    &a.slot,
+                )
+            }),
+        );
+        let main = main.map(|(k, a, s)| (k, PaneIdx::Primary, a, s));
+        let blocks = self.column.iter().flat_map(|c| {
+            c.tabs.iter().flat_map(|t| {
+                t.blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| (b.spec.id.clone(), PaneIdx::Block(i), None, &b.slot))
+            })
+        });
+        main.chain(blocks).collect()
     }
 }
 
@@ -578,11 +935,12 @@ pub struct Registry {
     ns_window: *mut c_void,
     tabs: Vec<TabEntry>,
     active: Option<String>,
-    /// Last reported rect per pane. Two, not one, because a cold pane that spawns later must
-    /// be born at ITS hole's size — using the other pane's rect makes a freshly-spawned
-    /// secondary render at the primary's width for one frame.
+    /// Last reported rect per pane: the primary's, and each column block's by index. Per pane,
+    /// not one, because a cold pane that spawns later must be born at ITS hole's size — using
+    /// another pane's rect makes a freshly-spawned block render at the primary's width for one
+    /// frame.
     last_rect: PixelRect,
-    last_rect_secondary: PixelRect,
+    last_rect_blocks: Vec<PixelRect>,
     /// Opens Rex panes' sessions off this thread; `None` until the window installs one, and then
     /// a Rex pane can't open (its tab says so).
     rex_opener: Option<RexOpener>,
@@ -604,7 +962,7 @@ impl Registry {
             tabs: Vec::new(),
             active: None,
             last_rect: initial_rect,
-            last_rect_secondary: initial_rect,
+            last_rect_blocks: Vec::new(),
             rex_opener: None,
             report_socket: None,
             next_rex_token: 0,
@@ -635,7 +993,7 @@ impl Registry {
             id: spec.id.clone(),
             title: spec.title.clone(),
             primary: Pane::new(spec.clone(), TabSlot::Cold),
-            secondary: None,
+            column: None,
             focused: PaneIdx::Primary,
             rex_error: None,
         });
@@ -657,15 +1015,12 @@ impl Registry {
             let idx = self.tabs.len() - 1;
             self.split(&spec.id);
             if self.tabs[idx].primary.live() {
-                match self.ensure_spawned(idx, PaneIdx::Block(0), true) {
+                match self.ensure_column(idx, true) {
                     Ok(_) => {
-                        if let Some(TabSlot::Spawned(s)) =
-                            self.tabs[idx].secondary.as_ref().map(|p| &p.slot)
-                        {
-                            s.hide();
-                        }
+                        let column = self.tabs[idx].column.iter();
+                        column.flat_map(Column::surfaces).for_each(|s| s.hide());
                     }
-                    Err(e) => log::error!("secondary spawn failed for tab {:?}: {e}", spec.title),
+                    Err(e) => log::error!("column spawn failed for tab {:?}: {e}", spec.title),
                 }
             }
         }
@@ -677,34 +1032,31 @@ impl Registry {
         self.tabs
             .iter()
             .find(|t| t.id == id)
-            .is_some_and(|t| t.secondary.is_some())
+            .is_some_and(|t| t.column.is_some())
     }
 
-    /// Any-pane, not primary-only: a tab is "spawned" if either pane is live — the tab-row live
-    /// dot (`activate_tab`'s `live`), so a split tab with only its secondary live reads as
+    /// Any-pane, not primary-only: a tab is "spawned" if any pane is live — the tab-row live
+    /// dot (`activate_tab`'s `live`), so a split tab with only a column block live reads as
     /// spawned.
     pub fn is_spawned(&self, id: &str) -> bool {
         self.tabs
             .iter()
             .find(|t| t.id == id)
-            .is_some_and(|t| t.panes().any(Pane::live))
+            .is_some_and(TabEntry::live)
     }
 
-    /// Give tab `id` a second pane: the tab's own shell, in the tab's own dir, running the
-    /// config split's `cmd` when the tab has one, else no startup command — the frame's
-    /// scratch terminal (`secondary_spec` decides). Idempotent: splitting an already
-    /// split tab is a no-op, which is what keeps the two-pane cap true even if the chrome
-    /// double-fires. Unknown tab is a no-op.
+    /// Give tab `id` its scratch column ([`Column::new`] over `secondary_spec`): a plain tab's one
+    /// block runs the config split's `cmd` when the tab has one, else no startup command — the
+    /// frame's scratch terminal; a Rex tab's opens its session when it first spawns. Idempotent:
+    /// splitting an already split tab is a no-op, even if the chrome double-fires. Unknown tab is
+    /// a no-op.
     ///
-    /// The pane is created **Cold**, not spawned: `activate` brings cold panes live, exactly
+    /// The column is created **Cold**, not spawned: `activate` brings cold panes live, exactly
     /// as a lazily-added tab (`add(load_on_open = false)`) already works. Spawning here would
     /// make this method the only one in the file that must succeed against a live NSWindow,
     /// and would make it untestable — the registry tests run against a null window.
     /// The `split_pane` command calls `activate` right after, so the pane still comes
     /// up immediately for the user.
-    ///
-    /// The secondary's `TabSpec.id` is `"<tab>::2"`, distinct from the tab id — see
-    /// `secondary_spec`, the one home for that derivation.
     ///
     /// Returns whether the tab is split now. An unclaimed Rex session's tab never is: its pane
     /// attaches the session it lists, and a second pane would have to make a session of its own.
@@ -712,59 +1064,125 @@ impl Registry {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
         };
-        if t.secondary.is_some() {
+        if t.column.is_some() {
             return true;
         }
         let p = &t.primary.spec;
         if crate::rex::unclaimed::is_unclaimed(&p.id, &p.dir, p.server.as_deref()) {
             return false;
         }
-        let spec = secondary_spec(&t.primary.spec, id);
-        t.secondary = Some(Pane::new(spec, TabSlot::Cold));
+        t.column = Some(Column::new(secondary_spec(&t.primary.spec, id)));
         true
     }
 
-    /// Drop tab `id`'s second pane, freeing its surface. Returns whether there was one.
-    /// Focus falls back to the primary — the record, and, on the visible tab, the live
-    /// surface's first responder too: the closed view held it, and with nothing taking it
-    /// over the keystrokes go to the bare NSWindow, which beeps.
-    pub fn close_secondary(&mut self, id: &str) -> bool {
-        let is_active = self.active.as_deref() == Some(id);
+    /// Drop block `block` of tab `id`'s selected scratch tab, freeing its surface; a scratch tab
+    /// left with no block goes, and a column left with no tab — a plain tab's, whose one block
+    /// this always is — goes with it. Returns whether there was that block.
+    ///
+    /// Focus follows: off the closed block to the primary — the record, and, on the visible tab,
+    /// the live surface's first responder too: the closed view held it, and with nothing taking
+    /// it over the keystrokes go to the bare NSWindow, which beeps.
+    pub fn close_block(&mut self, id: &str, block: usize) -> bool {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
         };
-        // `close()`, never a bare `take()` that lets `Drop` free it: `GhosttySurface::drop`
-        // treats being dropped without `close()` as a registry bug and says so in debug
-        // builds, so a plain take made the second shell exiting — the way a split ends — print a
-        // false bug report every time. Same `mem::replace` + `close()` shape as `unload`,
-        // `remove` and `close_all`.
-        let had = match t.secondary.take() {
-            Some(mut pane) => {
-                if let TabSlot::Spawned(s) = std::mem::replace(&mut pane.slot, TabSlot::Cold) {
-                    s.close();
-                }
-                true
-            }
-            None => false,
+        let Some(column) = t.column.as_mut() else {
+            return false;
         };
-        if had {
-            t.focused = PaneIdx::Primary;
-            if is_active {
-                if let Some(s) = t.primary.shown() {
-                    s.focus();
-                }
+        let tab_survives = column.shown().len() > 1;
+        // `close()`, never a bare drop that lets `Drop` free it: `GhosttySurface::drop` treats
+        // being dropped without `close()` as a registry bug and says so in debug builds, so a
+        // plain drop made the second shell exiting — the way a split ends — print a false bug
+        // report every time.
+        if !column.remove_block(block) {
+            return false;
+        }
+        if column.tabs.is_empty() {
+            t.column = None;
+        }
+        let refocus = match t.focused {
+            PaneIdx::Block(i) if tab_survives && i < block => PaneIdx::Block(i),
+            PaneIdx::Block(i) if tab_survives && i > block => PaneIdx::Block(i - 1),
+            _ => PaneIdx::Primary,
+        };
+        self.refocus(id, refocus);
+        true
+    }
+
+    /// Close the surface of the Rex column block keyed `key` ([`block_key`]), leaving its slot cold
+    /// in place: its relay exited, and whether its block did is the hub's to find out
+    /// (`rex::spawn::end_if_exited`) — the session's next view then drops the block, or its end
+    /// drops the column ([`close_column`](Self::close_column)); a relay that left for any other
+    /// reason reattaches when the tab is next shown. Focus on it falls back to the primary.
+    /// Returns whether a live block had that key.
+    pub fn release_block(&mut self, key: &str) -> bool {
+        let Some((id, which, _)) = self.locate_key(key) else {
+            return false;
+        };
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        let focused = t.focused == which
+            && matches!(which, PaneIdx::Block(i) if t.block(i).is_some_and(|b| b.spec.id == key));
+        let Some(b) = t
+            .column
+            .as_mut()
+            .and_then(|c| c.slots_mut().find(|b| b.spec.id == key))
+        else {
+            return false;
+        };
+        if !matches!(b.slot, TabSlot::Spawned(_)) {
+            return false;
+        }
+        if let TabSlot::Spawned(s) = std::mem::replace(&mut b.slot, TabSlot::Cold) {
+            s.close();
+        }
+        if focused {
+            self.refocus(&id, PaneIdx::Primary);
+        }
+        true
+    }
+
+    /// Drop tab `id`'s whole scratch column, freeing its surfaces — its Rex session ended.
+    /// Focus falls back to the primary, as [`close_block`](Self::close_block) leaves it. Returns
+    /// whether there was one.
+    pub fn close_column(&mut self, id: &str) -> bool {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        let Some(mut column) = t.column.take() else {
+            return false;
+        };
+        // `close()`, never a bare drop: `GhosttySurface::drop` treats being dropped without
+        // `close()` as a registry bug and says so in debug builds.
+        column.close_live();
+        self.refocus(id, PaneIdx::Primary);
+        true
+    }
+
+    /// Point tab `id`'s focus record at `which` and, on the visible tab, its live surface's first
+    /// responder too.
+    fn refocus(&mut self, id: &str, which: PaneIdx) {
+        let is_active = self.active.as_deref() == Some(id);
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        t.focused = which;
+        if is_active {
+            if let Some(s) = t.shown(which) {
+                s.focus();
             }
         }
-        had
     }
 
     /// The pane of tab `id` lying to `side` of its focused one, on screen: a config split with
-    /// `side = "left"` draws its second pane first. `None` for an unknown or unsplit tab, or
-    /// when the focused pane is already the one on that side.
+    /// `side = "left"` draws its column first. From the primary that is the column's first block;
+    /// from any block, the primary. `None` for an unknown tab, one whose column shows no block,
+    /// or when the focused pane is already the one on that side.
     pub fn pane_to(&self, id: &str, side: Side) -> Option<PaneIdx> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         let left = self.split_side(id) == Some(warden_config::SplitSide::Left);
-        pane_toward(t.secondary.is_some(), left, t.focused, side)
+        pane_toward(t.block(0).is_some(), left, t.focused, side)
     }
 
     /// Give pane `which` of tab `id` keyboard focus by focusing its shown surface; its
@@ -775,8 +1193,7 @@ impl Registry {
             .tabs
             .iter()
             .find(|t| t.id == id)
-            .and_then(|t| t.pane(which))
-            .and_then(|p| p.shown())
+            .and_then(|t| t.shown(which))
         else {
             return false;
         };
@@ -790,7 +1207,7 @@ impl Registry {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return false;
         };
-        if t.pane(which).is_none() {
+        if !t.has_pane(which) {
             return false;
         }
         t.focused = which;
@@ -807,9 +1224,20 @@ impl Registry {
         self.tabs
             .iter()
             .find(|t| t.id == id)?
-            .secondary
+            .column
             .as_ref()
-            .map(|p| p.spec.clone())
+            .map(|c| c.spec.clone())
+    }
+
+    /// Test-only: the keys of tab `id`'s selected scratch tab's blocks, in layout order.
+    #[cfg(test)]
+    pub fn scratch_block_keys(&self, id: &str) -> Vec<String> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.column.as_ref())
+            .map(|c| c.shown().iter().map(|b| b.spec.id.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Is tab `id` currently a `Detached` placeholder (its live surface popped
@@ -850,22 +1278,33 @@ impl Registry {
     /// the hot-reload guards (`is_detached`) see it. Call it on a cold slot only — a `Spawned`
     /// one would be overwritten without `close()`.
     ///
-    /// `has_secondary` marks the second pane too, declaring it (`secondary_spec`) when the
-    /// rebuilt tab has none — a runtime (⌘D) split is in no config, so the rebuild is unsplit,
-    /// and the returning pair still needs a slot to land in. With `false` a config split's
-    /// declared second pane stays `Cold`, as `detach` leaves a secondary that wasn't live.
-    /// Unknown tab = no-op (it left the config while out; `redock` drops it).
-    pub fn mark_detached(&mut self, id: &str, has_secondary: bool) {
+    /// `has_secondary` marks the column's travelling block too — Rex block `block` of a Rex
+    /// column ([`column_block`](Self::column_block) at pop-out) — declaring the column
+    /// (`secondary_spec`) and that block when the rebuilt tab lacks them: a runtime (⌘D) split is
+    /// in no config, so the rebuild is unsplit, a rebuilt Rex column has not opened yet, and the
+    /// returning pair still needs a slot to land in. With `false` a config split's declared column
+    /// stays `Cold`, as `detach` leaves a block that wasn't live. Unknown tab = no-op (it left the
+    /// config while out; `redock` drops it).
+    pub fn mark_detached(&mut self, id: &str, has_secondary: bool, block: Option<&str>) {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return;
         };
         t.primary.slot = TabSlot::Detached;
         if has_secondary {
             let spec = secondary_spec(&t.primary.spec, id);
-            t.secondary
-                .get_or_insert(Pane::new(spec, TabSlot::Cold))
-                .slot = TabSlot::Detached;
+            let column = t.column.get_or_insert_with(|| Column::new(spec));
+            column.slot_for(block).slot = TabSlot::Detached;
         }
+    }
+
+    /// The Rex block of tab `id`'s column that a pop-out carries: its one block, when the column
+    /// holds exactly one and it is a Rex block. What `mark_detached` and `attach` take back.
+    pub fn column_block(&self, id: &str) -> Option<String> {
+        let c = self.tabs.iter().find(|t| t.id == id)?.column.as_ref()?;
+        if c.slots().count() != 1 {
+            return None;
+        }
+        c.slots().next()?.block_id.clone()
     }
 
     /// Test-only: force tab `id`'s slot straight to `Detached`, bypassing
@@ -884,8 +1323,8 @@ impl Registry {
     #[cfg(test)]
     pub fn force_detached_pane(&mut self, id: &str, which: PaneIdx) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
-            if let Some(p) = t.pane_mut(which) {
-                p.slot = TabSlot::Detached;
+            if let Some(slot) = t.slot_mut(which) {
+                *slot = TabSlot::Detached;
             }
         }
     }
@@ -897,8 +1336,8 @@ impl Registry {
         self.tabs
             .iter()
             .find(|t| t.id == id)
-            .and_then(|t| t.pane(which))
-            .is_some_and(|p| matches!(p.slot, TabSlot::Detached))
+            .and_then(|t| t.slot(which))
+            .is_some_and(|s| matches!(s, TabSlot::Detached))
     }
 
     /// Test-only: give tab `id`'s main pane cold agent slots for `records`, `selected` among them,
@@ -1154,11 +1593,8 @@ impl Registry {
                 detached: matches!(t.primary.slot, TabSlot::Detached),
                 // Read straight off the `TabEntry` already in hand: re-finding `t` in `self.tabs`
                 // by id for every row would turn this map into an O(n²) pass.
-                secondary_spawned: t
-                    .secondary
-                    .as_ref()
-                    .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_))),
-                split: t.secondary.is_some(),
+                secondary_spawned: t.column.as_ref().is_some_and(Column::live),
+                split: t.column.is_some(),
                 split_layout: t.primary.spec.split.as_ref().map(|s| SplitLayoutDto {
                     side: match s.side {
                         warden_config::SplitSide::Left => "left",
@@ -1166,6 +1602,7 @@ impl Registry {
                     },
                     size: s.size,
                 }),
+                column: t.column.as_ref().map(Column::dto),
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
                 colour: crate::project_colour::project_colour(&t.title, t.primary.spec.colour),
                 server: t.primary.spec.server.clone(),
@@ -1204,7 +1641,7 @@ impl Registry {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         let spec = &t.primary.spec;
         if let Some(server) = &spec.server {
-            let panes = vec![spec.id.clone(), secondary_spec(spec, id).id];
+            let panes = vec![spec.id.clone(), secondary_id(id)];
             return Some(match how {
                 EndSession::Destroy => EndTarget::Rex(panes),
                 EndSession::Suspend => EndTarget::RexSleep {
@@ -1322,33 +1759,23 @@ impl Registry {
     }
 
     /// The key of the live surface `surface_id`: its pane's spec id (the tab key for a main pane,
-    /// `secondary_id` for a split) or, for an agent's surface, its [`agent_key`]. `None` if it
-    /// isn't in this registry.
+    /// `secondary_id` for a plain tab's column block, a Rex block's [`block_key`]) or, for an
+    /// agent's surface, its [`agent_key`]. `None` if it isn't in this registry.
     pub fn surface_key(&self, surface_id: usize) -> Option<String> {
         let is = |slot: &TabSlot| matches!(slot, TabSlot::Spawned(s) if s.id() == surface_id);
         self.tabs.iter().find_map(|t| {
-            t.panes().find_map(|p| {
-                if is(&p.slot) {
-                    return Some(p.spec.id.clone());
-                }
-                let a = p.agents.iter().find(|a| is(&a.slot))?;
-                Some(agent_key(&t.id, &a.record_id))
-            })
+            t.keyed()
+                .into_iter()
+                .find_map(|(key, _, _, slot)| is(slot).then_some(key))
         })
     }
 
-    /// The tab, pane and — for an agent's key — agent record that key `key` names here.
+    /// The tab, pane and — for an agent's key — agent record that key `key` names here. A block
+    /// of a scratch tab not on screen is `Block(i)` of its own tab.
     pub fn locate_key(&self, key: &str) -> Option<(String, PaneIdx, Option<String>)> {
         self.tabs.iter().find_map(|t| {
-            t.panes_indexed().find_map(|(which, p)| {
-                if p.spec.id == key {
-                    return Some((t.id.clone(), which, None));
-                }
-                let a = p
-                    .agents
-                    .iter()
-                    .find(|a| agent_key(&t.id, &a.record_id) == key)?;
-                Some((t.id.clone(), which, Some(a.record_id.clone())))
+            t.keyed().into_iter().find_map(|(k, which, agent, _)| {
+                (k == key).then(|| (t.id.clone(), which, agent.map(str::to_string)))
             })
         })
     }
@@ -1376,20 +1803,25 @@ impl Registry {
         self.active.as_deref()
     }
 
-    /// The last reported rect for whichever hole pane `which` occupies.
+    /// The last reported rect for whichever hole pane `which` occupies. A block whose index no
+    /// hole has reported yet takes the nearest block hole before it: a column's, not the main
+    /// pane's width.
     fn rect_for(&self, which: PaneIdx) -> PixelRect {
         match which {
             PaneIdx::Primary => self.last_rect,
-            PaneIdx::Block(_) => self.last_rect_secondary,
+            PaneIdx::Block(i) => self
+                .last_rect_blocks
+                .get(i)
+                .or(self.last_rect_blocks.last())
+                .copied()
+                .unwrap_or(self.last_rect),
         }
     }
 
     /// Where tab `t`'s pane `which` frames: its own hole ([`Pane::rect`]), else the window's
     /// latest for that hole.
     fn tab_rect(&self, t: &TabEntry, which: PaneIdx) -> PixelRect {
-        t.pane(which)
-            .and_then(|p| p.rect)
-            .unwrap_or_else(|| self.rect_for(which))
+        t.pane_rect(which).unwrap_or_else(|| self.rect_for(which))
     }
 
     /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
@@ -1420,13 +1852,14 @@ impl Registry {
         which: PaneIdx,
         auto: bool,
     ) -> Result<bool, SurfaceError> {
+        if let PaneIdx::Block(_) = which {
+            return self.ensure_column(idx, auto);
+        }
         let agents = hosts_agents(&self.tabs[idx].primary.spec, which);
         let stack = stack_of(&self.tabs[idx].primary.spec);
         let tab = &mut self.tabs[idx];
         let label = session_label(&tab.title, which);
-        let Some(pane) = tab.pane_mut(which) else {
-            return Ok(false);
-        };
+        let pane = &mut tab.primary;
         if !matches!(pane.slot, TabSlot::Cold) {
             return Ok(false);
         }
@@ -1462,42 +1895,105 @@ impl Registry {
                 return Ok(false);
             }
             (Some(server), RexState::Idle | RexState::Asleep) => {
-                let Some(open) = &self.rex_opener else {
-                    tab.rex_error = Some(format!("Rex server {server}: no connection to Rex"));
-                    return Ok(false);
-                };
-                let token = self.next_rex_token;
-                self.next_rex_token += 1;
-                log::info!("{label:?}: opening Rex session on {server}");
-                let started = open(RexOpen {
+                let req = RexOpen {
                     pane_key: pane.spec.id.clone(),
                     server,
                     dir: pane.spec.dir.clone(),
                     startup: pane.spec.startup.clone(),
                     label,
-                    token,
+                    token: 0,
                     auto,
                     agents,
                     resume: pane.spec.resume.clone(),
                     stack,
-                });
-                match started {
-                    Ok(()) => pane.rex = RexState::Opening { token, wake: false },
+                };
+                match start_open(&self.rex_opener, &mut self.next_rex_token, req) {
+                    Ok(token) => pane.rex = RexState::Opening { token, wake: false },
                     Err(reason) => tab.rex_error = Some(reason),
                 }
                 return Ok(false);
             }
         };
-        // Born at ITS OWN hole's rect, not the primary's — see the doc comment on
-        // `last_rect_secondary`. A freshly-spawned secondary that started at the primary's
-        // rect would render at the wrong width for one frame.
         let rect = self.tab_rect(&self.tabs[idx], which);
         let s = GhosttySurface::new(self.ns_window, rect, &spec)?;
         log::info!("tab {:?}: spawned {which:?} terminal", self.tabs[idx].title);
-        self.tabs[idx]
-            .pane_mut(which)
-            .expect("pane existed above")
-            .slot = TabSlot::Spawned(s);
+        self.tabs[idx].primary.slot = TabSlot::Spawned(s);
+        Ok(true)
+    }
+
+    /// Bring tab `idx`'s scratch column up: spawn every cold block of its selected scratch tab,
+    /// each born at its own hole's rect. A Rex column with no session in hand asks for it first,
+    /// as [`ensure_spawned`](Self::ensure_spawned) asks for a Rex pane's ([`RexOpen`] on the
+    /// column's key, carrying the tab's `stack`), and spawns when the answer lands; with one, each
+    /// block runs `warden-relay` on its own Rex block. Returns whether any block spawned this
+    /// call; the first block that fails to spawn stops the rest, which stay cold.
+    fn ensure_column(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
+        let stack = stack_of(&self.tabs[idx].primary.spec);
+        let tab = &mut self.tabs[idx];
+        let label = session_label(&tab.title, PaneIdx::Block(0));
+        let Some(column) = tab.column.as_mut() else {
+            return Ok(false);
+        };
+        if let (Some(server), None) = (column.spec.server.clone(), &column.session) {
+            if column.rex.opening().is_some() {
+                return Ok(false);
+            }
+            let req = RexOpen {
+                pane_key: column.spec.id.clone(),
+                server,
+                dir: column.spec.dir.clone(),
+                startup: column.spec.startup.clone(),
+                label,
+                token: 0,
+                auto,
+                agents: false,
+                resume: column.spec.resume.clone(),
+                stack,
+            };
+            match start_open(&self.rex_opener, &mut self.next_rex_token, req) {
+                Ok(token) => column.rex = RexState::Opening { token, wake: false },
+                Err(reason) => tab.rex_error = Some(reason),
+            }
+            return Ok(false);
+        }
+        let mut spawned = false;
+        for i in 0..column.shown().len() {
+            spawned |= self.spawn_block(idx, i)?;
+        }
+        Ok(spawned)
+    }
+
+    /// Spawn block `i` of tab `idx`'s selected scratch tab if it is cold: a plain block's spec, or
+    /// a relay on its Rex block. Born at ITS OWN hole's rect — see `last_rect_blocks`. Returns
+    /// whether it spawned this call.
+    fn spawn_block(&mut self, idx: usize, i: usize) -> Result<bool, SurfaceError> {
+        let t = &self.tabs[idx];
+        let Some(column) = t.column.as_ref() else {
+            return Ok(false);
+        };
+        let Some(b) = column.block(i).filter(|b| matches!(b.slot, TabSlot::Cold)) else {
+            return Ok(false);
+        };
+        let spec = match (&column.session, &b.block_id) {
+            (_, None) if !column.is_rex() => b.spec.clone(),
+            (Some((endpoint, session_id)), Some(block_id)) => {
+                let target = PaneTarget {
+                    endpoint: endpoint.clone(),
+                    session_id: session_id.clone(),
+                    block_id: block_id.clone(),
+                };
+                crate::rex::spawn::effective_spec(&b.spec, &target, self.report_socket.as_deref())
+            }
+            // A Rex block with no session (or no block) in hand has nothing to attach yet.
+            _ => return Ok(false),
+        };
+        let rect = self.tab_rect(t, PaneIdx::Block(i));
+        let s = GhosttySurface::new(self.ns_window, rect, &spec)?;
+        log::info!("tab {:?}: spawned column block {i} terminal", t.title);
+        match self.tabs[idx].column.as_mut().and_then(|c| c.block_mut(i)) {
+            Some(b) => b.slot = TabSlot::Spawned(s),
+            None => s.close(),
+        }
         Ok(true)
     }
 
@@ -1537,26 +2033,39 @@ impl Registry {
     /// the chrome then blanks the hole rather than waking a cold tab.
     pub fn unload(&mut self, id: &str) -> Option<String> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        // Act on every pane: a cold split respawns split, so `secondary` (if any)
-        // stays present and only its slot moves to `Cold` alongside the primary's.
-        let mut any_closed = false;
-        for pane in self.tabs[idx].panes_mut() {
-            // An open still in flight is no longer wanted: its answer lands stale.
-            pane.rex = RexState::Idle;
-            // A `Detached` slot keeps its placeholder: its surface lives in another window's
-            // registry (a pop-out), and a `Cold` one would look locally respawnable, spawning a
-            // second surface for the same identity.
-            any_closed |= pane.close_live();
-            // The agents go with their surfaces; the next open reconciles them afresh. One out in
-            // a pop-out keeps its slot to return to.
-            pane.agents.retain(|a| matches!(a.slot, TabSlot::Detached));
-            if pane.agents.is_empty() {
-                pane.selected = None;
-            }
+        // Act on every pane: a cold split respawns split, so the column (if any) stays present
+        // and only its slots move to `Cold` alongside the primary's. A `Detached` slot keeps its
+        // placeholder: its surface lives in another window's registry (a pop-out), and a `Cold`
+        // one would look locally respawnable, spawning a second surface for the same identity.
+        let t = &mut self.tabs[idx];
+        let any_closed = t.close_live();
+        let pane = &mut t.primary;
+        // An open still in flight is no longer wanted: its answer lands stale.
+        pane.rex = RexState::Idle;
+        // The agents go with their surfaces; the next open reconciles them afresh. One out in a
+        // pop-out keeps its slot to return to.
+        pane.agents.retain(|a| matches!(a.slot, TabSlot::Detached));
+        if pane.agents.is_empty() {
+            pane.selected = None;
+        }
+        // A Rex column lets go of its session as the main pane does: the next open finds whatever
+        // the session is by then, keeping the blocks still out in a pop-out.
+        if let Some(c) = t.column.as_mut().filter(|c| c.is_rex()) {
+            c.rex = RexState::Idle;
+            c.session = None;
+            c.tabs.retain(|tab| {
+                tab.blocks
+                    .iter()
+                    .any(|b| matches!(b.slot, TabSlot::Detached))
+            });
+            c.selected = 0;
+        }
+        if matches!(t.focused, PaneIdx::Block(i) if t.block(i).is_none()) {
+            t.focused = PaneIdx::Primary;
         }
         // A config split whose shell exited comes back on relaunch — this is the relaunch. Declared
         // cold; the next `activate` spawns it with the primary.
-        if self.tabs[idx].secondary.is_none() && self.tabs[idx].primary.spec.split.is_some() {
+        if self.tabs[idx].column.is_none() && self.tabs[idx].primary.spec.split.is_some() {
             self.split(id);
         }
         if !any_closed {
@@ -1585,17 +2094,26 @@ impl Registry {
         token: u64,
         result: Result<RexAnswer, String>,
     ) -> RexLanded {
-        let Some((idx, which)) = self.tabs.iter().enumerate().find_map(|(i, t)| {
-            t.panes_indexed()
-                .find(|(_, p)| p.spec.id == pane_key && p.rex.opening() == Some(token))
-                .map(|(which, _)| (i, which))
-        }) else {
+        let waiting = |t: &TabEntry| {
+            if t.primary.spec.id == pane_key && t.primary.rex.opening() == Some(token) {
+                return Some(PaneIdx::Primary);
+            }
+            let c = t.column.as_ref()?;
+            (c.spec.id == pane_key && c.rex.opening() == Some(token)).then_some(PaneIdx::Block(0))
+        };
+        let Some((idx, which)) = self
+            .tabs
+            .iter()
+            .enumerate()
+            .find_map(|(i, t)| Some((i, waiting(t)?)))
+        else {
             return RexLanded::Stale;
         };
+        if which != PaneIdx::Primary {
+            return self.column_opened(idx, result);
+        }
         let tab = &mut self.tabs[idx];
-        let Some(pane) = tab.pane_mut(which) else {
-            return RexLanded::Stale;
-        };
+        let pane = &mut tab.primary;
         let wake = matches!(pane.rex, RexState::Opening { wake: true, .. });
         match result {
             Err(reason) => {
@@ -1608,7 +2126,7 @@ impl Registry {
                     RexAnswer::Pane(target) => pane.rex = RexState::Ready(target),
                     RexAnswer::Column(_) => {
                         pane.rex = RexState::Idle;
-                        tab.rex_error = Some("column not yet supported".to_owned());
+                        tab.rex_error = Some("Rex answered a main pane with a column".to_owned());
                         return RexLanded::Failed;
                     }
                     RexAnswer::Agents(found) => {
@@ -1641,23 +2159,124 @@ impl Registry {
                 if self.active.as_deref() == Some(id.as_str()) {
                     return RexLanded::Opened(self.activate(&id).map(|_| ()));
                 }
-                // A secondary spawns only beside a primary live in this registry — the gate
-                // `activate` and `ensure_spawned_by_id` share. Without it, it waits `Ready`.
-                let primary_live = |r: &Self| r.tabs[idx].primary.live();
-                let spawned = if which == PaneIdx::Primary || primary_live(self) {
-                    self.ensure_spawned(idx, which, true).map(|_| ())
-                } else {
-                    Ok(())
-                };
-                if primary_live(self) {
-                    let _ = self.ensure_spawned(idx, PaneIdx::Block(0), true);
-                }
-                for p in self.tabs[idx].panes() {
-                    p.surfaces().for_each(|s| s.hide());
-                }
+                // The column spawns only beside a primary live in this registry — the gate
+                // `activate` and `ensure_spawned_by_id` share.
+                let spawned = self.spawn_panes(idx, true).map(|_| ());
+                self.tabs[idx].surfaces().for_each(|s| s.hide());
                 RexLanded::Opened(spawned)
             }
         }
+    }
+
+    /// [`rex_opened`](Self::rex_opened) for tab `idx`'s column: its session's windows become the
+    /// scratch tabs ([`Column::sync`]), and the blocks spawn beside a live primary — shown on the
+    /// visible tab, hidden on any other.
+    fn column_opened(&mut self, idx: usize, result: Result<RexAnswer, String>) -> RexLanded {
+        let tab = &mut self.tabs[idx];
+        let Some(column) = tab.column.as_mut() else {
+            return RexLanded::Stale;
+        };
+        column.rex = RexState::Idle;
+        let opened = match result {
+            Ok(RexAnswer::Column(opened)) => opened,
+            Ok(_) => {
+                tab.rex_error = Some("Rex answered a column with a single pane".to_owned());
+                return RexLanded::Failed;
+            }
+            Err(reason) => {
+                tab.rex_error = Some(reason);
+                return RexLanded::Failed;
+            }
+        };
+        column.sync(opened);
+        tab.rex_error = None;
+        RexLanded::Opened(self.show_column(idx))
+    }
+
+    /// Bring tab `idx`'s column up after it changed: its selected scratch tab's cold blocks spawn
+    /// beside a live primary, and the visible tab is put on screen again; any other's surfaces
+    /// stay hidden.
+    fn show_column(&mut self, idx: usize) -> Result<(), SurfaceError> {
+        let t = &mut self.tabs[idx];
+        if matches!(t.focused, PaneIdx::Block(i) if t.block(i).is_none()) {
+            t.focused = match t.column.as_ref().map_or(0, |c| c.shown().len()) {
+                0 => PaneIdx::Primary,
+                n => PaneIdx::Block(n - 1),
+            };
+        }
+        let spawned = if self.tabs[idx].primary.live() {
+            self.ensure_column(idx, true).map(|_| ())
+        } else {
+            Ok(())
+        };
+        if self.active.as_deref() == Some(self.tabs[idx].id.as_str()) {
+            self.show_active();
+        } else {
+            self.tabs[idx].surfaces().for_each(|s| s.hide());
+        }
+        spawned
+    }
+
+    /// Follow tab `id`'s column session as Rex has it now (`opened`, from the hub's view of it):
+    /// surviving blocks keep their surfaces, gone ones close, new ones come up cold — and spawn
+    /// at once when the tab is on screen — and the selection stays on its window or leans to its
+    /// neighbour ([`Column::sync`]). A tab with no Rex column, or whose column's open is still in
+    /// flight or not yet made, is left for that open to land.
+    pub fn sync_column(&mut self, id: &str, opened: ColumnOpened) {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        let Some(column) = self.tabs[idx].column.as_mut() else {
+            return;
+        };
+        if !column.is_rex() || column.session.is_none() {
+            return;
+        }
+        column.sync(opened);
+        if let Err(e) = self.show_column(idx) {
+            log::error!("couldn't open a scratch block of tab {id:?}: {e}");
+        }
+    }
+
+    /// Tab `id`'s Rex column's session, `(server, session id)`, once its open has landed.
+    pub fn column_session(&self, id: &str) -> Option<(String, String)> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let (_, session) = t.column.as_ref()?.session.as_ref()?;
+        Some((t.primary.spec.server.clone()?, session.clone()))
+    }
+
+    /// The tabs whose Rex column is `server`'s session `session_id`.
+    pub fn columns_on(&self, server: &str, session_id: &str) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|t| {
+                self.column_session(&t.id)
+                    .is_some_and(|(s, sid)| s == server && sid == session_id)
+            })
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
+    /// Show scratch tab `tab` of tab `id`'s column: its blocks spawn if cold and the tab is on
+    /// screen, and the other scratch tabs' surfaces hide. Focus in the column moves to the new
+    /// tab's first block. Returns whether the column has that tab.
+    #[allow(dead_code)] // its command, `scratch_select`, lands with the column's chrome (Task 6)
+    pub fn select_scratch(&mut self, id: &str, tab: usize) -> bool {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return false;
+        };
+        let t = &mut self.tabs[idx];
+        let Some(column) = t.column.as_mut().filter(|c| tab < c.tabs.len()) else {
+            return false;
+        };
+        column.selected = tab;
+        if let PaneIdx::Block(_) = t.focused {
+            t.focused = PaneIdx::Block(0);
+        }
+        if let Err(e) = self.show_column(idx) {
+            log::error!("couldn't open a scratch block of tab {id:?}: {e}");
+        }
+        true
     }
 
     /// Whether tab `id` is waiting on a Rex open for its primary pane — cold, with nothing on
@@ -1668,12 +2287,14 @@ impl Registry {
             .any(|t| t.id == id && t.primary.rex.opening().is_some())
     }
 
-    /// The Rex pane key of tab `id`'s pane `which` (its `TabSpec.id`), or `None` when that pane
-    /// doesn't exist or isn't a Rex pane.
+    /// The Rex pane key of tab `id`'s pane `which` (the main pane's `TabSpec.id`, a block's
+    /// column's), or `None` when the tab has no such pane or column, or isn't a Rex tab.
     #[cfg(test)]
     pub fn rex_pane_key(&self, id: &str, which: PaneIdx) -> Option<String> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
-        t.pane(which)?;
+        if which != PaneIdx::Primary && t.column.is_none() {
+            return None;
+        }
         rex_pane_key(&t.primary.spec, which)
     }
 
@@ -1691,11 +2312,7 @@ impl Registry {
     /// ways a tab's terminal ends, so both leave the sidebar in the same place.
     fn lean_to_live_neighbour(&mut self, idx: usize) -> Option<String> {
         self.active = None;
-        let live: Vec<bool> = self
-            .tabs
-            .iter()
-            .map(|t| t.panes().any(Pane::live))
-            .collect();
+        let live: Vec<bool> = self.tabs.iter().map(TabEntry::live).collect();
         let n = shell_core::pick_live_neighbour(idx, &live)?;
         let next = self.tabs[n].id.clone();
         // The neighbour is already live (pick_live_neighbour only returns spawned tabs), so
@@ -1716,37 +2333,40 @@ impl Registry {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return DetachedEnded::Cold(None);
         };
+        let t = &mut self.tabs[idx];
         let mut any = false;
-        let mut sibling = false;
-        for pane in self.tabs[idx].panes_mut() {
-            if matches!(pane.slot, TabSlot::Detached) {
-                pane.slot = TabSlot::Cold;
+        let blocks = t.column.iter_mut().flat_map(|c| c.slots_mut());
+        for slot in std::iter::once(&mut t.primary.slot).chain(blocks.map(|b| &mut b.slot)) {
+            if matches!(slot, TabSlot::Detached) {
+                *slot = TabSlot::Cold;
                 any = true;
             }
-            // The agent that went out with the pane ended there. A selection naming it leans to
-            // the nearest running sibling; one the user made here since stays.
-            if let Some(at) = pane
-                .agents
-                .iter()
-                .position(|a| matches!(a.slot, TabSlot::Detached))
-            {
-                let gone = pane.agents[at].record_id.clone();
-                if pane.selected.as_deref() == Some(gone.as_str()) {
-                    let running: Vec<bool> = pane
-                        .agents
-                        .iter()
-                        .enumerate()
-                        .map(|(i, a)| i != at && matches!(a.rex, RexState::Ready(_)))
-                        .collect();
-                    let next = shell_core::pick_live_neighbour(at, &running);
-                    pane.selected = next.map(|n| pane.agents[n].record_id.clone());
-                }
-                pane.agents.remove(at);
-                sibling |= pane.selected.as_deref().is_some_and(|s| {
-                    pane.agent(s)
-                        .is_some_and(|a| matches!(a.rex, RexState::Ready(_)))
-                });
+        }
+        let pane = &mut t.primary;
+        let mut sibling = false;
+        // The agent that went out with the pane ended there. A selection naming it leans to the
+        // nearest running sibling; one the user made here since stays.
+        if let Some(at) = pane
+            .agents
+            .iter()
+            .position(|a| matches!(a.slot, TabSlot::Detached))
+        {
+            let gone = pane.agents[at].record_id.clone();
+            if pane.selected.as_deref() == Some(gone.as_str()) {
+                let running: Vec<bool> = pane
+                    .agents
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| i != at && matches!(a.rex, RexState::Ready(_)))
+                    .collect();
+                let next = shell_core::pick_live_neighbour(at, &running);
+                pane.selected = next.map(|n| pane.agents[n].record_id.clone());
             }
+            pane.agents.remove(at);
+            sibling = pane.selected.as_deref().is_some_and(|s| {
+                pane.agent(s)
+                    .is_some_and(|a| matches!(a.rex, RexState::Ready(_)))
+            });
         }
         if !any {
             return DetachedEnded::Cold(None);
@@ -1787,8 +2407,20 @@ impl Registry {
     ///
     /// A main pane holding agents carries its selected agent's surface out, leaving that agent's
     /// slot and the pane's own `Detached`; its other agents stay here, hidden, until it returns.
+    ///
+    /// The second surface is the column's one block: a column holding more than one block, or
+    /// more than one scratch tab, refuses the whole detach (`None`, nothing touched) — the
+    /// detached window lays out one hole beside the primary.
     pub fn detach(&mut self, id: &str) -> Option<(GhosttySurface, Option<GhosttySurface>)> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
+        // The detached window lays out one block beside the primary; a column holding more stays.
+        if self.tabs[idx]
+            .column
+            .as_ref()
+            .is_some_and(|c| c.tabs.len() > 1 || c.slots().count() > 1)
+        {
+            return None;
+        }
         let main = &mut self.tabs[idx].primary;
         let shown = main
             .selected
@@ -1820,19 +2452,14 @@ impl Registry {
                 }
             },
         };
-        let secondary = match self.tabs[idx].secondary.as_mut() {
-            None => None,
-            Some(p) => match std::mem::replace(&mut p.slot, TabSlot::Detached) {
-                TabSlot::Spawned(s) => Some(s),
-                TabSlot::Cold => {
-                    p.slot = TabSlot::Cold;
-                    None
+        let secondary = match self.tabs[idx].slot_mut(PaneIdx::Block(0)) {
+            Some(slot) if matches!(slot, TabSlot::Spawned(_)) => {
+                match std::mem::replace(slot, TabSlot::Detached) {
+                    TabSlot::Spawned(s) => Some(s),
+                    _ => None,
                 }
-                TabSlot::Detached => {
-                    p.slot = TabSlot::Detached;
-                    None
-                }
-            },
+            }
+            _ => None,
         };
         Some((primary, secondary))
     }
@@ -1864,24 +2491,27 @@ impl Registry {
         // A new surface lands visible over the active tab's hole; a background tab's stays
         // hidden until it is activated (a pop-out's reparent un-hides its own).
         if self.active.as_deref() != Some(id) {
-            for p in self.tabs[idx].panes() {
-                p.surfaces().for_each(|s| s.hide());
-            }
+            self.tabs[idx].surfaces().for_each(|s| s.hide());
         }
         spawned
     }
 
-    /// Spawn tab `idx`'s primary, then its secondary best-effort, returning the primary's
-    /// result — the one answer to "may this registry birth a secondary surface?", which
-    /// `activate` and `ensure_spawned_by_id` both ask. The secondary is gated on the PRIMARY being
-    /// live **in this registry**: pop out a split tab whose secondary spawn failed and the
-    /// primary is `Detached` while the secondary is still `Cold`, and an ungated spawn would birth
+    /// Spawn tab `idx`'s primary, then its column best-effort, returning the primary's
+    /// result — the one answer to "may this registry birth a column surface?", which
+    /// `activate`, `ensure_spawned_by_id` and a landed open all ask. The column is gated on the
+    /// PRIMARY being live **in this registry**: pop out a split tab whose block spawn failed and
+    /// the primary is `Detached` while the block is still `Cold`, and an ungated spawn would birth
     /// a surface in the ORIGIN window for a tab that isn't showing there — with no pop-out left
     /// to carry it out again.
     fn spawn_panes(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
         let primary = self.ensure_spawned(idx, PaneIdx::Primary, auto);
-        if self.tabs[idx].primary.live() && self.tabs[idx].secondary.is_some() {
-            let _ = self.ensure_spawned(idx, PaneIdx::Block(0), auto);
+        if self.tabs[idx].primary.live() {
+            if let Err(e) = self.ensure_column(idx, auto) {
+                log::error!(
+                    "column spawn failed for tab {:?}: {e}",
+                    self.tabs[idx].title
+                );
+            }
         }
         primary
     }
@@ -1911,9 +2541,11 @@ impl Registry {
     /// registry is unchanged — there is no "the primary landed, the secondary didn't"
     /// state for a caller to discover, and no shape in the `Err` that could express one.
     ///
-    /// A returning `secondary` whose tab has **no** secondary pane recreates the pane
-    /// (`secondary_spec`, the same derivation `split` and `mark_detached` use) rather than
-    /// refusing: refusing would end a live PTY purely because its slot is missing.
+    /// A returning `secondary` lands in its column block — Rex block `block` of a Rex column
+    /// ([`column_block`](Self::column_block) at pop-out), else the selected scratch tab's first
+    /// block. A tab with **no** column, or no such block, has it recreated (`secondary_spec`, the
+    /// same derivation `split` and `mark_detached` use) rather than refusing: refusing would end
+    /// a live PTY purely because its slot is missing.
     ///
     /// A returning `agent`'s surface (the record `selected_agent` named at pop-out) lands in that
     /// agent's slot — the one `detach` left `Detached`, or, in a pane rebuilt while it was out, a
@@ -1924,6 +2556,7 @@ impl Registry {
         primary: GhosttySurface,
         secondary: Option<GhosttySurface>,
         agent: Option<&str>,
+        block: Option<&str>,
     ) -> Result<(), (GhosttySurface, Option<GhosttySurface>)> {
         let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
             return Err((primary, secondary));
@@ -1932,11 +2565,13 @@ impl Registry {
         if matches!(t.primary.slot, TabSlot::Spawned(_)) {
             return Err((primary, secondary));
         }
-        if secondary.is_some()
-            && t.secondary
-                .as_ref()
-                .is_some_and(|p| matches!(p.slot, TabSlot::Spawned(_)))
-        {
+        let landing = |c: &Column| {
+            c.slots()
+                .find(|b| block.is_some() && b.block_id.as_deref() == block)
+                .or_else(|| c.block(0))
+                .is_some_and(|b| matches!(b.slot, TabSlot::Spawned(_)))
+        };
+        if secondary.is_some() && t.column.as_ref().is_some_and(landing) {
             return Err((primary, secondary));
         }
         let agent = agent.filter(|_| hosts_agents(&t.primary.spec, PaneIdx::Primary));
@@ -1964,26 +2599,24 @@ impl Registry {
             None => t.primary.slot = TabSlot::Spawned(primary),
         }
         match secondary {
-            Some(s) => match t.secondary.as_mut() {
-                Some(p) => p.slot = TabSlot::Spawned(s),
-                None => {
-                    let spec = secondary_spec(&t.primary.spec, id);
-                    t.secondary = Some(Pane::new(spec, TabSlot::Spawned(s)));
-                }
-            },
+            Some(s) => {
+                let spec = secondary_spec(&t.primary.spec, id);
+                let column = t.column.get_or_insert_with(|| Column::new(spec));
+                column.slot_for(block).slot = TabSlot::Spawned(s);
+            }
             None => {
-                // A secondary that left with the tab (`Detached`) and didn't come back ended
-                // while it was out — its child exited in the detached window and
-                // `handle_child_exited` closed it. Retire the pane, or the tab reads as split
-                // forever around a placeholder no `attach` will ever fill. A `Cold` secondary
-                // never left and stays: it respawns on the next `activate`. (Needs a live
-                // surface to exercise, so it is pinned by inspection only — the same test-double
-                // gap `docs/FOLLOWUPS.md` records for `activate`'s gate.)
-                if t.secondary
+                // A block that left with the tab (`Detached`) and didn't come back ended while it
+                // was out — its child exited in the detached window and `handle_child_exited`
+                // closed it. Retire the column, or the tab reads as split forever around a
+                // placeholder no `attach` will ever fill. A `Cold` block never left and stays: it
+                // respawns on the next `activate`. (Needs a live surface to exercise, so it is
+                // pinned by inspection only — the same test-double gap `docs/FOLLOWUPS.md`
+                // records for `activate`'s gate.)
+                if t.column
                     .as_ref()
-                    .is_some_and(|p| matches!(p.slot, TabSlot::Detached))
+                    .is_some_and(|c| c.slots().any(|b| matches!(b.slot, TabSlot::Detached)))
                 {
-                    t.secondary = None;
+                    t.column = None;
                     t.focused = PaneIdx::Primary;
                 }
             }
@@ -2024,43 +2657,60 @@ impl Registry {
         spawned
     }
 
-    /// Put the active tab on screen and every other surface away: each of its panes shows its one
-    /// surface — a main pane holding agents, its [`visible_agent`](Self::visible_agent)'s — sized
-    /// to that pane's hole, and hides the rest.
+    /// Put the active tab on screen and every other surface away: its main pane shows its one
+    /// surface — a main pane holding agents, its [`visible_agent`](Self::visible_agent)'s — and
+    /// its column the selected scratch tab's blocks, each sized to its own hole; every other
+    /// surface (other scratch tabs' blocks, other agents, other tabs) hides.
     fn show_active(&self) {
         for t in &self.tabs {
-            let on_screen = self.active.as_deref() == Some(t.id.as_str());
-            for (which, pane) in t.panes_indexed() {
-                let shown = match self
-                    .visible_agent(&t.id)
-                    .filter(|_| which == PaneIdx::Primary)
-                {
-                    Some(r) => match pane.agent(r).map(|a| &a.slot) {
-                        Some(TabSlot::Spawned(s)) => Some(s),
-                        _ => None,
-                    },
-                    None if on_screen && pane.agents.is_empty() => pane.shown(),
-                    None => None,
-                };
-                for s in pane.surfaces() {
-                    if shown.is_some_and(|v| std::ptr::eq(v, s)) {
-                        // This tab's own hole, per pane (`tab_rect`): another tab's or the
-                        // other pane's rect is a wrong size the page corrects a round trip
-                        // later, a second resize.
+            let shown = self.on_screen(t);
+            for s in t.surfaces() {
+                match shown.iter().find(|(_, v)| std::ptr::eq(*v, s)) {
+                    Some(&(which, _)) => {
+                        // This tab's own hole, per pane (`tab_rect`): another tab's or another
+                        // pane's rect is a wrong size the page corrects a round trip later, a
+                        // second resize.
                         s.set_frame(self.tab_rect(t, which));
                         s.show();
-                        // Show every pane of the active tab, but focus only the one
-                        // `focused` names — focusing each in turn would hand focus to
-                        // whichever pane iterates last, by construction order.
+                        // Show every pane of the active tab, but focus only the one `focused`
+                        // names — focusing each in turn would hand focus to whichever pane
+                        // iterates last, by construction order.
                         if which == t.focused {
                             s.focus();
                         }
-                    } else {
-                        s.hide();
                     }
+                    None => s.hide(),
                 }
             }
         }
+    }
+
+    /// The surfaces tab `t` puts on screen, each with its pane: none unless it is the active tab;
+    /// else its main pane's (its visible agent's, while it holds agents) and its column's selected
+    /// scratch tab's live blocks, in layout order.
+    fn on_screen<'a>(&self, t: &'a TabEntry) -> Vec<(PaneIdx, &'a GhosttySurface)> {
+        if self.active.as_deref() != Some(t.id.as_str()) {
+            return Vec::new();
+        }
+        let pane = &t.primary;
+        let main = match self.visible_agent(&t.id) {
+            Some(r) => pane.agent(r).and_then(|a| match &a.slot {
+                TabSlot::Spawned(s) => Some(s),
+                _ => None,
+            }),
+            None if pane.agents.is_empty() => pane.shown(),
+            None => None,
+        };
+        let blocks = t.column.iter().flat_map(|c| {
+            c.shown()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, b)| Some((PaneIdx::Block(i), b.surface()?)))
+        });
+        main.map(|s| (PaneIdx::Primary, s))
+            .into_iter()
+            .chain(blocks)
+            .collect()
     }
 
     /// Apply a hole's rect to the pane that occupies it, and remember it for later spawns.
@@ -2069,7 +2719,13 @@ impl Registry {
     pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) -> Vec<PaneSize> {
         match which {
             PaneIdx::Primary => self.last_rect = rect,
-            PaneIdx::Block(_) => self.last_rect_secondary = rect,
+            PaneIdx::Block(i) => {
+                let last = self.rect_for(which);
+                if self.last_rect_blocks.len() <= i {
+                    self.last_rect_blocks.resize(i + 1, last);
+                }
+                self.last_rect_blocks[i] = rect;
+            }
         }
         let Some(idx) = self
             .active
@@ -2088,7 +2744,7 @@ impl Registry {
     /// Returns each reframed live Rex surface's size, as `set_pane_frame` does.
     pub fn set_tab_rects(
         &mut self,
-        rects: &HashMap<String, (PixelRect, Option<PixelRect>)>,
+        rects: &HashMap<String, (PixelRect, Vec<PixelRect>)>,
     ) -> Vec<PaneSize> {
         let mut sizes = Vec::new();
         for idx in 0..self.tabs.len() {
@@ -2096,45 +2752,61 @@ impl Registry {
             if self.active.as_deref() == Some(t.id.as_str()) {
                 continue;
             }
-            let Some(&(primary, secondary)) = rects.get(&t.id) else {
+            let Some((primary, blocks)) = rects.get(&t.id) else {
                 continue;
             };
-            for (which, rect) in [
-                (PaneIdx::Primary, Some(primary)),
-                (PaneIdx::Block(0), secondary),
-            ] {
+            let panes = std::iter::once((PaneIdx::Primary, *primary)).chain(
+                blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| (PaneIdx::Block(i), *r)),
+            );
+            for (which, rect) in panes {
                 let t = &self.tabs[idx];
-                let Some(rect) = rect.filter(|r| t.pane(which).is_some_and(|p| p.rect != Some(*r)))
-                else {
-                    continue;
-                };
-                sizes.extend(self.frame_pane(idx, which, rect));
+                if t.has_pane(which) && t.pane_rect(which) != Some(rect) {
+                    sizes.extend(self.frame_pane(idx, which, rect));
+                }
             }
         }
         sizes
     }
 
-    /// Frame every surface of tab `idx`'s pane `which` — its own and each agent's, shown or not —
-    /// at `rect`, and remember it as that pane's hole ([`Pane::rect`]). Returns each live Rex
-    /// surface's size, for `rex::size` to send while warden owns its block.
+    /// Frame every surface of tab `idx`'s pane `which` — for the main pane its own and each
+    /// agent's, shown or not; for a block, the block's — at `rect`, and remember it as that pane's
+    /// hole ([`Pane::rect`]). Returns each live Rex surface's size, for `rex::size` to send while
+    /// warden owns its block.
     fn frame_pane(&mut self, idx: usize, which: PaneIdx, rect: PixelRect) -> Vec<PaneSize> {
-        let Some(pane) = self.tabs[idx].pane_mut(which) else {
-            return Vec::new();
-        };
-        pane.rect = Some(rect);
-        let t = &self.tabs[idx];
-        let pane = t.pane(which).expect("pane existed above");
+        let t = &mut self.tabs[idx];
+        let rex = t.primary.spec.server.is_some();
         let mut sizes = Vec::new();
-        if let TabSlot::Spawned(s) = &pane.slot {
-            s.set_frame(rect);
-            if let Some(key) = rex_pane_key(&t.primary.spec, which) {
-                sizes.extend(PaneSize::of(key, s));
+        match which {
+            PaneIdx::Primary => {
+                let pane = &mut t.primary;
+                pane.rect = Some(rect);
+                if let TabSlot::Spawned(s) = &pane.slot {
+                    s.set_frame(rect);
+                    if rex {
+                        sizes.extend(PaneSize::of(pane.spec.id.clone(), s));
+                    }
+                }
+                for a in &pane.agents {
+                    if let TabSlot::Spawned(s) = &a.slot {
+                        s.set_frame(rect);
+                        sizes.extend(PaneSize::of(agent_key(&t.id, &a.record_id), s));
+                    }
+                }
             }
-        }
-        for a in &pane.agents {
-            if let TabSlot::Spawned(s) = &a.slot {
-                s.set_frame(rect);
-                sizes.extend(PaneSize::of(agent_key(&t.id, &a.record_id), s));
+            PaneIdx::Block(i) => {
+                let Some(b) = t.column.as_mut().and_then(|c| c.block_mut(i)) else {
+                    return sizes;
+                };
+                b.rect = Some(rect);
+                if let TabSlot::Spawned(s) = &b.slot {
+                    s.set_frame(rect);
+                    if rex {
+                        sizes.extend(PaneSize::of(b.spec.id.clone(), s));
+                    }
+                }
             }
         }
         sizes
@@ -2144,10 +2816,10 @@ impl Registry {
     /// pane or isn't in this registry.
     pub fn rex_size_of_surface(&self, surface_id: usize) -> Option<PaneSize> {
         let key = self.rex_key_of_surface(surface_id)?;
-        let s = self.tabs.iter().find_map(|t| {
-            t.panes()
-                .find_map(|p| p.surfaces().find(|s| s.id() == surface_id))
-        })?;
+        let s = self
+            .tabs
+            .iter()
+            .find_map(|t| t.surfaces().find(|s| s.id() == surface_id))?;
         PaneSize::of(key, s)
     }
 
@@ -2226,9 +2898,7 @@ impl Registry {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
             let mut entry = self.tabs.remove(pos);
             log::info!("tab {:?}: removed", entry.title);
-            for pane in entry.panes_mut() {
-                pane.close_live();
-            }
+            entry.close_live();
             if self.active.as_deref() == Some(id) {
                 self.active = None;
             }
@@ -2245,9 +2915,7 @@ impl Registry {
     /// Destroy all surfaces (called on window close / app exit).
     pub fn close_all(&mut self) {
         for mut entry in self.tabs.drain(..) {
-            for pane in entry.panes_mut() {
-                pane.close_live();
-            }
+            entry.close_live();
         }
         self.active = None;
     }
@@ -2691,7 +3359,7 @@ mod tests {
         // terminal into.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("t0", "/tmp"), false).unwrap();
-        r.mark_detached("t0", false);
+        r.mark_detached("t0", false, None);
         assert!(r.is_detached("t0"));
         assert!(r.activate("t0").is_ok());
         assert!(r.ensure_spawned_by_id("t0").is_ok());
@@ -2709,7 +3377,7 @@ mod tests {
         // returning pair still needs one to land in, and the row reads as split meanwhile.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("t0", "/tmp"), false).unwrap();
-        r.mark_detached("t0", true);
+        r.mark_detached("t0", true, None);
         assert!(r.is_pane_detached("t0", PaneIdx::Primary));
         assert!(r.is_pane_detached("t0", PaneIdx::Block(0)));
         assert_eq!(
@@ -2721,7 +3389,7 @@ mod tests {
     #[test]
     fn mark_detached_of_unknown_tab_is_a_noop() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.mark_detached("nope", true);
+        r.mark_detached("nope", true, None);
         assert!(r.tab_dtos().is_empty());
     }
 
@@ -2756,7 +3424,7 @@ mod tests {
         let d = dto(&r);
         assert!(d.split, "structurally split the instant `split` runs…");
         assert!(!d.secondary_spawned, "…even though nothing is live yet");
-        r.close_secondary("a");
+        r.close_block("a", 0);
         assert!(!dto(&r).split);
     }
 
@@ -2928,7 +3596,7 @@ mod tests {
         assert!(!r.start_session("nope"), "unknown id");
     }
 
-    // --- split / close_secondary / focus_pane ---------------------------------
+    // --- split / close_block / focus_pane -------------------------------------
 
     #[test]
     fn split_adds_a_secondary_and_close_removes_it() {
@@ -2936,7 +3604,7 @@ mod tests {
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         r.split("a");
         assert!(r.is_split("a"));
-        assert!(r.close_secondary("a"));
+        assert!(r.close_block("a", 0));
         assert!(!r.is_split("a"));
     }
 
@@ -2979,7 +3647,7 @@ mod tests {
     fn config_split_closed_by_x_comes_back_on_unload() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec_with_split("a", None), false).unwrap();
-        assert!(r.close_secondary("a"));
+        assert!(r.close_block("a", 0));
         assert!(!r.is_split("a"));
         // Nothing is live, so `unload` returns None — but it still re-declares the pane, which
         // is what "a closed pane holds only until the tab is relaunched" means structurally.
@@ -3041,10 +3709,10 @@ mod tests {
     }
 
     #[test]
-    fn close_secondary_on_unsplit_tab_is_false() {
+    fn close_block_on_unsplit_tab_is_false() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
-        assert!(!r.close_secondary("a"));
+        assert!(!r.close_block("a", 0));
     }
 
     #[test]
@@ -3071,7 +3739,7 @@ mod tests {
         r.split("a");
         assert!(r.focus_pane("a", PaneIdx::Block(0)));
         assert_eq!(r.focused_pane("a"), Some(PaneIdx::Block(0)));
-        r.close_secondary("a");
+        r.close_block("a", 0);
         assert_eq!(r.focused_pane("a"), Some(PaneIdx::Primary));
     }
 
@@ -3097,43 +3765,53 @@ mod tests {
 
     // --- activate's show/focus loop must honour `focused`, not "last spawned wins" ---
     //
-    // `activate` focuses only the pane `t.focused` names, by iterating
-    // `TabEntry::panes_indexed()` and comparing each pane's `PaneIdx` against it.
+    // `activate` focuses only the pane `t.focused` names, by pairing each surface it shows with
+    // its `PaneIdx` and comparing that against it.
     //
     // That cannot be exercised through `Registry::activate` itself in this file's unit
     // tests: every test here runs against `ns_window = null` so panes never leave `Cold`
     // (see the detach/attach block earlier in this file), and `activate` on a COLD tab
     // SIGSEGVs — `GhosttySurface::new`'s null-window path is not the "safely returns Err"
     // case it looks like — so tests here call `activate` only on `Detached` tabs, which
-    // spawn nothing. So this test pins the one ingredient that
-    // *is* safely testable: that `panes_indexed()` — what the loop's `which == t.focused`
-    // comparison is applied to — pairs each pane with its own correct `PaneIdx`, primary
-    // first. A wrong pairing here (e.g. the two panes swapped) is exactly the kind of bug
-    // that would silently misroute focus; the `.focus()`/`.show()` call sequencing itself
-    // is GUI-only verifiable, the same boundary already documented for `attach`/`detach`.
+    // spawn nothing. So this test pins the one ingredient that *is* safely testable: that
+    // `TabEntry::keyed()` pairs each pane with its own correct `PaneIdx`, primary first, blocks
+    // in layout order — the same indexing `on_screen` gives the shown blocks. A wrong pairing
+    // here (e.g. two blocks swapped) is exactly the kind of bug that would silently misroute
+    // focus; the `.focus()`/`.show()` call sequencing itself is GUI-only verifiable, the same
+    // boundary already documented for `attach`/`detach`.
     #[test]
-    fn panes_indexed_pairs_each_pane_with_its_own_idx_primary_first() {
+    fn keyed_pairs_each_pane_with_its_own_idx_primary_first() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
-        let t = r.tabs.iter().find(|t| t.id == "a").unwrap();
-        let idxs: Vec<PaneIdx> = t.panes_indexed().map(|(w, _)| w).collect();
-        assert_eq!(idxs, vec![PaneIdx::Primary], "unsplit tab: primary only");
+        let idxs = |r: &Registry, id: &str| -> Vec<(String, PaneIdx)> {
+            let t = r.tabs.iter().find(|t| t.id == id).unwrap();
+            t.keyed().into_iter().map(|(k, w, _, _)| (k, w)).collect()
+        };
+        assert_eq!(
+            idxs(&r, "a"),
+            [("a".into(), PaneIdx::Primary)],
+            "unsplit tab"
+        );
 
         r.split("a");
-        let t = r.tabs.iter().find(|t| t.id == "a").unwrap();
-        let idxs: Vec<PaneIdx> = t.panes_indexed().map(|(w, _)| w).collect();
         assert_eq!(
-            idxs,
-            vec![PaneIdx::Primary, PaneIdx::Block(0)],
-            "split tab: primary then secondary, in that order"
+            idxs(&r, "a"),
+            [
+                ("a".into(), PaneIdx::Primary),
+                ("a::2".into(), PaneIdx::Block(0))
+            ],
+            "split tab: primary then its block"
         );
-        for (which, pane) in t.panes_indexed() {
-            assert_eq!(
-                pane.spec.id,
-                t.pane(which).unwrap().spec.id,
-                "panes_indexed's PaneIdx must resolve back to the SAME pane via TabEntry::pane"
-            );
-        }
+
+        let r = landed_column(vec![scratch("w1", &["x", "y"])]);
+        assert_eq!(
+            idxs(&r, "t"),
+            [
+                ("t".into(), PaneIdx::Primary),
+                ("t::2#x".into(), PaneIdx::Block(0)),
+                ("t::2#y".into(), PaneIdx::Block(1))
+            ]
+        );
     }
 
     // --- per-pane geometry ------------------------------------------------------
@@ -3154,7 +3832,7 @@ mod tests {
 
     #[test]
     fn pane_rects_are_remembered_independently() {
-        // `last_rect`/`last_rect_secondary` are two fields; this pins that they don't alias.
+        // `last_rect`/`last_rect_blocks` are two fields; this pins that they don't alias.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         let wide = PixelRect {
@@ -3224,9 +3902,9 @@ mod tests {
         r.active = Some("a".into());
         r.set_pane_frame(PaneIdx::Primary, shown);
         r.set_tab_rects(&HashMap::from([
-            ("a".to_string(), (measured, None)),
-            ("b".to_string(), (measured, Some(measured))),
-            ("gone".to_string(), (measured, None)),
+            ("a".to_string(), (measured, vec![])),
+            ("b".to_string(), (measured, vec![measured])),
+            ("gone".to_string(), (measured, vec![])),
         ]));
         assert_eq!(
             r.tab_rect_for_test("a", PaneIdx::Primary),
@@ -3240,12 +3918,15 @@ mod tests {
     // --- surface→tab routing ------------------------------------------------------
 
     #[test]
-    fn pane_index_round_trips_and_floors_to_primary() {
+    fn pane_index_round_trips() {
         assert_eq!(PaneIdx::Primary.index(), 0);
         assert_eq!(PaneIdx::Block(0).index(), 1);
+        assert_eq!(PaneIdx::Block(2).index(), 3);
+        for i in 0..5 {
+            assert_eq!(PaneIdx::from_index(i).index(), i);
+        }
         assert_eq!(PaneIdx::from_index(0), PaneIdx::Primary);
         assert_eq!(PaneIdx::from_index(1), PaneIdx::Block(0));
-        assert_eq!(PaneIdx::from_index(7), PaneIdx::Primary, "never an error");
     }
 
     #[test]
@@ -3538,45 +4219,300 @@ mod tests {
     }
 
     #[test]
-    fn a_column_answer_lands_as_a_failure_for_now() {
+    fn rex_column_opens_on_secondary_key() {
         let (mut r, asked) = rex_registry();
-        let mut spec = rex_spec("t", "local");
-        let panes = vec![warden_config::StackPane {
-            size: 1.0,
-            startup: Some("make watch".into()),
-        }];
-        spec.split = Some(warden_config::Split {
-            side: warden_config::SplitSide::Right,
-            size: 0.4,
-            panes: panes.clone(),
-        });
-        r.add(&spec, false).unwrap();
+        r.add(&split_rex_spec("t", 3), false).unwrap();
         // The split pane opens beside a live primary, which needs AppKit: ask for it directly.
         assert!(!r.ensure_spawned(0, PaneIdx::Block(0), false).unwrap());
-        let column_key = secondary_id("t");
-        let req = asked
+        let req = column_open(&asked);
+        assert_eq!(req.pane_key, secondary_id("t"));
+        assert_eq!(
+            req.stack.len(),
+            3,
+            "the column's open carries the tab's stack"
+        );
+        assert!(!req.agents);
+    }
+
+    // --- the scratch column ---------------------------------------------------------
+
+    /// Blocks `ids` stacked top to bottom in equal shares of `y..y + h`, as Rex lays out a stack.
+    fn stack_view(ids: &[&str], y: f64, h: f64) -> crate::rex::layout::Layout {
+        use crate::rex::layout::{Dir, Frac, Layout};
+        let frac = |y, h| Frac {
+            x: 0.0,
+            y,
+            w: 1.0,
+            h,
+        };
+        if let [only] = ids {
+            return Layout::Block {
+                block_id: (*only).into(),
+                rect: frac(y, h),
+            };
+        }
+        let top = h / ids.len() as f64;
+        Layout::Split {
+            split_id: format!("split-{}", ids[0]),
+            dir: Dir::Vertical,
+            ratio: 1.0 / ids.len() as f64,
+            rect: frac(y, h),
+            before: Box::new(stack_view(&ids[..1], y, top)),
+            after: Box::new(stack_view(&ids[1..], y + top, h - top)),
+        }
+    }
+
+    fn scratch(window: &str, blocks: &[&str]) -> crate::rex::column::ScratchWindow {
+        crate::rex::column::ScratchWindow {
+            window_id: window.into(),
+            label: format!("label {window}"),
+            layout: stack_view(blocks, 0.0, 1.0),
+        }
+    }
+
+    fn opened(windows: Vec<crate::rex::column::ScratchWindow>) -> ColumnOpened {
+        ColumnOpened {
+            endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
+            session_id: "session:col".into(),
+            windows,
+            active: None,
+        }
+    }
+
+    /// Rex tab `id` with a config split of `panes` stack panes.
+    fn split_rex_spec(id: &str, panes: usize) -> TabSpec {
+        let mut s = rex_spec(id, "local");
+        s.split = Some(warden_config::Split {
+            side: warden_config::SplitSide::Right,
+            size: 0.4,
+            panes: (0..panes)
+                .map(|i| warden_config::StackPane {
+                    size: 1.0 / panes as f64,
+                    startup: Some(format!("cmd {i}")),
+                })
+                .collect(),
+        });
+        s
+    }
+
+    /// The open the column of a recorded registry asked for.
+    fn column_open(asked: &std::sync::Mutex<Vec<RexOpen>>) -> RexOpen {
+        asked
             .lock()
             .unwrap()
             .iter()
-            .find(|q| q.pane_key == column_key)
+            .find(|q| tab_of_secondary(&q.pane_key).is_some())
             .cloned()
-            .expect("the split pane's open");
-        assert_eq!(
-            req.stack, panes,
-            "the column's open carries the tab's stack"
+            .expect("the split pane's open")
+    }
+
+    /// A registry holding Rex tab `t`, off screen, whose column's open landed with `windows`.
+    fn landed_column(windows: Vec<crate::rex::column::ScratchWindow>) -> Registry {
+        let (mut r, asked) = rex_registry();
+        r.add(&split_rex_spec("t", 3), false).unwrap();
+        r.ensure_spawned(0, PaneIdx::Block(0), false).unwrap();
+        let req = column_open(&asked);
+        let landed = r.rex_opened(
+            &req.pane_key,
+            req.token,
+            Ok(RexAnswer::Column(opened(windows))),
         );
-        let column = crate::rex::column::ColumnOpened {
-            endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
-            session_id: "session:s".into(),
-            windows: Vec::new(),
-            active: None,
+        assert!(matches!(landed, RexLanded::Opened(Ok(()))));
+        r
+    }
+
+    #[test]
+    fn column_landed_declares_one_slot_per_block() {
+        let r = landed_column(vec![scratch("w1", &["a", "b", "c"]), scratch("w2", &["d"])]);
+        let d = &r.tab_dtos()[0];
+        let col = d.column.as_ref().expect("a column");
+        assert!(col.rex);
+        assert_eq!(col.tabs.len(), 2);
+        assert_eq!(col.tabs[1].label, "label w2");
+        assert_eq!(col.selected, 0);
+        assert_eq!(col.tiles.len(), 3);
+        assert_eq!(col.dividers.len(), 2);
+        assert!(d.split && !d.secondary_spawned && d.warn.is_none());
+        assert_eq!(
+            r.scratch_block_keys("t"),
+            ["t::2#a", "t::2#b", "t::2#c"],
+            "each block answers to its own key"
+        );
+        assert_eq!(
+            r.locate_key("t::2#b"),
+            Some(("t".to_string(), PaneIdx::Block(1), None))
+        );
+    }
+
+    #[test]
+    fn sync_column_keeps_surviving_blocks() {
+        let mut r = landed_column(vec![scratch("w1", &["a", "b", "c"])]);
+        let at = |x: f64| PixelRect {
+            x,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
         };
-        let landed = r.rex_opened(&req.pane_key, req.token, Ok(RexAnswer::Column(column)));
-        assert!(matches!(landed, RexLanded::Failed));
+        // The tab is off screen: the page's measure frames each block where it stands.
+        r.set_tab_rects(&HashMap::from([(
+            "t".to_string(),
+            (rect(), vec![at(1.0), at(2.0), at(3.0)]),
+        )]));
+        r.sync_column("t", opened(vec![scratch("w1", &["a", "c", "e"])]));
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#a", "t::2#c", "t::2#e"]);
+        assert_eq!(r.tab_rect_for_test("t", PaneIdx::Block(0)), at(1.0));
         assert_eq!(
-            r.tab_dtos()[0].warn.as_deref(),
-            Some("column not yet supported")
+            r.tab_rect_for_test("t", PaneIdx::Block(1)),
+            at(3.0),
+            "c keeps its own slot"
         );
+        assert_eq!(r.tab_dtos()[0].column.as_ref().unwrap().tiles.len(), 3);
+    }
+
+    #[test]
+    fn sync_column_drops_closed_window_and_leans() {
+        let three = || {
+            vec![
+                scratch("w1", &["a"]),
+                scratch("w2", &["b"]),
+                scratch("w3", &["c"]),
+            ]
+        };
+        let mut r = landed_column(three());
+        assert!(r.select_scratch("t", 1));
+        r.focus_pane("t", PaneIdx::Block(0));
+        // w2's last block exited, and Rex closed it: its neighbour shows.
+        r.sync_column(
+            "t",
+            opened(vec![scratch("w1", &["a"]), scratch("w3", &["c"])]),
+        );
+        let col = r.tab_dtos()[0].column.clone().unwrap();
+        assert_eq!((col.tabs.len(), col.selected), (2, 1));
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#c"]);
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(0)));
+
+        // The last tab closing leans back to the one before it.
+        r.sync_column("t", opened(vec![scratch("w1", &["a"])]));
+        let col = r.tab_dtos()[0].column.clone().unwrap();
+        assert_eq!((col.tabs.len(), col.selected), (1, 0));
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#a"]);
+
+        // A selection whose window survives stays on it as others come and go.
+        r.sync_column("t", opened(three()));
+        assert!(r.select_scratch("t", 2));
+        r.sync_column(
+            "t",
+            opened(vec![scratch("w2", &["b"]), scratch("w3", &["c"])]),
+        );
+        assert_eq!(r.tab_dtos()[0].column.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn select_scratch_switches_tiles() {
+        let mut r = landed_column(vec![scratch("w1", &["a", "b"]), scratch("w2", &["c"])]);
+        assert!(r.select_scratch("t", 1));
+        let col = r.tab_dtos()[0].column.clone().unwrap();
+        assert_eq!(col.selected, 1);
+        assert_eq!(col.tiles.len(), 1);
+        assert_eq!(col.tiles[0].block_id, "c");
+        assert!(col.dividers.is_empty());
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#c"]);
+        assert!(!r.select_scratch("t", 2), "no third tab");
+        assert!(!r.select_scratch("nope", 0));
+        assert_eq!(r.tab_dtos()[0].column.as_ref().unwrap().selected, 1);
+    }
+
+    #[test]
+    fn plain_tab_column_is_one_block() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert!(r.tab_dtos()[0].column.is_none());
+        r.split("a");
+        let col = r.tab_dtos()[0].column.clone().expect("a column");
+        assert!(!col.rex);
+        assert_eq!((col.tabs.len(), col.selected), (1, 0));
+        assert_eq!(col.tiles.len(), 1);
+        assert_eq!(
+            col.tiles[0].rect,
+            crate::rex::layout::Frac {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0
+            }
+        );
+        assert!(col.dividers.is_empty());
+        assert_eq!(r.scratch_block_keys("a"), ["a::2"]);
+        assert!(!r.select_scratch("a", 1));
+    }
+
+    #[test]
+    fn pane_to_crosses_into_column_and_between_blocks() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert_eq!(r.pane_to("a", Side::Right), None, "unsplit");
+        r.split("a");
+        assert_eq!(r.pane_to("a", Side::Right), Some(PaneIdx::Block(0)));
+        assert_eq!(r.pane_to("a", Side::Left), None);
+
+        let mut r = landed_column(vec![scratch("w1", &["a", "b", "c"])]);
+        assert_eq!(r.pane_to("t", Side::Right), Some(PaneIdx::Block(0)));
+        assert!(r.focus_pane("t", PaneIdx::Block(2)));
+        assert_eq!(r.pane_to("t", Side::Left), Some(PaneIdx::Primary));
+        assert_eq!(r.pane_to("t", Side::Right), None);
+        assert!(!r.focus_pane("t", PaneIdx::Block(3)), "no fourth block");
+    }
+
+    #[test]
+    fn a_rex_column_before_its_open_lands_has_no_block() {
+        let (mut r, _) = rex_registry();
+        r.add(&split_rex_spec("t", 2), false).unwrap();
+        assert!(r.is_split("t"));
+        let col = r.tab_dtos()[0].column.clone().unwrap();
+        assert!(col.rex && col.tabs.is_empty() && col.tiles.is_empty());
+        assert_eq!(r.pane_to("t", Side::Right), None);
+    }
+
+    #[test]
+    fn the_column_session_ending_drops_the_column() {
+        let mut r = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b"])]);
+        r.focus_pane("t", PaneIdx::Block(0));
+        assert!(r.close_column("t"));
+        assert!(!r.is_split("t"));
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Primary));
+        assert!(!r.close_column("t"));
+    }
+
+    #[test]
+    fn closing_a_block_of_a_rex_column_leans_within_it() {
+        let mut r = landed_column(vec![scratch("w1", &["a", "b"]), scratch("w2", &["c"])]);
+        assert!(r.close_block("t", 0));
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#b"]);
+        assert!(r.close_block("t", 0), "w1's last block: w1 goes");
+        let col = r.tab_dtos()[0].column.clone().unwrap();
+        assert_eq!((col.tabs.len(), col.selected), (1, 0));
+        assert_eq!(r.scratch_block_keys("t"), ["t::2#c"]);
+        assert!(r.close_block("t", 0), "the last block: the column goes");
+        assert!(!r.is_split("t"));
+    }
+
+    #[test]
+    fn a_popped_out_column_block_keeps_its_key() {
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
+        assert_eq!(r.column_block("t").as_deref(), Some("a"));
+        let t = r.spec_of("t").unwrap().clone();
+        assert_eq!(
+            shown_rex_key(&t, PaneIdx::Block(0), None, Some("a")).as_deref(),
+            Some("t::2#a")
+        );
+        // An origin rebuilt while it was out declares the block for it to return to.
+        let (mut fresh, _) = rex_registry();
+        fresh.add(&split_rex_spec("t", 1), false).unwrap();
+        fresh.mark_detached("t", true, Some("a"));
+        assert!(fresh.is_pane_detached("t", PaneIdx::Block(0)));
+        assert_eq!(fresh.scratch_block_keys("t"), ["t::2#a"]);
+        r.sync_column("t", opened(vec![scratch("w1", &["a", "b"])]));
+        assert_eq!(r.column_block("t"), None, "two blocks: none travels alone");
     }
 
     #[test]
@@ -3709,16 +4645,18 @@ mod tests {
 
     #[test]
     fn locate_surface_finds_agent_key() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&rex_spec("t", "local"), false).unwrap();
-        r.split("t");
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
         r.force_agents("t", &["r1"], Some("r1"));
         let at = |key: &str| r.locate_key(key);
         assert_eq!(
             at(&agent_key("t", "r1")),
             Some(("t".to_string(), PaneIdx::Primary, Some("r1".to_string())))
         );
-        assert_eq!(at("t::2"), Some(("t".to_string(), PaneIdx::Block(0), None)));
+        assert_eq!(
+            at("t::2#a"),
+            Some(("t".to_string(), PaneIdx::Block(0), None))
+        );
+        assert_eq!(at("t::2"), None, "a Rex column's own key is no surface's");
         assert_eq!(at("t"), Some(("t".to_string(), PaneIdx::Primary, None)));
         assert_eq!(at(&agent_key("t", "zz")), None);
         assert_eq!(agent_key("t", "r1"), "t::agent:r1");
@@ -3845,21 +4783,21 @@ mod tests {
         assert_eq!(agent, Some("r2"));
         let t = r.spec_of("t").unwrap();
         assert_eq!(
-            shown_rex_key(t, PaneIdx::Primary, agent).as_deref(),
+            shown_rex_key(t, PaneIdx::Primary, agent, None).as_deref(),
             Some("t::agent:r2")
         );
         assert_eq!(
-            shown_rex_key(t, PaneIdx::Block(0), agent).as_deref(),
+            shown_rex_key(t, PaneIdx::Block(0), agent, None).as_deref(),
             Some("t::2"),
             "a split pane is never an agent"
         );
         assert_eq!(
-            shown_rex_key(t, PaneIdx::Primary, None).as_deref(),
+            shown_rex_key(t, PaneIdx::Primary, None, None).as_deref(),
             Some("t")
         );
         assert_eq!(r.selected_agent("p"), None);
         assert_eq!(
-            shown_rex_key(r.spec_of("p").unwrap(), PaneIdx::Primary, None),
+            shown_rex_key(r.spec_of("p").unwrap(), PaneIdx::Primary, None, None),
             None
         );
     }

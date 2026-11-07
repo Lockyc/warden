@@ -1049,7 +1049,7 @@ fn pop_out_tab(
 
     // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
     // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, secondary, secondary_left, tab_spec, spec, token, agent) = {
+    let (surface, secondary, secondary_left, tab_spec, spec, token, agent, block) = {
         let mut m = state.lock();
         let ws = m
             .windows
@@ -1073,6 +1073,8 @@ fn pop_out_tab(
         }
         // The agent whose surface travels, so its size and exit still name the agent.
         let agent = ws.registry.selected_agent(&id).map(str::to_string);
+        // Likewise the Rex block whose surface travels, so its size and exit name the block.
+        let block = ws.registry.column_block(&id);
         let (surface, secondary) = ws
             .registry
             .detach(&id)
@@ -1122,6 +1124,7 @@ fn pop_out_tab(
             spec,
             token,
             agent,
+            block,
         )
     };
 
@@ -1245,10 +1248,13 @@ fn pop_out_tab(
             let secondary = secondary_opt.take();
             let mut m = state.lock();
             if let Some(ws) = m.windows.get_mut(&origin_label) {
-                match ws
-                    .registry
-                    .attach(&id, surface, secondary, agent.as_deref())
-                {
+                match ws.registry.attach(
+                    &id,
+                    surface,
+                    secondary,
+                    agent.as_deref(),
+                    block.as_deref(),
+                ) {
                     // Re-assert the origin's CURRENT selection (not this tab — pop-out can be
                     // driven on a background tab, and `activate` would move the shown surface
                     // out from under the sidebar's highlight). This is what re-applies the
@@ -1290,6 +1296,7 @@ fn pop_out_tab(
                 origin_title,
                 tab_id: id.clone(),
                 agent,
+                block,
             },
         );
     }
@@ -1824,8 +1831,12 @@ fn set_tab_rects(
         .into_iter()
         .filter_map(|(id, r)| {
             let primary = view_rect_of(&window, &r.primary)?;
-            let secondary = r.secondary.as_ref().and_then(|s| view_rect_of(&window, s));
-            Some((id, (primary, secondary)))
+            let blocks = r
+                .blocks
+                .iter()
+                .map(|b| view_rect_of(&window, b))
+                .collect::<Option<Vec<_>>>()?;
+            Some((id, (primary, blocks)))
         })
         .collect();
     let mut m = state.lock();
@@ -1846,7 +1857,8 @@ fn set_tab_rects(
 #[derive(serde::Deserialize)]
 struct TabRectsArg {
     primary: RectArg,
-    secondary: Option<RectArg>,
+    /// One per block of the tab's column's selected scratch tab, in layout order.
+    blocks: Vec<RectArg>,
 }
 
 /// A Rex pane's block takes a new grid only while warden owns it.

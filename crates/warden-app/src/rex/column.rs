@@ -8,9 +8,6 @@
 //! after that Rex holds the layout. A session Rex restored after a restart has each stack pane's
 //! `cmd` retyped only while its first window still has the stack's shape.
 
-// Only the open has a caller yet: the registry's column wiring lands next, and removes this allow.
-#![allow(dead_code)]
-
 use std::path::Path;
 use std::time::Instant;
 
@@ -157,6 +154,7 @@ impl RexHub {
 
     /// A new scratch tab in `column_key`'s session: a window with one bare shell in `dir`, named
     /// by Rex. Returns its window id.
+    #[allow(dead_code)] // its command, `scratch_new`, lands with the column's chrome (Task 6)
     pub fn column_new_tab(&self, column_key: &str, dir: &Path) -> Result<String, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
@@ -170,6 +168,7 @@ impl RexHub {
     /// Split `block_id` of `column_key`'s session: a bare shell in `dir` stacked below it, half
     /// its height, focused. Returns the new block's id, bound at once; the window's layout follows
     /// with Rex's next view.
+    #[allow(dead_code)] // its caller, ⌘D in a column block, lands with the column's chrome (Task 6)
     pub fn column_split(
         &self,
         column_key: &str,
@@ -202,6 +201,7 @@ impl RexHub {
     }
 
     /// Move divider `d` of `column_key`'s session to `ratio` of its split.
+    #[allow(dead_code)] // its command, `scratch_resize`, lands with the column's chrome (Task 6)
     pub fn column_resize(&self, column_key: &str, d: &Divider, ratio: f64) -> Result<(), RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
