@@ -72,12 +72,19 @@ const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
 
-/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓) and Fork
+/// Tab ▸ Previous / Next Agent Tab (⌘↑ / ⌘↓, and ⌘K / ⌘J), Move Agent Tab Up / Down (⌥⇧⌘↑ / ⌥⇧⌘↓) and Fork
 /// Agent Tab (⌥⌘T): the selected agent tab of the focused window's active tab, enabled only while
 /// its main pane has keyboard focus and the step can act ([`sync_agent_menu`]) — a disabled item
 /// leaves its chord to the terminal, so ⌘↑ / ⌘↓ still jump between prompts in the scratch shell.
 const MENU_AGENT_PREV: &str = "warden:agent-prev";
 const MENU_AGENT_NEXT: &str = "warden:agent-next";
+
+/// ⌘K / ⌘J: Previous / Next Agent Tab's second chords, each its own menu item (a menu item carries
+/// one key equivalent) kept off screen by [`hide_alias_items`], which finds them by these titles.
+/// Same enablement and action as the visible pair.
+const MENU_AGENT_PREV_ALIAS: &str = "warden:agent-prev-alias";
+const MENU_AGENT_NEXT_ALIAS: &str = "warden:agent-next-alias";
+const ALIAS_TITLES: [&str; 2] = ["Previous Agent Tab (⌘K)", "Next Agent Tab (⌘J)"];
 const MENU_AGENT_MOVE_UP: &str = "warden:agent-move-up";
 const MENU_AGENT_MOVE_DOWN: &str = "warden:agent-move-down";
 const MENU_AGENT_FORK: &str = "warden:agent-fork";
@@ -104,8 +111,9 @@ struct AgentItems {
     new: tauri::menu::MenuItem<tauri::Wry>,
     sleep: tauri::menu::MenuItem<tauri::Wry>,
     reopen: tauri::menu::MenuItem<tauri::Wry>,
-    prev: tauri::menu::MenuItem<tauri::Wry>,
-    next: tauri::menu::MenuItem<tauri::Wry>,
+    /// The visible item, then its hidden alias.
+    prev: [tauri::menu::MenuItem<tauri::Wry>; 2],
+    next: [tauri::menu::MenuItem<tauri::Wry>; 2],
     move_up: tauri::menu::MenuItem<tauri::Wry>,
     move_down: tauri::menu::MenuItem<tauri::Wry>,
     /// The spine's Close Tab (⌘W), retitled while it closes an agent tab.
@@ -264,12 +272,14 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let _ = i
             .reopen
             .set_enabled(agent.as_ref().is_some_and(|a| a.3) || reopen_window);
-        let _ = i
-            .prev
-            .set_enabled(list.is_some_and(|l| agent_step(l, Step::Prev).is_some()));
-        let _ = i
-            .next
-            .set_enabled(list.is_some_and(|l| agent_step(l, Step::Next).is_some()));
+        let prev = list.is_some_and(|l| agent_step(l, Step::Prev).is_some());
+        let next = list.is_some_and(|l| agent_step(l, Step::Next).is_some());
+        for item in &i.prev {
+            let _ = item.set_enabled(prev);
+        }
+        for item in &i.next {
+            let _ = item.set_enabled(next);
+        }
         let _ = i
             .move_up
             .set_enabled(list.is_some_and(|l| agent_move(l, Step::Prev).is_some()));
@@ -327,8 +337,12 @@ fn agent_key(app: &tauri::AppHandle, id: &str) {
                 return;
             };
             match id {
-                MENU_AGENT_PREV | MENU_AGENT_NEXT => {
-                    match agent_step(&list, step(id == MENU_AGENT_PREV)) {
+                MENU_AGENT_PREV
+                | MENU_AGENT_NEXT
+                | MENU_AGENT_PREV_ALIAS
+                | MENU_AGENT_NEXT_ALIAS => {
+                    let up = id == MENU_AGENT_PREV || id == MENU_AGENT_PREV_ALIAS;
+                    match agent_step(&list, step(up)) {
                         Some(to) => rex::lifecycle::select(app, &label, &tab, &to),
                         None => Ok(()),
                     }
@@ -460,6 +474,8 @@ fn build_app_menu(
     };
     let agent_prev_item = disabled(MENU_AGENT_PREV, "Previous Agent Tab", "Cmd+ArrowUp")?;
     let agent_next_item = disabled(MENU_AGENT_NEXT, "Next Agent Tab", "Cmd+ArrowDown")?;
+    let agent_prev_alias = disabled(MENU_AGENT_PREV_ALIAS, ALIAS_TITLES[0], "Cmd+KeyK")?;
+    let agent_next_alias = disabled(MENU_AGENT_NEXT_ALIAS, ALIAS_TITLES[1], "Cmd+KeyJ")?;
     let agent_up_item = disabled(
         MENU_AGENT_MOVE_UP,
         "Move Agent Tab Up",
@@ -507,6 +523,8 @@ fn build_app_menu(
                 &agent_new_item,
                 &agent_prev_item,
                 &agent_next_item,
+                &agent_prev_alias,
+                &agent_next_alias,
                 &agent_up_item,
                 &agent_down_item,
                 &agent_fork_item,
@@ -540,13 +558,15 @@ fn build_app_menu(
         ])
         .build()?;
     app.set_menu(menu)?;
+    // Queued behind `set_menu`'s own main-thread work, so the installed menu is the one walked.
+    app.run_on_main_thread(hide_alias_items)?;
     if let Some(keep) = tauri::Manager::try_state::<AgentMenu>(app) {
         *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(AgentItems {
             new: agent_new_item,
             sleep: agent_sleep_item,
             reopen: reopen_last,
-            prev: agent_prev_item,
-            next: agent_next_item,
+            prev: [agent_prev_item, agent_prev_alias],
+            next: [agent_next_item, agent_next_alias],
             move_up: agent_up_item,
             move_down: agent_down_item,
             close_tab: spine.close_tab.clone(),
@@ -575,6 +595,30 @@ fn rebuild_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     sync_agent_menu(app);
     sync_server_menu(app);
     Ok(())
+}
+
+/// Hide the [`ALIAS_TITLES`] items in the installed main menu while keeping their key equivalents
+/// live. tauri exposes no `NSMenuItem`, so they are found by title (main thread).
+#[cfg(target_os = "macos")]
+fn hide_alias_items() {
+    use objc2_app_kit::{NSApplication, NSMenu};
+    use objc2_foundation::MainThreadMarker;
+    fn walk(menu: &NSMenu) {
+        for item in menu.itemArray().iter() {
+            if let Some(sub) = item.submenu() {
+                walk(&sub);
+            } else if ALIAS_TITLES.contains(&item.title().to_string().as_str()) {
+                item.setAllowsKeyEquivalentWhenHidden(true);
+                item.setHidden(true);
+            }
+        }
+    }
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    if let Some(menu) = NSApplication::sharedApplication(mtm).mainMenu() {
+        walk(&menu);
+    }
 }
 
 /// Return the calling window's banner + tab descriptors, resolved by label.
@@ -2276,6 +2320,8 @@ fn main() {
             if [
                 MENU_AGENT_PREV,
                 MENU_AGENT_NEXT,
+                MENU_AGENT_PREV_ALIAS,
+                MENU_AGENT_NEXT_ALIAS,
                 MENU_AGENT_MOVE_UP,
                 MENU_AGENT_MOVE_DOWN,
                 MENU_AGENT_FORK,
