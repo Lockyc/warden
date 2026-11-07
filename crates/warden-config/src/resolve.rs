@@ -1,4 +1,4 @@
-use crate::model::{Config, Root, Split, SplitSide, Tab, Window};
+use crate::model::{Config, Root, Split, SplitSide, StackPane, Tab, Window};
 use crate::raw::{RawConfig, RawSplit, RawWindow};
 use crate::Colour;
 use config_core::{Density, TabDigitKeys, Warning, WindowError};
@@ -30,6 +30,10 @@ pub const DEFAULT_COLOUR: Colour = Colour {
 pub const DEFAULT_SPLIT_SIZE: f64 = 0.5;
 pub const SPLIT_SIZE_MIN: f64 = 0.1;
 pub const SPLIT_SIZE_MAX: f64 = 0.9;
+/// A stacked pane's declared share of the column, and the most panes a column holds.
+pub const PANE_SIZE_MIN: f64 = 0.05;
+pub const PANE_SIZE_MAX: f64 = 0.9;
+pub const MAX_PANES: usize = 8;
 
 /// The `server` value naming this machine's own Rex server; any other value is a remote host label.
 pub const LOCAL_SERVER: &str = "local";
@@ -68,7 +72,10 @@ fn resolve_split_level(raw: Option<&RawSplit>) -> Result<Option<Option<Split>>, 
         Some(RawSplit::Off(true)) => Ok(Some(Some(Split {
             side: SplitSide::Right,
             size: DEFAULT_SPLIT_SIZE,
-            startup: None,
+            panes: vec![StackPane {
+                size: 1.0,
+                startup: None,
+            }],
         }))),
         Some(RawSplit::On(t)) => {
             let side = match t.side.as_deref().map(str::trim) {
@@ -80,18 +87,93 @@ fn resolve_split_level(raw: Option<&RawSplit>) -> Result<Option<Option<Split>>, 
             if !(size.is_finite() && (SPLIT_SIZE_MIN..=SPLIT_SIZE_MAX).contains(&size)) {
                 return Err(ResolveError::BadSplitSize(size));
             }
-            let startup = t
-                .cmd
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(String::from);
-            Ok(Some(Some(Split {
-                side,
-                size,
-                startup,
-            })))
+            let nonblank = |c: &Option<String>| {
+                c.as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(String::from)
+            };
+            let panes = match &t.panes {
+                Some(_) if t.cmd.is_some() => return Err(ResolveError::SplitCmdAndPanes),
+                Some(raw) => resolve_stack(raw, &nonblank)?,
+                None => vec![StackPane {
+                    size: 1.0,
+                    startup: nonblank(&t.cmd),
+                }],
+            };
+            Ok(Some(Some(Split { side, size, panes })))
         }
     }
+}
+
+/// Resolve a `[[…split.pane]]` list: sized panes keep their share, unsized panes split the
+/// remainder equally, and an all-sized stack is normalised to sum 1.
+fn resolve_stack(
+    raw: &[crate::raw::RawStackPane],
+    nonblank: &dyn Fn(&Option<String>) -> Option<String>,
+) -> Result<Vec<StackPane>, ResolveError> {
+    if raw.len() > MAX_PANES {
+        return Err(ResolveError::TooManyPanes(raw.len()));
+    }
+    for s in raw.iter().filter_map(|p| p.size) {
+        if !(s.is_finite() && (PANE_SIZE_MIN..=PANE_SIZE_MAX).contains(&s)) {
+            return Err(ResolveError::BadPaneSize(s));
+        }
+    }
+    let sized: f64 = raw.iter().filter_map(|p| p.size).sum();
+    let unsized_n = raw.iter().filter(|p| p.size.is_none()).count();
+    let share = |p: &crate::raw::RawStackPane| -> Result<f64, ResolveError> {
+        match p.size {
+            Some(s) if unsized_n == 0 => Ok(s / sized),
+            Some(s) => Ok(s),
+            None => {
+                let each = (1.0 - sized) / unsized_n as f64;
+                if each < PANE_SIZE_MIN - 1e-9 {
+                    return Err(ResolveError::PaneSizesOverflow);
+                }
+                Ok(each)
+            }
+        }
+    };
+    let mut panes = raw
+        .iter()
+        .map(|p| {
+            Ok(StackPane {
+                size: share(p)?,
+                startup: nonblank(&p.cmd),
+            })
+        })
+        .collect::<Result<Vec<_>, ResolveError>>()?;
+    if panes.is_empty() {
+        panes.push(StackPane {
+            size: 1.0,
+            startup: None,
+        });
+    }
+    Ok(panes)
+}
+
+/// A plain (no `server`) tab has one scratch pane: a stack collapses to its last pane, with a
+/// warning. Rex tabs keep the whole stack.
+fn collapse_for_plain(
+    split: Option<Split>,
+    server: Option<&str>,
+    what: &str,
+    window: &str,
+    warnings: &mut Vec<Warning>,
+) -> Option<Split> {
+    let mut split = split?;
+    if server.is_none() && split.panes.len() > 1 {
+        warnings.push(Warning {
+            window: window.to_string(),
+            message: format!(
+                "{what}: stacked scratch panes need a Rex tab (server); using its last pane"
+            ),
+        });
+        let mut last = split.panes.pop().expect("len > 1");
+        last.size = 1.0;
+        split.panes = vec![last];
+    }
+    Some(split)
 }
 
 /// The split cascade: nearest SET level wins as a whole table (a tab table that sets only
@@ -136,6 +218,14 @@ pub enum ResolveError {
     BadSplitSide(String),
     #[error("invalid split size {0} (expected {min}..={max})", min = SPLIT_SIZE_MIN, max = SPLIT_SIZE_MAX)]
     BadSplitSize(f64),
+    #[error("a split sets `cmd` or `pane`, not both")]
+    SplitCmdAndPanes,
+    #[error("a split stacks {0} panes (at most {max})", max = MAX_PANES)]
+    TooManyPanes(usize),
+    #[error("invalid pane size {0} (expected {min}..={max})", min = PANE_SIZE_MIN, max = PANE_SIZE_MAX)]
+    BadPaneSize(f64),
+    #[error("stacked pane sizes leave less than {min} for each unsized pane", min = PANE_SIZE_MIN)]
+    PaneSizesOverflow,
 }
 
 /// Parse the global `tab_digit_keys` setting. Missing/empty → the default
@@ -496,6 +586,13 @@ fn resolve_tab(
         globals,
         window_split,
     )?;
+    let split = collapse_for_plain(
+        split,
+        server.as_deref(),
+        &format!("tab {title:?}"),
+        &rp.title,
+        warnings,
+    );
     Ok(Tab {
         id,
         key,
@@ -642,6 +739,13 @@ fn resolve_root(
         globals,
         window_split,
     )?;
+    let split = collapse_for_plain(
+        split,
+        server.as_deref(),
+        &format!("root {:?}", root_dir.name),
+        &rp.title,
+        warnings,
+    );
     Ok(Some(Root {
         name: root_dir.name,
         dir: root_dir.dir,
@@ -2343,17 +2447,17 @@ split = false
         let inherited = work[0].split.as_ref().unwrap();
         assert_eq!(inherited.side, SplitSide::Left);
         assert_eq!(inherited.size, 0.3);
-        assert_eq!(inherited.startup.as_deref(), Some("scratch-global"));
+        assert_eq!(inherited.scratch_startup(), Some("scratch-global"));
         // The nearest table wins WHOLE — the tab's own table sets only `size`, so side and
         // cmd fall back to the table's own defaults, not the global table's values.
         let own = work[1].split.as_ref().unwrap();
         assert_eq!(own.side, SplitSide::Right);
         assert_eq!(own.size, 0.4);
-        assert_eq!(own.startup, None);
+        assert_eq!(own.scratch_startup(), None);
         assert_eq!(work[2].split, None, "split = false opts the tab out");
         let dflt = work[3].split.as_ref().unwrap();
         assert_eq!(
-            (dflt.side, dflt.size, dflt.startup.as_deref()),
+            (dflt.side, dflt.size, dflt.scratch_startup()),
             (SplitSide::Right, DEFAULT_SPLIT_SIZE, None)
         );
         assert_eq!(
@@ -2383,7 +2487,8 @@ colour = "#000000"
         let root = cfg.windows[0].roots[0].split.as_ref().unwrap();
         assert_eq!(root.side, SplitSide::Left);
         assert_eq!(
-            root.startup, None,
+            root.scratch_startup(),
+            None,
             "the root's own table has no cmd → bare shell"
         );
     }
@@ -2634,5 +2739,125 @@ title = "a"
         assert!(cfg.windows[0].roots.is_empty());
         assert!(warnings.iter().any(|w| w.message
             == "root \"projects\": server must be \"local\" (remote roots aren't discovered yet)"));
+    }
+
+    fn stack_of(split_toml: &str) -> Result<Vec<StackPane>, ResolveError> {
+        let (cfg, _) = resolve_str(&format!(
+            "[[window]]\ntitle = \"w\"\ncolour = \"#000000\"\n  [[window.tab]]\n  dir = \"/tmp/a\"\n  server = \"local\"\n  [window.tab.split]\n{split_toml}"
+        ))?;
+        Ok(cfg.windows[0].tabs[0].split.clone().unwrap().panes)
+    }
+
+    fn sizes(p: &[StackPane]) -> Vec<f64> {
+        p.iter().map(|p| p.size).collect()
+    }
+
+    fn assert_sizes(p: &[StackPane], want: &[f64]) {
+        let got = sizes(p);
+        assert_eq!(got.len(), want.len(), "{got:?}");
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-9, "{got:?} != {want:?}");
+        }
+    }
+
+    #[test]
+    fn split_cmd_is_a_one_pane_stack() {
+        let p = stack_of("cmd = \"x\"\n").unwrap();
+        assert_eq!(
+            p,
+            vec![StackPane {
+                size: 1.0,
+                startup: Some("x".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn pane_stack_shares_remainder() {
+        let p = stack_of(
+            "[[window.tab.split.pane]]\nsize = 0.15\n[[window.tab.split.pane]]\nsize = 0.15\n[[window.tab.split.pane]]\nsize = 0.1\n[[window.tab.split.pane]]\n",
+        )
+        .unwrap();
+        assert_sizes(&p, &[0.15, 0.15, 0.1, 0.6]);
+    }
+
+    #[test]
+    fn two_unsized_share_equally() {
+        let p = stack_of(
+            "[[window.tab.split.pane]]\nsize = 0.2\n[[window.tab.split.pane]]\n[[window.tab.split.pane]]\n",
+        )
+        .unwrap();
+        assert_sizes(&p, &[0.2, 0.4, 0.4]);
+    }
+
+    #[test]
+    fn all_sized_normalise() {
+        let p = stack_of(
+            "[[window.tab.split.pane]]\nsize = 0.2\n[[window.tab.split.pane]]\nsize = 0.2\n",
+        )
+        .unwrap();
+        assert_sizes(&p, &[0.5, 0.5]);
+    }
+
+    #[test]
+    fn cmd_and_pane_conflict() {
+        assert_eq!(
+            stack_of("cmd = \"x\"\n[[window.tab.split.pane]]\n").unwrap_err(),
+            ResolveError::SplitCmdAndPanes
+        );
+    }
+
+    #[test]
+    fn nine_panes_rejected() {
+        let toml = "[[window.tab.split.pane]]\n".repeat(9);
+        assert_eq!(stack_of(&toml).unwrap_err(), ResolveError::TooManyPanes(9));
+    }
+
+    #[test]
+    fn pane_size_out_of_range() {
+        assert_eq!(
+            stack_of("[[window.tab.split.pane]]\nsize = 0.95\n").unwrap_err(),
+            ResolveError::BadPaneSize(0.95)
+        );
+    }
+
+    #[test]
+    fn pane_sizes_overflow() {
+        assert_eq!(
+            stack_of(
+                "[[window.tab.split.pane]]\nsize = 0.9\n[[window.tab.split.pane]]\nsize = 0.08\n[[window.tab.split.pane]]\n"
+            )
+            .unwrap_err(),
+            ResolveError::PaneSizesOverflow
+        );
+    }
+
+    const THREE: &str = "  [[window.tab.split.pane]]\n  cmd = \"a\"\n  [[window.tab.split.pane]]\n  cmd = \"b\"\n  [[window.tab.split.pane]]\n  cmd = \"c\"\n";
+
+    fn tab_with_stack(server: &str) -> (Config, Vec<Warning>) {
+        resolve_str(&format!(
+            "[[window]]\ntitle = \"w\"\ncolour = \"#000000\"\n  [[window.tab]]\n  title = \"t\"\n  dir = \"/tmp/a\"\n{server}{THREE}"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn plain_tab_stack_warns_and_keeps_last() {
+        let (cfg, warnings) = tab_with_stack("");
+        let s = cfg.windows[0].tabs[0].split.as_ref().unwrap();
+        assert_eq!(s.panes.len(), 1);
+        assert_eq!(s.scratch_startup(), Some("c"));
+        assert!(warnings.iter().any(|w| w.message
+            == "tab \"t\": stacked scratch panes need a Rex tab (server); using its last pane"));
+    }
+
+    #[test]
+    fn rex_tab_keeps_whole_stack() {
+        let (cfg, warnings) = tab_with_stack("  server = \"local\"\n");
+        assert_eq!(
+            cfg.windows[0].tabs[0].split.as_ref().unwrap().panes.len(),
+            3
+        );
+        assert!(warnings.iter().all(|w| !w.message.contains("stacked")));
     }
 }

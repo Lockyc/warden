@@ -27,7 +27,7 @@ pub use config_core::{
     TabDigitKeys, Warning, DEFAULT_ROOT_DEPTH,
 };
 pub use load::{config_path, load, load_with, login_shell, LoadError, Loaded};
-pub use model::{Config, Root, Split, SplitSide, Tab, Window};
+pub use model::{Config, Root, Split, SplitSide, StackPane, Tab, Window};
 pub use reconcile::{reconcile, Reconciliation, TabMeta, TerminalSpec, WindowUpdate};
 pub use resolve::{apply_resume, normalize_dir_key, ResolveError};
 pub use watch::Watcher;

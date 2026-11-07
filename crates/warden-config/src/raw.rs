@@ -48,6 +48,17 @@ pub struct RawSplitTable {
     pub size: Option<f64>,
     // Typed into the second pane's shell on spawn; absent or "" = bare shell.
     pub cmd: Option<String>,
+    // A column of stacked panes (Rex tabs): `[[…split.pane]]`. Excludes `cmd`. Validated in resolve.rs.
+    #[serde(rename = "pane")]
+    pub panes: Option<Vec<RawStackPane>>,
+}
+
+/// One `[[…split.pane]]` entry: what it runs and its share of the column.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawStackPane {
+    pub cmd: Option<String>,
+    pub size: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -418,5 +429,39 @@ split = false
             err.contains("ratio"),
             "the error must name the bad key: {err}"
         );
+    }
+
+    #[test]
+    fn parses_split_panes() {
+        let cfg = parse(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [[window.tab.split.pane]]
+  cmd = "one"
+  size = 0.3
+  [[window.tab.split.pane]]
+"##,
+        )
+        .unwrap();
+        let Some(RawSplit::On(t)) = &cfg.windows[0].extra.tabs[0].split else {
+            panic!("split table")
+        };
+        let panes = t.panes.as_ref().unwrap();
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0].cmd.as_deref(), Some("one"));
+        assert_eq!(panes[0].size, Some(0.3));
+        assert_eq!(panes[1].cmd, None);
+    }
+
+    #[test]
+    fn pane_rejects_unknown_fields() {
+        let err = parse("[split]\n[[split.pane]]\nratio = 0.3\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("ratio"), "{err}");
     }
 }

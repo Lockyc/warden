@@ -1,4 +1,4 @@
-use crate::model::{Config, Split, Tab, Window};
+use crate::model::{Config, Split, SplitSide, StackPane, Tab, Window};
 use crate::Colour;
 use std::path::Path;
 
@@ -19,7 +19,7 @@ pub struct TabMeta {
     pub title: String,
     /// The kept tab's current declared split. Carried on every metadata update (like
     /// `title`); a `side`/`size`-only change is a live re-layout, so it rides here. A change
-    /// to the split's PRESENCE or `startup` is a terminal-spec change and rides
+    /// to the split's PRESENCE or (on a plain tab) `startup` is a terminal-spec change and rides
     /// `respawn_tabs` instead — the second pane has to be (re)spawned to run it.
     pub split: Option<Split>,
     /// The kept tab's pinned project colour (`Tab::colour`), carried like `title`.
@@ -29,7 +29,8 @@ pub struct TabMeta {
 /// What a tab's terminal runs — the fields a running PTY can't take on in place, so a change to
 /// any of them means a respawn. The one home for that decision: [`reconcile`] and the app's
 /// popped-out-tab return path both compare these, so a docked and a detached tab decide alike.
-/// `split_startup` is `None` for no declared split, `Some(None)` for a split running a bare shell.
+/// `split_startup` is `None` for no declared split, `Some(None)` for a split running a bare shell
+/// (or, on a Rex tab, any stack: its panes ride `set_meta`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalSpec<'a> {
     pub dir: &'a Path,
@@ -52,7 +53,12 @@ impl<'a> TerminalSpec<'a> {
             dir,
             shell,
             startup,
-            split_startup: split.map(|s| s.startup.as_deref()),
+            // A Rex tab's panes are all sessions created at spawn: its stack is `set_meta`
+            // territory, so only the split's presence rides the spec there.
+            split_startup: split.map(|s| match server {
+                Some(_) => None,
+                None => s.scratch_startup(),
+            }),
             server,
         }
     }
@@ -210,7 +216,15 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 let mut spawn_tabs: Vec<String> = Vec::new();
                 for nt in &np.tabs {
                     if let Some(ot) = op.tabs.iter().find(|ot| ot.key == nt.key) {
-                        let layout = |t: &Tab| t.split.as_ref().map(|s| (s.side, s.size));
+                        fn layout(t: &Tab) -> Option<(SplitSide, f64, &[StackPane])> {
+                            let s = t.split.as_ref()?;
+                            let panes = if t.server.is_some() {
+                                &s.panes[..]
+                            } else {
+                                &[]
+                            };
+                            Some((s.side, s.size, panes))
+                        }
                         if ot.title != nt.title
                             || ot.group != nt.group
                             || ot.probe != nt.probe
@@ -1026,5 +1040,40 @@ colour = "#0f8a8a"
         assert_eq!(r.update.len(), 1);
         assert_eq!(r.update[0].respawn_tabs.len(), 1);
         assert!(reconcile(&mk("local"), &mk("local")).update.is_empty());
+    }
+
+    const REX_STACK: &str = r##"
+[[window]]
+title = "work"
+colour = "#0f8a8a"
+  [[window.tab]]
+  title = "alpha"
+  dir = "/tmp/alpha"
+  server = "local"
+  [[window.tab.split.pane]]
+  cmd = "a"
+  [[window.tab.split.pane]]
+  cmd = "b"
+"##;
+
+    #[test]
+    fn pane_change_on_rex_tab_is_set_meta() {
+        let old = cfg(REX_STACK);
+        let new = cfg(&REX_STACK.replace("cmd = \"b\"", "cmd = \"c\"\n  size = 0.3"));
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].set_meta.len(), 1);
+        assert!(r.update[0].respawn_tabs.is_empty());
+    }
+
+    #[test]
+    fn pane_change_on_plain_tab_respawns() {
+        let plain = REX_STACK.replace("  server = \"local\"\n", "");
+        // A plain tab keeps only its last pane, so only the last pane's cmd matters.
+        let old = cfg(&plain);
+        let new = cfg(&plain.replace("cmd = \"b\"", "cmd = \"c\""));
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].respawn_tabs.len(), 1);
     }
 }

@@ -9,14 +9,29 @@ pub enum SplitSide {
     Right,
 }
 
-/// A tab's declared second pane, fully resolved (the cascade is collapsed). `size` is the
-/// second pane's share of the hole; `startup` is typed into its shell (`None` = bare shell).
-/// The pane's shell and dir are the tab's own — that's why they aren't here.
+/// One pane of a split's stack, fully resolved. `size` is its share of the column (the stack's
+/// sizes sum to 1.0); `startup` is typed into its shell (`None` = bare shell).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackPane {
+    pub size: f64,
+    pub startup: Option<String>,
+}
+
+/// A tab's declared second column, fully resolved (the cascade is collapsed). `size` is the
+/// column's share of the hole; `panes` are its stacked panes, top to bottom (never empty — a
+/// plain `cmd` is a one-pane stack). A pane's shell and dir are the tab's own.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Split {
     pub side: SplitSide,
     pub size: f64,
-    pub startup: Option<String>,
+    pub panes: Vec<StackPane>,
+}
+
+impl Split {
+    /// The last pane's startup — the scratch shell a plain tab (one pane) and a runtime ⌘D split run.
+    pub fn scratch_startup(&self) -> Option<&str> {
+        self.panes.last().and_then(|p| p.startup.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

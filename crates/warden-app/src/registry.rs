@@ -394,7 +394,10 @@ fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
     spec.id = secondary_id(tab_id);
     // A config split names what the second pane runs; a runtime split is a bare scratch shell.
-    spec.startup = primary.split.as_ref().and_then(|s| s.startup.clone());
+    spec.startup = primary
+        .split
+        .as_ref()
+        .and_then(|s| s.scratch_startup().map(String::from));
     spec.split = None;
     spec
 }
@@ -2917,7 +2920,10 @@ mod tests {
         s.split = Some(warden_config::Split {
             side: warden_config::SplitSide::Left,
             size: 0.3,
-            startup: cmd.map(String::from),
+            panes: vec![warden_config::StackPane {
+                size: 1.0,
+                startup: cmd.map(String::from),
+            }],
         });
         s
     }
@@ -2983,7 +2989,10 @@ mod tests {
                 split: Some(warden_config::Split {
                     side: warden_config::SplitSide::Right,
                     size: 0.6,
-                    startup: None,
+                    panes: vec![warden_config::StackPane {
+                        size: 1.0,
+                        startup: None,
+                    }],
                 }),
             },
             false,

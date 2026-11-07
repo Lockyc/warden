@@ -88,6 +88,20 @@ suspend = '"$HOME/.agentmux/bin/amux" --suspend'
     cmd          = ""
     load_on_open = true
     split        = false
+  [[window.tab]] # a Rex tab's split can stack scratch panes: sized panes keep their share, unsized share the rest
+    title  = "stack"
+    id     = "stack"
+    dir    = "projects/personal/notes"
+    server = "local"
+
+    [[window.tab.split.pane]]
+      cmd  = "htop"
+      size = 0.25
+
+    [[window.tab.split.pane]]
+
+    [[window.tab.split.pane]]
+      size = 0.15
   [[window.tab]] # also a plain shell (no agent) for quick notes
     title = "notes"
     dir   = "projects/personal/notes"

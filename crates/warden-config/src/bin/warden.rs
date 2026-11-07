@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use warden_config::{config_path, fmt_cli, load_with, login_shell, Split, SplitSide};
 
 /// A compact `split=…` rendering for `validate`'s tree, in place of raw `{:?}` Debug
-/// (`Some(Split { side: Left, size: 0.3, startup: None })`): `split=none` when unset, else
+/// (`Some(Split { side: Left, size: 0.3, panes: [..] })`): `split=none` when unset, else
 /// `split=left/0.3` and, with a declared `cmd`, `split=left/0.3/"amux"`.
 fn fmt_split(split: &Option<Split>) -> String {
     match split {
@@ -12,7 +12,18 @@ fn fmt_split(split: &Option<Split>) -> String {
                 SplitSide::Left => "left",
                 SplitSide::Right => "right",
             };
-            match &s.startup {
+            if s.panes.len() > 1 {
+                let panes: Vec<String> = s
+                    .panes
+                    .iter()
+                    .map(|p| match &p.startup {
+                        Some(cmd) => format!("{:.2}:{cmd:?}", p.size),
+                        None => format!("{:.2}", p.size),
+                    })
+                    .collect();
+                return format!("split={side}/{}/[{}]", s.size, panes.join(","));
+            }
+            match s.scratch_startup() {
                 Some(cmd) => format!("split={side}/{}/{cmd:?}", s.size),
                 None => format!("split={side}/{}", s.size),
             }
