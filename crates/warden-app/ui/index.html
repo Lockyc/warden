@@ -871,7 +871,7 @@
             killable: !!t.has_kill,
             suspendable: !!t.has_suspend,
             startable: !!t.has_cmd, // presence dot can restart a dead session by re-running `cmd`
-            warn: !!t.warn,
+            warn: t.warn || false, // the reason the tab can't open: the ⚠'s hover text
           })),
         };
       }
