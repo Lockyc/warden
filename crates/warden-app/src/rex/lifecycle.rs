@@ -107,13 +107,30 @@ impl RexHub {
         op: &AgentOp,
         now: u64,
     ) -> Result<AgentsOpened, String> {
+        let mut last = AgentsOpened::default();
+        self.agent_op_shown(store, req, op, now, |opened| last = opened)?;
+        Ok(last)
+    }
+
+    /// [`RexHub::agent_op`], handing `shown` each list it stores as it stores it. A close stores
+    /// and shows its list before asking Rex to close the window — Rex answers only once the
+    /// program in it has exited, which an agent shutting down cleanly makes take a second — and,
+    /// if Rex then refuses, shows the record put back as it was before returning the refusal.
+    pub fn agent_op_shown(
+        &self,
+        store: &Mutex<AgentStore>,
+        req: &RexOpen,
+        op: &AgentOp,
+        now: u64,
+        mut shown: impl FnMut(AgentsOpened),
+    ) -> Result<(), String> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let done = match self.inner.hold_pane(&req.pane_key, Some(deadline)) {
-            Ok(_held) => self.agent_op_until(store, req, op, now, deadline),
+            Ok(_held) => self.agent_op_until(store, req, op, now, deadline, &mut shown),
             Err(e) => Err(Failed::Rex(e)),
         };
         match done {
-            Ok(opened) => Ok(opened),
+            Ok(()) => Ok(()),
             Err(Failed::Refused(why)) => Err(why.to_owned()),
             Err(Failed::Rex(e)) => Err(super::spawn::open_error(
                 &req.server,
@@ -146,7 +163,8 @@ impl RexHub {
         op: &AgentOp,
         now: u64,
         deadline: Instant,
-    ) -> Result<AgentsOpened, Failed> {
+        shown: &mut dyn FnMut(AgentsOpened),
+    ) -> Result<(), Failed> {
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
         let held = lock(store).records(project);
         if let Some(why) = refusal(op, &held) {
@@ -167,6 +185,9 @@ impl RexHub {
         let mut want = None;
         // A tab closing for good is dropped once the selection has leaned off it.
         let mut drop = None;
+        // A close's window, asked of Rex once the list without it is shown, and its record as it
+        // was, to put back if Rex refuses.
+        let mut closing = None;
         match op {
             AgentOp::Refresh => {}
             AgentOp::Exited(id) => {
@@ -255,8 +276,12 @@ impl RexHub {
             }
             AgentOp::Close { id, .. } => {
                 let i = at(&records, id)?;
-                self.close_window_of(server, session.as_ref(), &mut records[i])?;
                 let r = &mut records[i];
+                if let (Some((_, sid)), Some(w)) = (&session, &r.window_id) {
+                    closing = Some((sid.clone(), w.clone(), r.clone()));
+                }
+                r.window_id = None;
+                r.block_id = None;
                 if r.resume.is_none() {
                     drop = Some(r.id.clone());
                 }
@@ -316,6 +341,36 @@ impl RexHub {
                 }
             }
         }
+        let session = session.as_ref();
+        shown(self.store_settled(store, project, session, &held, records, want, drop));
+        let Some((sid, window, before)) = closing else {
+            return Ok(());
+        };
+        if let Err(e) = self.close_window(server, &sid, &window) {
+            let held = lock(store).records(project);
+            let mut records: Vec<AgentRecord> =
+                held.iter().filter(|r| r.id != before.id).cloned().collect();
+            records.push(before);
+            let want = Some(records.len() - 1);
+            shown(self.store_settled(store, project, session, &held, records, want, None));
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    /// Settle `records` (`project`'s, changed from `held`) as [`settle`] does around `want`, drop
+    /// record `drop` once the selection has leaned off it, bind the live ones and store them.
+    #[allow(clippy::too_many_arguments)]
+    fn store_settled(
+        &self,
+        store: &Mutex<AgentStore>,
+        project: &str,
+        session: Option<&(Endpoint, String)>,
+        held: &[AgentRecord],
+        mut records: Vec<AgentRecord>,
+        want: Option<usize>,
+        drop: Option<String>,
+    ) -> AgentsOpened {
         renumber(&mut records);
         let shown = settle(&mut records, want, false);
         if let Some(id) = drop {
@@ -325,9 +380,9 @@ impl RexHub {
             let id = records.get(i).map(|r| r.id.clone())?;
             records.iter().position(|r| r.id == id)
         });
-        let opened = self.bind_agents(project, session.as_ref(), &records, shown);
-        lock(store).merge(&held, records);
-        Ok(opened)
+        let opened = self.bind_agents(project, session, &records, shown);
+        lock(store).merge(held, records);
+        opened
     }
 
     /// `project`'s session on `server`: the one the hub already follows, read without a call,
@@ -1248,17 +1303,22 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
     std::thread::Builder::new()
         .name("warden-agent-op".into())
         .spawn(move || {
-            let result = match (
+            let land_on_main = |result: Result<AgentsOpened, String>| {
+                let (main, label, pane) = (app.clone(), label.clone(), req.pane_key.clone());
+                let _ = app.run_on_main_thread(move || land(&main, Some(&label), &pane, result));
+            };
+            let done = match (
                 app.try_state::<RexHub>(),
                 app.try_state::<Mutex<AgentStore>>(),
             ) {
-                (Some(hub), Some(store)) => hub.agent_op(&store, &req, &op, unix_now()),
+                (Some(hub), Some(store)) => {
+                    hub.agent_op_shown(&store, &req, &op, unix_now(), |o| land_on_main(Ok(o)))
+                }
                 _ => Err(format!("Rex server {}: no connection to Rex", req.server)),
             };
-            let main = app.clone();
-            let _ = app.run_on_main_thread(move || {
-                land(&main, Some(&label), &req.pane_key, result);
-            });
+            if let Err(message) = done {
+                land_on_main(Err(message));
+            }
         })
         .map(|_| ())
         .map_err(|e| format!("couldn't start the agent tab change: {e}"))
@@ -1605,6 +1665,7 @@ pub fn watch_reports(app: AppHandle) {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use rex_client::fake::Reply;
     use serde_json::json;
 
     use super::{agent_list, AgentOp, NO_RESUME};
@@ -1849,6 +1910,91 @@ mod tests {
             .expect("confirmed");
         assert_eq!(f.requests_for("session.close_window").len(), 1);
         assert_eq!(state_of(&s, "a"), None, "gone for good");
+    }
+
+    /// The list without the closed tab is stored and shown before Rex answers, which it does
+    /// only once the program in the window has exited.
+    #[test]
+    fn close_shows_before_rex_answers() {
+        let f = fake(
+            Some("session:old"),
+            vec![("window:1", "block:1", "a"), ("window:2", "block:2", "b")],
+        );
+        let slow = Duration::from_millis(600);
+        f.on("session.close_window", move |_, _| {
+            Reply::ok(json!({})).after(slow)
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut a = record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        );
+        a.selected = true;
+        let s = store(vec![
+            a,
+            record("b", RecordState::Live, Some("window:2"), None),
+        ]);
+        let close = AgentOp::Close {
+            id: "a".into(),
+            confirmed: false,
+        };
+
+        let started = Instant::now();
+        let mut shows = Vec::new();
+        hub.agent_op_shown(&s, &open(false, None), &close, 7, |o| {
+            shows.push((started.elapsed(), state_of(&s, "a").unwrap().state, o));
+        })
+        .expect("close");
+        assert!(started.elapsed() >= slow, "waited for Rex");
+        assert_eq!(shows.len(), 1);
+        let (at, state, opened) = &shows[0];
+        assert!(*at < slow / 2, "shown at {at:?}, before Rex answered");
+        assert_eq!(*state, RecordState::Closed);
+        assert_eq!(
+            opened.selected.as_deref(),
+            Some("b"),
+            "leaned to its neighbour"
+        );
+        assert_eq!(f.requests_for("session.close_window").len(), 1);
+    }
+
+    /// A close Rex refuses puts the record back as it was, shown, and reports the refusal.
+    #[test]
+    fn refused_close_puts_the_tab_back() {
+        let f = fake(
+            Some("session:old"),
+            vec![("window:1", "block:1", "a"), ("window:2", "block:2", "b")],
+        );
+        f.on("session.close_window", |_, _| {
+            Reply::error("internal", "no", 500)
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut a = record("a", RecordState::Live, Some("window:1"), None);
+        a.selected = true;
+        let s = store(vec![
+            a,
+            record("b", RecordState::Live, Some("window:2"), None),
+        ]);
+        let close = AgentOp::Close {
+            id: "a".into(),
+            confirmed: true,
+        };
+
+        let mut shows = Vec::new();
+        let got = hub.agent_op_shown(&s, &open(false, None), &close, 7, |o| shows.push(o));
+        assert!(got.is_err());
+        assert_eq!(shows.len(), 2, "the close, then the tab put back");
+        assert_eq!(shows[1].selected.as_deref(), Some("a"));
+        let a = state_of(&s, "a").expect("back, though it closes for good");
+        assert_eq!(a.state, RecordState::Live);
+        assert_eq!(a.window_id.as_deref(), Some("window:1"));
+        assert!(a.selected && !state_of(&s, "b").unwrap().selected);
     }
 
     #[test]
