@@ -204,7 +204,11 @@ pub fn divider_ratio(d: &Divider, pointer: f64) -> f64 {
         Dir::Horizontal => (d.rect.x, d.rect.w),
         Dir::Vertical => (d.rect.y, d.rect.h),
     };
-    ((pointer - origin) / extent).clamp(0.05, 0.95)
+    if extent > 0.0 {
+        ((pointer - origin) / extent).clamp(0.05, 0.95)
+    } else {
+        0.5
+    }
 }
 
 #[cfg(test)]
@@ -307,6 +311,13 @@ mod tests {
         assert_eq!(divider_ratio(&v, 0.625), 0.25);
         assert_eq!(divider_ratio(&v, 0.0), 0.05);
         assert_eq!(divider_ratio(&v, 2.0), 0.95);
+    }
+
+    #[test]
+    fn zero_extent_divider_is_even() {
+        let mut d = Layout::parse(&nested()).unwrap().dividers()[0].clone();
+        d.rect = frac(0.0, 0.5, 1.0, 0.0);
+        assert_eq!(divider_ratio(&d, 0.5), 0.5);
     }
 
     fn pane(size: f64, startup: Option<&str>) -> StackPane {

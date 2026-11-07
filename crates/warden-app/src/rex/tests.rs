@@ -7,6 +7,7 @@ use rex_client::fake::{FakeServer, Reply};
 use rex_client::{ClientInfo, Endpoint, RexError};
 use serde_json::{json, Value};
 
+use super::layout::Layout;
 use super::store::{PaneRecord, RexStore};
 use super::windows::{AgentState, AgentWindow, BlockStatus};
 use super::{HubEvent, RexHub};
@@ -1237,6 +1238,15 @@ fn agent(window_id: &str, block_id: Option<&str>, label: &str) -> AgentWindow {
         window_id: window_id.into(),
         block_id: block_id.map(str::to_owned),
         label: label.into(),
+        layout: None,
+    }
+}
+
+/// A window as `windows_view` shows it: its one block fills the window.
+fn viewed(window_id: &str, block_id: &str, label: &str) -> AgentWindow {
+    AgentWindow {
+        layout: Layout::parse(&json!({"rect": [0, 0, 1, 1], "block_id": block_id})),
+        ..agent(window_id, Some(block_id), label)
     }
 }
 
@@ -1258,7 +1268,7 @@ fn windows_follow_created_and_closed() {
         .expect("ensure_session");
     assert_eq!(
         hub.windows("local", "session:new"),
-        [agent("window:1", Some("block:new"), "main")]
+        [viewed("window:1", "block:new", "main")]
     );
     // Subscribed after the attach, so its own view isn't what the next event matches.
     let rx = hub.subscribe();
@@ -1281,7 +1291,7 @@ fn windows_follow_created_and_closed() {
     assert_eq!(
         hub.windows("local", "session:new"),
         [
-            agent("window:1", Some("block:new"), "main"),
+            viewed("window:1", "block:new", "main"),
             agent("window:2", None, "review"),
         ],
         "listed from the event alone, its block unknown until the view"
@@ -1294,8 +1304,8 @@ fn windows_follow_created_and_closed() {
     eventually("the new window's block", || {
         hub.windows("local", "session:new")
             == [
-                agent("window:1", Some("block:new"), "main"),
-                agent("window:2", Some("block:2"), "review"),
+                viewed("window:1", "block:new", "main"),
+                viewed("window:2", "block:2", "review"),
             ]
     });
 
@@ -1325,7 +1335,7 @@ fn windows_follow_created_and_closed() {
         json!({"revision": 4}),
     );
     eventually("the closed window to go", || {
-        hub.windows("local", "session:new") == [agent("window:2", Some("block:2"), "tests")]
+        hub.windows("local", "session:new") == [viewed("window:2", "block:2", "tests")]
     });
 
     // A session no pane shows is never tracked.
@@ -1639,7 +1649,7 @@ fn new_window_types_startup() {
     assert_eq!(
         hub.windows("local", "session:new"),
         [
-            agent("window:1", Some("block:new"), "main"),
+            viewed("window:1", "block:new", "main"),
             agent("window:9", Some("block:9"), "second"),
         ]
     );
@@ -1671,7 +1681,7 @@ fn close_window_removes_it() {
     assert_eq!(close["window_id"], "window:2");
     assert_eq!(
         hub.windows("local", "session:new"),
-        [agent("window:1", Some("block:new"), "main")]
+        [viewed("window:1", "block:new", "main")]
     );
 
     // A window already gone closes cleanly.
@@ -1973,4 +1983,51 @@ fn a_reconnect_to_the_same_instance_reports_no_restart() {
     while let Ok(ev) = rx.try_recv() {
         assert!(!matches!(ev, HubEvent::Restarted { .. }), "{ev:?}");
     }
+}
+
+/// `windows_view` with a caller-supplied `layers[0].layout` for one window.
+fn windows_view_with_layout(
+    session_id: &str,
+    revision: u64,
+    layout: Value,
+    blocks: &[&str],
+) -> Value {
+    let blocks: Vec<Value> = blocks
+        .iter()
+        .map(|b| {
+            json!({"block_id": b, "creator_name": "com.superlogical.terminal",
+                   "flavor": "com.superlogical.terminal.shell"})
+        })
+        .collect();
+    json!({"revision": revision, "session_id": session_id, "windows": [{
+    "window_id": "window:1", "label": "main", "layers": [{
+        "layer_id": "layer-of-window:1", "kind": "tiled", "bounds": [0, 0, 1, 1],
+        "layout": layout, "blocks": blocks,
+    }]}]})
+}
+
+#[test]
+fn windows_carry_their_layout() {
+    let fake = scripted(json!([]));
+    let view = windows_view_with_layout(
+        "session:new",
+        1,
+        json!({"rect": [0, 0, 1, 1], "split": {
+            "split_id": "s1", "direction": "vertical", "ratio": 0.5,
+            "before": {"rect": [0, 0, 1, 0.5], "block_id": "b1"},
+            "after": {"rect": [0, 0.5, 1, 0.5], "block_id": "b2"},
+        }}),
+        &["b1", "b2"],
+    );
+    let v = view.clone();
+    fake.on("session.attach", move |_, _| {
+        Reply::ok(json!({"client_id": "client:fake-1", "view": v}))
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    let windows = hub.windows("local", "session:new");
+    assert_eq!(windows[0].block_id.as_deref(), Some("b1"));
+    assert_eq!(windows[0].layout.as_ref().unwrap().blocks(), ["b1", "b2"]);
 }

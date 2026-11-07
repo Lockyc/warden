@@ -565,6 +565,7 @@ mod tests {
             window_id: id.into(),
             block_id: Some(format!("b-{id}")),
             label: label.into(),
+            layout: None,
         }
     }
 

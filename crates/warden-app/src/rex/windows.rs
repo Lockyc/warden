@@ -28,6 +28,7 @@ use std::time::Instant;
 use rex_client::{ControlClient, Event, RexError};
 use serde_json::{json, Value};
 
+use super::layout::Layout;
 use super::{
     call_seq, str_field, terminal_options, view_blocks, HubEvent, Inner, RexHub, TERMINAL_CREATOR,
     TERMINAL_FLAVOR,
@@ -37,12 +38,14 @@ const PROGRAM_STATUS: &str = "com.superlogical.terminal.program_status";
 const TITLE: &str = "com.superlogical.terminal.title";
 
 /// One window of a session, as a row of agent tabs shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AgentWindow {
     pub window_id: String,
     /// The window's first terminal block; `None` until a view shows it.
     pub block_id: Option<String>,
     pub label: String,
+    /// The window's first layer's split layout; `None` until a view shows it.
+    pub layout: Option<Layout>,
 }
 
 /// An OSC 7501 `state`. A value Rex doesn't define reads as `Idle`.
@@ -424,6 +427,7 @@ impl Inner {
             window_id: str_field(&made["window_id"], "session.new_window window_id")?,
             block_id: made["block_ids"][0].as_str().map(str::to_owned),
             label: label.unwrap_or_default().to_owned(),
+            layout: None,
         };
         self.edit_windows(server, session_id, |list| {
             match list.iter_mut().find(|w| w.window_id == window.window_id) {
@@ -700,6 +704,7 @@ pub(super) fn apply_event(
                             window_id: window_id.to_owned(),
                             block_id: None,
                             label: label.to_owned(),
+                            layout: None,
                         });
                         true
                     }
@@ -808,6 +813,7 @@ fn parse_windows(view: &Value) -> Vec<AgentWindow> {
                     .and_then(|b| b["block_id"].as_str())
                     .map(str::to_owned),
                 label: w["label"].as_str().unwrap_or_default().to_owned(),
+                layout: Layout::parse(&w["layers"][0]["layout"]),
             })
         })
         .collect()
