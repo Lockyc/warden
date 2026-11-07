@@ -318,6 +318,7 @@ const UNSAFE_PATH_EXTENSIONS: &[&str] = &[
     "class",
     "command",
     "desktop",
+    "fileloc",
     "inetloc",
     "jar",
     "mobileconfig",
@@ -536,6 +537,9 @@ mod tests {
         // A script by extension with no execute bit.
         let cmd = dir.path().join("run.command");
         std::fs::write(&cmd, "echo hi\n").unwrap();
+        // A Finder location file: LaunchServices opens what it points at.
+        let loc = dir.path().join("readme.fileloc");
+        std::fs::write(&loc, "<plist/>\n").unwrap();
         // An executable regular file with a harmless-looking name.
         let exe = dir.path().join("notes.txt");
         std::fs::write(&exe, "plain\n").unwrap();
@@ -544,7 +548,7 @@ mod tests {
         // A harmless name symlinked at an executable target.
         let link = dir.path().join("readme");
         std::os::unix::fs::symlink(&exe, &link).unwrap();
-        for p in [&cmd, &exe, &link] {
+        for p in [&cmd, &loc, &exe, &link] {
             let url = format!("file://{}", p.display());
             assert_eq!(
                 denied(&decide(&url)),
