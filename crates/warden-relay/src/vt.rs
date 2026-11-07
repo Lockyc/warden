@@ -41,43 +41,38 @@ const IO_ERROR: c_int = -5;
 const DECODER_DATA_SOURCE_OFFSET: c_int = 2;
 const FORMAT_VT: c_int = 1;
 
+const FORMATTER_OPT_EMIT: c_int = 1;
+const FORMATTER_OPT_TRIM: c_int = 3;
+const FORMATTER_OPT_EXTRAS: c_int = 5;
+
+// `GhosttyFormatterExtras` bits.
+const EXTRA_PALETTE: u32 = 1 << 0;
+const EXTRA_MODES: u32 = 1 << 1;
+const EXTRA_SCROLLING_REGION: u32 = 1 << 2;
+const EXTRA_TABSTOPS: u32 = 1 << 3;
+const EXTRA_KEYBOARD: u32 = 1 << 5;
+const EXTRA_CURSOR: u32 = 1 << 6;
+const EXTRA_STYLE: u32 = 1 << 7;
+const EXTRA_KITTY_KEYBOARD: u32 = 1 << 10;
+const EXTRA_CHARSETS: u32 = 1 << 11;
+
+/// The terminal state the replay restores beyond the cells. Not the working directory (the
+/// pane's shell reports its own) and not the cursor's hyperlink or protection, which only
+/// affect text written after the replay.
+const REPLAY_EXTRAS: u32 = EXTRA_PALETTE
+    | EXTRA_MODES
+    | EXTRA_SCROLLING_REGION
+    | EXTRA_TABSTOPS
+    | EXTRA_KEYBOARD
+    | EXTRA_CURSOR
+    | EXTRA_STYLE
+    | EXTRA_KITTY_KEYBOARD
+    | EXTRA_CHARSETS;
+
 #[repr(C)]
 struct Reader {
     read: extern "C" fn(*mut c_void, *mut u8, usize, *mut usize) -> bool,
     userdata: *mut c_void,
-}
-
-#[repr(C)]
-struct ScreenExtra {
-    size: usize,
-    cursor: bool,
-    style: bool,
-    hyperlink: bool,
-    protection: bool,
-    kitty_keyboard: bool,
-    charsets: bool,
-}
-
-#[repr(C)]
-struct TerminalExtra {
-    size: usize,
-    palette: bool,
-    modes: bool,
-    scrolling_region: bool,
-    tabstops: bool,
-    pwd: bool,
-    keyboard: bool,
-    screen: ScreenExtra,
-}
-
-#[repr(C)]
-struct FormatterOptions {
-    size: usize,
-    emit: c_int,
-    unwrap: bool,
-    trim: bool,
-    extra: TerminalExtra,
-    selection: *const c_void,
 }
 
 extern "C" {
@@ -91,8 +86,8 @@ extern "C" {
         alloc: *const c_void,
         fmt: *mut Formatter,
         term: Terminal,
-        opts: FormatterOptions,
     ) -> c_int;
+    fn ghostty_formatter_set(fmt: Formatter, opt: c_int, value: *const c_void) -> c_int;
     fn ghostty_formatter_format_alloc(
         fmt: Formatter,
         alloc: *const c_void,
@@ -188,34 +183,21 @@ pub fn snapshot_to_vt(bytes: &[u8], pane: Option<PaneSize>) -> Result<(Vec<u8>, 
         check(rc)?;
     }
 
-    let opts = FormatterOptions {
-        size: size_of::<FormatterOptions>(),
-        emit: FORMAT_VT,
-        unwrap: false,
-        trim: false,
-        extra: TerminalExtra {
-            size: size_of::<TerminalExtra>(),
-            palette: true,
-            modes: true,
-            scrolling_region: true,
-            tabstops: true,
-            pwd: false,
-            keyboard: true,
-            screen: ScreenExtra {
-                size: size_of::<ScreenExtra>(),
-                cursor: true,
-                style: true,
-                hyperlink: false,
-                protection: false,
-                kitty_keyboard: true,
-                charsets: true,
-            },
-        },
-        selection: ptr::null(),
-    };
-    let rc =
-        unsafe { ghostty_formatter_terminal_new(ptr::null(), &mut h.formatter, h.terminal, opts) };
+    // SAFETY: `h.terminal` is live and outlives the formatter (`Handles` frees it first); each
+    // option value is the type its `GhosttyFormatterOption` names, read during the call only.
+    let rc = unsafe { ghostty_formatter_terminal_new(ptr::null(), &mut h.formatter, h.terminal) };
     check(rc)?;
+    let emit: c_int = FORMAT_VT;
+    // Untrimmed VT keeps the screen's trailing blank rows, so the replay fills the rows it did.
+    let trim = false;
+    let extras: u32 = REPLAY_EXTRAS;
+    for (opt, value) in [
+        (FORMATTER_OPT_EMIT, &emit as *const c_int as *const c_void),
+        (FORMATTER_OPT_TRIM, &trim as *const bool as *const c_void),
+        (FORMATTER_OPT_EXTRAS, &extras as *const u32 as *const c_void),
+    ] {
+        check(unsafe { ghostty_formatter_set(h.formatter, opt, value) })?;
+    }
     let mut out: *mut u8 = ptr::null_mut();
     let mut len: usize = 0;
     let rc =
