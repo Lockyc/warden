@@ -25,6 +25,7 @@
 pub mod agent_open;
 pub mod agents;
 pub mod attention;
+pub mod layout;
 pub mod lifecycle;
 pub mod reports;
 pub mod server;
