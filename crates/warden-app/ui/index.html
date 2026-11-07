@@ -263,9 +263,12 @@
          (`--s-*`, set on #main-col by `summarySync`). It and the agent column set their text at
          the terminal's size (`--term-font`, `applyTermFont`), and size everything else in `em`
          from it. */
-      :root { --term-font: 13px; --s-rows: 3; }
+      /* `--s-gap` is the agent column's ground between the band (tile + summary) and the list and
+         terminal above it: the tile's margin over #agents' own background, the summary's border. */
+      :root { --term-font: 13px; --s-rows: 3; --s-gap: 0.5em; --agents-bg: #15191e; }
       #summary { display: none; flex: none; font-size: var(--term-font); user-select: none;
-        -webkit-user-select: none; color: var(--s-fg); background: var(--s-shade); }
+        -webkit-user-select: none; color: var(--s-fg); background: var(--s-shade);
+        border-top: var(--s-gap) solid var(--agents-bg); }
       #terminal-hole.agents #summary { display: block; }
       #summary > div { height: 1.5em; line-height: 1.5em; padding: 0 0.8em; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; }
@@ -273,6 +276,7 @@
       /* The identity tile: the agent list's foot, beside the summary block at its height, solid
          in the project colour against the summary's shade. */
       #agents-tile { flex: none; box-sizing: border-box; height: calc(var(--s-rows) * 1.5em);
+        margin-top: var(--s-gap);
         background: var(--s-bar); color: var(--s-fg); padding: 0 0.8em; display: flex;
         flex-direction: column; justify-content: center; line-height: 1.5em; text-align: right; }
       #agents-tile > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -281,7 +285,7 @@
       #agents.narrow #agents-tile > div { display: none; }
       :root { --agents-w: calc(var(--term-font) * 18); --agents-narrow-w: 34px; }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
-        flex-direction: column; background: #15191e; border-right: 1px solid #313640;
+        flex-direction: column; background: var(--agents-bg); border-right: 1px solid #313640;
         color: #c3ccd8; font-size: var(--term-font); user-select: none; -webkit-user-select: none; }
       #terminal-hole.agents #agents { display: flex; }
       #terminal-hole.agents #pane-primary { --c-br: 0px; }
