@@ -3549,9 +3549,20 @@ mod tests {
             panes: panes.clone(),
         });
         r.add(&spec, false).unwrap();
-        let _ = r.activate("t");
-        let req = asked.lock().unwrap()[0].clone();
-        assert_eq!(req.stack, panes, "the open carries the tab's stack");
+        // The split pane opens beside a live primary, which needs AppKit: ask for it directly.
+        assert!(!r.ensure_spawned(0, PaneIdx::Secondary, false).unwrap());
+        let column_key = secondary_id("t");
+        let req = asked
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|q| q.pane_key == column_key)
+            .cloned()
+            .expect("the split pane's open");
+        assert_eq!(
+            req.stack, panes,
+            "the column's open carries the tab's stack"
+        );
         let column = crate::rex::column::ColumnOpened {
             endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
             session_id: "session:s".into(),

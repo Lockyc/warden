@@ -204,6 +204,7 @@ impl RexHub {
     /// Move divider `d` of `column_key`'s session to `ratio` of its split.
     pub fn column_resize(&self, column_key: &str, d: &Divider, ratio: f64) -> Result<(), RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
+        let _held = self.inner.hold_pane(column_key, Some(deadline))?;
         let rec = self.column_record(column_key)?;
         let resize = || {
             let (client, _) = self.inner.conn_with(&rec.server, deadline, false)?;
@@ -270,7 +271,7 @@ impl RexHub {
             st.bind_columns(server, &session_id);
         }
         self.column(server, &session_id)
-            .ok_or_else(|| api_error("no_terminal", "the scratch column's session has no view", 0))
+            .ok_or_else(|| api_error("no_view", "the scratch column's session has no view", 0))
     }
 
     /// A new session for `req`'s column, laid out as its stack, mapped and attached. Returns its id.
@@ -295,13 +296,19 @@ impl RexHub {
 
     /// Type each stack pane's command into its block of restored session `session_id`'s first
     /// window, top to bottom — only while that window holds exactly one block per stack pane;
-    /// otherwise the layout is no longer the stack's, and nothing is typed.
+    /// otherwise the layout is no longer the stack's, and nothing is typed. A stack of bare shells
+    /// has nothing to type.
     fn retype_stack(
         &self,
         req: &RexOpen,
         session_id: &str,
         deadline: Instant,
     ) -> Result<(), RexError> {
+        let typed =
+            |p: &warden_config::StackPane| p.startup.as_deref().is_some_and(|s| !s.is_empty());
+        if !req.stack.iter().any(typed) {
+            return Ok(());
+        }
         let (key, server) = (req.pane_key.as_str(), req.server.as_str());
         let windows = self.windows(server, session_id);
         let blocks = windows
