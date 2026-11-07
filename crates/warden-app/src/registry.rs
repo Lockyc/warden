@@ -1,6 +1,8 @@
 use crate::rex::size::PaneSize;
 use crate::rex::PaneTarget;
+use crate::session::PaneRects;
 use crate::surface::{ghostty::GhosttySurface, PixelRect, SurfaceError, TabSpec, TerminalSurface};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::raw::c_void;
 use std::path::PathBuf;
 
@@ -562,6 +564,9 @@ pub struct Registry {
     /// secondary render at the primary's width for one frame.
     last_rect: PixelRect,
     last_rect_secondary: PixelRect,
+    /// Tabs' hole rects from an earlier run ([`crate::session::WindowRecord::rects`]), for a pane
+    /// not yet framed this run.
+    remembered: HashMap<String, PaneRects>,
     /// Opens Rex panes' sessions off this thread; `None` until the window installs one, and then
     /// a Rex pane can't open (its tab says so).
     rex_opener: Option<RexOpener>,
@@ -584,6 +589,7 @@ impl Registry {
             active: None,
             last_rect: initial_rect,
             last_rect_secondary: initial_rect,
+            remembered: HashMap::new(),
             rex_opener: None,
             report_socket: None,
             next_rex_token: 0,
@@ -1363,11 +1369,42 @@ impl Registry {
     }
 
     /// Where tab `t`'s pane `which` frames: its own hole's last rect ([`Pane::rect`]), else the
-    /// window's latest for that hole.
+    /// one remembered from an earlier run, else the window's latest for that hole.
     fn tab_rect(&self, t: &TabEntry, which: PaneIdx) -> PixelRect {
-        t.pane(which)
-            .and_then(|p| p.rect)
+        self.own_rect(t, which)
             .unwrap_or_else(|| self.rect_for(which))
+    }
+
+    fn own_rect(&self, t: &TabEntry, which: PaneIdx) -> Option<PixelRect> {
+        t.pane(which).and_then(|p| p.rect).or_else(|| {
+            let r = self.remembered.get(&t.id)?;
+            match which {
+                PaneIdx::Primary => r.primary,
+                PaneIdx::Secondary => r.secondary,
+            }
+        })
+    }
+
+    /// Seed the hole rects remembered from an earlier run; call before adding the tabs, so an
+    /// eager spawn is born at its tab's size.
+    pub fn remember_rects(&mut self, rects: HashMap<String, PaneRects>) {
+        self.remembered = rects;
+    }
+
+    /// The loaded tabs' hole rects, for [`crate::session::WindowRecord::rects`].
+    pub fn loaded_rects(&self) -> BTreeMap<String, PaneRects> {
+        let loaded: HashSet<String> = self.loaded_ids().into_iter().collect();
+        self.tabs
+            .iter()
+            .filter(|t| loaded.contains(&t.id))
+            .filter_map(|t| {
+                let r = PaneRects {
+                    primary: self.own_rect(t, PaneIdx::Primary),
+                    secondary: self.own_rect(t, PaneIdx::Secondary),
+                };
+                (r != PaneRects::default()).then(|| (t.id.clone(), r))
+            })
+            .collect()
     }
 
     /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
@@ -3113,6 +3150,33 @@ mod tests {
         // A tab never framed yet starts at the window's latest hole.
         r.add(&spec("c", "/tmp/c"), false).unwrap();
         assert_eq!(r.tab_rect_for_test("c", PaneIdx::Primary), half);
+    }
+
+    #[test]
+    fn a_remembered_rect_frames_a_tab_until_its_hole_reports() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let kept = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 512.0,
+            height: 300.0,
+        };
+        r.remember_rects(HashMap::from([(
+            "a".to_string(),
+            PaneRects {
+                primary: Some(kept),
+                secondary: None,
+            },
+        )]));
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        assert_eq!(r.tab_rect_for_test("a", PaneIdx::Primary), kept);
+        let now = PixelRect {
+            width: 600.0,
+            ..kept
+        };
+        r.active = Some("a".into());
+        r.set_pane_frame(PaneIdx::Primary, now);
+        assert_eq!(r.tab_rect_for_test("a", PaneIdx::Primary), now);
     }
 
     // --- surface→tab routing ------------------------------------------------------

@@ -491,6 +491,7 @@ impl WindowManager {
             .flatten()
             .map(|r| r.restore(spec.tabs.iter().map(|t| t.spec.id.as_str())))
             .unwrap_or_default();
+        registry.remember_rects(restore.rects);
         // A tab still popped out of this window (rebuilt while it's out) already has its
         // terminal in the detached window: it is added cold and then marked `Detached`, the
         // same placeholder `detach` leaves, so nothing here or later spawns a second one.
@@ -1189,6 +1190,7 @@ impl WindowManager {
         let record = remember.then(|| crate::session::WindowRecord {
             loaded: ws.registry.loaded_ids(),
             active: ws.registry.active_tab().map(str::to_string),
+            rects: ws.registry.loaded_rects(),
         });
         self.session.set(&ws.session_key, record);
     }
@@ -1449,6 +1451,7 @@ mod tests {
         crate::session::WindowRecord {
             loaded: vec!["/tmp".into()],
             active: None,
+            rects: Default::default(),
         }
     }
 
