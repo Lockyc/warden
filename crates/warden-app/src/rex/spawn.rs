@@ -300,16 +300,18 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
                     None => match column_of(&pane_key) {
                         Some(column) => {
                             let block = &pane_key[column.len() + 1..];
+                            // Read before the exit: a session that ends takes its mapping along.
+                            let session = hub.column_session(column);
                             if hub.block_exited(&pane_key) {
-                                match hub.column_block_exited(column, block) {
-                                    Ok(ColumnExit::Closed) => {}
-                                    Ok(ColumnExit::SessionEnded) => {
-                                        let (main, column) = (app.clone(), column.to_owned());
+                                match (hub.column_block_exited(column, block), session) {
+                                    (Ok(ColumnExit::SessionEnded), Some((server, sid))) => {
+                                        let main = app.clone();
                                         let _ = app.run_on_main_thread(move || {
-                                            column_ended(&main, &column)
+                                            column_ended(&main, &server, &sid)
                                         });
                                     }
-                                    Err(e) => {
+                                    (Ok(_), _) => {}
+                                    (Err(e), _) => {
                                         log::error!("couldn't close Rex block {pane_key:?}: {e}")
                                     }
                                 }
@@ -333,31 +335,31 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
     }
 }
 
-/// Column `column_key`'s session ended with its last block (main thread): every window's tab
-/// whose column it was drops the column, and its chrome collapses the split (`warden:pane-closed`),
-/// as a plain tab's scratch shell exiting does.
-fn column_ended(app: &AppHandle, column_key: &str) {
-    let Some(tab) = tab_of_secondary(column_key) else {
-        return;
-    };
+/// `server`'s session `session_id` — a column's — ended with its last block (main thread): every
+/// tab whose column is on it drops the column, and its window's chrome collapses the split
+/// (`warden:pane-closed`), as a plain tab's scratch shell exiting does.
+fn column_ended(app: &AppHandle, server: &str, session_id: &str) {
     let Some(st) = app.try_state::<ManagerState>() else {
         return;
     };
     let mut m = st.lock();
-    let labels: Vec<String> = m
-        .windows
-        .iter_mut()
-        .filter_map(|(label, ws)| ws.registry.close_column(tab).then(|| label.clone()))
-        .collect();
-    for label in &labels {
+    let mut closed = Vec::new();
+    for (label, ws) in m.windows.iter_mut() {
+        for id in ws.registry.columns_on(server, session_id) {
+            if ws.registry.close_column(&id) {
+                closed.push((label.clone(), id));
+            }
+        }
+    }
+    for (label, _) in &closed {
         m.record_session(app, label);
     }
     drop(m);
-    for label in labels {
+    for (label, id) in closed {
         let _ = app.emit_to(
             label.as_str(),
             "warden:pane-closed",
-            serde_json::json!({ "label": label, "id": tab }),
+            serde_json::json!({ "label": label, "id": id }),
         );
     }
 }

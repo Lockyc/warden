@@ -335,6 +335,13 @@ impl RexHub {
         Ok(())
     }
 
+    /// `column_key`'s stored session as `(server, session id)`, if it has one.
+    pub(super) fn column_session(&self, column_key: &str) -> Option<(String, String)> {
+        self.column_record(column_key)
+            .ok()
+            .map(|r| (r.server, r.session_id))
+    }
+
     /// `column_key`'s stored session, or `session_not_found` when it has none.
     fn column_record(&self, column_key: &str) -> Result<PaneRecord, RexError> {
         self.inner

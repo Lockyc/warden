@@ -1794,8 +1794,9 @@ fn set_hole_rect(
     };
 
     // None is the single-hole caller (shell-core's detach.html when it declares no panes, and
-    // any older chrome); anything unexpected floors to the primary (`from_index`/`from_hole`)
-    // rather than erroring, so a bad index can't leave a hole unpositioned and transparent.
+    // any older chrome). Docked, an index past the column's blocks names no pane and is ignored
+    // (`from_index`, `Registry::set_pane_frame`); a detached window floors anything past its
+    // second hole to the primary (`from_hole`). Neither is an error.
     let hole = pane.unwrap_or(0);
 
     let mut m = state.lock();

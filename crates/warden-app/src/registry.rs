@@ -532,6 +532,12 @@ impl Column {
         self.surfaces().next().is_some()
     }
 
+    /// Whether a pop-out can carry this column: the detached window lays out one block beside
+    /// the primary, so at most one scratch tab holding at most one block.
+    fn fits_pop_out(&self) -> bool {
+        self.tabs.len() <= 1 && self.slots().count() <= 1
+    }
+
     /// Close every live block, leaving `Detached` placeholders in place. Returns whether one was
     /// closed.
     fn close_live(&mut self) -> bool {
@@ -906,28 +912,60 @@ impl TabEntry {
         primary || column
     }
 
-    /// Every live surface's key ([`Registry::surface_key`]) and pane: the main pane's own and its
+    /// Every slot's key ([`Registry::surface_key`]) and pane: the main pane's own and its
     /// agents', then every block of every scratch tab, each as `Block(i)` of its own tab.
-    fn keyed(&self) -> Vec<(String, PaneIdx, Option<&str>, &TabSlot)> {
-        let main = std::iter::once((self.primary.spec.id.clone(), None, &self.primary.slot)).chain(
-            self.primary.agents.iter().map(|a| {
-                (
-                    agent_key(&self.id, &a.record_id),
-                    Some(a.record_id.as_str()),
-                    &a.slot,
-                )
-            }),
-        );
-        let main = main.map(|(k, a, s)| (k, PaneIdx::Primary, a, s));
+    fn keyed(&self) -> impl Iterator<Item = (SlotKey<'_>, PaneIdx, &TabSlot)> {
+        let agents = self
+            .primary
+            .agents
+            .iter()
+            .map(|a| (SlotKey::Agent(&a.record_id), &a.slot));
+        let main = std::iter::once((SlotKey::Spec(&self.primary.spec.id), &self.primary.slot))
+            .chain(agents)
+            .map(|(k, s)| (k, PaneIdx::Primary, s));
         let blocks = self.column.iter().flat_map(|c| {
             c.tabs.iter().flat_map(|t| {
                 t.blocks
                     .iter()
                     .enumerate()
-                    .map(|(i, b)| (b.spec.id.clone(), PaneIdx::Block(i), None, &b.slot))
+                    .map(|(i, b)| (SlotKey::Spec(&b.spec.id), PaneIdx::Block(i), &b.slot))
             })
         });
-        main.chain(blocks).collect()
+        main.chain(blocks)
+    }
+}
+
+/// A slot's key as [`TabEntry::keyed`] lends it: a spec id, or an agent's record id, whose key
+/// ([`agent_key`]) is spelled only when it is asked for.
+#[derive(Clone, Copy)]
+enum SlotKey<'a> {
+    Spec(&'a str),
+    Agent(&'a str),
+}
+
+impl<'a> SlotKey<'a> {
+    /// Whether this is `key`, for a slot of tab `tab_id`.
+    fn is(self, tab_id: &str, key: &str) -> bool {
+        match self {
+            SlotKey::Spec(id) => id == key,
+            SlotKey::Agent(record_id) => agent_key(tab_id, record_id) == key,
+        }
+    }
+
+    /// The key itself, for a slot of tab `tab_id`.
+    fn owned(self, tab_id: &str) -> String {
+        match self {
+            SlotKey::Spec(id) => id.to_owned(),
+            SlotKey::Agent(record_id) => agent_key(tab_id, record_id),
+        }
+    }
+
+    /// The agent record it names, for an agent's slot.
+    fn agent(self) -> Option<&'a str> {
+        match self {
+            SlotKey::Spec(_) => None,
+            SlotKey::Agent(record_id) => Some(record_id),
+        }
     }
 }
 
@@ -1765,8 +1803,7 @@ impl Registry {
         let is = |slot: &TabSlot| matches!(slot, TabSlot::Spawned(s) if s.id() == surface_id);
         self.tabs.iter().find_map(|t| {
             t.keyed()
-                .into_iter()
-                .find_map(|(key, _, _, slot)| is(slot).then_some(key))
+                .find_map(|(key, _, slot)| is(slot).then(|| key.owned(&t.id)))
         })
     }
 
@@ -1774,8 +1811,9 @@ impl Registry {
     /// of a scratch tab not on screen is `Block(i)` of its own tab.
     pub fn locate_key(&self, key: &str) -> Option<(String, PaneIdx, Option<String>)> {
         self.tabs.iter().find_map(|t| {
-            t.keyed().into_iter().find_map(|(k, which, agent, _)| {
-                (k == key).then(|| (t.id.clone(), which, agent.map(str::to_string)))
+            t.keyed().find_map(|(k, which, _)| {
+                k.is(&t.id, key)
+                    .then(|| (t.id.clone(), which, k.agent().map(str::to_string)))
             })
         })
     }
@@ -2239,7 +2277,7 @@ impl Registry {
     }
 
     /// Tab `id`'s Rex column's session, `(server, session id)`, once its open has landed.
-    pub fn column_session(&self, id: &str) -> Option<(String, String)> {
+    fn column_session(&self, id: &str) -> Option<(String, String)> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         let (_, session) = t.column.as_ref()?.session.as_ref()?;
         Some((t.primary.spec.server.clone()?, session.clone()))
@@ -2413,11 +2451,10 @@ impl Registry {
     /// detached window lays out one hole beside the primary.
     pub fn detach(&mut self, id: &str) -> Option<(GhosttySurface, Option<GhosttySurface>)> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
-        // The detached window lays out one block beside the primary; a column holding more stays.
-        if self.tabs[idx]
+        if !self.tabs[idx]
             .column
             .as_ref()
-            .is_some_and(|c| c.tabs.len() > 1 || c.slots().count() > 1)
+            .is_none_or(Column::fits_pop_out)
         {
             return None;
         }
@@ -2715,11 +2752,23 @@ impl Registry {
 
     /// Apply a hole's rect to the pane that occupies it, and remember it for later spawns.
     /// Returns the pane's new size when it is a live Rex pane, for `rex::size` to send while
-    /// warden owns its block.
+    /// warden owns its block. A block index past the active tab's selected scratch tab (the
+    /// column's first hole always counts) names no hole and is ignored.
     pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) -> Vec<PaneSize> {
+        let idx = self
+            .active
+            .as_deref()
+            .and_then(|a| self.tabs.iter().position(|t| t.id == a));
         match which {
             PaneIdx::Primary => self.last_rect = rect,
             PaneIdx::Block(i) => {
+                let holes = idx
+                    .and_then(|x| self.tabs[x].column.as_ref())
+                    .map_or(0, |c| c.shown().len())
+                    .max(1);
+                if i >= holes {
+                    return Vec::new();
+                }
                 let last = self.rect_for(which);
                 if self.last_rect_blocks.len() <= i {
                     self.last_rect_blocks.resize(i + 1, last);
@@ -2727,14 +2776,10 @@ impl Registry {
                 self.last_rect_blocks[i] = rect;
             }
         }
-        let Some(idx) = self
-            .active
-            .as_deref()
-            .and_then(|a| self.tabs.iter().position(|t| t.id == a))
-        else {
-            return Vec::new();
-        };
-        self.frame_pane(idx, which, rect)
+        match idx {
+            Some(idx) => self.frame_pane(idx, which, rect),
+            None => Vec::new(),
+        }
     }
 
     /// The page's measure of each hidden tab's holes (`measureTabs` in `ui/index.html`): frame
@@ -3785,7 +3830,7 @@ mod tests {
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         let idxs = |r: &Registry, id: &str| -> Vec<(String, PaneIdx)> {
             let t = r.tabs.iter().find(|t| t.id == id).unwrap();
-            t.keyed().into_iter().map(|(k, w, _, _)| (k, w)).collect()
+            t.keyed().map(|(k, w, _)| (k.owned(&t.id), w)).collect()
         };
         assert_eq!(
             idxs(&r, "a"),
@@ -4494,6 +4539,53 @@ mod tests {
         assert_eq!(r.scratch_block_keys("t"), ["t::2#c"]);
         assert!(r.close_block("t", 0), "the last block: the column goes");
         assert!(!r.is_split("t"));
+    }
+
+    #[test]
+    fn detach_refuses_a_column_holding_more_than_one_block() {
+        let fits = |r: &Registry| {
+            let t = r.tabs.iter().find(|t| t.id == "t").unwrap();
+            t.column.as_ref().unwrap().fits_pop_out()
+        };
+        let mut two_blocks = landed_column(vec![scratch("w1", &["a", "b"])]);
+        assert!(!fits(&two_blocks));
+        assert!(two_blocks.detach("t").is_none());
+        let mut two_tabs = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b"])]);
+        assert!(!fits(&two_tabs));
+        assert!(two_tabs.detach("t").is_none());
+        // One block in one tab gets past the refusal (this cold primary then has nothing to carry).
+        let one = landed_column(vec![scratch("w1", &["a"])]);
+        assert!(fits(&one));
+        let mut plain = Registry::new(std::ptr::null_mut(), rect());
+        plain.add(&spec("p", "/tmp/p"), false).unwrap();
+        plain.split("p");
+        assert!(plain.tabs[0].column.as_ref().unwrap().fits_pop_out());
+    }
+
+    #[test]
+    fn a_frame_for_a_block_the_column_lacks_is_ignored() {
+        let mut r = landed_column(vec![scratch("w1", &["a", "b"])]);
+        r.active = Some("t".into());
+        let at = |x: f64| PixelRect {
+            x,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        r.set_pane_frame(PaneIdx::Block(1), at(1.0));
+        assert_eq!(r.last_rect_for_test(PaneIdx::Block(1)), at(1.0));
+        r.set_pane_frame(PaneIdx::Block(1_000_000), at(2.0));
+        assert_eq!(
+            r.last_rect_blocks.len(),
+            2,
+            "no hole past the column's blocks"
+        );
+        // No active tab: the column's first hole is still remembered.
+        r.active = None;
+        r.set_pane_frame(PaneIdx::Block(0), at(3.0));
+        r.set_pane_frame(PaneIdx::Block(1), at(4.0));
+        assert_eq!(r.last_rect_for_test(PaneIdx::Block(0)), at(3.0));
+        assert_eq!(r.last_rect_for_test(PaneIdx::Block(1)), at(1.0));
     }
 
     #[test]
