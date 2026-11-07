@@ -129,6 +129,8 @@ struct AgentItems {
     scratch_new: tauri::menu::MenuItem<tauri::Wry>,
     /// The spine's Pop Out Tab, disabled with its reason while the column is too full to carry.
     pop_out: tauri::menu::MenuItem<tauri::Wry>,
+    /// `pop_out`'s own title as the spine built it, which the reason is appended to.
+    pop_out_title: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -336,8 +338,8 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let _ = i.scratch_new.set_enabled(scratch);
         let _ = i.pop_out.set_enabled(pop_out_blocked.is_none());
         let _ = i.pop_out.set_text(match &pop_out_blocked {
-            Some(reason) => format!("Pop Out Tab ({reason})"),
-            None => "Pop Out Tab".to_owned(),
+            Some(reason) => format!("{} ({reason})", i.pop_out_title),
+            None => i.pop_out_title.clone(),
         });
     }
 }
@@ -620,6 +622,7 @@ fn build_app_menu(
             pane_right: pane_right_item,
             scratch_new: scratch_new_item,
             pop_out: spine.pop_out_tab.clone(),
+            pop_out_title: spine.pop_out_tab.text()?,
         });
     }
     if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
