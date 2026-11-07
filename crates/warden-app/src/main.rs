@@ -271,7 +271,8 @@ fn focused_tab_keys(
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
 /// Tab while it has a Rex scratch column, and Pop Out Tab (titled with the reason) unless the
 /// column is too full to carry. Runs on every
-/// menu build, window focus, pane focus, tab activation and agent list change, so it also marks
+/// menu build, window focus, pane focus, tab activation, agent list change and scratch column
+/// change (a Rex view landing), so it also marks
 /// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
 /// callers must not hold it.
 #[cfg(target_os = "macos")]

@@ -537,10 +537,11 @@ impl Column {
         self.surfaces().next().is_some()
     }
 
-    /// How many panes a pop-out would have to carry: the blocks across every scratch tab, or the
-    /// tabs when they outnumber them.
+    /// How many panes a pop-out would have to carry: the blocks across every scratch tab. A
+    /// scratch tab is never empty (Rex closes a window with its last block), so more than one
+    /// block covers more than one tab too.
     fn pop_out_load(&self) -> usize {
-        self.slots().count().max(self.tabs.len())
+        self.slots().count()
     }
 
     /// Whether a pop-out can carry this column: the detached window lays out one block beside
@@ -1272,10 +1273,14 @@ impl Registry {
         if !t.has_pane(which) {
             return false;
         }
-        t.focused = which;
-        if let Some(c) = t.column.as_mut() {
-            c.pending_focus = None;
+        // Only a move supersedes a pending block: warden's own refocus of the pane it already
+        // had comes back here as a Focused echo and must not undo it.
+        if t.focused != which {
+            if let Some(c) = t.column.as_mut() {
+                c.pending_focus = None;
+            }
         }
+        t.focused = which;
         true
     }
 
@@ -4764,6 +4769,12 @@ mod tests {
         r.focus_block("t", "ghost");
         assert_eq!(pending(&r).as_deref(), Some("ghost"));
         assert!(r.focus_pane("t", PaneIdx::Block(0)));
+        assert_eq!(pending(&r), None);
+        r.focus_block("t", "ghost");
+        // The echo of the focus the pane already had leaves it alone; a move clears it.
+        assert!(r.focus_pane("t", PaneIdx::Block(0)));
+        assert_eq!(pending(&r).as_deref(), Some("ghost"));
+        assert!(r.focus_pane("t", PaneIdx::Primary));
         assert_eq!(pending(&r), None);
         r.focus_block("t", "ghost");
         r.unload("t");
