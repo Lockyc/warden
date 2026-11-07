@@ -61,8 +61,8 @@ pub struct RawConfig {
     pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
-    /// Seconds between background session-probe passes (global only). `None` →
-    /// default 5; `Some(0)` → focus/refresh-only (no timer). See resolve.rs.
+    /// Slow-poll floor in seconds once a probe burst settles (global only). `None` →
+    /// default 5; `Some(0)` → event-driven only: bursts on triggers, then idle.
     pub probe_interval: Option<u64>,
     // When true, warden rewrites this config file formatted on each clean hot-reload
     // (via config-core's format_file). Optional; a missing field resolves to false.
@@ -87,7 +87,7 @@ pub struct RawConfig {
     // tab, when it is next built (launch or reopen). Cascades global -> window.
     // Optional; unset at both levels -> false.
     pub remember_tabs: Option<bool>,
-    // Whether warden checks for a new release on launch (global only). Optional;
+    // Whether warden checks for a new release on launch and every 6h (global only). Optional;
     // a missing field resolves to true (auto-check on by default).
     pub auto_update: Option<bool>,
     // Diagnostic toggle: when true, warden-app appends a trace of the notification

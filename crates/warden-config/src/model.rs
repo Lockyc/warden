@@ -27,8 +27,8 @@ pub struct Config {
     pub format_on_save: bool,
     /// What ⌘1/⌘2 do in the app menu. Whole-app concern — no per-window cascade.
     pub tab_digit_keys: TabDigitKeys,
-    /// Seconds between background session-probe passes. 0 = focus/refresh-only.
-    /// Default 5. Global concern — no per-window cascade.
+    /// Slow-poll floor in seconds once a probe burst settles. 0 = event-driven only:
+    /// bursts on triggers, then idle. Default 5. Global concern — no per-window cascade.
     pub probe_interval: u64,
     /// Chrome sizing mode. Whole-app concern — no per-window cascade.
     pub density: Density,

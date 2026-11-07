@@ -41,11 +41,16 @@ fn main() {
                                 .map(|g| format!(" group={g:?}"))
                                 .unwrap_or_default();
                             println!(
-                                "    tab {:?} dir={} shell={:?} startup={:?} load_on_open={} {}{}",
+                                "    tab {:?} dir={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} resume={:?} server={:?} load_on_open={} {}{}",
                                 t.title,
                                 t.dir.display(),
                                 t.shell,
                                 t.startup,
+                                t.probe,
+                                t.kill,
+                                t.suspend,
+                                t.resume,
+                                t.server,
                                 t.load_on_open,
                                 fmt_split(&t.split),
                                 group
@@ -57,7 +62,7 @@ fn main() {
                         // deceptively empty.
                         for r in &p.roots {
                             println!(
-                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} {}",
+                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} resume={:?} server={:?} {}",
                                 r.name,
                                 r.dir.display(),
                                 r.depth,
@@ -66,6 +71,8 @@ fn main() {
                                 r.probe,
                                 r.kill,
                                 r.suspend,
+                                r.resume,
+                                r.server,
                                 fmt_split(&r.split)
                             );
                         }

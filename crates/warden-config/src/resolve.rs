@@ -34,9 +34,6 @@ pub const SPLIT_SIZE_MAX: f64 = 0.9;
 /// The `server` value naming this machine's own Rex server; any other value is a remote host label.
 pub const LOCAL_SERVER: &str = "local";
 
-/// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
-/// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
-/// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
 /// The cascaded `server`, in its one canonical form: trimmed, and the local keyword in any case
 /// as [`LOCAL_SERVER`], so everything downstream compares against that exact value. A host label
 /// keeps its case (Rex matches labels ignoring case).
@@ -49,6 +46,9 @@ fn cascade_server(tab: Option<&str>, window: Option<&str>, global: Option<&str>)
     })
 }
 
+/// Resolve a cascading setting — the nearest *explicitly set* level wins (tab > window >
+/// global). An explicitly-empty value (`""`) still counts as "set", so it resets to unset
+/// rather than inheriting: that's how `cmd = ""` on a tab opts out of an inherited command.
 fn cascade<'a>(
     tab: Option<&'a str>,
     window: Option<&'a str>,
