@@ -546,17 +546,52 @@ unsafe fn surface_of(userdata: *mut c_void) -> ffi::ghostty_surface_t {
 }
 
 // --- Shared app -------------------------------------------------------------
+/// The user's ghostty config (if any), finalized — the reference's Config(at:) sequence. Null on
+/// failure; the caller owns it.
+unsafe fn user_config() -> ffi::ghostty_config_t {
+    let config = ffi::ghostty_config_new();
+    if !config.is_null() {
+        ffi::ghostty_config_load_default_files(config);
+        ffi::ghostty_config_finalize(config);
+    }
+    config
+}
+
+/// The terminal's font size in points, as libghostty resolves it from the user's config (its
+/// default when unset). Read once; a webview CSS px is a point, so the chrome sizes its own text
+/// with it.
+pub fn terminal_font_size() -> f32 {
+    static SIZE: OnceLock<f32> = OnceLock::new();
+    *SIZE.get_or_init(|| unsafe {
+        const KEY: &str = "font-size";
+        const FALLBACK: f32 = 13.0;
+        let config = user_config();
+        if config.is_null() {
+            return FALLBACK;
+        }
+        let mut size: f32 = 0.0;
+        let ok = ffi::ghostty_config_get(
+            config,
+            (&mut size as *mut f32).cast(),
+            KEY.as_ptr().cast(),
+            KEY.len(),
+        );
+        ffi::ghostty_config_free(config);
+        if ok && size > 0.0 {
+            size
+        } else {
+            FALLBACK
+        }
+    })
+}
+
 /// Build the ghostty app exactly once. Returns 0 on failure.
 unsafe fn create_app() -> usize {
-    let config = ffi::ghostty_config_new();
+    // ghostty_app_new takes ownership of the config, so we deliberately do not free it.
+    let config = user_config();
     if config.is_null() {
         return 0;
     }
-    // Load the user's ghostty config (if any) then finalize, matching the
-    // reference's Config(at:) sequence. ghostty_app_new takes ownership of
-    // the config, so we deliberately do not free it.
-    ffi::ghostty_config_load_default_files(config);
-    ffi::ghostty_config_finalize(config);
 
     let runtime = ffi::ghostty_runtime_config_s {
         userdata: ptr::null_mut(),
@@ -1873,7 +1908,7 @@ mod tests {
         assert!(!is_printable_text("\u{03}")); // Ctrl-C
         assert!(!is_printable_text("\u{1b}")); // Esc
         assert!(!is_printable_text("")); // no text at all
-        // AppKit's function-key characters (private use) — arrows, F-keys, Home/End.
+                                         // AppKit's function-key characters (private use) — arrows, F-keys, Home/End.
         assert!(!is_printable_text("\u{F700}")); // ↑
         assert!(!is_printable_text("\u{F701}")); // ↓
         assert!(!is_printable_text("\u{F704}")); // F1

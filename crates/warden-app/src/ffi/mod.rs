@@ -465,6 +465,15 @@ extern "C" {
     pub fn ghostty_config_finalize(config: ghostty_config_t);
     // void ghostty_config_free(ghostty_config_t);
     pub fn ghostty_config_free(config: ghostty_config_t);
+    // bool ghostty_config_get(ghostty_config_t, void*, const char*, uintptr_t);
+    // Writes the value of key `key` (`key_len` bytes, no NUL needed) to `out`, typed as the
+    // key's Zig type (`font-size` is an f32).
+    pub fn ghostty_config_get(
+        config: ghostty_config_t,
+        out: *mut c_void,
+        key: *const c_char,
+        key_len: usize,
+    ) -> bool;
 
     // ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*, ghostty_config_t);
     pub fn ghostty_app_new(

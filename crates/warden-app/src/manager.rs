@@ -175,6 +175,9 @@ pub struct InitDto {
     /// `[SPLIT_SIZE_MIN, SPLIT_SIZE_MAX]`: the share either pane of a split may take. The
     /// chrome clamps its divider drag to it and rejects a saved ratio outside it.
     pub split_band: [f64; 2],
+    /// The terminal's font size in points (`ghostty::terminal_font_size`); the chrome's agent
+    /// column and summary block size their text with it.
+    pub terminal_font_size: f32,
     /// This window's `[[window.root]]` names, from `last_good`: chrome-core paints a
     /// root's section (head, ⟳ rescan, "No projects found") even when it found no projects.
     pub trees: Vec<String>,
@@ -659,6 +662,7 @@ impl WindowManager {
                 background_tabs_section: ws.background_tabs_section,
                 auto_update: self.last_good.auto_update,
                 split_band: SPLIT_BAND,
+                terminal_font_size: crate::surface::ghostty::terminal_font_size(),
                 trees: self
                     .last_good
                     .windows
