@@ -248,16 +248,16 @@
       }
       #empty-state svg, #empty-state-2 svg { width: 160px; height: auto; opacity: 0.9; }
 
-      /* The agent tab list: a column right of the main pane of a Rex tab, inside #terminal-hole
+      /* The agent tab list: a column left of the main pane of a Rex tab, inside #terminal-hole
          but outside #pane-primary, so `reportRect` measures a primary hole narrower by its width.
          Shown only while `#terminal-hole.agents` (the active tab's main pane holds agent tabs and
          is docked here; `syncAgentsColumn` is its one toggle), so a plain tab's layout is exactly
-         the column-less one. DOM order puts it after #pane-primary: right of the primary whichever
-         side a split takes (before the divider of a right split, at the window edge of a left
-         one). At the window edge the primary's right corners are no longer window corners, so
-         they go square here and the native surface squares them from its own frame. Opaque, like
-         every painted surface on this transparent window. `.narrow` folds it to a rail of dots —
-         automatically on a narrow hole, or by the fold button (`railPref`). */
+         the column-less one. DOM order puts it before #pane-primary, so the row reads sidebar →
+         list → main pane → divider → second pane. The summary block sits under the primary, so
+         its bottom-right is never a window corner while the list shows; the native surface
+         squares it from its own frame. Opaque, like every painted surface on this transparent
+         window. `.narrow` folds it to a rail of dots — automatically on a narrow hole, or by the
+         fold button (`railPref`). */
       /* The summary block: under #main-row, shown with the agent list. Fixed-height single-line
          rows, so text never grows it; colours are the active tab's `TabDto.colour`. */
       #summary { display: none; flex: none; font-size: 12px; user-select: none;
@@ -270,10 +270,10 @@
       #summary .s-title { background: var(--s-bar); font-weight: 600; }
       :root { --agents-w: 220px; --agents-narrow-w: 34px; }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
-        flex-direction: column; background: #15191e; border-left: 1px solid #313640;
+        flex-direction: column; background: #15191e; border-right: 1px solid #313640;
         color: #c3ccd8; font-size: 12px; user-select: none; -webkit-user-select: none; }
       #terminal-hole.agents #agents { display: flex; }
-      #terminal-hole.agents #pane-primary { --c-tr: 0px; --c-br: 0px; }
+      #terminal-hole.agents #pane-primary { --c-br: 0px; }
       #agents.narrow { flex-basis: var(--agents-narrow-w); }
       #agents-list { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 6px 4px; }
       :where(#agents) button { font: inherit; color: inherit; background: transparent; border: 0;
@@ -406,6 +406,18 @@
       <div id="terminal-hole">
         <div id="main-col">
         <div id="main-row">
+        <!-- The agent tab list (a Rex tab's main pane only): rows, groups, and the foot's `+` and
+             Closed fold. Rendered by `renderAgents`; shown by `syncAgentsColumn`. -->
+        <aside id="agents" class="cc-ctl-host">
+          <div id="agents-list"></div>
+          <div id="agents-foot">
+            <div class="a-foot-row">
+              <button id="agents-new" title="New agent tab (⌘T)">+ New tab</button>
+              <button id="agents-rail"></button>
+            </div>
+            <div id="agents-closed"></div>
+          </div>
+        </aside>
         <div id="pane-primary" class="pane">
           <div id="empty-state">
             <svg id="empty-state-art" viewBox="108 52 296 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="no tab selected">
@@ -420,18 +432,6 @@
             </svg>
           </div>
         </div>
-        <!-- The agent tab list (a Rex tab's main pane only): rows, groups, and the foot's `+` and
-             Closed fold. Rendered by `renderAgents`; shown by `syncAgentsColumn`. -->
-        <aside id="agents" class="cc-ctl-host">
-          <div id="agents-list"></div>
-          <div id="agents-foot">
-            <div class="a-foot-row">
-              <button id="agents-new" title="New agent tab (⌘T)">+ New tab</button>
-              <button id="agents-rail"></button>
-            </div>
-            <div id="agents-closed"></div>
-          </div>
-        </aside>
         </div>
         <!-- The summary block (a Rex tab's main pane only, with the agent list): the selected
              agent's three rows, then the tab's title. Filled by `summarySync`. -->
@@ -1133,7 +1133,7 @@
         const narrow = isNarrow() && !agentArmWidened;
         document.getElementById("agents").classList.toggle("narrow", narrow);
         const btn = document.getElementById("agents-rail");
-        btn.textContent = narrow ? "«" : "»";
+        btn.textContent = narrow ? "»" : "«";
         btn.title = narrow ? "Show names" : "Fold to dots";
         document.getElementById("agents-new").textContent = narrow ? "+" : "+ New tab";
       }
