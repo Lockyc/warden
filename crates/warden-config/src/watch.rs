@@ -43,8 +43,10 @@ impl Watcher {
         let default_shell = default_shell.into();
         // A symlinked config (`config.toml -> ~/dotfiles/warden.toml`) is edited at its target,
         // so the events land in the target's directory under the target's name: watch both the
-        // link's and the target's (dir, name). The link's pair still catches the link itself
-        // being replaced.
+        // link's and the target's (dir, name). The link's pair catches the link itself being
+        // replaced, which reloads through the new link; the target pair is fixed here, so edits
+        // to a re-pointed link's new target don't hot-reload until the next launch (unlock: re-
+        // canonicalize on a link event and watch the new target's dir).
         let mut watched = vec![dir_and_name(&path)];
         if path.is_symlink() {
             if let Ok(target) = std::fs::canonicalize(&path) {
