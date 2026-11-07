@@ -499,6 +499,7 @@
 
       let myLabel = null; // this window's Tauri label — emit_to leaks to siblings, so filter on it
       let sb = null;
+      let tabIds = []; // this window's tab ids, from the last snapshot — what `measureTabs` measures
       let activeId = null; // controller mirror of the active tab, for the empty-state placeholder
       let activeLive = false; // …and whether a live surface actually covers the PRIMARY hole for it
       let secondaryLive = false; // …and the SECONDARY hole, when the active tab is split
@@ -762,23 +763,87 @@
       // `collapseSplit` (⌘D / a secondary exiting on its own). Never poke
       // `hidden`/`.split` directly.
       function setSplitVisible(isSplit) {
+        // Ahead of reportRect so the first report is right.
+        applySplitShape(activeId, isSplit);
+        reportRect();
+        paintEmptyState();
+        updateFocusMarker();
+      }
+      // Tab `id`'s split, side and ratio on the shared hole elements, without reporting —
+      // `setSplitVisible` shows the active tab's, `measureTabs` lays out each hidden tab's.
+      function applySplitShape(id, isSplit) {
         const hole = document.getElementById("terminal-hole");
         hole.classList.toggle("split", !!isSplit);
         document.getElementById("pane-divider").hidden = !isSplit;
         document.getElementById("pane-secondary").hidden = !isSplit;
-        const layout = isSplit && activeId !== null ? splitLayoutById.get(activeId) : null;
+        const layout = isSplit && id !== null ? splitLayoutById.get(id) : null;
         hole.classList.toggle("secondary-left", !!layout && layout.side === "left");
-        if (isSplit && activeId !== null) {
+        if (isSplit && id !== null) {
           // THIS tab's own ratio, every time — the shared pane elements keep whatever flex the
-          // last split tab shown left them at. Ahead of reportRect so the first report is right.
-          const p = loadSplit(activeId);
+          // last split tab shown left them at.
+          const p = loadSplit(id);
           applySplitFlex(p ? p.ratio : 0.5);
         } else {
           resetSplit();
         }
-        reportRect();
-        paintEmptyState();
-        updateFocusMarker();
+      }
+      // Whether tab `id` is split: its structural answer once known, else its secondary's liveness.
+      const splitOf = (id) => (splitById.has(id) ? splitById.get(id) : !!secondarySpawnedById.get(id));
+      // Tab `id`'s agent column shape: whether its hole carries the list.
+      const hasAgentsColumn = (id) => !!agentsById.get(id) && !detached.has(id);
+
+      // Each hidden tab's holes, measured as if it were on screen and sent to `set_tab_rects`, so
+      // its terminals are framed (and a Rex pane's program redrawn) while it is off screen —
+      // showing it then changes no size. Tabs share a few shapes (agent column, split side and
+      // ratio); each is laid out once on the shared elements and read, then the active tab's
+      // exact layout — inline drag flex included — is put back, all inside one task, so nothing
+      // paints and no ResizeObserver sees a change. Debounced: a window drag measures once.
+      let measureTimer = null;
+      const MEASURE_SETTLE_MS = 150;
+      function scheduleMeasure() {
+        clearTimeout(measureTimer);
+        measureTimer = setTimeout(measureTabs, MEASURE_SETTLE_MS);
+      }
+      function measureTabs() {
+        const hole = document.getElementById("terminal-hole");
+        const prim = document.getElementById("pane-primary");
+        const sec = document.getElementById("pane-secondary");
+        const div = document.getElementById("pane-divider");
+        const mainCol = document.getElementById("main-col");
+        const saved = {
+          cls: hole.className,
+          secHidden: sec.hidden,
+          divHidden: div.hidden,
+          grow: mainCol.style.flexGrow,
+          secFlex: sec.style.flex,
+        };
+        const byShape = new Map();
+        const rects = {};
+        for (const id of tabIds) {
+          if (id === activeId || detached.has(id)) continue;
+          const agents = hasAgentsColumn(id);
+          const split = splitOf(id);
+          const layout = splitLayoutById.get(id);
+          const p = split ? loadSplit(id) : null;
+          const shape = [agents, split, split && layout ? layout.side : "", p ? p.ratio : ""].join("|");
+          if (!byShape.has(shape)) {
+            hole.classList.toggle("agents", agents);
+            if (agents) syncRail();
+            applySplitShape(id, split);
+            byShape.set(shape, {
+              primary: contentRect(prim),
+              secondary: split ? contentRect(sec) : null,
+            });
+          }
+          rects[id] = byShape.get(shape);
+        }
+        hole.className = saved.cls;
+        sec.hidden = saved.secHidden;
+        div.hidden = saved.divHidden;
+        mainCol.style.flexGrow = saved.grow;
+        sec.style.flex = saved.secFlex;
+        if (agentsTab() !== null) syncRail();
+        if (Object.keys(rects).length) invokeSafe("set_tab_rects", { rects });
       }
 
       // The tail for a split ending — a secondary's process exiting on its own
@@ -807,6 +872,8 @@
       // component preserves selection + falls back to the first tab, firing onSelect to activate it).
       function toComponentDto(dto) {
         const ids = new Set(dto.tabs.map((t) => t.id));
+        tabIds = [...ids];
+        scheduleMeasure(); // a tab's shape rides the snapshot (agents, split, detached)
         badges.forEach((id) => { if (!ids.has(id)) badges.delete(id); });
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
         secondarySpawnedById.forEach((_, id) => { if (!ids.has(id)) secondarySpawnedById.delete(id); });
@@ -1101,8 +1168,7 @@
 
       // The tab whose list is on screen: the active tab, when its main pane holds agent tabs and
       // is docked here (a popped-out tab's panes are in its own window).
-      const agentsTab = () =>
-        activeId !== null && agentsById.get(activeId) && !detached.has(activeId) ? activeId : null;
+      const agentsTab = () => (activeId !== null && hasAgentsColumn(activeId) ? activeId : null);
 
       // tab id → { title, colour, server, presence } for the summary block and identity tile,
       // rebuilt on every snapshot.
@@ -1184,6 +1250,7 @@
         } catch (e) {}
         syncRail();
         reportRect();
+        scheduleMeasure(); // every agent tab's hole folds with the rail
       }
 
       // Run an agent command; a refusal or Rex failure shows in the sidebar's error bar. The list
@@ -1853,8 +1920,11 @@
       ro.observe(document.getElementById("pane-secondary"));
       // The agent list folds by the hole's width; its own fold narrows the primary, which the
       // observer above re-reports.
-      new ResizeObserver(() => { if (agentsTab() !== null) syncRail(); })
-        .observe(document.getElementById("terminal-hole"));
+      // The hidden tabs' holes follow the window and sidebar too (`measureTabs`).
+      new ResizeObserver(() => {
+        if (agentsTab() !== null) syncRail();
+        scheduleMeasure();
+      }).observe(document.getElementById("terminal-hole"));
 
       // Divider drag-to-resize: chrome owns split geometry — Rust never sees a ratio, only the
       // rects reportRect derives from these panes' live flex-basis. Same mousedown→mousemove→mouseup

@@ -14,7 +14,8 @@ site whose comment carries the rest.
 
 The normal case: one `GhosttySurface` per pane, an `NSView` hosted on the window's content view
 above the webview, sized to the rect the page reports for its hole (`reportRect` →
-`set_hole_rect`, `geometry.rs`). libghostty's action stream (`surface/ghostty.rs::action_cb`)
+`set_hole_rect`, `geometry.rs`) — a hidden tab's too, laid out off screen (`measureTabs` →
+`set_tab_rects`), so showing a tab changes no size. libghostty's action stream (`surface/ghostty.rs::action_cb`)
 drives links, notifications and child exit; everything else is AppKit plumbing around focus,
 keys and rendering.
 

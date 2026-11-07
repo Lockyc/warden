@@ -7,42 +7,26 @@
 //! active tab (never on quit — see `WindowManager::record_session`), so a crash loses nothing.
 //! No AppKit/Tauri: unit-tests against temp dirs.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-
-use crate::surface::PixelRect;
 
 /// Filename stem handed to `shell_core::config_scoped_filename`.
 pub const STEM: &str = "tab-session";
 
 /// One window's remembered state. Ids are `TabSpec::id` (`Tab::key`: id-else-normalized-dir),
 /// so a record survives a relabel and a discovered tab keeps its identity across rescans.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WindowRecord {
     /// Tabs with a terminal standing — live, or popped out (which restores docked).
     pub loaded: Vec<String>,
     pub active: Option<String>,
-    /// Loaded tabs' hole rects: their terminals spawn in the background next launch, before
-    /// their tab is ever shown, and must be born at the size they'll show at.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub rects: BTreeMap<String, PaneRects>,
-}
-
-/// A tab's panes' hole rects, as each last framed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PaneRects {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub primary: Option<PixelRect>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secondary: Option<PixelRect>,
 }
 
 /// What a window restores from its record, filtered against the tabs it has now.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Restore {
     pub loaded: HashSet<String>,
     pub active: Option<String>,
-    pub rects: HashMap<String, PaneRects>,
 }
 
 impl WindowRecord {
@@ -61,12 +45,6 @@ impl WindowRecord {
                 .active
                 .clone()
                 .filter(|id| present.contains(id.as_str())),
-            rects: self
-                .rects
-                .iter()
-                .filter(|(id, _)| present.contains(id.as_str()))
-                .map(|(id, r)| (id.clone(), *r))
-                .collect(),
         }
     }
 }
@@ -143,48 +121,7 @@ mod tests {
         WindowRecord {
             loaded: loaded.iter().map(|s| s.to_string()).collect(),
             active: active.map(str::to_string),
-            rects: BTreeMap::new(),
         }
-    }
-
-    #[test]
-    fn rects_round_trip_and_restore_only_present_tabs() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s.json");
-        let r = PixelRect {
-            x: 1.0,
-            y: 2.0,
-            width: 640.5,
-            height: 480.0,
-        };
-        let mut record = rec(&["a", "gone"], Some("a"));
-        for id in ["a", "gone"] {
-            record.rects.insert(
-                id.into(),
-                PaneRects {
-                    primary: Some(r),
-                    secondary: None,
-                },
-            );
-        }
-        let mut s = SessionStore::load(path.clone());
-        s.set("w", Some(record.clone()));
-        let back = SessionStore::load(path);
-        assert_eq!(back.get("w"), Some(&record));
-        let restore = record.restore(["a", "b"]);
-        assert_eq!(restore.rects.len(), 1);
-        assert_eq!(restore.rects["a"].primary, Some(r));
-    }
-
-    #[test]
-    fn a_record_from_before_rects_still_loads() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s.json");
-        std::fs::write(&path, br#"{"w":{"loaded":["a"],"active":"a"}}"#).unwrap();
-        assert_eq!(
-            SessionStore::load(path).get("w"),
-            Some(&rec(&["a"], Some("a")))
-        );
     }
 
     #[test]

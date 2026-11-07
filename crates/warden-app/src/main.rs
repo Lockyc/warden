@@ -1738,43 +1738,9 @@ fn set_hole_rect(
     rect: RectArg,
     pane: Option<usize>,
 ) {
-    // Reject non-finite values before they reach NSView or libghostty.
-    if !rect.x.is_finite()
-        || !rect.y.is_finite()
-        || !rect.width.is_finite()
-        || !rect.height.is_finite()
-    {
-        return;
-    }
-    // Clamp to sane bounds: huge values saturate u32 in ghostty_surface_set_size.
-    let x = rect.x.clamp(-100_000.0, 100_000.0);
-    let y = rect.y.clamp(-100_000.0, 100_000.0);
-    let width = rect.width.clamp(0.0, 100_000.0);
-    let height = rect.height.clamp(0.0, 100_000.0);
-
-    let scale = window.scale_factor().unwrap_or(1.0);
-    // inner_size is in physical pixels; divide by scale to get points. A rect report
-    // can race window teardown (the window's gone but a queued JS call still fires),
-    // so bail rather than panic — consistent with the scale_factor fallback above.
-    let Ok(size) = window.inner_size() else {
+    let Some(view_rect) = view_rect_of(&window, &rect) else {
         return;
     };
-    let view_h = size.height as f64 / scale;
-    // Snapped INWARD to the device-pixel grid: the page's flex layout puts a divider edge on a
-    // fractional pixel at some window widths, and a frame rounded any other way spills over the
-    // focus ring's column there — see `geometry::snap_inward`.
-    let view_rect = geometry::snap_inward(
-        geometry::web_rect_to_view(
-            WebRect {
-                x,
-                y,
-                width,
-                height,
-            },
-            view_h,
-        ),
-        scale,
-    );
 
     // None is the single-hole caller (shell-core's detach.html when it declares no panes, and
     // any older chrome); anything unexpected floors to the primary (`from_index`/`from_hole`)
@@ -1782,7 +1748,7 @@ fn set_hole_rect(
     let hole = pane.unwrap_or(0);
 
     let mut m = state.lock();
-    let rex_size = if let Some(ws) = m.windows.get_mut(window.label()) {
+    let rex_sizes = if let Some(ws) = m.windows.get_mut(window.label()) {
         // The docked chrome's index IS the pane (`reportRect`'s 0 = primary, 1 = secondary,
         // whichever side the CSS draws them on).
         ws.registry
@@ -1794,16 +1760,102 @@ fn set_hole_rect(
         // left-side split's first hole is the secondary). No-op if the label is neither a
         // real nor a detached window.
         m.set_detached_frame(window.label(), hole, view_rect)
+            .into_iter()
+            .collect()
     };
     drop(m);
-    // A Rex pane's block takes the new grid only while warden owns it.
-    if let Some(size) = rex_size {
+    request_rex_sizes(&window, rex_sizes);
+}
+
+/// The page's measure of each hidden tab's holes (`measureTabs` in `ui/index.html`), keyed by
+/// tab id: framed while hidden (`Registry::set_tab_rects`).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn set_tab_rects(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    rects: std::collections::HashMap<String, TabRectsArg>,
+) {
+    let rects: std::collections::HashMap<_, _> = rects
+        .into_iter()
+        .filter_map(|(id, r)| {
+            let primary = view_rect_of(&window, &r.primary)?;
+            let secondary = r.secondary.as_ref().and_then(|s| view_rect_of(&window, s));
+            Some((id, (primary, secondary)))
+        })
+        .collect();
+    let mut m = state.lock();
+    let Some(ws) = m.windows.get_mut(window.label()) else {
+        return;
+    };
+    let rex_sizes = ws.registry.set_tab_rects(&rects);
+    drop(m);
+    log::debug!(
+        "{}: measured {} hidden tab(s); {} Rex pane(s) resized",
+        window.label(),
+        rects.len(),
+        rex_sizes.len()
+    );
+    request_rex_sizes(&window, rex_sizes);
+}
+
+#[derive(serde::Deserialize)]
+struct TabRectsArg {
+    primary: RectArg,
+    secondary: Option<RectArg>,
+}
+
+/// A Rex pane's block takes a new grid only while warden owns it.
+#[cfg(target_os = "macos")]
+fn request_rex_sizes(window: &tauri::WebviewWindow, sizes: Vec<rex::size::PaneSize>) {
+    for size in sizes {
         rex::size::request(
-            tauri::Manager::app_handle(&window),
+            tauri::Manager::app_handle(window),
             rex::size::SizeAsk::IfOwner,
             size,
         );
     }
+}
+
+/// A web-coordinate rect from the page as the view rect a surface frames at; `None` for a
+/// non-finite rect, or a window torn down under the call.
+#[cfg(target_os = "macos")]
+fn view_rect_of(window: &tauri::WebviewWindow, rect: &RectArg) -> Option<surface::PixelRect> {
+    // Reject non-finite values before they reach NSView or libghostty.
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+    {
+        return None;
+    }
+    // Clamp to sane bounds: huge values saturate u32 in ghostty_surface_set_size.
+    let x = rect.x.clamp(-100_000.0, 100_000.0);
+    let y = rect.y.clamp(-100_000.0, 100_000.0);
+    let width = rect.width.clamp(0.0, 100_000.0);
+    let height = rect.height.clamp(0.0, 100_000.0);
+
+    let scale = window.scale_factor().unwrap_or(1.0);
+    // inner_size is in physical pixels; divide by scale to get points. A rect report
+    // can race window teardown (the window's gone but a queued JS call still fires),
+    // so bail rather than panic — consistent with the scale_factor fallback above.
+    let size = window.inner_size().ok()?;
+    let view_h = size.height as f64 / scale;
+    // Snapped INWARD to the device-pixel grid: the page's flex layout puts a divider edge on a
+    // fractional pixel at some window widths, and a frame rounded any other way spills over the
+    // focus ring's column there — see `geometry::snap_inward`.
+    Some(geometry::snap_inward(
+        geometry::web_rect_to_view(
+            WebRect {
+                x,
+                y,
+                width,
+                height,
+            },
+            view_h,
+        ),
+        scale,
+    ))
 }
 
 /// warden's starter config, offered by the shared home surface's "Create a starter config"
@@ -2295,6 +2347,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             set_hole_rect,
+            set_tab_rects,
             init_tabs,
             activate_tab,
             unload_tab,

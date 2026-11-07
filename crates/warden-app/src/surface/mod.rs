@@ -120,7 +120,7 @@ pub struct TabSpec {
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PixelRect {
     pub x: f64,
     pub y: f64,

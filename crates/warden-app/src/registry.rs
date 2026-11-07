@@ -1,8 +1,7 @@
 use crate::rex::size::PaneSize;
 use crate::rex::PaneTarget;
-use crate::session::PaneRects;
 use crate::surface::{ghostty::GhosttySurface, PixelRect, SurfaceError, TabSpec, TerminalSurface};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::os::raw::c_void;
 use std::path::PathBuf;
 
@@ -564,9 +563,6 @@ pub struct Registry {
     /// secondary render at the primary's width for one frame.
     last_rect: PixelRect,
     last_rect_secondary: PixelRect,
-    /// Tabs' hole rects from an earlier run ([`crate::session::WindowRecord::rects`]), for a pane
-    /// not yet framed this run.
-    remembered: HashMap<String, PaneRects>,
     /// Opens Rex panes' sessions off this thread; `None` until the window installs one, and then
     /// a Rex pane can't open (its tab says so).
     rex_opener: Option<RexOpener>,
@@ -589,7 +585,6 @@ impl Registry {
             active: None,
             last_rect: initial_rect,
             last_rect_secondary: initial_rect,
-            remembered: HashMap::new(),
             rex_opener: None,
             report_socket: None,
             next_rex_token: 0,
@@ -1368,43 +1363,12 @@ impl Registry {
         }
     }
 
-    /// Where tab `t`'s pane `which` frames: its own hole's last rect ([`Pane::rect`]), else the
-    /// one remembered from an earlier run, else the window's latest for that hole.
+    /// Where tab `t`'s pane `which` frames: its own hole ([`Pane::rect`]), else the window's
+    /// latest for that hole.
     fn tab_rect(&self, t: &TabEntry, which: PaneIdx) -> PixelRect {
-        self.own_rect(t, which)
+        t.pane(which)
+            .and_then(|p| p.rect)
             .unwrap_or_else(|| self.rect_for(which))
-    }
-
-    fn own_rect(&self, t: &TabEntry, which: PaneIdx) -> Option<PixelRect> {
-        t.pane(which).and_then(|p| p.rect).or_else(|| {
-            let r = self.remembered.get(&t.id)?;
-            match which {
-                PaneIdx::Primary => r.primary,
-                PaneIdx::Secondary => r.secondary,
-            }
-        })
-    }
-
-    /// Seed the hole rects remembered from an earlier run; call before adding the tabs, so an
-    /// eager spawn is born at its tab's size.
-    pub fn remember_rects(&mut self, rects: HashMap<String, PaneRects>) {
-        self.remembered = rects;
-    }
-
-    /// The loaded tabs' hole rects, for [`crate::session::WindowRecord::rects`].
-    pub fn loaded_rects(&self) -> BTreeMap<String, PaneRects> {
-        let loaded: HashSet<String> = self.loaded_ids().into_iter().collect();
-        self.tabs
-            .iter()
-            .filter(|t| loaded.contains(&t.id))
-            .filter_map(|t| {
-                let r = PaneRects {
-                    primary: self.own_rect(t, PaneIdx::Primary),
-                    secondary: self.own_rect(t, PaneIdx::Secondary),
-                };
-                (r != PaneRects::default()).then(|| (t.id.clone(), r))
-            })
-            .collect()
     }
 
     /// Ensure the entry at `idx` is spawned (lazy materialization). A cold tab —
@@ -2074,23 +2038,78 @@ impl Registry {
     /// Apply a hole's rect to the pane that occupies it, and remember it for later spawns.
     /// Returns the pane's new size when it is a live Rex pane, for `rex::size` to send while
     /// warden owns its block.
-    pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) -> Option<PaneSize> {
+    pub fn set_pane_frame(&mut self, which: PaneIdx, rect: PixelRect) -> Vec<PaneSize> {
         match which {
             PaneIdx::Primary => self.last_rect = rect,
             PaneIdx::Secondary => self.last_rect_secondary = rect,
         }
-        let active = self.active.clone()?;
-        let t = self.tabs.iter_mut().find(|t| t.id == active)?;
-        t.pane_mut(which)?.rect = Some(rect);
-        let t = &*t;
-        let pane = t.pane(which)?;
-        let s = pane.shown()?;
-        s.set_frame(rect);
-        let key = match pane.selected.as_deref().filter(|_| !pane.agents.is_empty()) {
-            Some(agent) => agent_key(&t.id, agent),
-            None => rex_pane_key(&t.primary.spec, which)?,
+        let Some(idx) = self
+            .active
+            .as_deref()
+            .and_then(|a| self.tabs.iter().position(|t| t.id == a))
+        else {
+            return Vec::new();
         };
-        PaneSize::of(key, s)
+        self.frame_pane(idx, which, rect)
+    }
+
+    /// The page's measure of each hidden tab's holes (`measureTabs` in `ui/index.html`): frame
+    /// those tabs' surfaces there while they are off screen, so a Rex pane's relay and program
+    /// redraw at the new size before the tab is shown, not after. The active tab is
+    /// [`set_pane_frame`](Self::set_pane_frame)'s, and a pane already at its rect is left alone.
+    /// Returns each reframed live Rex surface's size, as `set_pane_frame` does.
+    pub fn set_tab_rects(
+        &mut self,
+        rects: &HashMap<String, (PixelRect, Option<PixelRect>)>,
+    ) -> Vec<PaneSize> {
+        let mut sizes = Vec::new();
+        for idx in 0..self.tabs.len() {
+            let t = &self.tabs[idx];
+            if self.active.as_deref() == Some(t.id.as_str()) {
+                continue;
+            }
+            let Some(&(primary, secondary)) = rects.get(&t.id) else {
+                continue;
+            };
+            for (which, rect) in [
+                (PaneIdx::Primary, Some(primary)),
+                (PaneIdx::Secondary, secondary),
+            ] {
+                let t = &self.tabs[idx];
+                let Some(rect) = rect.filter(|r| t.pane(which).is_some_and(|p| p.rect != Some(*r)))
+                else {
+                    continue;
+                };
+                sizes.extend(self.frame_pane(idx, which, rect));
+            }
+        }
+        sizes
+    }
+
+    /// Frame every surface of tab `idx`'s pane `which` — its own and each agent's, shown or not —
+    /// at `rect`, and remember it as that pane's hole ([`Pane::rect`]). Returns each live Rex
+    /// surface's size, for `rex::size` to send while warden owns its block.
+    fn frame_pane(&mut self, idx: usize, which: PaneIdx, rect: PixelRect) -> Vec<PaneSize> {
+        let Some(pane) = self.tabs[idx].pane_mut(which) else {
+            return Vec::new();
+        };
+        pane.rect = Some(rect);
+        let t = &self.tabs[idx];
+        let pane = t.pane(which).expect("pane existed above");
+        let mut sizes = Vec::new();
+        if let TabSlot::Spawned(s) = &pane.slot {
+            s.set_frame(rect);
+            if let Some(key) = rex_pane_key(&t.primary.spec, which) {
+                sizes.extend(PaneSize::of(key, s));
+            }
+        }
+        for a in &pane.agents {
+            if let TabSlot::Spawned(s) = &a.slot {
+                s.set_frame(rect);
+                sizes.extend(PaneSize::of(agent_key(&t.id, &a.record_id), s));
+            }
+        }
+        sizes
     }
 
     /// The size of the live Rex pane surface `surface_id` shows, or `None` when it shows a plain
@@ -3153,30 +3172,35 @@ mod tests {
     }
 
     #[test]
-    fn a_remembered_rect_frames_a_tab_until_its_hole_reports() {
+    fn the_pages_measure_frames_hidden_tabs_but_not_the_active_one() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let kept = PixelRect {
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.add(&spec("b", "/tmp/b"), false).unwrap();
+        r.split("b");
+        let shown = PixelRect {
             x: 0.0,
             y: 0.0,
-            width: 512.0,
-            height: 300.0,
+            width: 800.0,
+            height: 600.0,
         };
-        r.remember_rects(HashMap::from([(
-            "a".to_string(),
-            PaneRects {
-                primary: Some(kept),
-                secondary: None,
-            },
-        )]));
-        r.add(&spec("a", "/tmp/a"), false).unwrap();
-        assert_eq!(r.tab_rect_for_test("a", PaneIdx::Primary), kept);
-        let now = PixelRect {
-            width: 600.0,
-            ..kept
+        let measured = PixelRect {
+            width: 400.0,
+            ..shown
         };
         r.active = Some("a".into());
-        r.set_pane_frame(PaneIdx::Primary, now);
-        assert_eq!(r.tab_rect_for_test("a", PaneIdx::Primary), now);
+        r.set_pane_frame(PaneIdx::Primary, shown);
+        r.set_tab_rects(&HashMap::from([
+            ("a".to_string(), (measured, None)),
+            ("b".to_string(), (measured, Some(measured))),
+            ("gone".to_string(), (measured, None)),
+        ]));
+        assert_eq!(
+            r.tab_rect_for_test("a", PaneIdx::Primary),
+            shown,
+            "the active tab's hole is set_pane_frame's"
+        );
+        assert_eq!(r.tab_rect_for_test("b", PaneIdx::Primary), measured);
+        assert_eq!(r.tab_rect_for_test("b", PaneIdx::Secondary), measured);
     }
 
     // --- surface→tab routing ------------------------------------------------------
