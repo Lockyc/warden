@@ -916,7 +916,10 @@ pub(super) mod tests {
         assert_eq!(closed_windows(&f), ["window:1", "window:2", "window:3"]);
         assert_eq!(f.requests_for("session.destroy").len(), 1);
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
-        assert!(!hub.session_alive("t"), "nothing left to mistake for a live agent");
+        assert!(
+            !hub.session_alive("t"),
+            "nothing left to mistake for a live agent"
+        );
     }
 
     #[test]

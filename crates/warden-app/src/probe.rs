@@ -499,7 +499,9 @@ fn warn_unrunnable(cmd: &str, dir: &Path, code: i32) {
         .unwrap_or_else(|e| e.into_inner())
         .insert((cmd.to_owned(), dir.to_owned()));
     if first {
-        log::warn!("{cmd:?} in {dir:?} couldn't run (exit {code}: command not found or not executable)");
+        log::warn!(
+            "{cmd:?} in {dir:?} couldn't run (exit {code}: command not found or not executable)"
+        );
     }
 }
 
@@ -843,20 +845,14 @@ mod tests {
 
     #[test]
     fn substitute_quotes_tokens_inside_a_command_substitution_as_unquoted() {
-        assert_eq!(
-            substitute(r#""$(f {dir})""#),
-            r#""$(f "${WARDEN_DIR}")""#
-        );
+        assert_eq!(substitute(r#""$(f {dir})""#), r#""$(f "${WARDEN_DIR}")""#);
         assert_eq!(substitute(r#""`f {dir}`""#), r#""`f "${WARDEN_DIR}"`""#);
         // A paren inside the substitution doesn't close it; its `)` returns to the `"…"`.
         assert_eq!(
             substitute(r#""$(f (g) {dir}) {title}""#),
             r#""$(f (g) "${WARDEN_DIR}") ${WARDEN_TITLE}""#
         );
-        assert_eq!(
-            substitute(r#"'$(x) {dir}'"#),
-            r#"'$(x) '"${WARDEN_DIR}"''"#
-        );
+        assert_eq!(substitute(r#"'$(x) {dir}'"#), r#"'$(x) '"${WARDEN_DIR}"''"#);
     }
 
     #[test]
