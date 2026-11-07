@@ -197,9 +197,9 @@ pub struct TabDto {
     pub detached: bool,
     /// Whether any block of this tab's scratch column is live — `false` both when the tab is
     /// unsplit (no column exists) and when every block is cold. `spawned` above is primary-only
-    /// (see `tab_dtos`), so the chrome needs this alongside it to decide the second hole's own
-    /// backstop: a live primary beside a cold secondary must still cover the secondary's hole
-    /// with `#empty-state-2`, or it leaks the desktop through the transparent window.
+    /// (see `tab_dtos`), so the chrome needs this alongside it to decide the column's own
+    /// backstop art: a live primary beside a cold column still shows each block's
+    /// `.scratch-empty` illustration.
     pub secondary_spawned: bool,
     /// Whether this tab STRUCTURALLY has a second pane — distinct from `secondary_spawned`
     /// above, which is that pane's LIVENESS. Both are needed: a hot-reload `respawn_tabs`
@@ -2297,16 +2297,13 @@ impl Registry {
 
     /// Show scratch tab `tab` of tab `id`'s column: its blocks spawn if cold and the tab is on
     /// screen, and the other scratch tabs' surfaces hide. Focus in the column moves to the new
-    /// tab's first block. Returns whether the column has that tab.
-    #[allow(dead_code)] // its command, `scratch_select`, lands with the column's chrome (Task 6)
-    pub fn select_scratch(&mut self, id: &str, tab: usize) -> bool {
-        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
-            return false;
-        };
+    /// tab's first block. Returns each newly shown live Rex block's size, framed at its own hole,
+    /// for `rex::size` to send as [`set_pane_frame`](Self::set_pane_frame)'s are; `None` when the
+    /// column has no such tab.
+    pub fn select_scratch(&mut self, id: &str, tab: usize) -> Option<Vec<PaneSize>> {
+        let idx = self.tabs.iter().position(|t| t.id == id)?;
         let t = &mut self.tabs[idx];
-        let Some(column) = t.column.as_mut().filter(|c| tab < c.tabs.len()) else {
-            return false;
-        };
+        let column = t.column.as_mut().filter(|c| tab < c.tabs.len())?;
         column.selected = tab;
         if let PaneIdx::Block(_) = t.focused {
             t.focused = PaneIdx::Block(0);
@@ -2314,7 +2311,58 @@ impl Registry {
         if let Err(e) = self.show_column(idx) {
             log::error!("couldn't open a scratch block of tab {id:?}: {e}");
         }
-        true
+        let column = self.tabs[idx].column.as_ref()?;
+        if !column.is_rex() {
+            return Some(Vec::new());
+        }
+        Some(
+            column
+                .shown()
+                .iter()
+                .filter_map(|b| PaneSize::of(b.spec.id.clone(), b.surface()?))
+                .collect(),
+        )
+    }
+
+    /// Tab `id`'s Rex column as `(pane key, dir)` — what a new scratch tab opens on — or `None`
+    /// for a tab with no column, or a plain one.
+    pub fn rex_column(&self, id: &str) -> Option<(String, PathBuf)> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let column = t.column.as_ref().filter(|c| c.is_rex())?;
+        Some((column.spec.id.clone(), column.spec.dir.clone()))
+    }
+
+    /// The Rex block tab `id`'s focused pane shows, when that is a block of a Rex column.
+    pub fn focused_rex_block(&self, id: &str) -> Option<String> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let PaneIdx::Block(i) = t.focused else {
+            return None;
+        };
+        let column = t.column.as_ref().filter(|c| c.is_rex())?;
+        column.block(i)?.block_id.clone()
+    }
+
+    /// Divider `split_id` of the scratch tab tab `id`'s column shows.
+    pub fn column_divider(&self, id: &str, split_id: &str) -> Option<Divider> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let column = t.column.as_ref()?;
+        column
+            .tabs
+            .get(column.selected)?
+            .layout
+            .dividers()
+            .into_iter()
+            .find(|d| d.split_id == split_id)
+    }
+
+    /// Which scratch tab of tab `id`'s column is Rex window `window_id`.
+    pub fn scratch_tab_of_window(&self, id: &str, window_id: &str) -> Option<usize> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        t.column
+            .as_ref()?
+            .tabs
+            .iter()
+            .position(|s| s.window_id.as_deref() == Some(window_id))
     }
 
     /// Whether tab `id` is waiting on a Rex open for its primary pane — cold, with nothing on
@@ -2786,10 +2834,11 @@ impl Registry {
     /// those tabs' surfaces there while they are off screen, so a Rex pane's relay and program
     /// redraw at the new size before the tab is shown, not after. The active tab is
     /// [`set_pane_frame`](Self::set_pane_frame)'s, and a pane already at its rect is left alone.
-    /// Returns each reframed live Rex surface's size, as `set_pane_frame` does.
+    /// Returns each reframed live Rex surface's size, as `set_pane_frame` does. A block with no
+    /// measure (`None`) keeps its rect, and the blocks after it their own indices.
     pub fn set_tab_rects(
         &mut self,
-        rects: &HashMap<String, (PixelRect, Vec<PixelRect>)>,
+        rects: &HashMap<String, (PixelRect, Vec<Option<PixelRect>>)>,
     ) -> Vec<PaneSize> {
         let mut sizes = Vec::new();
         for idx in 0..self.tabs.len() {
@@ -2804,7 +2853,7 @@ impl Registry {
                 blocks
                     .iter()
                     .enumerate()
-                    .map(|(i, r)| (PaneIdx::Block(i), *r)),
+                    .filter_map(|(i, r)| Some((PaneIdx::Block(i), (*r)?))),
             );
             for (which, rect) in panes {
                 let t = &self.tabs[idx];
@@ -3948,7 +3997,7 @@ mod tests {
         r.set_pane_frame(PaneIdx::Primary, shown);
         r.set_tab_rects(&HashMap::from([
             ("a".to_string(), (measured, vec![])),
-            ("b".to_string(), (measured, vec![measured])),
+            ("b".to_string(), (measured, vec![Some(measured)])),
             ("gone".to_string(), (measured, vec![])),
         ]));
         assert_eq!(
@@ -4401,7 +4450,7 @@ mod tests {
         // The tab is off screen: the page's measure frames each block where it stands.
         r.set_tab_rects(&HashMap::from([(
             "t".to_string(),
-            (rect(), vec![at(1.0), at(2.0), at(3.0)]),
+            (rect(), vec![Some(at(1.0)), Some(at(2.0)), Some(at(3.0))]),
         )]));
         r.sync_column("t", opened(vec![scratch("w1", &["a", "c", "e"])]));
         assert_eq!(r.scratch_block_keys("t"), ["t::2#a", "t::2#c", "t::2#e"]);
@@ -4424,7 +4473,7 @@ mod tests {
             ]
         };
         let mut r = landed_column(three());
-        assert!(r.select_scratch("t", 1));
+        assert!(r.select_scratch("t", 1).is_some());
         r.focus_pane("t", PaneIdx::Block(0));
         // w2's last block exited, and Rex closed it: its neighbour shows.
         r.sync_column(
@@ -4444,7 +4493,7 @@ mod tests {
 
         // A selection whose window survives stays on it as others come and go.
         r.sync_column("t", opened(three()));
-        assert!(r.select_scratch("t", 2));
+        assert!(r.select_scratch("t", 2).is_some());
         r.sync_column(
             "t",
             opened(vec![scratch("w2", &["b"]), scratch("w3", &["c"])]),
@@ -4455,15 +4504,15 @@ mod tests {
     #[test]
     fn select_scratch_switches_tiles() {
         let mut r = landed_column(vec![scratch("w1", &["a", "b"]), scratch("w2", &["c"])]);
-        assert!(r.select_scratch("t", 1));
+        assert!(r.select_scratch("t", 1).is_some());
         let col = r.tab_dtos()[0].column.clone().unwrap();
         assert_eq!(col.selected, 1);
         assert_eq!(col.tiles.len(), 1);
         assert_eq!(col.tiles[0].block_id, "c");
         assert!(col.dividers.is_empty());
         assert_eq!(r.scratch_block_keys("t"), ["t::2#c"]);
-        assert!(!r.select_scratch("t", 2), "no third tab");
-        assert!(!r.select_scratch("nope", 0));
+        assert!(r.select_scratch("t", 2).is_none(), "no third tab");
+        assert!(r.select_scratch("nope", 0).is_none());
         assert_eq!(r.tab_dtos()[0].column.as_ref().unwrap().selected, 1);
     }
 
@@ -4488,7 +4537,69 @@ mod tests {
         );
         assert!(col.dividers.is_empty());
         assert_eq!(r.scratch_block_keys("a"), ["a::2"]);
-        assert!(!r.select_scratch("a", 1));
+        assert!(r.select_scratch("a", 1).is_none());
+        assert_eq!(
+            r.rex_column("a"),
+            None,
+            "a plain column has no session to act on"
+        );
+        r.focus_pane("a", PaneIdx::Block(0));
+        assert_eq!(r.focused_rex_block("a"), None);
+    }
+
+    #[test]
+    fn a_rex_column_names_its_key_dir_focused_block_and_dividers() {
+        let mut r = landed_column(vec![scratch("w1", &["a", "b"]), scratch("w2", &["c"])]);
+        assert_eq!(
+            r.rex_column("t"),
+            Some(("t::2".to_string(), PathBuf::from("/tmp")))
+        );
+        assert_eq!(r.rex_column("nope"), None);
+        assert_eq!(r.focused_rex_block("t"), None, "the primary has focus");
+        assert!(r.focus_pane("t", PaneIdx::Block(1)));
+        assert_eq!(r.focused_rex_block("t").as_deref(), Some("b"));
+        let d = r
+            .column_divider("t", "split-a")
+            .expect("the selected tab's divider");
+        assert_eq!(
+            (d.before_block.as_str(), d.after_block.as_str()),
+            ("a", "b")
+        );
+        assert!(r.column_divider("t", "split-x").is_none());
+        assert_eq!(r.scratch_tab_of_window("t", "w2"), Some(1));
+        assert_eq!(r.scratch_tab_of_window("t", "w9"), None);
+        // Another scratch tab's dividers aren't on screen to drag.
+        r.select_scratch("t", 1);
+        assert!(r.column_divider("t", "split-a").is_none());
+    }
+
+    #[test]
+    fn a_rex_tab_with_no_column_has_none_to_act_on() {
+        let (mut r, _) = rex_registry();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        assert_eq!(r.rex_column("t"), None);
+    }
+
+    #[test]
+    fn a_block_with_no_measure_keeps_its_rect_and_its_neighbours_their_index() {
+        let mut r = landed_column(vec![scratch("w1", &["a", "b", "c"])]);
+        let at = |x: f64| PixelRect {
+            x,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        r.set_tab_rects(&HashMap::from([(
+            "t".to_string(),
+            (rect(), vec![Some(at(1.0)), Some(at(2.0)), Some(at(3.0))]),
+        )]));
+        r.set_tab_rects(&HashMap::from([(
+            "t".to_string(),
+            (rect(), vec![Some(at(4.0)), None, Some(at(6.0))]),
+        )]));
+        assert_eq!(r.tab_rect_for_test("t", PaneIdx::Block(0)), at(4.0));
+        assert_eq!(r.tab_rect_for_test("t", PaneIdx::Block(1)), at(2.0));
+        assert_eq!(r.tab_rect_for_test("t", PaneIdx::Block(2)), at(6.0));
     }
 
     #[test]

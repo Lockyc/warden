@@ -103,6 +103,10 @@ const MENU_TAB_CLOSE_PROJECT: &str = "warden:close-project-tab";
 const MENU_PANE_LEFT: &str = "warden:pane-left";
 const MENU_PANE_RIGHT: &str = "warden:pane-right";
 
+/// Tab ▸ New Scratch Tab (⌃⌘T): a new scratch tab in the focused window's active tab's Rex
+/// scratch column ([`scratch_run`]), enabled only while it has one.
+const MENU_SCRATCH_NEW: &str = "warden:scratch-new";
+
 /// The items whose enabled state follows the focused window's active tab, kept from the last menu
 /// build so [`sync_agent_menu`] can set it without a rebuild.
 #[cfg(target_os = "macos")]
@@ -122,6 +126,7 @@ struct AgentItems {
     fork: tauri::menu::MenuItem<tauri::Wry>,
     pane_left: tauri::menu::MenuItem<tauri::Wry>,
     pane_right: tauri::menu::MenuItem<tauri::Wry>,
+    scratch_new: tauri::menu::MenuItem<tauri::Wry>,
 }
 
 #[cfg(target_os = "macos")]
@@ -181,18 +186,37 @@ pub(crate) fn sync_server_menu(app: &tauri::AppHandle) {
     }
 }
 
+/// The focused window's label.
+#[cfg(target_os = "macos")]
+fn focused_label(app: &tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    let w = app
+        .webview_windows()
+        .into_values()
+        .find(|w| w.is_focused().unwrap_or(false))?;
+    Some(w.label().to_string())
+}
+
+/// `(label, tab)` when the focused window's active tab has a Rex scratch column.
+#[cfg(target_os = "macos")]
+fn focused_scratch_column(app: &tauri::AppHandle) -> Option<(String, String)> {
+    use tauri::Manager;
+    let label = focused_label(app)?;
+    let st = app.state::<ManagerState>();
+    let m = st.lock();
+    let reg = &m.windows.get(&label)?.registry;
+    let tab = reg.active_tab()?.to_owned();
+    reg.rex_column(&tab)?;
+    Some((label, tab))
+}
+
 /// What the focused window's active tab offers the agent menu items: `(label, tab, sleep,
 /// reopen)` when it holds agent tabs — its selected agent tab can sleep, it has a closed one to
 /// reopen — else `None`.
 #[cfg(target_os = "macos")]
 fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bool)> {
     use tauri::Manager;
-    let label = app
-        .webview_windows()
-        .into_values()
-        .find(|w| w.is_focused().unwrap_or(false))?
-        .label()
-        .to_string();
+    let label = focused_label(app)?;
     let tab = {
         let st = app.state::<ManagerState>();
         let m = st.lock();
@@ -222,12 +246,7 @@ fn focused_tab_keys(
     Option<registry::PaneIdx>,
 )> {
     use tauri::Manager;
-    let label = app
-        .webview_windows()
-        .into_values()
-        .find(|w| w.is_focused().unwrap_or(false))?
-        .label()
-        .to_string();
+    let label = focused_label(app)?;
     let (tab, agents, left, right) = {
         let st = app.state::<ManagerState>();
         let m = st.lock();
@@ -247,7 +266,8 @@ fn focused_tab_keys(
 /// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
 /// holds agent tabs, Sleep Agent Tab while its selected one can sleep, Reopen Last Closed while
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
-/// while the step can act, and Focus Left / Right Pane while there's a pane that way. Runs on every
+/// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
+/// Tab while it has a Rex scratch column. Runs on every
 /// menu build, window focus, pane focus, tab activation and agent list change, so it also marks
 /// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
 /// callers must not hold it.
@@ -263,6 +283,7 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     let keys = focused_tab_keys(app);
     let list = keys.as_ref().and_then(|k| k.2.as_ref());
     let reopen_window = reopen_target(app).is_some();
+    let scratch = focused_scratch_column(app).is_some();
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -301,6 +322,7 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let _ = i
             .pane_right
             .set_enabled(keys.as_ref().is_some_and(|k| k.4.is_some()));
+        let _ = i.scratch_new.set_enabled(scratch);
     }
 }
 
@@ -490,6 +512,7 @@ fn build_app_menu(
     let agent_fork_item = disabled(MENU_AGENT_FORK, "Fork Agent Tab", "Alt+Cmd+KeyT")?;
     let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
     let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
+    let scratch_new_item = disabled(MENU_SCRATCH_NEW, "New Scratch Tab", "Ctrl+Cmd+KeyT")?;
     // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
     // disabled line says so.
     let server_items = servers
@@ -517,7 +540,12 @@ fn build_app_menu(
         &spine,
         mode.is_cycle(),
         &[
-            &[&split_pane_item, &pane_left_item, &pane_right_item],
+            &[
+                &split_pane_item,
+                &scratch_new_item,
+                &pane_left_item,
+                &pane_right_item,
+            ],
             &[&suspend_item, &terminate_item],
             &[
                 &agent_new_item,
@@ -574,6 +602,7 @@ fn build_app_menu(
             fork: agent_fork_item,
             pane_left: pane_left_item,
             pane_right: pane_right_item,
+            scratch_new: scratch_new_item,
         });
     }
     if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
@@ -813,6 +842,9 @@ fn unload_tab(
 /// split, which the chrome's banner shows). `activate`'s `Err`
 /// is the *primary's* spawn failure (the secondary's is discarded), so it goes to this window's
 /// banner as a label-stamped `warden:error`, exactly as `activate_tab` reports it.
+///
+/// With focus in a block of a Rex scratch column, the split is Rex's instead: a bare shell
+/// stacked below that block ([`ScratchOp::Split`]), shown when Rex's next view lands.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn split_pane(
@@ -821,6 +853,20 @@ fn split_pane(
     id: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
+    let block = state
+        .lock()
+        .windows
+        .get(window.label())
+        .and_then(|ws| ws.registry.focused_rex_block(&id));
+    if let Some(block) = block {
+        // The column stands whatever happens to the split, so a failure is the banner's — an
+        // `Err` here would collapse the chrome's column.
+        let app = tauri::Manager::app_handle(&window);
+        if let Err(e) = scratch_run(app, window.label(), &id, ScratchOp::Split(block)) {
+            rex::lifecycle::banner(app, window.label(), &e);
+        }
+        return Ok(());
+    }
     let primary = {
         let mut m = state.lock();
         let ws = m
@@ -1725,6 +1771,175 @@ fn agent_clear_closed(
     })
 }
 
+// The scratch column's commands (`ui/index.html`'s `#scratch-tabs` strip and dividers). Showing a
+// scratch tab is warden's own; every other change is Rex's, made on a worker ([`scratch_run`]).
+
+/// Show scratch tab `tab` of tab `id`'s column. False when the column has no such tab.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn scratch_select(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+    tab: usize,
+) -> bool {
+    use tauri::Emitter;
+    let (sizes, dto) = {
+        let mut m = state.lock();
+        let Some(sizes) = m
+            .windows
+            .get_mut(window.label())
+            .and_then(|ws| ws.registry.select_scratch(&id, tab))
+        else {
+            return false;
+        };
+        (sizes, m.init_dto(window.label()))
+    };
+    if let Some(dto) = dto {
+        let _ = window.emit("warden:refresh", dto);
+    }
+    let app = tauri::Manager::app_handle(&window);
+    request_rex_sizes(app, sizes);
+    sync_agent_menu(app);
+    true
+}
+
+/// A new scratch tab in tab `id`'s Rex column: one bare shell in the tab's dir, selected.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn scratch_new(window: tauri::WebviewWindow, id: String) -> Result<(), String> {
+    let app = tauri::Manager::app_handle(&window);
+    scratch_run(app, window.label(), &id, ScratchOp::NewTab)
+}
+
+/// Move divider `split_id` of the scratch tab tab `id`'s column shows to `ratio` of its split.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn scratch_resize(
+    window: tauri::WebviewWindow,
+    id: String,
+    split_id: String,
+    ratio: f64,
+) -> Result<(), String> {
+    if !ratio.is_finite() {
+        return Err("a divider ratio must be a number".into());
+    }
+    let app = tauri::Manager::app_handle(&window);
+    let op = ScratchOp::Resize {
+        split_id,
+        ratio: rex::layout::clamp_ratio(ratio),
+    };
+    scratch_run(app, window.label(), &id, op)
+}
+
+/// A change Rex makes to a tab's scratch column.
+#[derive(Debug)]
+enum ScratchOp {
+    /// A new window with one bare shell — a scratch tab — selected once made.
+    NewTab,
+    /// A bare shell stacked below block `0`.
+    Split(String),
+    /// A divider of the shown scratch tab, moved.
+    Resize { split_id: String, ratio: f64 },
+}
+
+/// Run `op` on tab `id`'s Rex scratch column in window `label` (main thread). A refusal answers at
+/// once; the Rex work runs on a worker and lands through [`scratch_landed`].
+#[cfg(target_os = "macos")]
+fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> Result<(), String> {
+    use tauri::Manager;
+    let (key, dir, server, divider) = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        let reg = &m.windows.get(label).ok_or("window not found")?.registry;
+        let (key, dir) = reg
+            .rex_column(id)
+            .ok_or("this tab has no Rex scratch column")?;
+        let server = reg
+            .spec_of(id)
+            .and_then(|s| s.server.clone())
+            .unwrap_or_default();
+        let divider = match &op {
+            ScratchOp::Resize { split_id, .. } => Some(
+                reg.column_divider(id, split_id)
+                    .ok_or("that divider is no longer on screen")?,
+            ),
+            _ => None,
+        };
+        (key, dir, server, divider)
+    };
+    log::info!("tab {id:?}: scratch column {op:?}");
+    let (app, label, id) = (app.clone(), label.to_owned(), id.to_owned());
+    std::thread::Builder::new()
+        .name("warden-scratch-op".into())
+        .spawn(move || {
+            let Some(hub) = app.try_state::<rex::RexHub>() else {
+                let main = app.clone();
+                let message = format!("Rex server {server}: no connection to Rex");
+                let _ = app.run_on_main_thread(move || {
+                    scratch_landed(&main, &label, &id, Err(message), None)
+                });
+                return;
+            };
+            let done = match (&op, &divider) {
+                (ScratchOp::NewTab, _) => hub.column_new_tab(&key, &dir).map(Some),
+                (ScratchOp::Split(block), _) => hub.column_split(&key, block, &dir).map(|_| None),
+                (ScratchOp::Resize { ratio, .. }, Some(d)) => {
+                    hub.column_resize(&key, d, *ratio).map(|_| None)
+                }
+                (ScratchOp::Resize { .. }, None) => Ok(None),
+            };
+            let done = done.map_err(|e| rex::spawn::open_error(&server, &e));
+            let opened = hub
+                .column_session(&key)
+                .and_then(|(server, sid)| hub.column(&server, &sid));
+            let main = app.clone();
+            let _ =
+                app.run_on_main_thread(move || scratch_landed(&main, &label, &id, done, opened));
+        })
+        .map(|_| ())
+        .map_err(|e| format!("couldn't start the scratch column change: {e}"))
+}
+
+/// A scratch column change landed (main thread): the column follows Rex's session as the hub now
+/// has it — a failed resize puts the dragged divider back — a new scratch tab (`done`'s window
+/// id) is selected, and the window repaints. A failure shows in the window's error banner.
+#[cfg(target_os = "macos")]
+fn scratch_landed(
+    app: &tauri::AppHandle,
+    label: &str,
+    id: &str,
+    done: Result<Option<String>, String>,
+    opened: Option<rex::column::ColumnOpened>,
+) {
+    use tauri::{Emitter, Manager};
+    let (sizes, dto) = {
+        let st = app.state::<ManagerState>();
+        let mut m = st.lock();
+        let Some(ws) = m.windows.get_mut(label) else {
+            return;
+        };
+        if let Some(opened) = opened {
+            ws.registry.sync_column(id, opened);
+        }
+        let made = done.as_ref().ok().and_then(Option::as_deref);
+        let sizes = made
+            .and_then(|w| ws.registry.scratch_tab_of_window(id, w))
+            .and_then(|t| ws.registry.select_scratch(id, t))
+            .unwrap_or_default();
+        (sizes, m.init_dto(label))
+    };
+    if let Err(e) = &done {
+        log::error!("{label}: tab {id:?}: scratch column: {e}");
+        rex::lifecycle::banner(app, label, e);
+    }
+    if let Some(dto) = dto {
+        let _ = app.emit_to(label, "warden:refresh", dto);
+    }
+    request_rex_sizes(app, sizes);
+    sync_agent_menu(app);
+}
+
 /// Sleep Rex server `server`, the user having confirmed losing `accepted` (by name). A loss not
 /// among them asks again; Tab ▸ Sleep Server starts here with none.
 #[cfg(target_os = "macos")]
@@ -1816,7 +2031,7 @@ fn set_hole_rect(
             .collect()
     };
     drop(m);
-    request_rex_sizes(&window, rex_sizes);
+    request_rex_sizes(tauri::Manager::app_handle(&window), rex_sizes);
 }
 
 /// The page's measure of each hidden tab's holes (`measureTabs` in `ui/index.html`), keyed by
@@ -1832,11 +2047,8 @@ fn set_tab_rects(
         .into_iter()
         .filter_map(|(id, r)| {
             let primary = view_rect_of(&window, &r.primary)?;
-            let blocks = r
-                .blocks
-                .iter()
-                .map(|b| view_rect_of(&window, b))
-                .collect::<Option<Vec<_>>>()?;
+            // A block with no usable measure is skipped, its neighbours keeping their indices.
+            let blocks = r.blocks.iter().map(|b| view_rect_of(&window, b)).collect();
             Some((id, (primary, blocks)))
         })
         .collect();
@@ -1852,7 +2064,7 @@ fn set_tab_rects(
         rects.len(),
         rex_sizes.len()
     );
-    request_rex_sizes(&window, rex_sizes);
+    request_rex_sizes(tauri::Manager::app_handle(&window), rex_sizes);
 }
 
 #[derive(serde::Deserialize)]
@@ -1864,13 +2076,9 @@ struct TabRectsArg {
 
 /// A Rex pane's block takes a new grid only while warden owns it.
 #[cfg(target_os = "macos")]
-fn request_rex_sizes(window: &tauri::WebviewWindow, sizes: Vec<rex::size::PaneSize>) {
+fn request_rex_sizes(app: &tauri::AppHandle, sizes: Vec<rex::size::PaneSize>) {
     for size in sizes {
-        rex::size::request(
-            tauri::Manager::app_handle(window),
-            rex::size::SizeAsk::IfOwner,
-            size,
-        );
+        rex::size::request(app, rex::size::SizeAsk::IfOwner, size);
     }
 }
 
@@ -2320,6 +2528,16 @@ fn main() {
                 }
             }
 
+            // ⌃⌘T: a new scratch tab in the active tab's Rex column (disabled elsewhere).
+            if id == MENU_SCRATCH_NEW {
+                if let Some((label, tab)) = focused_scratch_column(app) {
+                    if let Err(e) = scratch_run(app, &label, &tab, ScratchOp::NewTab) {
+                        rex::lifecycle::banner(app, &label, &e);
+                    }
+                }
+                return;
+            }
+
             // ⌘W in a tab with a selected agent tab closes that, not the project tab.
             if id == shell_core::menu::ids::CLOSE_TAB
                 && focused_tab_keys(app).is_some_and(|k| k.2.as_ref().is_some_and(agent_closable))
@@ -2407,6 +2625,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_hole_rect,
             set_tab_rects,
+            scratch_select,
+            scratch_new,
+            scratch_resize,
             init_tabs,
             activate_tab,
             unload_tab,
@@ -2833,6 +3054,29 @@ mod tests {
         // or the page lays the panes out at a width neither the ratio nor the window says.
         let r = split_ratio(Some(0.42));
         assert!((r + (1.0 - r) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn tab_rects_carry_one_rect_per_block_in_order() {
+        let r = |x: f64| serde_json::json!({ "x": x, "y": 0.0, "width": 10.0, "height": 5.0 });
+        let arg: TabRectsArg = serde_json::from_value(serde_json::json!({
+            "primary": r(0.0),
+            "blocks": [r(1.0), r(2.0)],
+        }))
+        .unwrap();
+        assert_eq!(arg.primary.x, 0.0);
+        assert_eq!(
+            arg.blocks.iter().map(|b| b.x).collect::<Vec<_>>(),
+            [1.0, 2.0]
+        );
+        let unsplit: TabRectsArg =
+            serde_json::from_value(serde_json::json!({ "primary": r(0.0), "blocks": [] })).unwrap();
+        assert!(unsplit.blocks.is_empty());
+        // The page always sends `blocks`; a payload without it is malformed, not unsplit.
+        assert!(
+            serde_json::from_value::<TabRectsArg>(serde_json::json!({ "primary": r(0.0) }))
+                .is_err()
+        );
     }
 
     #[test]

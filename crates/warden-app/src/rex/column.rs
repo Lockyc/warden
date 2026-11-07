@@ -154,7 +154,6 @@ impl RexHub {
 
     /// A new scratch tab in `column_key`'s session: a window with one bare shell in `dir`, named
     /// by Rex. Returns its window id.
-    #[allow(dead_code)] // its command, `scratch_new`, lands with the column's chrome (Task 6)
     pub fn column_new_tab(&self, column_key: &str, dir: &Path) -> Result<String, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
@@ -168,7 +167,6 @@ impl RexHub {
     /// Split `block_id` of `column_key`'s session: a bare shell in `dir` stacked below it, half
     /// its height, focused. Returns the new block's id, bound at once; the window's layout follows
     /// with Rex's next view.
-    #[allow(dead_code)] // its caller, ⌘D in a column block, lands with the column's chrome (Task 6)
     pub fn column_split(
         &self,
         column_key: &str,
@@ -201,7 +199,6 @@ impl RexHub {
     }
 
     /// Move divider `d` of `column_key`'s session to `ratio` of its split.
-    #[allow(dead_code)] // its command, `scratch_resize`, lands with the column's chrome (Task 6)
     pub fn column_resize(&self, column_key: &str, d: &Divider, ratio: f64) -> Result<(), RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
@@ -336,7 +333,7 @@ impl RexHub {
     }
 
     /// `column_key`'s stored session as `(server, session id)`, if it has one.
-    pub(super) fn column_session(&self, column_key: &str) -> Option<(String, String)> {
+    pub(crate) fn column_session(&self, column_key: &str) -> Option<(String, String)> {
         self.column_record(column_key)
             .ok()
             .map(|r| (r.server, r.session_id))

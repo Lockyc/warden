@@ -195,18 +195,24 @@ pub fn stack_layout(panes: &[StackPane], dir: &Path) -> Value {
 }
 
 /// The split ratio for a divider dragged to `pointer`, a window-fraction coordinate along
-/// the divider's direction, relative to the split's own rect.
-#[allow(dead_code)] // the column's divider drag (Task 6) computes this in its chrome
+/// the divider's direction, relative to the split's own rect. The page's divider drag
+/// (`scratchDragRatio` in `ui/index.html`) computes the same live, in its own hand.
+#[allow(dead_code)] // the reference the page's drag mirrors; no Rust caller
 pub fn divider_ratio(d: &Divider, pointer: f64) -> f64 {
     let (origin, extent) = match d.dir {
         Dir::Horizontal => (d.rect.x, d.rect.w),
         Dir::Vertical => (d.rect.y, d.rect.h),
     };
     if extent > 0.0 {
-        ((pointer - origin) / extent).clamp(0.05, 0.95)
+        clamp_ratio((pointer - origin) / extent)
     } else {
         0.5
     }
+}
+
+/// A split ratio kept where each side holds at least 5% of the split.
+pub fn clamp_ratio(ratio: f64) -> f64 {
+    ratio.clamp(0.05, 0.95)
 }
 
 #[cfg(test)]
