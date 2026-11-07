@@ -59,8 +59,8 @@ Two related deferrals about the seam between warden and agentmux. Both are consc
 
 The client is in `docs/rex.md`; these are its known edges and the projects after it.
 
-- **Mirror a Rex window's split layout.** Decided, in progress: the scratch column (*Next: the scratch column on Rex* in `docs/native-splits-direction.md`). An agent window's own splits stay unmirrored — the agent pane shows its window's first block.
-- **amux retirement.** Move amux's remaining jobs into warden — notes, launching agents by directory — then retire it. Unlock: the scratch column, above; the agent tab list is the base it builds on.
+- **An agent window's own splits aren't mirrored** — the agent pane shows its window's first block. Unlock: the scratch column's layout model (`rex/layout.rs`) applied to the main pane, once a workflow splits an agent's window.
+- **amux retirement.** Move amux's remaining jobs into warden — notes, launching agents by directory — then retire it. Ready: the scratch column and the agent tab list are the base it builds on.
 - **Codex's hook, and other harnesses.** `codex resume <id>` is already a row of `agents::RESUME_SHAPES`, but no Codex hook reports it and `/warden:install` wires Claude Code only, and its row has no fork form, so a Codex agent can't fork; a harness outside that closed set can't sleep. Unlock: Codex installed here, to write and verify its hook and `codex fork <id>` against the real CLI; for another harness, a config-declared resume shape (program + fixed words, id still class-checked), so a new harness needs no code change.
 - **Groups can't be reordered.** A group sits where its first member does (`agents::in_list_order`), so moving a group means dragging its rows one by one. Unlock: a group-header drag plus an `agent_group_move` command.
 - **Bundle the agent hook in the .app.** The release bundle carries only `warden-relay`, so a release-zip install has no hook and its agent tabs can't sleep until `/warden:install` runs from a checkout. Unlock: a `bundle.macOS.files` entry for the hook like the relay's, and the `settings.json` wiring pointing at the bundled path.

@@ -38,10 +38,12 @@ What that buys beyond one less parse: native scrollback and selection in the sec
 surface, and a **per-client viewport**. Shared scroll across attached clients is tmux's,
 not warden's, the moment the surface is warden's own.
 
-## Native splits: shipped
+## Native splits
 
-A tab holds a **primary pane plus an optional secondary** — two panes, not N-way. A split
-comes from one of two places, and which one decides where its geometry is remembered:
+A tab holds a **primary pane plus an optional scratch column**. On a plain tab the column is
+one pane — two panes, not N-way; on a Rex tab it is a Rex session that stacks and tabs its own
+panes (below). A split comes from one of two places, and which one decides where its geometry
+is remembered:
 
 - **Declared in config** (`split` — cascading global → window → tab, and root → window →
   global for discovered projects; schema in `docs/config.md`). The tab is created with its
@@ -58,22 +60,50 @@ comes from one of two places, and which one decides where its geometry is rememb
   sidebar width) and are restored on the next activation. A config-split tab never touches
   that store — the config is its source of truth — and a stale key for one is evicted.
 
-Both are closed only by the secondary shell exiting (`exit` in it), and resized by dragging
+Both are closed only by the column's shells exiting (`exit` in it), and resized by dragging
 the divider — a 1px line in a 5px grab strip that carries no close control, by choice: the
 one route out of a split is the shell's own end, docked or popped out alike. ⌘W (unload) and ⌘⇧O (pop-out) both act on the **whole
-tab** — unloading drops both panes to cold together, and popping out carries both surfaces
+tab** — unloading drops every pane to cold together, and popping out carries both surfaces
 to the detached window at the tab's current effective ratio
 (`shell_core::detach::DetachSpec.panes`, generic on purpose: a `Vec<f64>` of hole ratios,
 not a `warden` split type, so a future consumer can divide its own hole without learning
 warden's split concept).
 
+**On a Rex tab the column is one Rex session** — the split pane's (`rex/column.rs`). Each of
+its Rex windows is a **scratch tab** in the `#scratch-tabs` strip (`[1] [2] [+]`) at the
+column's top; each window's split tree (`session.view`'s `layers[0].layout`, read by
+`rex/layout.rs`) is the blocks stacked in it, one surface + relay per block. Rex owns the
+windows and layout (the `docs/rex.md` invariant), so a split made in Rex.app shows here and
+vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top_panes`:
+
+- **Config declares the first scratch tab's blocks** as a vertical stack (`[[…split.pane]]`,
+  schema in `docs/config.md`); warden creates the session in that layout
+  (`layout::stack_layout`), and after that Rex holds it, so a stack edit reaches only sessions
+  created afterwards. No stack (a runtime ⌘D, `split = true`) is one bare shell.
+- **`+`** or Tab ▸ New Scratch Tab (⌃⌘T) opens a new Rex window with a bare shell; clicking a
+  number shows that scratch tab and leaves the main pane alone.
+- **⌘D in a block** is `session.new_split` below it, and focus moves to the new block when
+  Rex's next view brings it (`Registry::focus_block`); dragging an inner divider is
+  `session.resize_pane`, sent on release.
+- **`exit` in a block** closes it: its scratch tab reflows, or goes with its last block and the
+  selection leans to a neighbour; the session's last block ends the column and collapses the
+  split (`docs/rex.md`, *Lifecycle*).
+- **Pop-out carries at most one block** — a fuller column is refused, with Tab ▸ Pop Out Tab
+  disabled and titled with the reason (`Registry::pop_out_blocked`; the unlock is in
+  `docs/FOLLOWUPS.md`).
+
+Plain tabs keep the one-pane column: a stack there needs a warden-owned layout model; unlock: a
+plain-tab workflow that needs more than two panes.
+
 Mechanism: `warden-config`'s `Tab.split: Option<Split>` (`resolve.rs::resolve_split_level` +
-`cascade_split`; `reconcile.rs` routes a presence/`cmd` change to `respawn_tabs` and a
-`side`/`size` change to `set_meta`), `Registry`'s `Pane`/`PaneIdx`/`TabSlot` model
-(`crates/warden-app/src/registry.rs` — `add` declares a config split's second pane, one
-`secondary_spec` derives its startup), `TabDto.split_layout` → the chrome's
-`splitLayoutById`/`ratioOverride`, the `split_pane`/`focus_pane` commands
-(`main.rs`), and the chrome's pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`).
+`cascade_split`; `reconcile.rs::reconcile` lists which edits respawn and which ride
+`set_meta`), `Registry`'s `Pane`/`PaneIdx`/`Column`/`TabSlot` model
+(`crates/warden-app/src/registry.rs` — `add` declares a config split's column, one
+`secondary_spec` derives its startup, `sync_column` follows a Rex column's session),
+`TabDto.split_layout` and `TabDto.column` (`ColumnDto`) → the chrome's
+`splitLayoutById`/`ratioOverride` and `scratchRender`, the `split_pane`/`focus_pane` and
+`scratch_select`/`scratch_new`/`scratch_resize` commands (`main.rs`), and the chrome's
+pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`).
 Read *Traps* below before touching split visibility, routing, or the backstop.
 
 ## Pop-out: session-preserving, whole-tab
@@ -109,7 +139,7 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
   draws a `side = "left"` split with a flex `order`, so the detached layout mirrors on warden's
   side; `mirrored` keys on the secondary's *presence*. `registry.rs::PaneIdx::hole`,
   `manager.rs::DetachedSurface::mirrored`.
-- **Surface→tab routing searches both panes and `detached` too**
+- **Surface→tab routing searches every pane and `detached` too**
   (`Registry::locate_surface`, `manager.rs::locate_detached_surface`, `handle_child_exited`'s
   detached arms). Missing either, a split tab silently stops badging or a dead shell sits under
   "Process exited".
@@ -123,7 +153,7 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
   the border box lets the surface occlude the focus border; the content box without an opaque
   outer ground leaks wallpaper round every pane. `ui/index.html` (`contentRect` + the `.pane` CSS).
 - **The per-pane backstop ground is always on; only the illustration toggles**
-  (`#empty-state`/`#empty-state-2`). Behind a live surface it is invisible, so an uncovered hole is
+  (`#empty-state`, each block's `.scratch-empty`). Behind a live surface it is invisible, so an uncovered hole is
   unrepresentable on every transient.
 - **Every split `localStorage` access is wrapped whole, `.length` and `.key()` included**
   (`evictSplits`) — unavailable storage throws on every member, and an unguarded read inside
@@ -179,6 +209,12 @@ only by eye. Each step below is written to actually fail if the feature regresse
   respawns the tab.
 - A tab with no config split still ⌘D-splits on the right at 50/50, and that split survives
   a restart (the `localStorage` path is untouched).
+- With a local Rex running, `just run`'s `stack` tab opens its column stacked at the declared
+  sizes; `+` adds scratch tab 2 with one shell, and clicking `1`/`2` swaps the column while the
+  agent pane stays put; ⌘D in a block adds a block below it, focused; dragging an inner divider
+  resizes only its two sides and survives a tab switch; `exit` in a non-last block reflows the
+  rest; `exit` in tab 2's only block returns to tab 1; a split made in Rex.app on the same
+  session appears in warden; Tab ▸ Pop Out Tab on the stacked tab is disabled with its reason.
 
 Expect no look change to a live terminal: each surface's own render layer is already opaque
 (`#0e1516`, `surface/ghostty.rs::new`), so it is never the pane ground a terminal composites
@@ -215,30 +251,6 @@ into the window title. But tmux's grid has no idea the pixel region is occupied 
 line of text draws straight over the image. So a multiplexer hop cannot own image
 placement across scroll, reflow or redraw, which is why the out-of-band surface has to be
 warden's own rather than a tmux popup.
-
-## Next: the scratch column on Rex (decided, unbuilt)
-
-The design that retires amux's frame for Rex tabs. A tab's layout is **sidebar │ agent list │
-agent │ scratch column**; the scratch column is always present, sits on the right by default,
-and is the Rex tab's split pane grown up:
-
-- **The scratch column is one Rex session.** Each of its Rex windows is a **scratch tab** in a
-  `[1] [2] [+]` strip at the column's top; each window's split tree (`session.view`'s
-  `layers[0].layout`) is the stacked panes, one surface + relay per block. This is the agent
-  column's "session windows are tabs" mapping applied to the split pane — Rex owns the windows and
-  layout (the `docs/rex.md` invariant), so a split made in Rex.app shows here and vice versa.
-- **Config declares the first scratch window's panes** as a vertical stack:
-  `[[…split.pane]]` entries, each with an optional `cmd` and `size` (a fraction of the column;
-  the last pane without a `size` takes the rest), cascading like `split` today. warden creates them
-  in one `session.new_window` layout when it creates the session; after that Rex holds the layout.
-  This replaces agentmux's `[frame]` `left_vertical_split` / `left_top_panes`.
-- **Scratch tab 1 is the configured layout.** `+` (and a Tab menu item) opens a new Rex window
-  with a bare shell; `exit` closes it; scratch tabs persist as Rex sessions do.
-- **⌘D in the scratch column** is `session.new_split` beside the focused block; a divider drag is
-  `session.resize_pane`.
-
-**Plain (non-Rex) tabs keep the two-pane split.** A stack there needs a warden-owned layout
-model; unlock: a plain-tab workflow that needs more than two panes.
 
 ## Not yet
 

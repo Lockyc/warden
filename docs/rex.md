@@ -42,6 +42,7 @@ public. Rex is chosen per tab.
 | `rex/size.rs` | The size worker (`Sizer`) behind every claim and resize. |
 | `rex/unclaimed.rs` | Sessions no tab claims, as sidebar rows under `Rex · <server>`. |
 | `rex/windows.rs` | Each attached session's windows (new, close, relabel) and every terminal block's status: its root OSC 7501 record and its title, from Rex's events. |
+| `rex/layout.rs` | A session window's split tree (`Layout`) as tiles and dividers for the page, and a config pane stack as the layout a new session is created with (`stack_layout`). |
 | `rex/column.rs` | A split pane's scratch column: one session whose windows are scratch tabs and whose split trees are the stacked panes — opening it (created from the config stack, retyped when restored), new tab, split, divider resize, a block's exit, each block's size key. |
 | `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live, waking on a user open. |
 | `rex/lifecycle.rs` | The agent tab list: new, wake, sleep, close, reopen, fork, rename (`RexHub::agent_op`), which agent shows (`settle`, an open's too), following a pane's windows and statuses, storing reported resume commands, and the list `warden:agents` carries. |
@@ -91,9 +92,10 @@ site omits it.
   OSC 7501 child records the hook writes straight to Rex (`warden/asked`, `warden/said`), so they
   reach warden for an agent no relay streams, and on a remote server.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
-  terminal block — with only the selected one on screen. A split pane and an unclaimed row show
-  one block: the first terminal block of their session's first window.
-- **`cmd` and the split's `cmd` are typed once, when warden creates the session**
+  terminal block — with only the selected one on screen. A split pane's session windows are its
+  scratch tabs, each showing every block of its split tree (`docs/native-splits-direction.md`).
+  An unclaimed row shows one block: the first terminal block of its session's first window.
+- **`cmd` and each split pane's `cmd` are typed once, when warden creates the session**
   (`initial_input`); a woken agent's window types its resume command instead. Reattaching types
   nothing (`spawn::effective_spec` clears `startup`).
 - **Only a user open wakes an agent** (`RexOpen.auto`): one warden makes itself (launch,
@@ -127,6 +129,7 @@ site omits it.
 | Tab ▸ Sleep Server | Every resumable live agent on the server sleeps (window closed, record asleep, one at a time), then `server.stop`; every pane on it goes cold (a popped-out one ends) and the hub lists the server with no sessions and doesn't reconnect; Rex saves the sessions, so its next start restores them (the restart row). Terminal panes, agents with no resume command, and sessions no pane maps are confirmed by name first, and again if one appears before the stop. Rex takes `server.stop` only on its local socket, so a server reached over HTTPS can't sleep. | `lifecycle::sleep_server` → `RexHub::sleep_server` |
 | ⏻ sleep project | Sleep Server narrowed to one tab: its surfaces let go, its resumable agents sleep, losses (the split's shell, agents with nothing to resume) are confirmed by name, then both panes' sessions are destroyed. The records stay asleep. Its `suspend` is not run. | `lifecycle::sleep_project` → `RexHub::sleep_project` |
 | The pane's program exits (`exit`, an agent quitting) | Destroyed if its block was the session's last; otherwise the pane lets go and the session lists as unclaimed. The pane goes cold, and the next open creates a fresh session: an exited block would only leave a dead screen that reads as live. An agent's exit closes only its window (the session's last ends as above) and its record closes or drops; the pane shows a live neighbour, else goes cold. | `spawn::end_if_exited` → `RexHub::destroy_if_exited` / `end_agent_if_exited` → `AgentOp::Exited`; `Registry::close_agent` |
+| A scratch column block's program exits | Only that block closes: its window reflows, or closes with it as its last block; the session's last block destroys the session and the split collapses. | `spawn::end_if_exited` → `RexHub::column_block_exited`; `spawn::column_ended` |
 | The server restarts, crashes, or the Mac reboots | Rex restores every session with the same ids, each terminal a bare shell. A record from an earlier server instance reads as gone (hollow, or the ghost with agents to wake) until an open adopts its session: the open types `cmd` into the restored shell; a main pane's resumable agents sleep and their windows close (the session too, if nothing else was in it), the rest drop, and a user open wakes the last-selected one. A tab open when Rex restarts lets go as under Sleep Server (docked cold, popped-out ended). | `State::restored`, `RexHub::ensure_session`, `retire_restored`, `spawn::reopen_restarted` |
 | Opening an unclaimed row | A temporary tab: adopted in memory, never persisted, never creates a session, can't split. ☠ ends the session. | `RexHub::adopt`, `Registry::split` |
 | The relay's stream drops | Resumed at its exact byte count; if refused, a new ticket and a full reset + redraw from a fresh snapshot. | `warden-relay` `RESET` |
@@ -171,5 +174,5 @@ doesn't build it, and its Rex tabs then fail to open.
 -- --ignored` against a running local Rex server; each touches only the sessions it labels and
 destroys them.
 
-Deferred work — remote roots, remote HTTPS, mirroring a window's splits, the closed set of resume
-shapes — is in `docs/FOLLOWUPS.md`.
+Deferred work — remote roots, remote HTTPS, the closed set of resume shapes — is in
+`docs/FOLLOWUPS.md`.
