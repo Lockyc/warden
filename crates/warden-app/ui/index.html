@@ -188,8 +188,12 @@
         background: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
       /* #main-col holds the main pane's row (#pane-primary + #agents) over the summary block; it
          takes the primary's place in the hole's row, so the split's `order` rules and the
-         divider sit against it unchanged. */
+         divider sit against it unchanged. The split ratio is its flex-GROW (`applySplitFlex`);
+         its basis is the agent list's width, so the ratio divides what the two panes share — the
+         hole less the divider and the list — exactly as `usableWidth` measures it. */
       #main-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+      #terminal-hole.agents #main-col { flex-basis: var(--agents-w); }
+      #terminal-hole.agents #main-col:has(#agents.narrow) { flex-basis: var(--agents-narrow-w); }
       #main-row { flex: 1 1 0; min-height: 0; display: flex; }
       #pane-primary { flex: 1 1 0; }
       #pane-secondary { flex: 1 1 0; display: none; }
@@ -711,7 +715,7 @@
       // — the empty-state ground lives on the PANES, and an uncovered flex remainder is outside
       // either pane entirely).
       function resetSplit() {
-        document.getElementById("pane-primary").style.flex = "";
+        document.getElementById("main-col").style.flexGrow = "";
         document.getElementById("pane-secondary").style.flex = "";
       }
       // Sets the divider ratio on both panes' flex-basis WITHOUT touching visibility — shared by
@@ -722,7 +726,8 @@
       // ratio on the FIRST reportRect rather than flashing 50/50 first.
       function applySplitFlex(frac) {
         const f = Math.max(splitBand[0], Math.min(splitBand[1], frac));
-        document.getElementById("pane-primary").style.flex = f + " 1 0";
+        // Grow only: #main-col's basis is the agent list's width (see its CSS).
+        document.getElementById("main-col").style.flexGrow = String(f);
         document.getElementById("pane-secondary").style.flex = (1 - f) + " 1 0";
         return f;
       }
