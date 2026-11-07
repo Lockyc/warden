@@ -16,6 +16,8 @@ const SHADE_L: f64 = 0.30;
 /// OKLab lightness of the shade under dark text — a light pinned bar keeps a light shade, or
 /// its dark text would vanish on the summary rows.
 const SHADE_L_LIGHT: f64 = 0.88;
+/// The least WCAG contrast between bar and shade, so the title row always reads as its own band.
+const MIN_SHADE_CONTRAST: f64 = 1.4;
 /// OKLCH chroma of a generated bar, and the cap on a shade's.
 const CHROMA: f64 = 0.12;
 
@@ -39,9 +41,16 @@ pub fn project_colour(title: &str, pin: Option<Colour>) -> ProjectColour {
     } else {
         DARK
     };
-    let (_, c, h) = srgb_to_oklch(bar);
-    let shade_l = if fg == WHITE { SHADE_L } else { SHADE_L_LIGHT };
-    let shade = oklch_in_gamut(shade_l, c.min(CHROMA), h);
+    let (bar_l, c, h) = srgb_to_oklch(bar);
+    let target = if fg == WHITE { SHADE_L } else { SHADE_L_LIGHT };
+    // A pinned bar can sit at the shade's own lightness; then step 0.15 off the bar instead,
+    // darker first, whichever keeps both the band and the text readable.
+    let shade_at = |l: f64| oklch_in_gamut(l.clamp(0.0, 1.0), c.min(CHROMA), h);
+    let shade = [target, bar_l - 0.15, bar_l + 0.15]
+        .into_iter()
+        .map(shade_at)
+        .find(|&s| contrast(s, bar) >= MIN_SHADE_CONTRAST && contrast(fg, s) >= 4.5)
+        .unwrap_or_else(|| shade_at(target));
     ProjectColour {
         bar_bg: hex(bar),
         fg: hex(fg),
@@ -217,6 +226,25 @@ mod tests {
         let dark = project_colour("x", Some(Colour { r: 5, g: 5, b: 5 }));
         assert_eq!(dark.fg, "#ffffff");
         assert_ne!(dark.shade_bg, dark.bar_bg);
+    }
+
+    #[test]
+    fn shade_stands_apart_from_any_bar() {
+        let pins = [
+            "#00ff00", "#dbdbdb", "#2b2b2b", "#00ffff", "#e0e0e0", "#4d4d4d", "#ffffaa",
+        ];
+        let cases = NAMES.iter().map(|n| project_colour(n, None)).chain(
+            pins.iter()
+                .map(|p| project_colour("x", Colour::parse(p).ok())),
+        );
+        for c in cases {
+            let (bar, shade, fg) = (rgb(&c.bar_bg), rgb(&c.shade_bg), rgb(&c.fg));
+            assert!(
+                contrast(bar, shade) >= MIN_SHADE_CONTRAST,
+                "{c:?} bar vs shade"
+            );
+            assert!(contrast(fg, shade) >= 4.5, "{c:?} text on shade");
+        }
     }
 
     #[test]
