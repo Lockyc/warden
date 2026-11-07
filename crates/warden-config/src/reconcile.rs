@@ -30,7 +30,7 @@ pub struct TabMeta {
 /// any of them means a respawn. The one home for that decision: [`reconcile`] and the app's
 /// popped-out-tab return path both compare these, so a docked and a detached tab decide alike.
 /// `split_startup` is `None` for no declared split, `Some(None)` for a split running a bare shell
-/// (or, on a Rex tab, any stack: its panes ride `set_meta`).
+/// (or, on a Rex tab, any split: its panes ride `set_meta`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalSpec<'a> {
     pub dir: &'a Path,
