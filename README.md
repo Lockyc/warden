@@ -138,7 +138,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `dir` | *required* | Working directory the terminal opens in (`~` expanded). A dir that doesn't exist is a warning, not an error. On a remote `server` it's a path on that host, taken as written. |
+| `dir` | *required* | Working directory the terminal opens in (`~` expanded; a relative path is relative to the config file). A dir that doesn't exist is a warning, not an error. On a remote `server` it's a path on that host, taken as written. |
 | `title` | basename of `dir` | Display label. Purely cosmetic — may repeat within a window. |
 | `id` | unset | Stable identity, needed only to disambiguate two tabs that share a `dir`. Otherwise the `dir` *is* the identity. |
 | `load_on_open` | `false` | Spawn at launch and keep running in the background. Otherwise a tab spawns lazily on first focus. |
@@ -155,7 +155,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `dir` | *required* | Dir to scan. The walk stops at each `.git` (never descends into a repo) and skips hidden dirs and symlinks. |
+| `dir` | *required* | Dir to scan (`~` expanded; a relative path is relative to the config file). The walk stops at each `.git` (never descends into a repo) and skips hidden dirs and symlinks. |
 | `name` | basename of `dir` | Section header for the discovered tree. |
 | `depth` | `6` | How deep to scan; must be ≥ 1. |
 | `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Overrides applied to every project discovered under this root. |

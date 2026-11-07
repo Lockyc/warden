@@ -18,10 +18,10 @@
 # each one becomes a tab in a collapsible tree section. Roots cascade shell/cmd/probe/kill just
 # like tabs (root -> window -> global, no tab level). See the "projects" window at the bottom.
 #
-# The `dir`s point at examples/projects/ (tracked mock dirs) so this demo validates warning-free
-# from the repo root. `just run` first `git init`s those mock dirs (`just seed-examples`) so the
-# "projects" window's tree has real repos to discover. A real config uses absolute or ~/-prefixed
-# paths to your actual projects.
+# The `dir`s point at examples/projects/ (tracked mock dirs), relative to this file, so this demo
+# validates warning-free from any cwd. `just run` first `git init`s those mock dirs (`just
+# seed-examples`) so the "projects" window's tree has real repos to discover. A real config points
+# at your actual projects, usually absolute or ~/-prefixed.
 
 shell          = "fish -l"     # global default shell for every tab
 cmd            = "amux"        # global default: launch agentmux in each tab (shell stays live on exit)
@@ -80,17 +80,17 @@ suspend = '"$HOME/.agentmux/bin/amux" --suspend'
   colour = "#1f9e8a"
   [[window.tab]]
     title = "dotfiles"
-    dir   = "examples/projects/personal/dotfiles"
+    dir   = "projects/personal/dotfiles"
   [[window.tab]] # cmd = "" opts out of amux → plain shell; load_on_open runs it from launch;
     # split = false opts out of the global split so ⌘D's runtime split stays exercisable
     title        = "blog"
-    dir          = "examples/projects/personal/blog"
+    dir          = "projects/personal/blog"
     cmd          = ""
     load_on_open = true
     split        = false
   [[window.tab]] # also a plain shell (no agent) for quick notes
     title = "notes"
-    dir   = "examples/projects/personal/notes"
+    dir   = "projects/personal/notes"
     cmd   = ""
 
 [[window]]
@@ -99,26 +99,26 @@ suspend = '"$HOME/.agentmux/bin/amux" --suspend'
   open_on_start = false     # starts closed — open from the launcher
   [[window.tab]] # loose tab → renders before any group
     title        = "planning"
-    dir          = "examples/projects/work/planning"
+    dir          = "projects/work/planning"
     load_on_open = true
 
   [[window.group]]
     name = "backend"
     [[window.group.tab]]
       title = "api"
-      dir   = "examples/projects/work/api"
+      dir   = "projects/work/api"
     [[window.group.tab]]
       title = "workers"
-      dir   = "examples/projects/work/workers"
+      dir   = "projects/work/workers"
 
   [[window.group]]
     name = "frontend"
     [[window.group.tab]]
       title = "web"
-      dir   = "examples/projects/work/web"
+      dir   = "projects/work/web"
     [[window.group.tab]] # per-tab shell override (a toolchain that wants zsh)
       title = "mobile"
-      dir   = "examples/projects/work/mobile"
+      dir   = "projects/work/mobile"
       shell = "zsh"
 
 # A project-tree window: instead of listing tabs, point a [[window.root]] at a dir and warden
@@ -132,4 +132,4 @@ suspend = '"$HOME/.agentmux/bin/amux" --suspend'
   colour = "#8a5cf6"
 
   [[window.root]]
-    dir = "examples/projects" # name defaults to the dir's basename ("projects")
+    dir = "projects" # name defaults to the dir's basename ("projects")

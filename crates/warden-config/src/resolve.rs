@@ -187,11 +187,11 @@ pub fn normalize_dir_key(dir: &Path) -> String {
     trimmed.to_string()
 }
 
-/// Resolve with the built-in [`DEFAULT_SHELL`] as the unset-`shell` fallback. Convenience
-/// for tests and the bare [`load`]; the app/CLI use [`resolve_with`] to inject the user's
-/// detected login shell instead.
+/// Resolve with the built-in [`DEFAULT_SHELL`] as the unset-`shell` fallback and relative dirs
+/// left as written. Convenience for tests; the app/CLI load through [`crate::load_with`], which
+/// injects the user's login shell and the config file's directory.
 pub fn resolve(raw: RawConfig) -> Result<(Config, Vec<Warning>), ResolveError> {
-    resolve_with(raw, DEFAULT_SHELL)
+    resolve_with(raw, DEFAULT_SHELL, Path::new(""))
 }
 
 impl Config {
@@ -208,10 +208,11 @@ impl Config {
 /// Resolve a raw config, defaulting an unset `shell` (at every cascade level) to
 /// `default_shell` — the caller's detected **login shell**. warden is a terminal, so the app
 /// passes your `$SHELL` here; this keeps the crate pure (no env access) by taking the default
-/// as data.
+/// as data. A relative local `dir` resolves against `base`, the config file's directory.
 pub fn resolve_with(
     raw: RawConfig,
     default_shell: &str,
+    base: &Path,
 ) -> Result<(Config, Vec<Warning>), ResolveError> {
     let global_split = resolve_split_level(raw.split.as_ref())?;
     let globals = Globals {
@@ -223,6 +224,7 @@ pub fn resolve_with(
         resume: raw.resume.as_deref(),
         server: raw.server.as_deref(),
         split: global_split.as_ref(),
+        base,
     };
     let mut warnings = Vec::new();
     let mut windows = Vec::with_capacity(raw.windows.len());
@@ -268,6 +270,19 @@ struct Globals<'a> {
     resume: Option<&'a str>,
     server: Option<&'a str>,
     split: Option<&'a Option<Split>>,
+    /// The directory a relative local `dir` resolves against ([`anchor`]).
+    base: &'a Path,
+}
+
+/// A local `dir` after `~` expansion, made absolute against `base` (the config file's directory)
+/// when it is relative, so the app and `warden validate` resolve it the same from any cwd. An
+/// empty `base` leaves it as written.
+fn anchor(base: &Path, dir: PathBuf) -> PathBuf {
+    if dir.is_relative() {
+        base.join(dir)
+    } else {
+        dir
+    }
 }
 
 fn resolve_window(
@@ -412,7 +427,7 @@ fn resolve_tab(
     let dir = if remote {
         PathBuf::from(dir_str)
     } else {
-        config_core::expand_tilde(dir_str)
+        anchor(globals.base, config_core::expand_tilde(dir_str))
     };
     if let Some(ref t) = rt.title {
         if t.trim().is_empty() {
@@ -580,8 +595,9 @@ fn resolve_root(
     // name/dir/depth validation + tilde expansion + basename default are shared with lector via
     // config-core's `resolve_root_dir` — leaf-free, so it hands back a bare RootDir and warden
     // maps its error onto ResolveError with this window's context.
-    let root_dir = config_core::resolve_root_dir(rr.name.as_deref(), &rr.dir, rr.depth)
+    let mut root_dir = config_core::resolve_root_dir(rr.name.as_deref(), &rr.dir, rr.depth)
         .map_err(|e| map_root_error(e, &rp.title))?;
+    root_dir.dir = anchor(globals.base, root_dir.dir);
     let server = cascade_server(
         rr.server.as_deref(),
         rp.extra.server.as_deref(),

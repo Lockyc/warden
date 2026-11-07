@@ -54,12 +54,13 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
 }
 
 /// Read + parse + resolve, defaulting an unset `shell` to `default_shell` (the caller's
-/// detected login shell). This is the path the app and the watcher use so hot-reload keeps
-/// the same login-shell default as the initial load.
+/// detected login shell) and resolving a relative `dir` against `path`'s directory. This is the
+/// path the app and the watcher use so hot-reload keeps the same defaults as the initial load.
 pub fn load_with(path: &Path, default_shell: &str) -> Result<Loaded, LoadError> {
     let text = std::fs::read_to_string(path)?;
     let raw = parse(&text)?;
-    let (config, warnings) = resolve_with(raw, default_shell)?;
+    let base = path.parent().unwrap_or(Path::new(""));
+    let (config, warnings) = resolve_with(raw, default_shell, base)?;
     Ok(Loaded { config, warnings })
 }
 
@@ -99,6 +100,33 @@ colour = "#0f8a8a"
         );
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.config.windows[0].title, "work");
+    }
+
+    #[test]
+    fn a_relative_dir_resolves_against_the_config_files_directory() {
+        let (d, path) = write_cfg(
+            r#"
+[[window]]
+title = "w"
+[[window.tab]]
+dir = "proj"
+[[window.tab]]
+dir = "/abs"
+[[window.root]]
+dir = "tree"
+"#,
+        );
+        std::fs::create_dir(d.path().join("proj")).unwrap();
+        let loaded = load(&path).unwrap();
+        let w = &loaded.config.windows[0];
+        assert_eq!(w.tabs[0].dir, d.path().join("proj"));
+        assert_eq!(w.tabs[1].dir, Path::new("/abs"));
+        assert_eq!(w.roots[0].dir, d.path().join("tree"));
+        assert!(
+            !loaded.warnings.iter().any(|w| w.message.contains("proj")),
+            "found from any cwd: {:?}",
+            loaded.warnings
+        );
     }
 
     #[test]
