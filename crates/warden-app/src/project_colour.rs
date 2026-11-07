@@ -159,7 +159,10 @@ mod tests {
 
     #[test]
     fn same_title_same_colour() {
-        assert_eq!(project_colour("warden", None), project_colour("warden", None));
+        assert_eq!(
+            project_colour("warden", None),
+            project_colour("warden", None)
+        );
     }
 
     #[test]
@@ -185,7 +188,14 @@ mod tests {
 
     #[test]
     fn pin_sets_bar_exactly() {
-        let c = project_colour("x", Some(Colour { r: 0x0f, g: 0x8a, b: 0x8a }));
+        let c = project_colour(
+            "x",
+            Some(Colour {
+                r: 0x0f,
+                g: 0x8a,
+                b: 0x8a,
+            }),
+        );
         assert_eq!(c.bar_bg, "#0f8a8a");
         let (_, _, bh) = srgb_to_oklch(rgb(&c.bar_bg));
         let (_, _, sh) = srgb_to_oklch(rgb(&c.shade_bg));
@@ -194,7 +204,14 @@ mod tests {
 
     #[test]
     fn light_pin_gets_dark_text() {
-        let light = project_colour("x", Some(Colour { r: 0xff, g: 0xff, b: 0xaa }));
+        let light = project_colour(
+            "x",
+            Some(Colour {
+                r: 0xff,
+                g: 0xff,
+                b: 0xaa,
+            }),
+        );
         assert_eq!(light.fg, "#111111");
         assert_ne!(light.shade_bg, light.bar_bg);
         let dark = project_colour("x", Some(Colour { r: 5, g: 5, b: 5 }));
@@ -205,7 +222,11 @@ mod tests {
     #[test]
     fn text_is_legible() {
         let pins = [
-            Some(Colour { r: 0xff, g: 0xff, b: 0xaa }),
+            Some(Colour {
+                r: 0xff,
+                g: 0xff,
+                b: 0xaa,
+            }),
             Some(Colour { r: 5, g: 5, b: 5 }),
         ];
         let cases = NAMES

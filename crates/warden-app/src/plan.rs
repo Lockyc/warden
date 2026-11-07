@@ -52,6 +52,7 @@ pub fn tab_to_plan(root_dirs: &HashMap<&str, &Path>, t: &Tab) -> TabPlan {
             split: t.split.clone(),
             server: t.server.clone(),
             resume: t.resume.clone(),
+            colour: t.colour,
         },
         load_on_open: t.load_on_open,
     }
@@ -456,6 +457,7 @@ colour = "#0f8a8a"
             background_tabs_section: false,
             remember_tabs: false,
             tabs: vec![Tab {
+                colour: None,
                 id: None,
                 key: "/r/Dev/gh/lockyc/warden".into(),
                 title: "warden".into(),
@@ -586,6 +588,7 @@ colour = "#0f8a8a"
         use warden_config::{Density, Root, Tab, TabDigitKeys, WindowUpdate};
 
         let added = Tab {
+            colour: None,
             id: None,
             key: "/r/Dev/gh/lockyc/warden".into(),
             title: "warden".into(),
@@ -711,6 +714,7 @@ colour = "#0f8a8a"
 
         // OLD: the project is only discovered by the root → a tree row under "Developer".
         let discovered = Tab {
+            colour: None,
             id: None,
             key: key.clone(),
             title: "mycelium".into(),
@@ -731,6 +735,7 @@ colour = "#0f8a8a"
         // NEW: a curated tab in the "tools" group at the SAME dir shadows the discovery
         // (same key). Its group is a plain [[window.group]], not a root → not a tree row.
         let curated = Tab {
+            colour: None,
             id: None,
             key: key.clone(),
             title: "mycelium".into(),

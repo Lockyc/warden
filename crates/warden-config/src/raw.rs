@@ -170,6 +170,8 @@ pub struct RawTab {
     pub split: Option<RawSplit>,
     #[serde(default)]
     pub load_on_open: bool,
+    // "#rgb" | "#rrggbb"; validated in resolve.rs.
+    pub colour: Option<String>,
 }
 
 pub fn parse(toml_str: &str) -> Result<RawConfig, toml::de::Error> {

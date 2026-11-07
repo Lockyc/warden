@@ -22,6 +22,8 @@ pub struct TabMeta {
     /// to the split's PRESENCE or `startup` is a terminal-spec change and rides
     /// `respawn_tabs` instead — the second pane has to be (re)spawned to run it.
     pub split: Option<Split>,
+    /// The kept tab's pinned project colour (`Tab::colour`), carried like `title`.
+    pub colour: Option<Colour>,
 }
 
 /// What a tab's terminal runs — the fields a running PTY can't take on in place, so a change to
@@ -128,7 +130,7 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 ///     changed with no explicit `id` changes key, so it is a remove + add.
 ///   - `tab_order`: when kept tabs reorder; an emitted update always carries the full new key list.
 ///   - `set_meta` — a live update, no respawn: a kept tab's display `title`, `group`, `probe`,
-///     `kill`, `suspend`, `resume`, split `side`/`size` (a live re-layout), or the dir of the
+///     `kill`, `suspend`, `resume`, `colour`, split `side`/`size` (a live re-layout), or the dir of the
 ///     `[[window.root]]` it was discovered under (its sidebar nesting derives from it).
 ///   - `respawn_tabs` — torn down and respawned in place, since a terminal can't migrate its
 ///     cwd/session: a kept tab's [`TerminalSpec`].
@@ -215,6 +217,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                             || ot.kill != nt.kill
                             || ot.suspend != nt.suspend
                             || ot.resume != nt.resume
+                            || ot.colour != nt.colour
                             || (ot.split.is_some()
                                 && nt.split.is_some()
                                 && layout(ot) != layout(nt))
@@ -230,6 +233,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                                     resume: nt.resume.clone(),
                                     title: nt.title.clone(),
                                     split: nt.split.clone(),
+                                    colour: nt.colour,
                                 },
                             ));
                         }
@@ -544,6 +548,7 @@ colour = "#0f8a8a"
                     resume: None,
                     title: "api".to_string(),
                     split: None,
+                    colour: None,
                 }
             )]
         );
@@ -585,6 +590,7 @@ colour = "#0f8a8a"
                     resume: None,
                     title: "api".to_string(),
                     split: None,
+                    colour: None,
                 }
             )]
         );
@@ -628,10 +634,40 @@ colour = "#0f8a8a"
                     resume: None,
                     title: "api".to_string(),
                     split: None,
+                    colour: None,
                 }
             )]
         );
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+    }
+
+    #[test]
+    fn colour_change_on_kept_tab_emits_set_meta_not_respawn() {
+        let old = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp/api"
+"##);
+        let new = cfg(r##"
+[[window]]
+title = "work"
+  [[window.tab]]
+  dir = "/tmp/api"
+  colour = "#0f8a8a"
+"##);
+        let r = reconcile(&old, &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].set_meta.len(), 1);
+        assert_eq!(
+            r.update[0].set_meta[0].1.colour,
+            Some(Colour {
+                r: 0x0f,
+                g: 0x8a,
+                b: 0x8a
+            })
+        );
+        assert!(r.update[0].respawn_tabs.is_empty());
     }
 
     #[test]
@@ -720,6 +756,7 @@ colour = "#0f8a8a"
                     resume: None,
                     title: "api".to_string(),
                     split: None,
+                    colour: None,
                 }
             )]
         );

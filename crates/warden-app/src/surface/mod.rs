@@ -114,6 +114,9 @@ pub struct TabSpec {
     /// The program a woken agent's resume command runs (config `resume`, `apply_resume`), read
     /// when the tab's main pane opens; `None` types the reported command as-is.
     pub resume: Option<String>,
+    /// The pinned project colour (config `colour`), or `None` to derive it from the title
+    /// (`project_colour`). Read only for `TabDto.colour`.
+    pub colour: Option<warden_config::Colour>,
 }
 
 /// Rect in AppKit view coordinates (points, origin bottom-left).

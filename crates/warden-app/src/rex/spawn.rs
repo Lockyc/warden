@@ -365,6 +365,7 @@ mod tests {
 
     fn spec(server: &str, dir: &str) -> TabSpec {
         TabSpec {
+            colour: None,
             id: "t".into(),
             title: "t".into(),
             dir: PathBuf::from(dir),

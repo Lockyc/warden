@@ -1226,6 +1226,7 @@ impl Registry {
             t.primary.spec.suspend = meta.suspend.clone();
             t.primary.spec.resume = meta.resume.clone();
             t.primary.spec.split = meta.split.clone();
+            t.primary.spec.colour = meta.colour;
             // Tree-ness can flip on a kept tab when its group moves between a root
             // section and a plain group (curated↔discovered shadowing) — recomputed
             // upstream in `tab_ops`, so it must be applied here too, not left
@@ -2146,6 +2147,7 @@ mod tests {
     }
     fn spec(id: &str, dir: &str) -> TabSpec {
         TabSpec {
+            colour: None,
             id: id.into(),
             title: id.into(),
             dir: PathBuf::from(dir),
@@ -2164,6 +2166,7 @@ mod tests {
     }
     fn spec_with_probe(id: &str, dir: &str, probe: Option<&str>) -> TabSpec {
         TabSpec {
+            colour: None,
             id: id.to_string(),
             title: id.to_string(),
             dir: PathBuf::from(dir),
@@ -2269,6 +2272,7 @@ mod tests {
         r.set_meta(
             "t0",
             &warden_config::TabMeta {
+                colour: None,
                 title: "Renamed".to_string(),
                 group: Some("backend".into()),
                 probe: Some("probe-x".into()),
@@ -2293,6 +2297,7 @@ mod tests {
         r.set_meta(
             "nope",
             &warden_config::TabMeta {
+                colour: None,
                 title: "x".to_string(),
                 group: None,
                 probe: None,
@@ -2842,6 +2847,7 @@ mod tests {
         r.set_meta(
             "a",
             &warden_config::TabMeta {
+                colour: None,
                 group: None,
                 probe: None,
                 kill: None,
@@ -3494,6 +3500,7 @@ mod tests {
         r.set_meta(
             "t",
             &warden_config::TabMeta {
+                colour: None,
                 title: "t".into(),
                 group: None,
                 probe: None,

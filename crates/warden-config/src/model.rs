@@ -150,4 +150,7 @@ pub struct Tab {
     /// Resolved second pane for this tab (cascaded tab→window→global, whole-table). `None`
     /// = no split (a single pane).
     pub split: Option<Split>,
+    /// The project's colour, pinned (tab-level only, no cascade). `None` = derived from the
+    /// title by the app. Presentational: a change is a live `set_meta`, never a respawn.
+    pub colour: Option<Colour>,
 }

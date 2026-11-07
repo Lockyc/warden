@@ -142,6 +142,7 @@ cmd    = "amux"              # this window's default startup command (each tab c
 | `title` | basename of `dir` | Display label. Purely cosmetic — may repeat within a window. |
 | `id` | unset | Stable identity, needed only to disambiguate two tabs that share a `dir`. Otherwise the `dir` *is* the identity. |
 | `load_on_open` | `false` | Spawn at launch and keep running in the background. Otherwise a tab spawns lazily on first focus. |
+| `colour` | derived from `title` | The project colour of the agent pane's summary block, `#rgb` or `#rrggbb`. Unset, each title gets its own hue. |
 | `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Per-tab overrides. |
 
 **`[[window.group]]`** — a labelled sidebar section:

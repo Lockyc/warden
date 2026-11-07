@@ -1363,6 +1363,7 @@ fn reconcile_returned_tab(
         resume: n.resume.clone(),
         title: n.title.clone(),
         split: n.split.clone(),
+        colour: n.colour,
     };
     registry.set_meta(id, &meta, n.tree, n.tree_path.clone());
     None
@@ -1508,6 +1509,7 @@ mod tests {
 
     fn tab_spec(id: &str, dir: &str) -> TabSpec {
         TabSpec {
+            colour: None,
             id: id.into(),
             title: id.into(),
             dir: std::path::PathBuf::from(dir),
@@ -1611,6 +1613,7 @@ mod tests {
         let proj = base.join("proj");
         std::fs::create_dir_all(proj.join(".git")).unwrap();
         let curated = Tab {
+            colour: None,
             id: Some("mine".into()),
             key: "mine".into(),
             title: "curated".into(),

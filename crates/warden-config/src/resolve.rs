@@ -116,6 +116,10 @@ pub enum ResolveError {
     EmptyDir { window: String },
     #[error("window {window:?} has a tab with an empty explicit title")]
     EmptyTabTitle { window: String },
+    #[error(
+        "window {window:?} has a tab with an invalid colour {value:?} (expected #rgb or #rrggbb)"
+    )]
+    BadTabColour { window: String, value: String },
     #[error("invalid tab_digit_keys {0:?} (expected \"jump\" or \"cycle\")")]
     BadTabDigitKeys(String),
     #[error("invalid density {0:?} (expected \"comfortable\" or \"compact\")")]
@@ -431,6 +435,16 @@ fn resolve_tab(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let colour = rt
+        .colour
+        .as_deref()
+        .map(|v| {
+            Colour::parse(v).map_err(|_| ResolveError::BadTabColour {
+                window: rp.title.clone(),
+                value: v.to_string(),
+            })
+        })
+        .transpose()?;
     let key = id.clone().unwrap_or_else(|| normalize_dir_key(&dir));
     if !seen_keys.insert(key.clone()) {
         return Err(ResolveError::DuplicateTabIdentity {
@@ -482,6 +496,7 @@ fn resolve_tab(
         resume,
         server,
         split,
+        colour,
     })
 }
 
@@ -660,6 +675,50 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert!(cfg.format_on_save);
+    }
+
+    #[test]
+    fn tab_colour_parses_and_defaults_none() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  dir = "/tmp/a"
+  colour = "#0f8a8a"
+  [[window.tab]]
+  dir = "/tmp/b"
+"##,
+        )
+        .unwrap();
+        let tabs = &cfg.windows[0].tabs;
+        assert_eq!(
+            tabs[0].colour,
+            Some(Colour {
+                r: 0x0f,
+                g: 0x8a,
+                b: 0x8a
+            })
+        );
+        assert_eq!(tabs[1].colour, None);
+    }
+
+    #[test]
+    fn bad_tab_colour_is_rejected() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  dir = "/tmp/a"
+  colour = "teal"
+"##,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, ResolveError::BadTabColour { ref window, ref value } if window == "w" && value == "teal"),
+            "{err:?}"
+        );
     }
 
     #[test]

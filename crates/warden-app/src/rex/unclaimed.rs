@@ -29,6 +29,7 @@ pub fn synthesize(server: &str, live: &[SessionInfo], claimed: &HashSet<String>)
     live.iter()
         .filter(|s| !claimed.contains(&s.id))
         .map(|s| Tab {
+            colour: None,
             id: None,
             key: format!("{KEY_PREFIX}{}", s.id),
             title: if s.label.is_empty() {
@@ -222,6 +223,7 @@ mod tests {
 
     fn tab(key: &str, server: Option<&str>) -> Tab {
         Tab {
+            colour: None,
             id: None,
             key: key.into(),
             title: key.into(),

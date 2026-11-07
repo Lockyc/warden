@@ -28,6 +28,7 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| proj.path.to_string_lossy().into_owned());
             Tab {
+                colour: None,
                 id: None,
                 key: warden_config::normalize_dir_key(&proj.path),
                 title,
@@ -137,6 +138,7 @@ mod tests {
         // resolves by keeping the curated tab (first in `window.tabs`, before roots' synthesized
         // tabs are appended).
         let curated = Tab {
+            colour: None,
             id: None,
             key: proj.to_string_lossy().into_owned(),
             title: "curated-title".into(),

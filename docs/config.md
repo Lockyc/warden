@@ -81,6 +81,8 @@ split  = false                         # optional; a whole `[window.split]` tabl
   shell      = "bash"                  # optional; per-tab shell override
   cmd        = "amux"                  # optional; per-tab startup override ("" = opt out → bare shell)
   load_on_open = true                  # optional; default false (spawn at launch + keep running for background work)
+  colour     = "#0f8a8a"               # optional; tab-level only, no cascade; the summary block's project colour
+                                       #   (default derived from title — warden-app `project_colour.rs`); live on edit
   probe      = "…"                     # optional; session-presence probe override for this tab ("" = opt out)
   kill       = "…"                     # optional; session-kill command override for this tab ("" = opt out)
   suspend    = "…"                     # optional; session-suspend command override for this tab ("" = opt out)
