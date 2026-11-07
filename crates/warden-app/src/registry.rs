@@ -181,6 +181,8 @@ pub struct TabDto {
     pub split_layout: Option<SplitLayoutDto>,
     /// The main pane holds agent tabs, so the chrome shows the agent tab list beside it.
     pub agents: bool,
+    /// The project's colours for the agent pane's summary block (`project_colour`).
+    pub colour: crate::project_colour::ProjectColour,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -1133,6 +1135,7 @@ impl Registry {
                     size: s.size,
                 }),
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
+                colour: crate::project_colour::project_colour(&t.title, t.primary.spec.colour),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
@@ -2261,6 +2264,38 @@ mod tests {
         r.reorder(&["b".to_string(), "a".to_string()]);
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
+    }
+
+    #[test]
+    fn tab_dto_carries_the_project_colour() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let mut s = spec("t0", "/tmp");
+        s.colour = Some(warden_config::Colour {
+            r: 0x0f,
+            g: 0x8a,
+            b: 0x8a,
+        });
+        let _ = r.add(&s, false);
+        assert_eq!(r.tab_dtos()[0].colour.bar_bg, "#0f8a8a");
+        let meta = |title: &str| warden_config::TabMeta {
+            colour: None,
+            title: title.to_string(),
+            group: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            resume: None,
+            split: None,
+        };
+        r.set_meta("t0", &meta("alpha"), false, vec![]);
+        let alpha = r.tab_dtos()[0].colour.bar_bg.clone();
+        assert_ne!(alpha, "#0f8a8a", "unpinning derives from the title");
+        r.set_meta("t0", &meta("beta"), false, vec![]);
+        assert_ne!(
+            r.tab_dtos()[0].colour.bar_bg,
+            alpha,
+            "a new title, a new hue"
+        );
     }
 
     #[test]
