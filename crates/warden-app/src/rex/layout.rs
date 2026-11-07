@@ -194,16 +194,26 @@ pub fn stack_layout(panes: &[StackPane], dir: &Path) -> Value {
     node(panes, panes.iter().map(|p| p.size).sum(), dir)
 }
 
-/// A split ratio kept where each side holds at least 5% of the split — the band the page's
-/// divider drag (`scratchDragRatio` in `ui/index.html`) keeps to.
+/// `[min, max]` of a scratch split's ratio: each side holds at least 5% of the split. The page's
+/// divider drag (`scratchDragRatio` in `ui/index.html`) is sent it as `InitDto.scratch_band`.
+pub const RATIO_BAND: [f64; 2] = [0.05, 0.95];
+
+/// A split ratio kept to [`RATIO_BAND`].
 pub fn clamp_ratio(ratio: f64) -> f64 {
-    ratio.clamp(0.05, 0.95)
+    ratio.clamp(RATIO_BAND[0], RATIO_BAND[1])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn clamp_ratio_keeps_to_the_band_the_page_is_sent() {
+        assert_eq!(clamp_ratio(0.0), RATIO_BAND[0]);
+        assert_eq!(clamp_ratio(1.0), RATIO_BAND[1]);
+        assert_eq!(clamp_ratio(0.3), 0.3);
+    }
 
     fn nested() -> Value {
         json!({

@@ -543,6 +543,8 @@
       // [min, max] share either pane of a split may take — the backend's `InitDto.split_band`,
       // set from every snapshot before anything can lay a split out.
       let splitBand;
+      // [min, max] ratio a scratch column divider may take within its split — `InitDto.scratch_band`.
+      let scratchBand;
       const detached = new Set(); // tab ids popped out into their own window (onSelect → raise it)
       // True while warden itself drives the component (`wardenSelect`): an onSelect fired
       // synchronously inside it is warden's own open, not the user's, so it wakes no agent.
@@ -810,12 +812,13 @@
         invoke("scratch_new", { id: activeId }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
       }
       // The split ratio for divider `d` dragged to `pointer` (a column fraction along its axis):
-      // relative to the split's own rect, each side keeping 5% (`rex::layout::clamp_ratio`'s band).
+      // relative to the split's own rect, kept to `scratchBand`.
       function scratchDragRatio(d, pointer) {
         const vert = d.dir === "vertical";
         const origin = vert ? d.rect.y : d.rect.x;
         const extent = vert ? d.rect.h : d.rect.w;
-        return extent > 0 ? Math.min(0.95, Math.max(0.05, (pointer - origin) / extent)) : 0.5;
+        const [lo, hi] = scratchBand;
+        return extent > 0 ? Math.min(hi, Math.max(lo, (pointer - origin) / extent)) : 0.5;
       }
       // `view` with divider `di` at `ratio`: everything inside its split before the boundary
       // scales into the new before side, everything after into the new after side; the rest
@@ -1246,6 +1249,7 @@
 
       function applyDto(dto) {
         splitBand = dto.split_band;
+        scratchBand = dto.scratch_band;
         applyTermFont(dto);
         // chrome-core's first-tab fallback fires onSelect inside `update` — warden's own open.
         wardenSelect(() => sb.update(toComponentDto(dto)));
@@ -1934,6 +1938,7 @@
         if (!dto) return; // no managed window for this label yet (race: init_tabs ran before this window's WindowState was inserted)
         myLabel = dto.label;
         splitBand = dto.split_band;
+        scratchBand = dto.scratch_band;
         applyTermFont(dto);
 
         sb = window.ChromeSidebar.mount(

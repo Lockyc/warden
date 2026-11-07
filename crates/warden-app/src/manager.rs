@@ -175,6 +175,9 @@ pub struct InitDto {
     /// `[SPLIT_SIZE_MIN, SPLIT_SIZE_MAX]`: the share either pane of a split may take. The
     /// chrome clamps its divider drag to it and rejects a saved ratio outside it.
     pub split_band: [f64; 2],
+    /// `rex::layout::RATIO_BAND`: the ratio a scratch column divider may take within its split.
+    /// The chrome clamps its drag to it; the backend clamps again on the way to Rex.
+    pub scratch_band: [f64; 2],
     /// The terminal's font size in points (`ghostty::terminal_font_size`); the chrome's agent
     /// column and summary block size their text with it.
     pub terminal_font_size: f32,
@@ -674,6 +677,7 @@ impl WindowManager {
                 background_tabs_section: ws.background_tabs_section,
                 auto_update: self.last_good.auto_update,
                 split_band: SPLIT_BAND,
+                scratch_band: crate::rex::layout::RATIO_BAND,
                 terminal_font_size: crate::surface::ghostty::terminal_font_size(),
                 trees: self
                     .last_good
