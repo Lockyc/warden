@@ -115,7 +115,11 @@
          always-on-ground ruling as `.pane`/`#empty-state`, one box further out again, so a
          corner that is rounded but not masked (a radius mismatch, a future edge) can never leak
          wallpaper. */
-      #terminal-hole { flex: 1; background: var(--pane-ground); position: relative; display: flex; }
+      /* `min-width: 0`: without it the hole's floor is its content's min-content width, which
+         includes the summary's nowrap rows — a long "doing"/"said" line widens the hole past the
+         window and shoves the panes (and their native surfaces) off its right edge. */
+      #terminal-hole { flex: 1; min-width: 0; background: var(--pane-ground); position: relative;
+        display: flex; }
       /* box-sizing: border-box + an always-present (transparent-by-default) border keeps the pane's
          OUTER box identical whether or not `.focused` is applied — only the border's COLOR
          changes, never the box's size, so toggling focus can never jitter layout for a frame.
