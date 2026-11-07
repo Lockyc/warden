@@ -78,6 +78,11 @@ check in this order:
    ⇧/⌥/⌃ but never ⌘ — so ⌘-click arrives as a bare click and the program opens links on its own
    terms (Claude Code: ⌃-click). ⇧⌘-click still reaches libghostty's handler, file paths included.
    Diagnostic: `tmux -L <socket> list-panes -F '#{mouse_any_flag}'` reads `1`.
+4. **In a Rex tab, `label (url)` text where a link should be is the program's detection, not the
+   pane.** Rex sets `TERM_PROGRAM=rex`, which supports-hyperlinks-style checks (Claude Code
+   among them) don't list, so the program never emits OSC 8. Rex and `warden-relay` carry OSC 8
+   through intact, live and in the snapshot replay. Rex has no per-session env option, so the fix
+   is `FORCE_HYPERLINK=1` in the shell Rex starts when `$TERM_PROGRAM` is `rex`.
 
 ## Child exit
 

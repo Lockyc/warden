@@ -290,6 +290,16 @@ mod tests {
         assert_eq!(consumed, snap.len());
     }
 
+    #[test]
+    fn a_snapshot_replays_its_osc8_hyperlinks() {
+        let text = b"see \x1b]8;;https://example.com/x\x1b\\the docs\x1b]8;;\x1b\\ now";
+        let snap = encode_snapshot(text, 80, 24);
+        let (vt, _) = snapshot_to_vt(&snap, None).expect("decode");
+        let vt = String::from_utf8_lossy(&vt);
+        assert!(vt.contains("]8;"), "no OSC 8 in the replay: {vt:?}");
+        assert!(vt.contains("https://example.com/x"), "{vt:?}");
+    }
+
     /// The longest run of `b` in `s`.
     fn longest_run(s: &str, b: char) -> usize {
         s.split(|c| c != b).map(str::len).max().unwrap_or(0)
