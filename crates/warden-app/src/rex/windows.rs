@@ -152,21 +152,37 @@ impl Tracked {
     }
 
     /// The title a window still on Rex's label should take: one set by the process that reported
-    /// the status record — not the shell that ran it — other than the program's own name
-    /// ("Claude Code" from `claude-code`).
+    /// the status record — not the shell that ran it — less its leading status glyph, other than
+    /// the program's own name ("✳ Claude Code" from `claude-code`).
     fn name(&self) -> Option<&str> {
         let record = self.record.value.as_ref()?;
         let title = self.title.value.as_ref()?;
         if record.pid.is_none() || title.pid != record.pid {
             return None;
         }
-        let text = title.text.trim();
-        let own = record
-            .app
-            .as_deref()
-            .is_some_and(|app| text.to_lowercase().replace(' ', "-") == app.to_lowercase());
-        (!text.is_empty() && !own).then_some(text)
+        let text = unglyphed(&title.text);
+        (!text.is_empty() && !self.is_own_name(text)).then_some(text)
     }
+
+    /// True if `label` is only the reporting program's own name — a window given it is still
+    /// waiting for a real one.
+    fn is_own_name(&self, label: &str) -> bool {
+        let label = unglyphed(label).to_lowercase().replace(' ', "-");
+        self.record
+            .value
+            .as_ref()
+            .and_then(|r| r.app.as_deref())
+            .is_some_and(|app| label == app.to_lowercase())
+    }
+}
+
+/// `title` without the status glyph a program leads it with (Claude Code's `✳`, and its
+/// spinner frames while working) or surrounding whitespace. ASCII is kept, so `[WIP] x` and
+/// `~/dir` survive.
+fn unglyphed(title: &str) -> &str {
+    title
+        .trim_start_matches(|c: char| c.is_whitespace() || (!c.is_ascii() && !c.is_alphanumeric()))
+        .trim_end()
 }
 
 /// Rex's own label for a window it named: `Window` and the last 8 digits of its id.
@@ -314,9 +330,9 @@ impl Inner {
         Ok(())
     }
 
-    /// Relabel each of `server`'s windows still on Rex's own label whose block has a name to
-    /// give it ([`Tracked::name`]), each on its own worker. A failed relabel is tried again at
-    /// the block's next status change.
+    /// Relabel each of `server`'s windows still on Rex's own label, or on its program's own name,
+    /// whose block has a name to give it ([`Tracked::name`]), each on its own worker. A failed
+    /// relabel is tried again at the block's next status change.
     pub(super) fn name_windows(self: &Arc<Self>, server: &str) {
         let due: Vec<(String, String, String)> = {
             let mut guard = self.lock();
@@ -327,15 +343,19 @@ impl Inner {
                     continue;
                 }
                 for win in &w.list {
+                    if st.naming.contains(&win.window_id) {
+                        continue;
+                    }
+                    let Some(tracked) = win.block_id.as_ref().and_then(|b| st.statuses.get(b))
+                    else {
+                        continue;
+                    };
                     if rex_label(&win.window_id).as_deref() != Some(win.label.as_str())
-                        || st.naming.contains(&win.window_id)
+                        && !tracked.is_own_name(&win.label)
                     {
                         continue;
                     }
-                    let name = win
-                        .block_id
-                        .as_ref()
-                        .and_then(|b| st.statuses.get(b)?.name());
+                    let name = tracked.name();
                     if let Some(name) = name {
                         due.push((session.clone(), win.window_id.clone(), name.to_owned()));
                     }

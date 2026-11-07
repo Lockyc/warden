@@ -1620,14 +1620,14 @@ fn a_window_on_rex_label_takes_its_programs_title_once() {
     // name.
     titled("block:new", "~/w", 7);
     status("block:new");
-    title("block:new", "Claude Code");
+    title("block:new", "✳ Claude Code");
     eventually("the program's name as title", || {
-        hub.block_status("block:new").and_then(|s| s.title) == Some("Claude Code".into())
+        hub.block_status("block:new").and_then(|s| s.title) == Some("✳ Claude Code".into())
     });
     // A window someone named keeps its name.
     title("block:2", "fix the parser");
     status("block:2");
-    title("block:new", "refactor auth");
+    title("block:new", "✳ refactor auth");
     eventually("the window named for its conversation", || {
         hub.windows("local", "session:new")[0].label == "refactor auth"
     });
@@ -1642,6 +1642,33 @@ fn a_window_on_rex_label_takes_its_programs_title_once() {
         hub.block_status("block:new").and_then(|s| s.title) == Some("something else".into())
     });
     assert_eq!(fake.requests_for("session.set_window_label").len(), 1);
+}
+
+#[test]
+fn a_window_named_for_its_program_takes_its_conversation() {
+    let (fake, _) = windowed(&[("window:1", "✳ Claude Code", "block:1")]);
+    fake.reply("session.set_window_label", json!({"revision": 4}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    fake.push_block_event(
+        "session:new",
+        "block:1",
+        "program_status_changed",
+        json!({"id": "", "record": {"state": "working", "app": "claude-code",
+               "updated_at": "2026-11-06T00:00:00Z", "owner": {"pid": 1, "name": "x"}},
+               "reason": "report"}),
+    );
+    fake.push_block_event(
+        "session:new",
+        "block:1",
+        "title_changed",
+        json!({"title": "✶ Cheap laser printer", "owner": {"pid": 1, "name": "x"}}),
+    );
+    eventually("the window named for its conversation", || {
+        hub.windows("local", "session:new")[0].label == "Cheap laser printer"
+    });
 }
 
 /// The server instance a restartable fake reports from `server.status`: change it, then drop the
