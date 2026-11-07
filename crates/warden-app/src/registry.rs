@@ -464,6 +464,8 @@ struct Column {
     session: Option<(rex_client::Endpoint, String)>,
     tabs: Vec<ScratchTab>,
     selected: usize,
+    /// A Rex block to take focus once the shown scratch tab holds it ([`Registry::focus_block`]).
+    pending_focus: Option<String>,
 }
 
 impl Column {
@@ -486,6 +488,7 @@ impl Column {
             session: None,
             tabs,
             selected: 0,
+            pending_focus: None,
         }
     }
 
@@ -2271,9 +2274,46 @@ impl Registry {
             return;
         }
         column.sync(opened);
+        self.take_pending_focus(idx);
         if let Err(e) = self.show_column(idx) {
             log::error!("couldn't open a scratch block of tab {id:?}: {e}");
         }
+    }
+
+    /// Give Rex block `block_id` of tab `id`'s column keyboard focus: now, when the shown scratch
+    /// tab holds it, else once a [`sync_column`](Self::sync_column) shows it — a block Rex just
+    /// made reaches warden with its next view.
+    pub fn focus_block(&mut self, id: &str, block_id: &str) {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        let Some(column) = self.tabs[idx].column.as_mut() else {
+            return;
+        };
+        column.pending_focus = Some(block_id.to_owned());
+        if self.take_pending_focus(idx) && self.active.as_deref() == Some(id) {
+            self.show_active();
+        }
+    }
+
+    /// Move tab `idx`'s focus to its column's pending block when the shown scratch tab holds
+    /// it, clearing the pending one. Returns whether it moved.
+    fn take_pending_focus(&mut self, idx: usize) -> bool {
+        let t = &mut self.tabs[idx];
+        let Some(column) = t.column.as_mut() else {
+            return false;
+        };
+        let Some(i) = column.pending_focus.as_deref().and_then(|b| {
+            column
+                .shown()
+                .iter()
+                .position(|s| s.block_id.as_deref() == Some(b))
+        }) else {
+            return false;
+        };
+        column.pending_focus = None;
+        t.focused = PaneIdx::Block(i);
+        true
     }
 
     /// Tab `id`'s Rex column's session, `(server, session id)`, once its open has landed.
@@ -4571,6 +4611,24 @@ mod tests {
         // Another scratch tab's dividers aren't on screen to drag.
         r.select_scratch("t", 1);
         assert!(r.column_divider("t", "split-a").is_none());
+    }
+
+    #[test]
+    fn a_split_block_takes_focus_once_rex_shows_it() {
+        let mut r = landed_column(vec![scratch("w1", &["a", "b"])]);
+        r.focus_pane("t", PaneIdx::Block(0));
+        // Rex made `n` below `a`; its view hasn't said so yet.
+        r.focus_block("t", "n");
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(0)));
+        r.sync_column("t", opened(vec![scratch("w1", &["a", "n", "b"])]));
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(1)));
+        // Taken once: a later view doesn't pull focus back.
+        r.focus_pane("t", PaneIdx::Block(2));
+        r.sync_column("t", opened(vec![scratch("w1", &["a", "n", "b"])]));
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(2)));
+        // A block already shown takes focus at once.
+        r.focus_block("t", "a");
+        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Block(0)));
     }
 
     #[test]

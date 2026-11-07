@@ -898,6 +898,8 @@ fn split_pane(
     if let Some(dto) = state.lock().init_dto(window.label()) {
         let _ = window.emit("warden:refresh", dto);
     }
+    // The new column enables New Scratch Tab and the pane moves.
+    sync_agent_menu(tauri::Manager::app_handle(&window));
     Ok(())
 }
 
@@ -1882,8 +1884,12 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                 return;
             };
             let done = match (&op, &divider) {
-                (ScratchOp::NewTab, _) => hub.column_new_tab(&key, &dir).map(Some),
-                (ScratchOp::Split(block), _) => hub.column_split(&key, block, &dir).map(|_| None),
+                (ScratchOp::NewTab, _) => hub
+                    .column_new_tab(&key, &dir)
+                    .map(|w| Some(ScratchMade::Tab(w))),
+                (ScratchOp::Split(block), _) => hub
+                    .column_split(&key, block, &dir)
+                    .map(|b| Some(ScratchMade::Block(b))),
                 (ScratchOp::Resize { ratio, .. }, Some(d)) => {
                     hub.column_resize(&key, d, *ratio).map(|_| None)
                 }
@@ -1907,15 +1913,23 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
         .map_err(|e| format!("couldn't start the scratch column change: {e}"))
 }
 
+/// What a scratch column change made in Rex: a window (scratch tab), or a block.
+#[derive(Debug)]
+enum ScratchMade {
+    Tab(String),
+    Block(String),
+}
+
 /// A scratch column change landed (main thread): the column follows Rex's session as the hub now
-/// has it — a failed resize puts the dragged divider back — a new scratch tab (`done`'s window
-/// id) is selected, and the window repaints. A failure shows in the window's error banner.
+/// has it — a failed resize puts the dragged divider back — a new scratch tab is selected, a new
+/// block takes focus once a view shows it ([`registry::Registry::focus_block`]), and the window
+/// repaints. A failure shows in the window's error banner.
 #[cfg(target_os = "macos")]
 fn scratch_landed(
     app: &tauri::AppHandle,
     label: &str,
     id: &str,
-    done: Result<Option<String>, String>,
+    done: Result<Option<ScratchMade>, String>,
     opened: Option<rex::column::ColumnOpened>,
 ) {
     use tauri::{Emitter, Manager};
@@ -1925,14 +1939,20 @@ fn scratch_landed(
         let Some(ws) = m.windows.get_mut(label) else {
             return;
         };
+        if let Ok(Some(ScratchMade::Block(b))) = &done {
+            ws.registry.focus_block(id, b);
+        }
         if let Some(opened) = opened {
             ws.registry.sync_column(id, opened);
         }
-        let made = done.as_ref().ok().and_then(Option::as_deref);
-        let sizes = made
-            .and_then(|w| ws.registry.scratch_tab_of_window(id, w))
-            .and_then(|t| ws.registry.select_scratch(id, t))
-            .unwrap_or_default();
+        let sizes = match &done {
+            Ok(Some(ScratchMade::Tab(w))) => ws
+                .registry
+                .scratch_tab_of_window(id, w)
+                .and_then(|t| ws.registry.select_scratch(id, t))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         (sizes, m.init_dto(label))
     };
     if let Err(e) = &done {

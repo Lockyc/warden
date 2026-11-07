@@ -194,23 +194,8 @@ pub fn stack_layout(panes: &[StackPane], dir: &Path) -> Value {
     node(panes, panes.iter().map(|p| p.size).sum(), dir)
 }
 
-/// The split ratio for a divider dragged to `pointer`, a window-fraction coordinate along
-/// the divider's direction, relative to the split's own rect. The page's divider drag
-/// (`scratchDragRatio` in `ui/index.html`) computes the same live, in its own hand.
-#[allow(dead_code)] // the reference the page's drag mirrors; no Rust caller
-pub fn divider_ratio(d: &Divider, pointer: f64) -> f64 {
-    let (origin, extent) = match d.dir {
-        Dir::Horizontal => (d.rect.x, d.rect.w),
-        Dir::Vertical => (d.rect.y, d.rect.h),
-    };
-    if extent > 0.0 {
-        clamp_ratio((pointer - origin) / extent)
-    } else {
-        0.5
-    }
-}
-
-/// A split ratio kept where each side holds at least 5% of the split.
+/// A split ratio kept where each side holds at least 5% of the split — the band the page's
+/// divider drag (`scratchDragRatio` in `ui/index.html`) keeps to.
 pub fn clamp_ratio(ratio: f64) -> f64 {
     ratio.clamp(0.05, 0.95)
 }
@@ -300,28 +285,6 @@ mod tests {
             (d[1].before_block.as_str(), d[1].after_block.as_str()),
             ("b", "c")
         );
-    }
-
-    #[test]
-    fn divider_ratio_is_relative_to_its_split() {
-        let d = Layout::parse(&nested()).unwrap().dividers();
-        assert_eq!(divider_ratio(&d[1], 0.25), 0.25);
-        let mut right = d[1].clone();
-        right.rect = frac(0.5, 0.0, 0.5, 1.0);
-        assert_eq!(divider_ratio(&right, 0.75), 0.5);
-        // vertical, inner rect y = 0.5, h = 0.5
-        let mut v = d[0].clone();
-        v.rect = frac(0.0, 0.5, 1.0, 0.5);
-        assert_eq!(divider_ratio(&v, 0.625), 0.25);
-        assert_eq!(divider_ratio(&v, 0.0), 0.05);
-        assert_eq!(divider_ratio(&v, 2.0), 0.95);
-    }
-
-    #[test]
-    fn zero_extent_divider_is_even() {
-        let mut d = Layout::parse(&nested()).unwrap().dividers()[0].clone();
-        d.rect = frac(0.0, 0.5, 1.0, 0.0);
-        assert_eq!(divider_ratio(&d, 0.5), 0.5);
     }
 
     fn pane(size: f64, startup: Option<&str>) -> StackPane {

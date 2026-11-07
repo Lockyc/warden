@@ -277,7 +277,6 @@
         -webkit-user-select: none;
       }
       #empty-state svg, .scratch-empty svg { width: 160px; height: auto; opacity: 0.9; }
-      .scratch-empty svg { max-width: 60%; max-height: 60%; }
 
       /* The agent tab list: a column left of the main pane of a Rex tab, inside #terminal-hole
          but outside #pane-primary, so `reportRect` measures a primary hole narrower by its width.
@@ -702,7 +701,7 @@
       // its snapshot's — or, before a column exists or a Rex column's session lands, one block
       // filling it. Tile and divider rects are fractions of the column (Rex's window).
       const SCRATCH_FULL = [{ block_id: "", rect: { x: 0, y: 0, w: 1, h: 1 } }];
-      let scratchHeld = null; // { tabId, view } — a dragged layout until the next snapshot
+      let scratchHeld = null; // { tabId, view, splitId?, ratio? } — a dragged layout (`scratchDragEnd`)
       function scratchView(id) {
         if (scratchHeld && scratchHeld.tabId === id) return scratchHeld.view;
         const c = id !== null ? columnById.get(id) : null;
@@ -804,7 +803,7 @@
         invoke("scratch_new", { id: activeId }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
       }
       // The split ratio for divider `d` dragged to `pointer` (a column fraction along its axis):
-      // relative to the split's own rect, each side keeping 5% — `rex::layout::divider_ratio`.
+      // relative to the split's own rect, each side keeping 5% (`rex::layout::clamp_ratio`'s band).
       function scratchDragRatio(d, pointer) {
         const vert = d.dir === "vertical";
         const origin = vert ? d.rect.y : d.rect.x;
@@ -850,15 +849,29 @@
       }
       // An inner divider drag: the two sides follow the pointer live, reported as they go; the
       // release asks Rex to resize, and Rex's view arrives back as `warden:refresh`. The same
-      // stuck-button unstick as the outer divider's drag (the native surfaces take the mouseup).
-      let scratchDrag = null; // { tabId, base, di, ratio }
+      // stuck-button unstick as the outer divider's drag (the native surfaces take the mouseup),
+      // and the same grab offset: the boundary keeps its distance from the pointer, so grabbing
+      // the strip off its line doesn't jump it.
+      let scratchDrag = null; // { tabId, base, di, ratio, grab }
+      // Where `e` is along divider `d`'s axis, as a fraction of the column.
+      function scratchPointer(d, e) {
+        const body = document.getElementById("scratch-body").getBoundingClientRect();
+        const vert = d.dir === "vertical";
+        const extent = vert ? body.height : body.width;
+        if (!(extent > 0)) return null;
+        return vert ? (e.clientY - body.top) / extent : (e.clientX - body.left) / extent;
+      }
       function scratchDragStart(e, di) {
         const view = scratchView(activeId);
-        if (!activeId || !view.dividers[di]) return;
+        const d = view.dividers[di];
+        if (!activeId || !d) return;
         e.preventDefault();
         e.stopPropagation();
-        scratchDrag = { tabId: activeId, base: view, di, ratio: view.dividers[di].ratio };
-        const vert = view.dividers[di].dir === "vertical";
+        const vert = d.dir === "vertical";
+        const boundary = vert ? d.rect.y + d.ratio * d.rect.h : d.rect.x + d.ratio * d.rect.w;
+        const at = scratchPointer(d, e);
+        const grab = at === null ? 0 : at - boundary;
+        scratchDrag = { tabId: activeId, base: view, di, ratio: d.ratio, grab };
         document.body.style.cursor = vert ? "row-resize" : "col-resize";
         window.addEventListener("mousemove", scratchDragMove);
         window.addEventListener("mouseup", scratchDragEnd);
@@ -870,12 +883,9 @@
         if (e.buttons === 0) { scratchDragEnd(); return; }
         if (g.tabId !== activeId) return;
         const d = g.base.dividers[g.di];
-        const body = document.getElementById("scratch-body").getBoundingClientRect();
-        const vert = d.dir === "vertical";
-        const extent = vert ? body.height : body.width;
-        if (!(extent > 0)) return;
-        const pointer = vert ? (e.clientY - body.top) / extent : (e.clientX - body.left) / extent;
-        g.ratio = scratchDragRatio(d, pointer);
+        const pointer = scratchPointer(d, e);
+        if (pointer === null) return;
+        g.ratio = scratchDragRatio(d, pointer - g.grab);
         scratchHeld = { tabId: g.tabId, view: scratchResized(g.base, g.di, g.ratio) };
         scratchRender(scratchHeld.view);
         reportRect();
@@ -890,9 +900,30 @@
         window.removeEventListener("blur", scratchDragEnd);
         const d = g.base.dividers[g.di];
         if (Math.abs(g.ratio - d.ratio) < SCRATCH_EPS) return; // a click, not a drag
+        // Held until a snapshot shows Rex at this ratio — an unrelated refresh before then would
+        // snap the divider back — or the resize fails, or Rex never says so.
+        const hold = { tabId: g.tabId, view: scratchHeld.view, splitId: d.split_id, ratio: g.ratio };
+        scratchHeld = hold;
+        const release = () => {
+          if (scratchHeld !== hold) return;
+          scratchHeld = null;
+          if (activeId === hold.tabId && splitOf(activeId)) {
+            scratchRender(scratchView(activeId));
+            reportRect();
+          }
+        };
+        setTimeout(release, SCRATCH_HOLD_MS);
         invoke("scratch_resize", { id: g.tabId, splitId: d.split_id, ratio: g.ratio }).catch((err) => {
           if (sb) sb.setError("⚠ " + err);
+          release();
         });
+      }
+      const SCRATCH_HOLD_MS = 2000;
+      const SCRATCH_HOLD_MATCH = 0.005;
+      // Whether snapshot column `c` shows Rex at hold `h`'s released ratio.
+      function scratchHoldMet(h, c) {
+        const d = c && c.dividers.find((x) => x.split_id === h.splitId);
+        return !!d && Math.abs(d.ratio - h.ratio) <= SCRATCH_HOLD_MATCH;
       }
 
       // Report each VISIBLE pane's CONTENT rect to the native layer so its libghostty surface
@@ -1127,8 +1158,12 @@
         dto.tabs.forEach((t) => { if (t.agents) agentsById.set(t.id, true); });
         columnById.clear();
         dto.tabs.forEach((t) => { if (t.column) columnById.set(t.id, t.column); });
-        // The snapshot carries Rex's layout now; a drag still held goes on showing its own.
-        if (!scratchDrag) scratchHeld = null;
+        // A drag in progress goes on showing its own layout; a released one until the snapshot
+        // shows Rex at its ratio (`scratchDragEnd`); anything else is the snapshot's.
+        if (!scratchDrag && scratchHeld &&
+            (!scratchHeld.splitId || scratchHoldMet(scratchHeld, columnById.get(scratchHeld.tabId)))) {
+          scratchHeld = null;
+        }
         summaryById.clear();
         dto.tabs.forEach((t) =>
           summaryById.set(t.id, { title: t.title, colour: t.colour, server: t.server, presence: t.presence }));
