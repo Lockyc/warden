@@ -173,6 +173,8 @@ fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer,
         log::error!("{label}: {}: {message}", req.pane_key);
         super::lifecycle::banner(app, label, &message);
     }
+    // A column's landing can change what Pop Out and New Scratch Tab may do.
+    crate::sync_agent_menu(app);
 }
 
 /// Repaint the presence dot of every Rex tab on `server` (every server when `None`) from the
