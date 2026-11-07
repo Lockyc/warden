@@ -639,6 +639,11 @@
         return p ? p.ratio : null;
       }
 
+      // ⤢ and ⌘⇧O both land here. A refusal (a stacked scratch column) shows its reason.
+      function popOut(id) {
+        invoke("pop_out_tab", { id, ratio: popOutRatio(id) }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
+      }
+
       // Drop keys for tabs this window no longer has. Without it a scanned-project tab that
       // disappears leaves its key behind forever, and a later tab reusing the id inherits a
       // split nobody asked for.
@@ -2010,7 +2015,7 @@
               // detaches the surface, opens a detached window, reparents into it, and pushes a
               // refresh so this row re-renders detached. chrome-core only offers this control on a
               // not-already-detached tab.
-              invokeSafe("pop_out_tab", { id, ratio: popOutRatio(id) });
+              popOut(id);
             },
             onPopIn(id) {
               // Dock a popped-out tab back in (the ↩ overlay on a detached row's tile). Closing
@@ -2146,7 +2151,7 @@
       // tab that's already detached (its window is elsewhere — nothing to pop out).
       listen("warden:pop-out-tab", (e) => {
         if (!forMe(e)) return;
-        if (activeId && !detached.has(activeId)) invokeSafe("pop_out_tab", { id: activeId, ratio: popOutRatio(activeId) });
+        if (activeId && !detached.has(activeId)) popOut(activeId);
       });
       // ⌘⇧F: the backend already made this webview the key view; put the cursor in the search.
       listen("warden:find-in-sidebar", (e) => {
