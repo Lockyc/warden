@@ -1700,7 +1700,7 @@ fn project_sleep(
     rex::lifecycle::sleep_project(window.app_handle(), window.label(), &id, &accepted)
 }
 
-/// Re-scan every project-tree root of the focused window's config and reconcile:
+/// Re-scan every window's project-tree roots and reconcile:
 /// projects that appeared/vanished on disk surface as tab add/remove, without a
 /// config-file edit. Diffs the freshly-expanded config against what's on screen
 /// (`last_good`), so it is NOT a no-op when disk changed.

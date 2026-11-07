@@ -306,9 +306,8 @@ pub struct Redocked {
 ///
 /// These live in `WindowManager::detached`, **separate from `windows`**, so hot-reload
 /// `reconcile` (which only walks `windows`) never sees them and can't close or duplicate
-/// them — the detached-label prefix exclusion is thus never even reached for these,
-/// because they aren't in the reconciled set at all. `is_empty` counts them so the home
-/// surface doesn't pop up while a detached window is the only thing on screen.
+/// them. Their count goes to the `WindowSet` (`sync_detached`) so the home surface doesn't
+/// pop up while a detached window is the only thing on screen.
 pub struct DetachedSurface {
     pub surface: GhosttySurface,
     /// The tab's second pane, when it had a live one at pop-out time. `None` for an

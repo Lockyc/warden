@@ -98,10 +98,10 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
   window + `reparent` with the lock **released** → re-lock to store and wire the return. The
   `Detached` placeholder — `detach`'s, or `mark_detached`'s in an origin rebuilt while the tab is
   out — keeps `reconcile` from touching the tab; `redock` reconciles it against the config once home
-  (`reconcile_returned_tab`); `detached` counts in `is_empty()`; `is_quitting` stops `redock`
+  (`reconcile_returned_tab`); `detached` is counted into the `WindowSet` (`sync_detached`); `is_quitting` stops `redock`
   resurrecting mid-teardown. **Every failure path restores both panes**
   — a partial restore strands a live PTY with no window and no route back.
-- **Size the reparented surface's birth rect from the built window** (`win.inner_size()` in
+- **Size the reparented surface's birth rect from the built window** (the `size` `open_detached` hands
   `pop_out_tab`'s birth closure), never `DETACHED_DEFAULT_*` — the geometry plugin restores the
   remembered size during `build()`.
 - **A detached window's `pane` index is a hole (left-to-right), never a `PaneIdx`.** Resolve with

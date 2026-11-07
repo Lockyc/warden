@@ -1812,10 +1812,18 @@ impl Registry {
     /// Warden, not the user, is bringing the tab up (`load_on_open` turned on, a pop-out), so an
     /// agent pane opens automatically: it wakes nothing.
     pub fn ensure_spawned_by_id(&mut self, id: &str) -> Result<(), SurfaceError> {
-        match self.tabs.iter().position(|t| t.id == id) {
-            Some(idx) => self.spawn_panes(idx, true).map(|_| ()),
-            None => Ok(()),
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return Ok(());
+        };
+        let spawned = self.spawn_panes(idx, true).map(|_| ());
+        // A new surface lands visible over the active tab's hole; a background tab's stays
+        // hidden until it is activated (a pop-out's reparent un-hides its own).
+        if self.active.as_deref() != Some(id) {
+            for p in self.tabs[idx].panes() {
+                p.surfaces().for_each(|s| s.hide());
+            }
         }
+        spawned
     }
 
     /// Spawn tab `idx`'s primary, then its secondary best-effort, returning the primary's
