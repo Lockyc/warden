@@ -2632,6 +2632,14 @@ impl Registry {
         Some((column.spec.id.clone(), column.spec.dir.clone()))
     }
 
+    /// [`rex_column`](Self::rex_column) for a column holding no scratch tab: what
+    /// `RexHub::column_fill` refills.
+    pub fn empty_rex_column(&self, id: &str) -> Option<(String, PathBuf)> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        t.column.as_ref().filter(|c| c.tabs.is_empty())?;
+        self.rex_column(id)
+    }
+
     /// The Rex block tab `id`'s focused pane shows, when that is a block of a Rex column.
     pub fn focused_rex_block(&self, id: &str) -> Option<String> {
         let t = self.tabs.iter().find(|t| t.id == id)?;

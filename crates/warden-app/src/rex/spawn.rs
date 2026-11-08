@@ -288,16 +288,11 @@ fn reopen_restarted(app: &AppHandle, server: &str) {
 /// ([`RexHub::end_agent_if_exited`]), and its record closes, or drops when it can't resume, as an
 /// op on its pane ([`AgentOp::Exited`]). For a column block's key ([`block_key`]) only that block
 /// closes ([`RexHub::column_close_block`]): its window reflows, or closes with it, and the
-/// session's next view brings the column along; the session's last block gives way to a fresh
-/// scratch tab in `dir`, the tab's.
+/// session's next view brings the column along, refilled when that emptied it
+/// ([`RexHub::column_fill`]).
 ///
 /// [`block_key`]: super::column::block_key
-pub fn end_if_exited(
-    app: &AppHandle,
-    pane_key: String,
-    agent: Option<(String, String)>,
-    dir: PathBuf,
-) {
+pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, String)>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("warden-rex-exit".into())
@@ -308,7 +303,7 @@ pub fn end_if_exited(
                         Some(column) => {
                             if hub.block_exited(&pane_key) {
                                 let block = &pane_key[column.len() + 1..];
-                                if let Err(e) = hub.column_close_block(column, block, &dir) {
+                                if let Err(e) = hub.column_close_block(column, block) {
                                     log::error!("couldn't close Rex block {pane_key:?}: {e}")
                                 }
                             }
@@ -334,11 +329,10 @@ pub fn end_if_exited(
 /// The user closed scratch block `pane_key` ([`block_key`]) of a column in window `label` — ⌘W or
 /// Close Pane: Rex closes it on a worker ([`RexHub::column_close_block`]), and it lands as a
 /// program's exit there does — its relay exits, the session's next view drops it, and the
-/// session's last block gives way to a fresh scratch tab in `dir`, the tab's. A failure shows in
-/// `label`'s banner.
+/// session, emptied, is refilled ([`RexHub::column_fill`]). A failure shows in `label`'s banner.
 ///
 /// [`block_key`]: super::column::block_key
-pub fn close_block(app: &AppHandle, label: &str, pane_key: String, dir: PathBuf) {
+pub fn close_block(app: &AppHandle, label: &str, pane_key: String) {
     let (app, label) = (app.clone(), label.to_owned());
     let spawned = std::thread::Builder::new()
         .name("warden-rex-close".into())
@@ -351,7 +345,7 @@ pub fn close_block(app: &AppHandle, label: &str, pane_key: String, dir: PathBuf)
                 return;
             };
             let block = &pane_key[column.len() + 1..];
-            if let Err(e) = hub.column_close_block(column, block, &dir) {
+            if let Err(e) = hub.column_close_block(column, block) {
                 log::error!("couldn't close Rex block {pane_key:?}: {e}");
                 super::lifecycle::banner(&app, &label, &format!("couldn't close the pane: {e}"));
             }

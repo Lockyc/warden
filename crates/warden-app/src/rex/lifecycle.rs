@@ -1489,10 +1489,12 @@ fn follow_column(
     let st = app.state::<ManagerState>();
     let mut m = st.lock();
     let mut changed = Vec::new();
+    let mut empty = None;
     for (label, ws) in m.windows.iter_mut() {
         let tabs = ws.registry.columns_on(server, session_id);
         for id in &tabs {
             ws.registry.sync_column(id, opened.clone());
+            empty = empty.or_else(|| ws.registry.empty_rex_column(id));
         }
         if !tabs.is_empty() {
             changed.push(label.clone());
@@ -1513,6 +1515,27 @@ fn follow_column(
     // Pop Out's enabled state follows the column's panes.
     if any {
         crate::sync_agent_menu(app);
+    }
+    if let Some((key, dir)) = empty {
+        fill_column(app, key, dir);
+    }
+}
+
+/// Column `key`'s session lost its last scratch tab: give it a fresh one in `dir` on a worker
+/// ([`RexHub::column_fill`]); the session's next view brings it in.
+fn fill_column(app: &AppHandle, key: String, dir: std::path::PathBuf) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("warden-rex-fill".into())
+        .spawn(move || {
+            if let Some(hub) = app.try_state::<RexHub>() {
+                if let Err(e) = hub.column_fill(&key, &dir) {
+                    log::error!("couldn't open a fresh scratch tab in {key:?}: {e}");
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::error!("couldn't start refilling a scratch column: {e}");
     }
 }
 

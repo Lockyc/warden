@@ -214,21 +214,15 @@ impl RexHub {
 
     /// Close `block_id` of `column_key`'s session, ending the program in it — one that exited, or
     /// a pane the user closed — so its window reflows (or closes, when it was the window's last).
-    /// The column never empties: closing the session's last block first opens a fresh scratch
-    /// tab in `dir` ([`Self::keep_column_open`]). A column already unmapped — its session ended
-    /// by ☠ racing this close — has nothing left to close.
-    pub fn column_close_block(
-        &self,
-        column_key: &str,
-        block_id: &str,
-        dir: &Path,
-    ) -> Result<(), RexError> {
+    /// Rex keeps a session whose last window closes, empty; [`Self::column_fill`] refills it. A
+    /// column already unmapped — its session ended by ☠ racing this close — has nothing left to
+    /// close.
+    pub fn column_close_block(&self, column_key: &str, block_id: &str) -> Result<(), RexError> {
         let _held = self.inner.hold_pane(column_key, None)?;
         let Ok(rec) = self.column_record(column_key) else {
             log::debug!("Rex block {block_id:?} of {column_key:?}: its column already ended");
             return Ok(());
         };
-        self.keep_column_open(column_key, &rec, &[block_id], dir)?;
         let (client, _) = self.inner.conn(&rec.server)?;
         let args = json!({ "session_id": rec.session_id, "block_id": block_id });
         match client.call("block.close", args) {
@@ -241,14 +235,8 @@ impl RexHub {
     }
 
     /// Close scratch tab `window_id` of `column_key`'s session and every block in it, ending their
-    /// programs. When they are the session's last blocks a fresh scratch tab in `dir` opens first
-    /// ([`Self::keep_column_open`]).
-    pub fn column_close_tab(
-        &self,
-        column_key: &str,
-        window_id: &str,
-        dir: &Path,
-    ) -> Result<(), RexError> {
+    /// programs. The last one leaves the session empty for [`Self::column_fill`].
+    pub fn column_close_tab(&self, column_key: &str, window_id: &str) -> Result<(), RexError> {
         let _held = self.inner.hold_pane(column_key, None)?;
         let rec = self.column_record(column_key)?;
         let window: Vec<AgentWindow> = self
@@ -258,36 +246,47 @@ impl RexHub {
             .collect();
         let blocks = window_blocks(&window);
         let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
-        self.keep_column_open(column_key, &rec, &blocks, dir)?;
         self.close_window(&rec.server, &rec.session_id, window_id)?;
         self.unbind_blocks(column_key, &blocks);
         Ok(())
     }
 
-    /// When `closing` are every block of `column_key`'s session, open a fresh scratch tab — one
-    /// bare shell in `dir` — before they close, so the session and the split outlive them, as a
-    /// scratch terminal respawns in place of its last shell. Holding the pane is the caller's.
-    fn keep_column_open(
+    /// Give `column_key`'s session a fresh scratch tab — one bare shell in `dir` — when it holds
+    /// no block, as a scratch terminal respawns in place of its last shell: the column never
+    /// sits empty, however its last tab went (×, ⌘W, its program exiting, or another client).
+    /// Returns the new window's id; `None` when the session still holds a block, or has no
+    /// mapping (☠ ended it).
+    pub fn column_fill(&self, column_key: &str, dir: &Path) -> Result<Option<String>, RexError> {
+        let deadline = Instant::now() + OPEN_BUDGET;
+        let _held = self.inner.hold_pane(column_key, Some(deadline))?;
+        let Ok(rec) = self.column_record(column_key) else {
+            return Ok(None);
+        };
+        let filled = self.fill_until(column_key, &rec, dir, deadline);
+        budgeted(deadline, filled)
+    }
+
+    /// [`Self::column_fill`]'s work, under the caller's hold, waiting until `deadline`. Rex's
+    /// own block list decides: a hub view that hasn't caught up never makes a second tab.
+    fn fill_until(
         &self,
         column_key: &str,
         rec: &PaneRecord,
-        closing: &[&str],
         dir: &Path,
-    ) -> Result<(), RexError> {
-        if self.inner.holds_other_block(rec, closing) {
-            return Ok(());
+        deadline: Instant,
+    ) -> Result<Option<String>, RexError> {
+        if self.inner.holds_other_block(rec, &[]) {
+            return Ok(None);
         }
-        let deadline = Instant::now() + OPEN_BUDGET;
         let made =
             self.inner
-                .new_window_until(&rec.server, &rec.session_id, dir, None, None, deadline);
-        let made = budgeted(deadline, made)?;
+                .new_window_until(&rec.server, &rec.session_id, dir, None, None, deadline)?;
         log::info!(
-            "Rex {}: {column_key:?}'s last scratch tab closing; opened {} in its place",
+            "Rex {}: {column_key:?}'s column was empty; opened scratch tab {}",
             rec.server,
             made.window_id
         );
-        Ok(())
+        Ok(Some(made.window_id))
     }
 
     /// Forget `blocks` of `column_key`, closed: their keys and the sizes asked for them.
@@ -317,6 +316,9 @@ impl RexHub {
                         }
                         return Err(e);
                     }
+                }
+                if let Ok(rec) = self.column_record(key) {
+                    self.fill_until(key, &rec, &req.dir, deadline)?;
                 }
                 sid
             }
