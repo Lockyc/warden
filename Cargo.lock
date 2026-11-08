@@ -3489,7 +3489,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.5.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=a0af24a830258419d7dfa2c22a32c90aa8761bbb#a0af24a830258419d7dfa2c22a32c90aa8761bbb"
+source = "git+https://github.com/Lockyc/shell-core?rev=0926eef4ab316f600ff22151fe74d442cc38ac33#0926eef4ab316f600ff22151fe74d442cc38ac33"
 dependencies = [
  "block2",
  "getrandom 0.2.17",
@@ -4900,7 +4900,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
