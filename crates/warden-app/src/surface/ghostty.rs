@@ -812,12 +812,26 @@ define_class!(
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             self.user_input();
-            unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
+            // A held key is a repeat, not a fresh press — Kitty event-type reporting tells them apart.
+            let action = if event.isARepeat() {
+                ffi::ghostty_input_action_e::GHOSTTY_ACTION_REPEAT
+            } else {
+                ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS
+            };
+            unsafe { forward_key(self, event, action) };
         }
 
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
             unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
+        }
+
+        // A modifier pressed or released alone arrives here, never at keyDown:/keyUp:. Without it
+        // libghostty learns mods only from the next key or mouse move, so ⌘-over-a-link doesn't
+        // underline until the mouse moves, and modifier-only key reports are never sent.
+        #[unsafe(method(flagsChanged:))]
+        fn flags_changed(&self, event: &NSEvent) {
+            unsafe { forward_modifier(self, event) };
         }
 
         // The Edit menu's Copy / Paste / Select All. The menu has first refusal on ⌘C / ⌘V / ⌘A
@@ -1327,6 +1341,41 @@ unsafe fn forward_key(
     };
     // `c_text` stays alive until the end of this fn, covering the call.
     ffi::ghostty_surface_key(surface, key)
+}
+
+/// Forward a `flagsChanged:` event as a press or release of the modifier key it names: a press
+/// when that modifier's bit is now set. Carries no text — `characters` raises on a
+/// flags-changed event, so this can't go through [`forward_key`]. Same keycode table as
+/// Ghostty.app's `flagsChanged(with:)`.
+unsafe fn forward_modifier(view: &WardenHostView, event: &NSEvent) {
+    let surface = view.ivars().surface.get();
+    if surface.is_null() {
+        return;
+    }
+    let bit = match event.keyCode() {
+        0x39 => ffi::GHOSTTY_MODS_CAPS,
+        0x38 | 0x3C => ffi::GHOSTTY_MODS_SHIFT,
+        0x3B | 0x3E => ffi::GHOSTTY_MODS_CTRL,
+        0x3A | 0x3D => ffi::GHOSTTY_MODS_ALT,
+        0x37 | 0x36 => ffi::GHOSTTY_MODS_SUPER,
+        _ => return,
+    };
+    let mods = mods_from_event(event);
+    let action = if mods & bit != 0 {
+        ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS
+    } else {
+        ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE
+    };
+    let key = ffi::ghostty_input_key_s {
+        action,
+        mods,
+        consumed_mods: ffi::GHOSTTY_MODS_NONE,
+        keycode: event.keyCode() as u32,
+        text: ptr::null(),
+        unshifted_codepoint: 0,
+        composing: false,
+    };
+    ffi::ghostty_surface_key(surface, key);
 }
 
 /// The `CGDirectDisplayID` of the display a window currently sits on (0 if unknown). Read from
