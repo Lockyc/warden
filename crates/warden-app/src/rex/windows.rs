@@ -328,17 +328,18 @@ impl RexHub {
         Ok(())
     }
 
-    /// Relabel `window_id`. Rex trims the label; an empty one restores its default, which the
-    /// list shows once Rex reports it.
-    pub fn set_window_label(
+    /// Relabel `window_id`, waiting only until `deadline`. Rex trims the label; an empty one
+    /// restores its default, which the list shows once Rex reports it.
+    pub(super) fn set_window_label_until(
         &self,
         server: &str,
         session_id: &str,
         window_id: &str,
         label: &str,
+        deadline: Instant,
     ) -> Result<(), RexError> {
         self.inner
-            .set_window_label(server, session_id, window_id, label)
+            .set_window_label(server, session_id, window_id, label, Some(deadline))
     }
 }
 
@@ -350,12 +351,16 @@ impl Inner {
         session_id: &str,
         window_id: &str,
         label: &str,
+        deadline: Option<Instant>,
     ) -> Result<(), RexError> {
         let (client, _) = self.conn(server)?;
-        client.call(
-            "session.set_window_label",
-            json!({ "session_id": session_id, "window_id": window_id, "label": label }),
-        )?;
+        let args = json!({ "session_id": session_id, "window_id": window_id, "label": label });
+        match deadline {
+            Some(d) => client
+                .call_seq_until("session.set_window_label", args, d)
+                .map(|_| ())?,
+            None => client.call("session.set_window_label", args).map(|_| ())?,
+        }
         let label = label.trim();
         if !label.is_empty() {
             self.edit_windows(server, session_id, |list| relabel(list, window_id, label));
@@ -404,7 +409,7 @@ impl Inner {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                if let Err(e) = inner.set_window_label(&server, &session, &window, &name) {
+                if let Err(e) = inner.set_window_label(&server, &session, &window, &name, None) {
                     log::warn!("Rex {server}: couldn't name {window} {name:?}: {e}");
                 }
                 inner.lock().naming.remove(&window);

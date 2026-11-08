@@ -1689,7 +1689,8 @@ fn close_window_removes_it() {
     hub.close_window("local", "session:new", "window:2")
         .expect("closing a closed window");
 
-    hub.set_window_label("local", "session:new", "window:1", "renamed")
+    let deadline = Instant::now() + Duration::from_secs(5);
+    hub.set_window_label_until("local", "session:new", "window:1", "renamed", deadline)
         .expect("set_window_label");
     let set = &fake.requests_for("session.set_window_label")[0].payload;
     assert_eq!(set["window_id"], "window:1");

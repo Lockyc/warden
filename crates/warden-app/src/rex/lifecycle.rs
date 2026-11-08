@@ -278,7 +278,7 @@ impl RexHub {
             AgentOp::Sleep(id) => {
                 let i = at(&records, id)?;
                 if records[i].state == RecordState::Live {
-                    self.close_window_of(server, session.as_ref(), &mut records[i])?;
+                    self.close_window_of(server, session.as_ref(), &mut records[i], deadline)?;
                     records[i].state = RecordState::Asleep;
                 }
             }
@@ -342,7 +342,7 @@ impl RexHub {
                     .clone()
                     .filter(|_| records[i].state == RecordState::Live);
                 if let (Some((_, sid)), Some(w)) = (&session, window) {
-                    self.set_window_label(server, sid, &w, name)?;
+                    self.set_window_label_until(server, sid, &w, name, deadline)?;
                 }
                 if !name.is_empty() {
                     records[i].name = name.to_owned();
@@ -423,9 +423,10 @@ impl RexHub {
         server: &str,
         session: Option<&(Endpoint, String)>,
         record: &mut AgentRecord,
+        deadline: Instant,
     ) -> Result<(), RexError> {
         if let (Some((_, sid)), Some(w)) = (session, record.window_id.as_deref()) {
-            self.close_window(server, sid, w)?;
+            self.close_window_until(server, sid, w, deadline)?;
         }
         record.window_id = None;
         record.block_id = None;
@@ -683,9 +684,8 @@ impl RexHub {
             }) else {
                 continue;
             };
-            let _held = self
-                .inner
-                .hold_pane(&project, Some(Instant::now() + OPEN_BUDGET))?;
+            let deadline = Instant::now() + OPEN_BUDGET;
+            let _held = self.inner.hold_pane(&project, Some(deadline))?;
             let before = lock(store).records(&project);
             let mut after = before.clone();
             let Some(r) = after
@@ -701,7 +701,7 @@ impl RexHub {
                 .get(&project)
                 .map(|m| m.session_id.clone());
             if let (Some(sid), Some(w)) = (session, r.window_id.as_deref()) {
-                self.close_window(server, &sid, w)?;
+                self.close_window_until(server, &sid, w, deadline)?;
             }
             r.window_id = None;
             r.block_id = None;
