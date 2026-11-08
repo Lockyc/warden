@@ -72,7 +72,7 @@ fn locate<'a>(window: &'a RawWindow, tab: &Tab, base: &Path) -> Result<Origin<'a
     // with that dir — so an earlier same-dir tab (one given an `id` to tell them apart) would
     // take the write.
     let curated = |tabs: &'a [RawTab], group: Option<&'a str>| {
-        let i = tabs.iter().position(|t| matches(t))?;
+        let i = tabs.iter().position(&matches)?;
         let t = &tabs[i];
         let by = match &tab.id {
             Some(id) => ("id", id.clone()),
