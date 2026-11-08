@@ -101,6 +101,21 @@ const EVENT_AGENT_CLOSE: &str = "warden:agent-close";
 /// Tab ▸ Close Project Tab (⌥⌘W): ⌘W's unload, kept on a key — enabled whenever ⌘W closes
 /// something other than the project tab ([`focused_close_target`]).
 const MENU_TAB_CLOSE_PROJECT: &str = "warden:close-project-tab";
+/// [`MENU_TAB_CLOSE_PROJECT`]'s title, which [`close_project_item`] appends a reason to.
+const CLOSE_PROJECT_TITLE: &str = "Close Project Tab";
+
+/// Close Project Tab's enabled state and title, given whether the focused window is a pop-out
+/// and what ⌘W closes there ([`focused_close_target`]): a pop-out's main pane docks the tab with
+/// ⌘W rather than unloading it, so the item says to dock first.
+fn close_project_item(popped_out: bool, close: Option<&registry::CloseTarget>) -> (bool, String) {
+    if popped_out {
+        return (false, format!("{CLOSE_PROJECT_TITLE} (Dock the tab first)"));
+    }
+    (
+        close != Some(&registry::CloseTarget::Project),
+        CLOSE_PROJECT_TITLE.to_owned(),
+    )
+}
 
 /// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
 /// enabled while there is one ([`registry::Registry::pane_to`]).
@@ -342,9 +357,9 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             Some(CloseTarget::Agent) => "Close Agent Tab".into(),
             Some(CloseTarget::Project) => "Close Tab".into(),
         });
-        let _ = i
-            .close_project
-            .set_enabled(!popped_out && close != Some(CloseTarget::Project));
+        let (enabled, title) = close_project_item(popped_out, close.as_ref());
+        let _ = i.close_project.set_enabled(enabled);
+        let _ = i.close_project.set_text(title);
         let _ = i
             .fork
             .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
@@ -631,7 +646,7 @@ fn build_app_menu(
         "Move Agent Tab Down",
         "Alt+Shift+Cmd+ArrowDown",
     )?;
-    let close_project_item = disabled(MENU_TAB_CLOSE_PROJECT, "Close Project Tab", "Alt+Cmd+KeyW")?;
+    let close_project_item = disabled(MENU_TAB_CLOSE_PROJECT, CLOSE_PROJECT_TITLE, "Alt+Cmd+KeyW")?;
     let agent_fork_item = disabled(MENU_AGENT_FORK, "Fork Agent Tab", "Alt+Cmd+KeyT")?;
     let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
     let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
@@ -3392,6 +3407,33 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⌥⌘W in a pop-out is disabled with the reason; docked, it carries its plain title, enabled
+    /// whenever ⌘W closes something other than the tab.
+    #[test]
+    fn close_project_item_names_why_a_pop_out_disables_it() {
+        use registry::CloseTarget;
+        let block = CloseTarget::Block {
+            tab: "t".into(),
+            block: 0,
+        };
+        assert_eq!(
+            close_project_item(true, Some(&block)),
+            (false, "Close Project Tab (Dock the tab first)".to_string())
+        );
+        assert_eq!(
+            close_project_item(false, Some(&block)),
+            (true, CLOSE_PROJECT_TITLE.to_string())
+        );
+        assert_eq!(
+            close_project_item(false, Some(&CloseTarget::Project)),
+            (false, CLOSE_PROJECT_TITLE.to_string())
+        );
+        assert_eq!(
+            close_project_item(false, None),
+            (true, CLOSE_PROJECT_TITLE.to_string())
+        );
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
