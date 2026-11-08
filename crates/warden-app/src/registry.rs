@@ -1972,6 +1972,23 @@ impl Registry {
         self.tabs.iter().find(|t| t.id == id).map(|t| t.id.as_str())
     }
 
+    /// Whether live surface `surface_id` is in the on-screen tab where the user can see it: any
+    /// main-pane surface of the active tab (its agents included), or one of its column's blocks
+    /// that [`on_screen`](Self::on_screen) shows — not a block of a scratch tab not selected,
+    /// which stays live but hidden.
+    pub fn shows_surface(&self, surface_id: usize) -> bool {
+        let Some((tab, which)) = self.locate_surface(surface_id) else {
+            return false;
+        };
+        let Some(t) = self.tabs.iter().find(|t| t.id == tab) else {
+            return false;
+        };
+        match which {
+            PaneIdx::Primary => self.active.as_deref() == Some(tab.as_str()),
+            PaneIdx::Block(_) => self.on_screen(t).iter().any(|(_, s)| s.id() == surface_id),
+        }
+    }
+
     /// The currently-active (on-screen) tab id, if any.
     pub fn active_tab(&self) -> Option<&str> {
         self.active.as_deref()

@@ -1001,13 +1001,14 @@ impl WindowManager {
     }
 
     /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and
-    /// whether that tab is currently **visible** (its window is focused AND it's the active tab).
-    /// A visible tab needs no notification — the user is already looking at it.
+    /// whether that surface is currently **visible** (its window is focused AND
+    /// `Registry::shows_surface`). A visible surface needs no notification — the user is
+    /// already looking at it.
     pub fn locate_surface(&self, surface_id: usize) -> Option<(String, String, bool)> {
         self.windows.iter().find_map(|(label, ws)| {
             let tab = ws.registry.tab_of_surface(surface_id)?;
             let focused = ws.window.is_focused().unwrap_or(false);
-            let visible = focused && ws.registry.active_tab() == Some(tab);
+            let visible = focused && ws.registry.shows_surface(surface_id);
             Some((label.clone(), tab.to_string(), visible))
         })
     }
@@ -1314,8 +1315,7 @@ impl WindowManager {
                 // chrome-core falls back to the first tab and spawns it if cold (`redock` does
                 // the same for a tab that left the config while out).
                 if let Some(active) = was_active.as_deref() {
-                    if remove_tabs.iter().any(|id| id == active)
-                        && !ws.registry.is_detached(active)
+                    if remove_tabs.iter().any(|id| id == active) && !ws.registry.is_detached(active)
                     {
                         let new_active = ws.registry.unload(active);
                         exited.push((label.clone(), active.to_string(), new_active));
