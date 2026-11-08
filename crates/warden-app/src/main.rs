@@ -1384,15 +1384,24 @@ fn pop_out_tab(
     // bells left on the origin's row (a badge is only ever set while that window is unfocused).
     if let Some(win) = app.get_window(&label) {
         let app2 = app.clone();
-        let origin = origin_label.clone();
-        let tab = id.clone();
+        let detached_label = label.clone();
         win.on_window_event(move |event| {
             if let tauri::WindowEvent::Focused(true) = event {
-                let _ = app2.emit_to(
-                    origin.as_str(),
-                    "warden:tab-seen",
-                    serde_json::json!({ "label": origin, "id": tab }),
-                );
+                // Read the origin now, not at pop-out: an origin rebuilt under a new label
+                // repoints `origin_label`, and the badge must clear in the live one.
+                let seen = app2.try_state::<ManagerState>().and_then(|st| {
+                    let m = st.lock();
+                    m.detached
+                        .get(&detached_label)
+                        .map(|d| (d.origin_label.clone(), d.tab_id.clone()))
+                });
+                if let Some((origin, tab)) = seen {
+                    let _ = app2.emit_to(
+                        origin.as_str(),
+                        "warden:tab-seen",
+                        serde_json::json!({ "label": origin, "id": tab }),
+                    );
+                }
                 sync_agent_menu(&app2);
             }
         });
