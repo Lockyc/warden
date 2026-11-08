@@ -83,7 +83,9 @@ check in this order:
    pane.** Rex sets `TERM_PROGRAM=rex`, which supports-hyperlinks-style checks (Claude Code
    among them) don't list, so the program never emits OSC 8. Rex and `warden-relay` carry OSC 8
    through intact, live and in the snapshot replay. Rex has no per-session env option, so the fix
-   is `FORCE_HYPERLINK=1` in the shell Rex starts when `$TERM_PROGRAM` is `rex`.
+   is `FORCE_HYPERLINK=1` in the shell Rex starts when `$TERM_PROGRAM` is `rex`. The same name
+   costs plain-click opening (item 3): Claude Code opens a link on a bare click only under
+   `TERM_PROGRAM=ghostty`, so that shell also re-exports it as `ghostty`.
 
 ## Child exit
 
