@@ -539,6 +539,9 @@ extern "C" {
     // True while the running program has turned on a mouse-reporting mode (tmux, vim, less).
     pub fn ghostty_surface_mouse_captured(surface: ghostty_surface_t) -> bool;
 
+    // bool ghostty_surface_has_selection(ghostty_surface_t);
+    pub fn ghostty_surface_has_selection(surface: ghostty_surface_t) -> bool;
+
     // bool ghostty_surface_mouse_button(ghostty_surface_t, state_e, button_e, mods_e);
     pub fn ghostty_surface_mouse_button(
         surface: ghostty_surface_t,

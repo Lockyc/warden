@@ -1372,16 +1372,19 @@ impl Registry {
     /// `SurfaceSignal::Focused` then records the pane (`WindowManager::handle_surface_focused`).
     /// False when the pane has no live surface.
     pub fn focus_pane_surface(&self, id: &str, which: PaneIdx) -> bool {
-        let Some(s) = self
-            .tabs
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.shown(which))
-        else {
+        let Some(s) = self.shown_surface(id, which) else {
             return false;
         };
         s.focus();
         true
+    }
+
+    /// The live surface pane `which` of tab `id` puts on screen, if any.
+    pub fn shown_surface(&self, id: &str, which: PaneIdx) -> Option<&GhosttySurface> {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.shown(which))
     }
 
     /// Why tab `id` can't be popped out, or `None`: its scratch column holds more than a pop-out

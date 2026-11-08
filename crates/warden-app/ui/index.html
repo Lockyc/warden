@@ -2122,8 +2122,9 @@
         scheduleMeasure();
       }).observe(document.getElementById("terminal-hole"));
 
-      // Divider drag-to-resize: chrome owns split geometry — Rust never sees a ratio, only the
-      // rects reportRect derives from these panes' live flex-basis. Same mousedown→mousemove→mouseup
+      // Divider drag-to-resize: chrome owns split geometry — Rust sees the rects reportRect
+      // derives from these panes' live flex-basis, and a ratio only when a menu asks
+      // (`warden:pane-menu`). Same mousedown→mousemove→mouseup
       // shape as chrome-core's sidebar resize handle (ui/chrome-core.js's `_initResize`), including
       // the same fix for the same footgun: the terminal NSView composites ABOVE this webview, so a
       // mouseup released over either pane's live surface never reaches this window at all — onMove
@@ -2230,6 +2231,27 @@
       listen("warden:split-pane", (e) => {
         if (!forMe(e)) return;
         splitActiveTab();
+      });
+
+      // A right-click on a terminal: the backend pops its menu once told the second pane's share
+      // as shown here — a divider drag lives only in `ratioOverride`.
+      listen("warden:pane-menu", (e) => {
+        if (!forMe(e)) return;
+        const p = e.payload;
+        if (!p || !p.id) return;
+        const s = splitOf(p.id) ? loadSplit(p.id) : null;
+        invoke("pane_menu", { id: p.id, pane: p.pane, x: p.x, y: p.y, size: s ? 1 - s.ratio : null })
+          .catch((err) => console.error("warden: IPC pane_menu failed", err));
+      });
+
+      // A size chosen from that menu, saved: it replaces any dragged ratio. The reload that
+      // follows declares the same size.
+      listen("warden:split-size", (e) => {
+        if (!forMe(e)) return;
+        const p = e.payload;
+        if (!p || !p.id || !Number.isFinite(p.size)) return;
+        ratioOverride.set(p.id, primaryFracFromLayout({ size: p.size }));
+        if (p.id === activeId && splitOf(p.id)) setSplitVisible(true);
       });
 
       // Tab ▸ Suspend Session (⌘⇧S) / Terminate Session (⌘⇧K): chrome-core's requestEnd suspends at

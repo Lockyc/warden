@@ -868,8 +868,7 @@ define_class!(
 
         #[unsafe(method(paste:))]
         fn paste(&self, _sender: Option<&AnyObject>) {
-            self.user_input();
-            binding_action(self, "paste_from_clipboard");
+            self.paste_clipboard();
         }
 
         #[unsafe(method(selectAll:))]
@@ -1196,6 +1195,12 @@ fn end_press(menu_press: &Cell<u8>, button: Button) -> bool {
 }
 
 impl WardenHostView {
+    /// Paste the clipboard, as typed input.
+    fn paste_clipboard(&self) {
+        self.user_input();
+        binding_action(self, "paste_from_clipboard");
+    }
+
     /// Route a right-button press, or a left one with ⌃, by [`right_click_route`]; true when the
     /// caller forwards it to libghostty. A menu press focuses this pane as a click does — AppKit
     /// only makes a view first responder on a left press, so the right button needs it done —
@@ -1588,6 +1593,21 @@ impl GhosttySurface {
     pub fn grid(&self) -> (u16, u16) {
         let s = unsafe { ffi::ghostty_surface_size(self.surface) };
         (s.columns, s.rows)
+    }
+
+    /// Whether the terminal holds a text selection (what Copy would take).
+    pub fn has_selection(&self) -> bool {
+        unsafe { ffi::ghostty_surface_has_selection(self.surface) }
+    }
+
+    /// The Edit menu's Copy, run on this surface.
+    pub fn copy(&self) {
+        binding_action(&self.host_view, "copy_to_clipboard");
+    }
+
+    /// The Edit menu's Paste, run on this surface.
+    pub fn paste(&self) {
+        self.host_view.paste_clipboard();
     }
 
     /// One cell's size in device pixels, `(width, height)`; `None` while libghostty doesn't know

@@ -50,7 +50,8 @@ panes (below). The config is the one source of a tab's split:
   second pane runs `split.cmd` (bare shell when absent) in the tab's own shell and dir, and
   `split.size`/`split.side` seed the divider. A drag overrides the ratio **in memory only**,
   for as long as the tab's terminals are live: unload, a child exit, a hot-reload respawn,
-  a new `size` in the config and an app restart all bring the config ratio back. `exit` in
+  a new `size` in the config and an app restart all bring the config ratio back; the
+  right-click menu's Size ▸ saves a size, replacing the drag. `exit` in
   the second shell closes the pane for the same lifetime — `Registry::unload` re-declares it,
   so it is back on the next spawn — and ⌘D recreates it from config. This is the frame-less
   shape of an `amux --frame` tab: the scratch shell beside the agent, with warden owning the

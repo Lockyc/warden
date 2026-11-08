@@ -16,10 +16,8 @@ pub enum SplitEdit {
     /// Turn the split on (`split = true`); nothing to write when the tab already resolves one.
     Enable,
     /// Save the second pane's share; dropped from the file when it equals what the tab inherits.
-    #[allow(dead_code)] // the pane right-click menu's, wired next
     Size(f64),
     /// Drop the tab's own `size`, back to the inherited one.
-    #[allow(dead_code)] // the pane right-click menu's, wired next
     ResetSize,
 }
 
@@ -136,34 +134,16 @@ pub fn write_split(
     if edit == SplitEdit::Enable && tab.split.is_some() {
         return Ok(());
     }
-    let w = raw
-        .windows
-        .iter()
-        .find(|w| w.title.trim() == window.trim())
-        .ok_or_else(|| format!("window {window:?} not in the config"))?;
-    let base = config.parent().unwrap_or(Path::new(""));
-    let origin = locate(w, tab, base)?;
-
-    // The levels nearest first, for the cascade the tab inherits through.
-    let (own, far): (Option<&RawSplit>, Vec<Option<&RawSplit>>) = match &origin {
-        Origin::Curated { raw, .. } => (raw.split.as_ref(), vec![]),
-        Origin::Discovered { root, existing, .. } => (*existing, vec![root.split.as_ref()]),
-    };
-    let stripped = without_size(own);
-    let cascade = |first: Option<&RawSplit>| {
-        let mut near = vec![first];
-        near.extend(far.iter().copied());
-        cascade_split_over(raw, w, &near).map_err(|e| e.to_string())
-    };
+    let w = raw_window(raw, window)?;
+    let origin = locate(w, tab, config.parent().unwrap_or(Path::new("")))?;
+    let (own, far) = levels(&origin);
+    let cascade = cascade_with(raw, w, far);
 
     let (keys, new): (&[&str], Option<Value>) = match edit {
         SplitEdit::Enable => (&["split"], Some(Value::from(true))),
         SplitEdit::Size(s) => {
-            let s = (s * 100.0).round() / 100.0;
-            let inherited = cascade(stripped.as_ref())?
-                .map(|sp| sp.size)
-                .unwrap_or(warden_config::resolve::DEFAULT_SPLIT_SIZE);
-            if (s - inherited).abs() < 0.005 {
+            let s = stored_size(s);
+            if (s - inherited(&cascade, own)?).abs() < 0.005 {
                 remove_size(&cascade, own)
             } else {
                 (&["split", "size"], Some(Value::from(s)))
@@ -174,13 +154,81 @@ pub fn write_split(
     apply(config, window, &origin, keys, new)
 }
 
-/// [`write_split`] onto the config warden runs from (`config_path`), parsed as it stands now.
-pub fn save_split(window: &str, tab: &Tab, edit: SplitEdit) -> Result<(), String> {
+/// A size as the file keeps it: two decimals.
+pub fn stored_size(s: f64) -> f64 {
+    (s * 100.0).round() / 100.0
+}
+
+fn raw_window<'a>(raw: &'a RawConfig, window: &str) -> Result<&'a RawWindow, String> {
+    raw.windows
+        .iter()
+        .find(|w| w.title.trim() == window.trim())
+        .ok_or_else(|| format!("window {window:?} not in the config"))
+}
+
+/// The tab's own split, and the levels above it nearest first (a discovered project's root),
+/// for the cascade the tab inherits through.
+fn levels<'a>(origin: &Origin<'a>) -> (Option<&'a RawSplit>, Vec<Option<&'a RawSplit>>) {
+    match origin {
+        Origin::Curated { raw, .. } => (raw.split.as_ref(), vec![]),
+        Origin::Discovered { root, existing, .. } => (*existing, vec![root.split.as_ref()]),
+    }
+}
+
+/// The split a tab resolves to with `first` as its own level, under the levels `far` and the
+/// window's and global ones.
+fn cascade_with<'a>(
+    raw: &'a RawConfig,
+    w: &'a RawWindow,
+    far: Vec<Option<&'a RawSplit>>,
+) -> impl Fn(Option<&RawSplit>) -> Result<Option<warden_config::Split>, String> + 'a {
+    move |first| {
+        let mut near = vec![first];
+        near.extend(far.iter().copied());
+        cascade_split_over(raw, w, &near).map_err(|e| e.to_string())
+    }
+}
+
+/// The size the tab gets without a `size` of its own.
+fn inherited(cascade: CascadeFn, own: Option<&RawSplit>) -> Result<f64, String> {
+    Ok(cascade(without_size(own).as_ref())?
+        .map(|sp| sp.size)
+        .unwrap_or(warden_config::resolve::DEFAULT_SPLIT_SIZE))
+}
+
+/// The config warden runs from (`config_path`), parsed as it stands now.
+fn current() -> Result<(PathBuf, RawConfig), String> {
     let config = warden_config::config_path();
-    let not_saved = |e: &dyn std::fmt::Display| format!("config not saved: {e}");
-    let text = std::fs::read_to_string(&config).map_err(|e| not_saved(&e))?;
-    let raw = warden_config::raw::parse(&text).map_err(|e| not_saved(&e))?;
+    let not_read = |e: &dyn std::fmt::Display| format!("config not saved: {e}");
+    let text = std::fs::read_to_string(&config).map_err(|e| not_read(&e))?;
+    let raw = warden_config::raw::parse(&text).map_err(|e| not_read(&e))?;
+    Ok((config, raw))
+}
+
+/// [`write_split`] onto the config warden runs from.
+pub fn save_split(window: &str, tab: &Tab, edit: SplitEdit) -> Result<(), String> {
+    let (config, raw) = current()?;
     write_split(&config, &raw, window, tab, edit)
+}
+
+/// The size `tab` in window `window` inherits without a `size` of its own — what
+/// [`SplitEdit::ResetSize`] goes back to — read from the config at `config`.
+pub fn inherited_size(
+    config: &Path,
+    raw: &RawConfig,
+    window: &str,
+    tab: &Tab,
+) -> Result<f64, String> {
+    let w = raw_window(raw, window)?;
+    let origin = locate(w, tab, config.parent().unwrap_or(Path::new("")))?;
+    let (own, far) = levels(&origin);
+    inherited(&cascade_with(raw, w, far), own)
+}
+
+/// [`inherited_size`] in the config warden runs from.
+pub fn current_inherited_size(window: &str, tab: &Tab) -> Result<f64, String> {
+    let (config, raw) = current()?;
+    inherited_size(&config, &raw, window, tab)
 }
 
 type CascadeFn<'a> = &'a dyn Fn(Option<&RawSplit>) -> Result<Option<warden_config::Split>, String>;
@@ -410,6 +458,17 @@ split = { size = 0.4, side = "left" }
         let c = warden_config::load(&p).unwrap().config;
         assert!(tab_titled(&c, "Two").split.is_some());
         assert!(tab_titled(&c, "One").split.is_none());
+    }
+
+    #[test]
+    fn inherited_size_ignores_the_tabs_own_size() {
+        let toml = "[[window]]\ntitle = \"W\"\n\n[window.split]\nsize = 0.3\n\n[[window.tab]]\ndir = \"/tmp/a\"\ntitle = \"A\"\nsplit = { size = 0.4 }\n\n[[window.tab]]\ndir = \"/tmp/b\"\ntitle = \"B\"\nsplit = true\n";
+        let (_d, p) = setup(toml);
+        let raw = warden_config::raw::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let c = warden_config::load(&p).unwrap().config;
+        let a = inherited_size(&p, &raw, "W", &tab_titled(&c, "A")).unwrap();
+        let b = inherited_size(&p, &raw, "W", &tab_titled(&c, "B")).unwrap();
+        assert_eq!((a, b), (0.3, 0.3));
     }
 
     #[test]

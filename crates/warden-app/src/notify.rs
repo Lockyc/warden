@@ -120,7 +120,7 @@ pub fn init(app: AppHandle, debug: bool) {
         }
         // A request for warden's menu: never attention.
         SurfaceSignal::ContextMenu { x, y } => {
-            log::debug!("context menu at ({x}, {y}) on surface {}", event.surface_id)
+            crate::manager::WindowManager::handle_context_menu(&app, event.surface_id, x, y)
         }
         _ => handle(&app, event),
     });
@@ -148,7 +148,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
             SurfaceSignal::Focused => "Focused (routed to the manager)".to_string(),
             SurfaceSignal::PointerEntered => "PointerEntered (routed to the manager)".to_string(),
             SurfaceSignal::UserInput => "UserInput (routed to the manager)".to_string(),
-            SurfaceSignal::ContextMenu { x, y } => format!("ContextMenu({x}, {y})"),
+            SurfaceSignal::ContextMenu { .. } => "ContextMenu (routed to the manager)".to_string(),
         };
         dbglog(&format!(
             "handle: signal={kind} surface={}",

@@ -952,6 +952,32 @@ impl WindowManager {
         );
     }
 
+    /// A right-click asked for warden's menu at `(x, y)` on a surface. The page holds the one
+    /// thing the menu can't learn here — the split's live ratio, a divider drag included — so it
+    /// gets `warden:pane-menu` and answers with `pane_menu`, which pops the menu. A pop-out's
+    /// surface has no sidebar page to answer, so its right-click shows nothing.
+    pub fn handle_context_menu(app: &AppHandle, surface_id: usize, x: f64, y: f64) {
+        let state = app.state::<ManagerState>();
+        let lock = state.lock();
+        let Some((label, _, _)) = lock.locate_surface(surface_id) else {
+            log::debug!("context menu on surface {surface_id}: not in a docked window");
+            return;
+        };
+        let Some((tab_id, which)) = lock
+            .windows
+            .get(&label)
+            .and_then(|ws| ws.registry.locate_surface(surface_id))
+        else {
+            return;
+        };
+        drop(lock);
+        let _ = app.emit_to(
+            label.as_str(),
+            "warden:pane-menu",
+            serde_json::json!({ "label": label, "id": tab_id, "pane": which.index(), "x": x, "y": y }),
+        );
+    }
+
     /// The pointer moved onto a surface, so it has just left that window's sidebar. Tell the
     /// chrome, which cannot see it for itself: the surface composites above the webview and takes
     /// the pointer at the boundary, so a fast flick out of the sidebar delivers no further event to

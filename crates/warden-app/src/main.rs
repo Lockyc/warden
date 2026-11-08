@@ -19,6 +19,9 @@ mod manager;
 mod notify;
 
 #[cfg(target_os = "macos")]
+mod pane_menu;
+
+#[cfg(target_os = "macos")]
 mod probe;
 mod project_colour;
 
@@ -892,11 +895,14 @@ fn split_pane(
             serde_json::json!({ "label": window.label(), "message": message }),
         );
     };
-    let block = state
-        .lock()
-        .windows
-        .get(window.label())
-        .and_then(|ws| ws.registry.focused_rex_block(&id));
+    let block = {
+        let m = state.lock();
+        let ws = m.windows.get(window.label()).ok_or("window not found")?;
+        match split_kind(&ws.registry, &id)? {
+            pane_menu::SplitKind::SplitBelow => ws.registry.focused_rex_block(&id),
+            pane_menu::SplitKind::Split => None,
+        }
+    };
     if let Some(block) = block {
         // The column stands whatever happens to the split, so a failure is the banner's — an
         // `Err` here would collapse the chrome's column.
@@ -912,19 +918,9 @@ fn split_pane(
         let spec = ws.registry.spec_of(&id).ok_or("tab not found")?;
         if spec.split.is_some() {
             SplitAction::Reopen
-        } else if rex::unclaimed::is_unclaimed(&spec.id, &spec.dir, spec.server.as_deref()) {
-            return Err(
-                "this tab can't split: it shows a Rex session opened from the sidebar".into(),
-            );
         } else {
-            let tab = m
-                .last_good
-                .windows
-                .iter()
-                .find(|w| w.title == ws.title)
-                .and_then(|w| w.tabs.iter().find(|t| t.key == id))
-                .ok_or_else(|| format!("no config entry for tab {:?}", spec.title))?;
-            SplitAction::Save(ws.title.clone(), Box::new(tab.clone()))
+            let (title, tab) = config_tab(&m, window.label(), &id)?;
+            SplitAction::Save(title, Box::new(tab))
         }
     };
     if let SplitAction::Save(title, tab) = action {
@@ -959,6 +955,166 @@ fn split_pane(
     // The new column enables New Scratch Tab and the pane moves.
     sync_agent_menu(tauri::Manager::app_handle(&window));
     Ok(())
+}
+
+/// What ⌘D would do on tab `id`: stack a shell below its focused Rex scratch block, or split the
+/// tab — or why it can't (a Rex session opened from the sidebar has no config entry to save a
+/// split to). [`split_pane`] acts on it and the right-click menu shows it.
+#[cfg(target_os = "macos")]
+fn split_kind(reg: &registry::Registry, id: &str) -> Result<pane_menu::SplitKind, String> {
+    if reg.focused_rex_block(id).is_some() {
+        return Ok(pane_menu::SplitKind::SplitBelow);
+    }
+    let spec = reg.spec_of(id).ok_or("tab not found")?;
+    if spec.split.is_none()
+        && rex::unclaimed::is_unclaimed(&spec.id, &spec.dir, spec.server.as_deref())
+    {
+        return Err("a Rex session opened from the sidebar can't split".into());
+    }
+    Ok(pane_menu::SplitKind::Split)
+}
+
+/// Tab `id` of window `label` as the loaded config has it, with its window's title: what a split
+/// write addresses.
+#[cfg(target_os = "macos")]
+fn config_tab(
+    m: &manager::WindowManager,
+    label: &str,
+    id: &str,
+) -> Result<(String, warden_config::Tab), String> {
+    let ws = m.windows.get(label).ok_or("window not found")?;
+    m.last_good
+        .windows
+        .iter()
+        .find(|w| w.title == ws.title)
+        .and_then(|w| w.tabs.iter().find(|t| t.key == id))
+        .map(|t| (ws.title.clone(), t.clone()))
+        .ok_or_else(|| format!("no config entry for tab {id:?}"))
+}
+
+/// The page's answer to `warden:pane-menu`: pop the right-click menu for pane `pane` (its wire
+/// index) of tab `id` at `(x, y)` in this window. `size` is the second pane's share the page
+/// shows — a divider drag included — or `None` while the tab shows no split.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn pane_menu(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+    pane: usize,
+    x: f64,
+    y: f64,
+    size: Option<f64>,
+) -> Result<(), String> {
+    let pane = registry::PaneIdx::from_index(pane);
+    let label = window.label().to_owned();
+    let (has_selection, can_split, tab) = {
+        let m = state.lock();
+        let ws = m.windows.get(&label).ok_or("window not found")?;
+        let has_selection = ws
+            .registry
+            .shown_surface(&id, pane)
+            .is_some_and(|s| s.has_selection());
+        let tab = size.and_then(|_| config_tab(&m, &label, &id).ok());
+        (has_selection, split_kind(&ws.registry, &id), tab)
+    };
+    // Read outside the lock: it parses the file.
+    let split = match (size, tab) {
+        (Some(current), Some((title, tab))) => {
+            match split_write::current_inherited_size(&title, &tab) {
+                Ok(inherited) => Some(pane_menu::SizeState { current, inherited }),
+                Err(e) => {
+                    log::warn!("pane menu of tab {id:?}: no size section: {e}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let ctx = pane_menu::PaneMenuCtx {
+        label,
+        tab: id,
+        pane,
+        has_selection,
+        can_split,
+        split,
+    };
+    let app = tauri::Manager::app_handle(&window);
+    let menu = pane_menu::build(app, &pane_menu::items(&ctx)).map_err(|e| e.to_string())?;
+    window
+        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
+}
+
+/// A right-click menu item was chosen, for tab `tab` of window `label`.
+#[cfg(target_os = "macos")]
+fn on_pane_menu(app: &tauri::AppHandle, op: pane_menu::Op, label: &str, tab: &str) {
+    use pane_menu::{Op, PRESETS};
+    use tauri::{Emitter, Manager};
+    let banner = |message: String| {
+        let _ = app.emit_to(
+            label,
+            "warden:error",
+            serde_json::json!({ "label": label, "message": message }),
+        );
+    };
+    let state = app.state::<ManagerState>();
+    match op {
+        // The right-click focused the pane, so the tab's focused pane is the clicked one.
+        Op::Copy | Op::Paste => {
+            let m = state.lock();
+            let Some(reg) = m.windows.get(label).map(|ws| &ws.registry) else {
+                return;
+            };
+            let surface = reg
+                .focused_pane(tab)
+                .and_then(|p| reg.shown_surface(tab, p));
+            match (surface, op) {
+                (Some(s), Op::Copy) => s.copy(),
+                (Some(s), _) => s.paste(),
+                (None, _) => {}
+            }
+        }
+        Op::Split => {
+            let Some(window) = app.get_webview_window(label) else {
+                return;
+            };
+            if let Err(e) = split_pane(window, state, tab.to_owned()) {
+                banner(e);
+            }
+        }
+        Op::Size(_) | Op::SizeDefault => {
+            let found = config_tab(&state.lock(), label, tab);
+            let saved = found.and_then(|(title, t)| {
+                let (edit, size) = match op {
+                    Op::Size(i) => (
+                        split_write::SplitEdit::Size(PRESETS[i]),
+                        split_write::stored_size(PRESETS[i]),
+                    ),
+                    _ => (
+                        split_write::SplitEdit::ResetSize,
+                        split_write::current_inherited_size(&title, &t)?,
+                    ),
+                };
+                split_write::save_split(&title, &t, edit).map(|()| size)
+            });
+            match saved {
+                // The page drops a dragged ratio for the chosen size; the reload carries it to
+                // the file's `size` too, which a size equal to the old one never changes.
+                Ok(size) => {
+                    let _ = app.emit_to(
+                        label,
+                        "warden:split-size",
+                        serde_json::json!({ "label": label, "id": tab, "size": size }),
+                    );
+                }
+                Err(e) => {
+                    log::error!("split size of tab {tab:?} not saved: {e}");
+                    banner(e);
+                }
+            }
+        }
+    }
 }
 
 /// Make this window's webview the key view, taking first responder from its terminal so the
@@ -2580,6 +2736,12 @@ fn main() {
                 return;
             }
 
+            // A terminal's right-click menu: its id names the window and tab it was popped for.
+            if let Some((op, label, tab)) = pane_menu::parse(id) {
+                on_pane_menu(app, op, &label, &tab);
+                return;
+            }
+
             // Tab ▸ Cycle Tabs: save the flip; the watcher's reload rebuilds the menu. muda already
             // flipped the tick, so a failed write rebuilds to undo it.
             if id == shell_core::menu::ids::TAB_DIGIT_CYCLE {
@@ -2741,6 +2903,7 @@ fn main() {
             shell_home_edit_config,
             shell_home_open_window,
             window_menu,
+            pane_menu,
             probe_now,
             agents_init,
             agent_new,
