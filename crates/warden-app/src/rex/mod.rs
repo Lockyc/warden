@@ -430,8 +430,7 @@ impl RexHub {
     }
 
     /// Whether Rex tab `tab_id` holds a live session in either pane ([`Self::session_alive`]):
-    /// its main pane's, or its scratch column's. The main pane's session ends with its last
-    /// agent while the column's terminals run on, and those are the tab's too.
+    /// its main pane's, or its scratch column's — the column's terminals are the tab's too.
     pub fn tab_alive(&self, tab_id: &str) -> bool {
         self.session_alive(tab_id) || self.session_alive(&crate::registry::secondary_id(tab_id))
     }
@@ -519,7 +518,34 @@ impl Inner {
                             block_id,
                         });
                     }
-                    // No terminal left in it: leave it for other clients, make a new one.
+                    // Rex keeps a session whose last window closed (its last agent tab, say),
+                    // empty: the pane's terminal opens in it again rather than orphaning it.
+                    if !adopted && view_blocks(&view, None).next().is_none() {
+                        let w = inner.new_window_until(
+                            server,
+                            &rec.session_id,
+                            dir,
+                            startup,
+                            window_label,
+                            deadline,
+                        )?;
+                        let block_id = w.block_id.ok_or_else(|| {
+                            api_error("no_terminal", "the new window has no terminal", 0)
+                        })?;
+                        log::info!(
+                            "Rex {server}: session {} was empty; opened a terminal in it ({pane_key})",
+                            rec.session_id
+                        );
+                        let mut st = inner.lock();
+                        st.blocks.insert(pane_key.to_owned(), block_id.clone());
+                        st.stamp(pane_key);
+                        return Ok(PaneTarget {
+                            endpoint,
+                            session_id: rec.session_id.clone(),
+                            block_id,
+                        });
+                    }
+                    // Only other clients' blocks in it: leave it to them, make a new one.
                     no_terminal = true;
                 }
                 Err(RexError::Api { code, .. }) if code == "session_not_found" => {}

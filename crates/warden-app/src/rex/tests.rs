@@ -163,6 +163,46 @@ fn ensure_session_reattaches_when_mapped_and_alive() {
 }
 
 #[test]
+fn ensure_session_opens_a_terminal_in_an_empty_mapped_session() {
+    let fake = scripted(json!([{"session_id": "session:old", "label": "proj · main"}]));
+    // Its last window closed (its last agent tab): Rex keeps it, empty.
+    fake.on("session.attach", |p, _| {
+        let id = p["session_id"].as_str().unwrap_or_default();
+        Reply::ok(windows_view(id, 3, &[]))
+    });
+    fake.reply(
+        "session.new_window",
+        json!({"window_id": "window:9", "block_ids": ["block:9"], "revision": 4}),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rex-sessions.json");
+    seed(&path, "tab-a", "local", "session:old");
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+
+    let t = hub
+        .ensure_session(
+            "tab-a",
+            "local",
+            Path::new("/work/proj"),
+            Some("amux"),
+            "proj · main",
+        )
+        .expect("ensure_session");
+    assert!(fake.requests_for("session.create").is_empty(), "no orphan");
+    let made = fake.requests_for("session.new_window");
+    assert_eq!(made.len(), 1);
+    assert_eq!(made[0].payload["session_id"], "session:old");
+    assert_eq!(t.session_id, "session:old");
+    assert_eq!(t.block_id, "block:9");
+    assert_eq!(
+        RexStore::load(path)
+            .get("tab-a")
+            .map(|r| r.session_id.clone()),
+        Some("session:old".into())
+    );
+}
+
+#[test]
 fn stale_session_id_recreates() {
     let fake = scripted(json!([]));
     fake.on("session.attach", |p, _| {

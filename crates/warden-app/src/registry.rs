@@ -3261,10 +3261,13 @@ impl Registry {
                     )
             })
             .collect();
-        if !showable.contains(&true) {
-            // The pane's last running agent: it ends as the tab's does.
+        let column_live = self.tabs[idx].column.as_ref().is_some_and(Column::live);
+        if !showable.contains(&true) && !column_live {
+            // The pane's last running agent, with nothing else of the tab running: it ends as
+            // the tab's does.
             return Some(AgentClosed::PaneCold(self.unload(id)));
         }
+        let pane = &mut self.tabs[idx].primary;
         if pane.selected.as_deref() == Some(record_id) {
             pane.selected = shell_core::pick_live_neighbour(at, &showable)
                 .map(|n| pane.agents[n].record_id.clone());
@@ -3278,7 +3281,7 @@ impl Registry {
                     log::error!("couldn't open agent {next:?} of tab {id:?}: {e}");
                 }
             }
-            if !self.tabs[idx].primary.live() {
+            if !self.tabs[idx].primary.live() && !column_live {
                 // Its surface is already closed, so `unload` finds nothing to close and leaves
                 // the sidebar where it is; lean from here, as it would have.
                 let next = self.unload(id);

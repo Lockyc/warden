@@ -1219,7 +1219,9 @@
             // the row with the ⤢ detached mark and the app treats a click on it as "raise that
             // window". Invisible until forwarded here (the "tree rendered flat" footgun class).
             detached: !!t.detached,
-            live: t.spawned,
+            // The tab is open while any of its terminals runs: a Rex tab's main pane holds none
+            // once its last agent tab closes, while its scratch column runs on.
+            live: t.spawned || !!t.secondary_spawned,
             attention: badges.has(t.id) ? true : null,
             // `t.presence` is already 'on'/'ghost'/'off' (or null = never probed) from the
             // backend PresenceCache; a live `session` entry from a probe emit wins over it.
@@ -1991,7 +1993,7 @@
                 // tracks selection + the empty-state; without this an unloaded tab that a cold
                 // start just brought live keeps showing a hollow (cold) dot until the next full
                 // refresh (the "cold-start indicator never lights up" bug).
-                sb.setLive(id, res.live);
+                sb.setLive(id, res.live || (res.split && !!secondarySpawnedById.get(id)));
               }
               // A row clicked from a filtered list: the activated terminal just took first
               // responder, so hand it back to the search — Esc clears, typing replaces the filter.
