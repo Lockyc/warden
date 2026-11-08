@@ -12,7 +12,7 @@
 ![Tauri](https://img.shields.io/badge/Tauri-24C8DB?logo=tauri&logoColor=white)
 [![License](https://img.shields.io/github/license/Lockyc/warden)](LICENSE)
 
-<img src="docs/screenshot.png" alt="warden's work window: the sidebar of grouped project tabs, the planning tab's agent list (one needs you, one asleep), a Claude Code agent's plan in the main pane with the asked/doing/said summary below it, and a scratch shell column on the right" width="900">
+<img src="docs/screenshot.png" alt="Two warden windows, personal behind work. The work window: the sidebar of grouped project tabs, the planning tab's agent list (one needs you, one asleep), a Claude Code agent's plan in the main pane with the asked/doing/said summary below it, and a scratch shell column on the right" width="900">
 
 </div>
 
