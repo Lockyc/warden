@@ -107,7 +107,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 ### Cross-cutting rules
 
 - **No transitional fallbacks.** Finish every migration in-branch.
-- **Keep tool-specific concepts out of `warden-config`** (neutral test strings). The README deliberately names [agentmux](https://github.com/lockyc/agentmux) as the companion — don't strip that, and don't leak it into the crate.
+- **Keep tool-specific concepts out of `warden-config`** (neutral test strings). The README leads with Rex tabs and agents as the workflow, with plain tabs documented alongside. It doesn't name agentmux: Rex tabs replace it.
 - **Raw-string TOML fixtures with a colour hex** self-terminate at `"#` inside `r#"…"#` — use `r##"…"##`.
 - **NEVER move the user's real config aside to test `NoConfig`/`Broken`** — `WARDEN_CONFIG="$(mktemp -d)/nonexistent.toml"` reproduces `NoConfig` with nothing to restore. Moving it has destroyed a config once.
 - **`open --env "WARDEN_CONFIG=<path>" -a /Applications/warden.app` is silently ignored if warden is already running** — and warden is persistent, so quit it first (`osascript -e 'quit app "warden"'`).
