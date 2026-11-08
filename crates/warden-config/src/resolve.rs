@@ -64,31 +64,42 @@ fn cascade<'a>(
     tab.or(window).or(global).filter(|s| !s.trim().is_empty())
 }
 
-/// Resolve ONE level's `split`. Three outcomes, and the cascade needs all three distinct:
-/// `None` = unset (inherit from above), `Some(None)` = `split = false` (opts this level out),
-/// `Some(Some(_))` = a declared split. Validated here, per level, so a bad global table is an
-/// error even when no tab inherits it.
-fn resolve_split_level(raw: Option<&RawSplit>) -> Result<Option<Option<Split>>, ResolveError> {
+/// One level's resolved `split` keys. A key a level doesn't set is `None` so the cascade can
+/// take it from a farther level; `off` is `split = false`.
+#[derive(Debug, Clone, PartialEq)]
+struct SplitLevel {
+    off: bool,
+    side: Option<SplitSide>,
+    size: Option<f64>,
+    /// The column's content — `cmd` or `pane` — set and inherited as one unit.
+    panes: Option<Vec<StackPane>>,
+}
+
+/// Resolve ONE level's `split`: `None` = unset (inherit from above), otherwise the level's own
+/// keys (`off` for `split = false`; `split = true` sets none, so it inherits all). Validated
+/// here, per level, so a bad global table is an error even when no tab inherits it.
+fn resolve_split_level(raw: Option<&RawSplit>) -> Result<Option<SplitLevel>, ResolveError> {
+    let unset = SplitLevel {
+        off: false,
+        side: None,
+        size: None,
+        panes: None,
+    };
     match raw {
         None => Ok(None),
-        Some(RawSplit::Off(false)) => Ok(Some(None)),
-        Some(RawSplit::Off(true)) => Ok(Some(Some(Split {
-            side: SplitSide::Right,
-            size: DEFAULT_SPLIT_SIZE,
-            panes: vec![StackPane {
-                size: 1.0,
-                startup: None,
-            }],
-        }))),
+        Some(RawSplit::Off(false)) => Ok(Some(SplitLevel { off: true, ..unset })),
+        Some(RawSplit::Off(true)) => Ok(Some(unset)),
         Some(RawSplit::On(t)) => {
             let side = match t.side.as_deref().map(str::trim) {
-                None | Some("") | Some("right") => SplitSide::Right,
-                Some("left") => SplitSide::Left,
+                None => None,
+                Some("") | Some("right") => Some(SplitSide::Right),
+                Some("left") => Some(SplitSide::Left),
                 Some(other) => return Err(ResolveError::BadSplitSide(other.to_string())),
             };
-            let size = t.size.unwrap_or(DEFAULT_SPLIT_SIZE);
-            if !(size.is_finite() && (SPLIT_SIZE_MIN..=SPLIT_SIZE_MAX).contains(&size)) {
-                return Err(ResolveError::BadSplitSize(size));
+            if let Some(size) = t.size {
+                if !(size.is_finite() && (SPLIT_SIZE_MIN..=SPLIT_SIZE_MAX).contains(&size)) {
+                    return Err(ResolveError::BadSplitSize(size));
+                }
             }
             let nonblank = |c: &Option<String>| {
                 c.as_deref()
@@ -97,13 +108,20 @@ fn resolve_split_level(raw: Option<&RawSplit>) -> Result<Option<Option<Split>>, 
             };
             let panes = match &t.panes {
                 Some(_) if t.cmd.is_some() => return Err(ResolveError::SplitCmdAndPanes),
-                Some(raw) => resolve_stack(raw, &nonblank)?,
-                None => vec![StackPane {
-                    size: 1.0,
-                    startup: nonblank(&t.cmd),
-                }],
+                Some(raw) => Some(resolve_stack(raw, &nonblank)?),
+                None => t.cmd.as_ref().map(|_| {
+                    vec![StackPane {
+                        size: 1.0,
+                        startup: nonblank(&t.cmd),
+                    }]
+                }),
             };
-            Ok(Some(Some(Split { side, size, panes })))
+            Ok(Some(SplitLevel {
+                off: false,
+                side,
+                size: t.size,
+                panes,
+            }))
         }
     }
 }
@@ -188,15 +206,40 @@ fn collapse_for_plain(
     Some(split)
 }
 
-/// The split cascade: nearest SET level wins as a whole table (a tab table that sets only
-/// `size` does not inherit the global table's `side` — same "set level wins" rule as
-/// `cascade`, lifted to a table). `Some(None)` at the nearest level is the opt-out.
-fn cascade_split(
-    tab: Option<&Option<Split>>,
-    window: Option<&Option<Split>>,
-    global: Option<&Option<Split>>,
-) -> Option<Split> {
-    tab.or(window).or(global).cloned().flatten()
+/// The split cascade, nearest level first. Walks outward until a level is `off`
+/// (`split = false`, → `None`); `side`, `size` and the column content (`cmd`/`pane`, one
+/// unit) each take the nearest level that sets them, else the defaults. Enabled iff some
+/// level before the stop is present.
+fn cascade_split(levels: &[Option<&SplitLevel>]) -> Option<Split> {
+    let mut present: Vec<&SplitLevel> = Vec::new();
+    for level in levels.iter().flatten() {
+        if level.off {
+            break;
+        }
+        present.push(level);
+    }
+    if present.is_empty() {
+        return None;
+    }
+    Some(Split {
+        side: present
+            .iter()
+            .find_map(|l| l.side)
+            .unwrap_or(SplitSide::Right),
+        size: present
+            .iter()
+            .find_map(|l| l.size)
+            .unwrap_or(DEFAULT_SPLIT_SIZE),
+        panes: present
+            .iter()
+            .find_map(|l| l.panes.clone())
+            .unwrap_or_else(|| {
+                vec![StackPane {
+                    size: 1.0,
+                    startup: None,
+                }]
+            }),
+    })
 }
 
 #[derive(Debug, Error, PartialEq)]
@@ -378,7 +421,7 @@ struct Globals<'a> {
     suspend: Option<&'a str>,
     resume: Option<&'a str>,
     server: Option<&'a str>,
-    split: Option<&'a Option<Split>>,
+    split: Option<&'a SplitLevel>,
     /// The directory a relative local `dir` resolves against ([`anchor`]).
     base: &'a Path,
 }
@@ -516,7 +559,7 @@ fn resolve_tab(
     rp: &RawWindow,
     default_shell: &str,
     globals: &Globals,
-    window_split: Option<&Option<Split>>,
+    window_split: Option<&SplitLevel>,
     seen_keys: &mut HashSet<String>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Tab, ResolveError> {
@@ -680,7 +723,7 @@ fn resolve_cascade(
     rp: &RawWindow,
     default_shell: &str,
     globals: &Globals,
-    window_split: Option<&Option<Split>>,
+    window_split: Option<&SplitLevel>,
 ) -> Result<Cascaded, ResolveError> {
     let level =
         |n: Option<&str>, w: Option<&str>, g: Option<&str>| cascade(n, w, g).map(String::from);
@@ -695,7 +738,7 @@ fn resolve_cascade(
         kill: level(near.kill, w.kill.as_deref(), globals.kill),
         suspend: level(near.suspend, w.suspend.as_deref(), globals.suspend),
         resume: level(near.resume, w.resume.as_deref(), globals.resume),
-        split: cascade_split(near_split.as_ref(), window_split, globals.split),
+        split: cascade_split(&[near_split.as_ref(), window_split, globals.split]),
     })
 }
 
@@ -705,7 +748,7 @@ fn resolve_root(
     rp: &RawWindow,
     default_shell: &str,
     globals: &Globals,
-    window_split: Option<&Option<Split>>,
+    window_split: Option<&SplitLevel>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Option<Root>, ResolveError> {
     // name/dir/depth validation + tilde expansion + basename default are shared with lector via
@@ -2428,7 +2471,7 @@ colour = "#000000"
     }
 
     #[test]
-    fn split_cascades_whole_table_nearest_level_winning() {
+    fn split_cascades_per_key_nearest_level_winning() {
         let (cfg, _) = resolve_str(
             r##"
 [split]
@@ -2451,7 +2494,7 @@ colour = "#000000"
   dir = "/tmp/c"
   split = false
   [[window.tab]]
-  title = "default-split"
+  title = "enabled"
   dir = "/tmp/d"
   split = true
 [[window]]
@@ -2469,21 +2512,156 @@ split = false
         assert_eq!(inherited.side, SplitSide::Left);
         assert_eq!(inherited.size, 0.3);
         assert_eq!(inherited.scratch_startup(), Some("scratch-global"));
-        // The nearest table wins WHOLE — the tab's own table sets only `size`, so side and
-        // cmd fall back to the table's own defaults, not the global table's values.
         let own = work[1].split.as_ref().unwrap();
-        assert_eq!(own.side, SplitSide::Right);
+        assert_eq!(own.side, SplitSide::Left);
         assert_eq!(own.size, 0.4);
-        assert_eq!(own.scratch_startup(), None);
+        assert_eq!(own.scratch_startup(), Some("scratch-global"));
         assert_eq!(work[2].split, None, "split = false opts the tab out");
-        let dflt = work[3].split.as_ref().unwrap();
+        let on = work[3].split.as_ref().unwrap();
         assert_eq!(
-            (dflt.side, dflt.size, dflt.scratch_startup()),
-            (SplitSide::Right, DEFAULT_SPLIT_SIZE, None)
+            (on.side, on.size, on.scratch_startup()),
+            (SplitSide::Left, 0.3, Some("scratch-global")),
+            "split = true inherits every key"
         );
         assert_eq!(
             cfg.windows[1].tabs[0].split, None,
             "a window-level false opts every tab out"
+        );
+    }
+
+    /// First tab of the only window of `toml`.
+    fn tab_split(toml: &str) -> Option<Split> {
+        resolve_str(toml).unwrap().0.windows[0].tabs[0]
+            .split
+            .clone()
+    }
+
+    #[test]
+    fn tab_size_only_inherits_window_side_and_cmd() {
+        let s = tab_split(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [window.split]
+  side = "left"
+  size = 0.3
+  cmd = "x"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [window.tab.split]
+  size = 0.25
+"##,
+        )
+        .unwrap();
+        assert_eq!(
+            (s.side, s.size, s.scratch_startup()),
+            (SplitSide::Left, 0.25, Some("x"))
+        );
+    }
+
+    #[test]
+    fn tab_cmd_replaces_window_pane_stack() {
+        let s = tab_split(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+server = "s"
+  [[window.split.pane]]
+  cmd = "a"
+  [[window.split.pane]]
+  cmd = "b"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [window.tab.split]
+  cmd = "c"
+"##,
+        )
+        .unwrap();
+        assert_eq!(
+            s.panes,
+            vec![StackPane {
+                size: 1.0,
+                startup: Some("c".into())
+            }]
+        );
+    }
+
+    #[test]
+    fn split_true_inherits_every_key() {
+        let s = tab_split(
+            r##"
+[split]
+side = "left"
+size = 0.3
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+  split = true
+"##,
+        )
+        .unwrap();
+        assert_eq!((s.side, s.size), (SplitSide::Left, 0.3));
+    }
+
+    #[test]
+    fn split_false_opts_out_despite_parent_keys() {
+        let s = tab_split(
+            r##"
+[split]
+side = "left"
+size = 0.3
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+  split = false
+"##,
+        );
+        assert_eq!(s, None);
+    }
+
+    #[test]
+    fn nearer_true_reenables_after_farther_false() {
+        let s = tab_split(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+split = false
+  [[window.tab]]
+  dir = "/tmp/a"
+  split = true
+"##,
+        )
+        .unwrap();
+        assert_eq!(
+            (s.side, s.size, s.scratch_startup()),
+            (SplitSide::Right, DEFAULT_SPLIT_SIZE, None)
+        );
+    }
+
+    #[test]
+    fn unset_keys_at_every_level_use_defaults() {
+        let s = tab_split(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [window.tab.split]
+  size = 0.4
+"##,
+        )
+        .unwrap();
+        assert_eq!(
+            (s.side, s.size, s.scratch_startup()),
+            (SplitSide::Right, 0.4, None)
         );
     }
 
@@ -2510,7 +2688,7 @@ colour = "#000000"
         assert_eq!(
             root.scratch_startup(),
             None,
-            "the root's own table has no cmd → bare shell"
+            "the window's empty cmd is the nearest cmd → bare shell"
         );
     }
 

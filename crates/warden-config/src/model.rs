@@ -162,7 +162,7 @@ pub struct Tab {
     pub resume: Option<String>,
     /// Rex server hosting this tab's panes: `Some("local")` or a host label; `None` = a plain tab.
     pub server: Option<String>,
-    /// Resolved second pane for this tab (cascaded tab→window→global, whole-table). `None`
+    /// Resolved second pane for this tab (cascaded tab→window→global, per key). `None`
     /// = no split (a single pane).
     pub split: Option<Split>,
     /// The project's colour, pinned (tab-level only, no cascade). `None` = derived from the
