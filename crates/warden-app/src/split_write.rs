@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use warden_config::edit::{self, At, RootAt};
 use warden_config::raw::{RawConfig, RawRoot, RawSplit, RawTab, RawWindow};
 use warden_config::resolve::cascade_split_over;
+use warden_config::toml_edit::Value;
 use warden_config::{normalize_dir_key, Tab};
 
 /// What to change about a tab's saved split.
@@ -20,8 +21,6 @@ pub enum SplitEdit {
     ResetSize,
 }
 
-use warden_config::toml_edit::Value;
-
 /// Where a tab's `split` lives in the file.
 enum Origin<'a> {
     Curated {
@@ -31,7 +30,6 @@ enum Origin<'a> {
     },
     Discovered {
         root: &'a RawRoot,
-        root_name: String,
         /// The project's `dir` as the file spells it (an existing override's, else a new one).
         dir: String,
         existing: Option<&'a RawSplit>,
@@ -63,12 +61,7 @@ fn new_dir_string(root_dir: &str, project: &Path) -> String {
     project.display().to_string()
 }
 
-fn locate<'a>(
-    raw: &'a RawConfig,
-    window: &'a RawWindow,
-    tab: &Tab,
-    base: &Path,
-) -> Result<Origin<'a>, String> {
+fn locate<'a>(window: &'a RawWindow, tab: &Tab, base: &Path) -> Result<Origin<'a>, String> {
     let matches = |t: &RawTab| match &tab.id {
         Some(id) => t.id.as_deref().map(str::trim) == Some(id.as_str()),
         None => {
@@ -95,7 +88,6 @@ fn locate<'a>(
             });
         }
     }
-    let _ = raw;
     let root = window
         .extra
         .roots
@@ -107,15 +99,9 @@ fn locate<'a>(
             named.is_some() && named.as_deref() == tab.group.as_deref()
         })
         .ok_or_else(|| format!("no config entry for tab {:?}", tab.title))?;
-    let root_name = root
-        .name
-        .as_deref()
-        .map(|n| n.trim().to_string())
-        .ok_or_else(|| "the tab's root has no `name` in the config to address it by".to_string())?;
     let existing_tab = root.tabs.iter().find(|t| dir_key(&t.dir, base) == tab.key);
     Ok(Origin::Discovered {
         root,
-        root_name,
         dir: existing_tab
             .map(|t| t.dir.trim().to_string())
             .unwrap_or_else(|| new_dir_string(&root.dir, &tab.dir)),
@@ -154,7 +140,7 @@ pub fn write_split(
         .find(|w| w.title.trim() == window.trim())
         .ok_or_else(|| format!("window {window:?} not in the config"))?;
     let base = config.parent().unwrap_or(Path::new(""));
-    let origin = locate(raw, w, tab, base)?;
+    let origin = locate(w, tab, base)?;
 
     // The levels nearest first, for the cascade the tab inherits through.
     let (own, far): (Option<&RawSplit>, Vec<Option<&RawSplit>>) = match &origin {
@@ -186,10 +172,10 @@ pub fn write_split(
     apply(config, window, &origin, keys, new)
 }
 
-/// Remove `split.size` — unless that would empty the tab's own split table and leave nothing
-/// above it to keep the split on, in which case the table collapses to `split = true`.
 type CascadeFn<'a> = &'a dyn Fn(Option<&RawSplit>) -> Result<Option<warden_config::Split>, String>;
 
+/// Remove `split.size` — unless that would empty the tab's own split table and leave nothing
+/// above it to keep the split on, in which case the table collapses to `split = true`.
 fn remove_size<'k>(cascade: CascadeFn, own: Option<&RawSplit>) -> (&'k [&'k str], Option<Value>) {
     let only_size = match own {
         Some(RawSplit::On(t)) => t.side.is_none() && t.cmd.is_none() && t.panes.is_none(),
@@ -221,11 +207,11 @@ fn apply(
             keys,
             new,
         ),
-        Origin::Discovered { root_name, dir, .. } => edit::set_root_tab_path(
+        Origin::Discovered { root, dir, .. } => edit::set_root_tab_path(
             config,
             RootAt {
                 window,
-                root: root_name,
+                root_dir: root.dir.trim(),
                 dir,
             },
             keys,
@@ -367,6 +353,72 @@ split = { size = 0.4, side = "left" }
         let o = &c.windows[0].roots[0].overrides[0];
         let s = o.split.as_ref().unwrap();
         assert_eq!((s.size, s.side), (0.7, warden_config::SplitSide::Left));
+    }
+
+    #[test]
+    fn unnamed_root_discovered_project_saves() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("proj");
+        std::fs::create_dir_all(root.join("p1")).unwrap();
+        let p = d.path().join("config.toml");
+        std::fs::write(
+            &p,
+            format!(
+                "[[window]]\ntitle = \"W\"\n\n[[window.root]]\ndir = \"{}\"\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+        let raw = warden_config::raw::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let tab = Tab {
+            dir: root.join("p1"),
+            key: normalize_dir_key(&root.join("p1")),
+            group: Some("proj".into()),
+            ..bare_tab()
+        };
+        write_split(&p, &raw, "W", &tab, SplitEdit::Enable).unwrap();
+        let c = warden_config::load(&p).unwrap().config;
+        assert!(c.windows[0].roots[0].overrides[0].split.is_some());
+    }
+
+    #[test]
+    fn tilde_spelled_dir_is_found() {
+        let toml = "[[window]]\ntitle = \"W\"\n\n[[window.tab]]\ndir = \"~/warden-split-write-test\"\ntitle = \"X\"\n";
+        let (_d, p) = setup(toml);
+        let out = run(&p, "W", |c| tab_titled(c, "X"), SplitEdit::Size(0.3)).unwrap();
+        assert!(out.contains("dir = \"~/warden-split-write-test\""), "{out}");
+        let c = warden_config::load(&p).unwrap().config;
+        assert_eq!(tab_titled(&c, "X").split.unwrap().size, 0.3);
+    }
+
+    #[test]
+    fn id_addresses_the_right_tab_when_dirs_are_shared() {
+        let toml = "[[window]]\ntitle = \"W\"\n\n[[window.tab]]\nid = \"one\"\ndir = \"/tmp/a\"\ntitle = \"One\"\n\n[[window.tab]]\nid = \"two\"\ndir = \"/tmp/a\"\ntitle = \"Two\"\n";
+        let (_d, p) = setup(toml);
+        run(&p, "W", |c| tab_titled(c, "Two"), SplitEdit::Enable).unwrap();
+        let c = warden_config::load(&p).unwrap().config;
+        assert!(tab_titled(&c, "Two").split.is_some());
+        assert!(tab_titled(&c, "One").split.is_none());
+    }
+
+    #[test]
+    fn reset_size_drops_only_the_size() {
+        let toml = "[[window]]\ntitle = \"W\"\n\n[[window.tab]]\ndir = \"/tmp/a\"\ntitle = \"A\"\nsplit = { size = 0.4, side = \"left\" }\n";
+        let (_d, p) = setup(toml);
+        run(&p, "W", |c| tab_titled(c, "A"), SplitEdit::ResetSize).unwrap();
+        let c = warden_config::load(&p).unwrap().config;
+        let s = tab_titled(&c, "A").split.unwrap();
+        assert_eq!((s.size, s.side), (0.5, warden_config::SplitSide::Left));
+    }
+
+    #[test]
+    fn dropping_the_only_split_key_keeps_the_split_on() {
+        let toml = "[[window]]\ntitle = \"W\"\n\n[[window.tab]]\ndir = \"/tmp/a\"\ntitle = \"A\"\nsplit = { size = 0.4 }\n";
+        let (_d, p) = setup(toml);
+        let out = run(&p, "W", |c| tab_titled(c, "A"), SplitEdit::ResetSize).unwrap();
+        assert!(out.contains("split = true"), "{out}");
+        let c = warden_config::load(&p).unwrap().config;
+        assert_eq!(tab_titled(&c, "A").split.unwrap().size, 0.5);
     }
 
     fn bare_tab() -> Tab {
