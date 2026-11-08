@@ -145,8 +145,9 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
   "Process exited".
 - **Split visibility is the `.split` class on `#terminal-hole`, never `hidden` alone** — `hidden`'s
   UA `display: none` loses to any author `display` rule, so `#pane-divider`/`#pane-secondary`'s
-  rule is scoped to `#terminal-hole.split`. **`setSplitVisible` is the sole authority** for `.split`
-  and `hidden`.
+  rule is scoped to `#terminal-hole.split`. **`applySplitShape` is the only writer** of `.split`
+  and `hidden` — `setSplitVisible` for the active tab; `measureTabs` borrows it per hidden tab and
+  restores the saved state in the same task (keep that restore synchronous).
 - **A config split's ratio never reaches `localStorage`** — `saveSplit`/`loadSplit` route it to
   the in-memory `ratioOverride`, cleared wherever the tab goes cold.
 - **Report the pane's content box, and paint the border box's own background** — both, together:

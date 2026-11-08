@@ -93,8 +93,8 @@ action is declined does libghostty print "Process exited. Press any key…" and,
 `close_surface_cb` — wired to the same signal as a fallback. `wait-after-command` is forced on
 for any surface given a `command` (embedded.zig), so the fallback is never the primary path:
 **"exit waits for a keypress" means the action isn't being matched (tag drift), never that warden
-must wait.** Both paths reuse `Registry::unload`, and the chrome's shared `applyUnloaded` handles
-`warden:tab-exited`.
+must wait.** Both paths reach `manager.rs::handle_child_exited`, which picks the pane's own close
+(`unload`, `close_block`, `release_block`, `close_agent`).
 
 **Never free a surface from inside `action_cb`** — libghostty is still standing on it, a silent
 use-after-free that tests fine. `SHOW_CHILD_EXITED` defers via `dispatch_async_f`; any future
