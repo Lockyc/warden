@@ -18,17 +18,17 @@ pub struct TabMeta {
     /// tab's current title), so a metadata update always relabels to the current title.
     pub title: String,
     /// The kept tab's current declared split. Carried on every metadata update (like
-    /// `title`); a `side`/`size`-only change is a live re-layout, so it rides here. A change
-    /// to the split's PRESENCE or (on a plain tab) `startup` is a terminal-spec change and rides
-    /// `respawn_tabs` instead — the second pane has to be (re)spawned to run it.
+    /// `title`); a `side`/`size`-only change is a live re-layout, so it rides here. The split's
+    /// PRESENCE rides `split_tabs`/`unsplit_tabs`, and (on a plain tab) its `startup` rides
+    /// `respawn_tabs` — the second pane has to be spawned or closed for either.
     pub split: Option<Split>,
     /// The kept tab's pinned project colour (`Tab::colour`), carried like `title`.
     pub colour: Option<Colour>,
 }
 
-/// What a tab's terminal runs — the fields a running PTY can't take on in place, so a change to
-/// any of them means a respawn. The one home for that decision: [`reconcile`] and the app's
-/// popped-out-tab return path both compare these, so a docked and a detached tab decide alike.
+/// What a tab's terminals run — the fields a running PTY can't take on in place. The one home for
+/// what a change to them costs is [`TerminalSpec::change_to`]: [`reconcile`] and the app's
+/// popped-out-tab return path both ask it, so a docked and a detached tab decide alike.
 /// `split_startup` is `None` for no declared split, `Some(None)` for a split running a bare shell
 /// (or, on a Rex tab, any split: its panes ride `set_meta`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,6 +60,36 @@ impl<'a> TerminalSpec<'a> {
                 None => s.scratch_startup(),
             }),
             server,
+        }
+    }
+}
+
+/// How a kept tab's terminals must follow its [`TerminalSpec`] from `old` to `new`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpecChange {
+    Same,
+    /// Only the split appeared: the second pane comes up beside the running primary.
+    Split,
+    /// Only the split went: the second pane closes, the primary keeps running.
+    Unsplit,
+    /// Anything else a running PTY can't take on: tear down and respawn both panes.
+    Respawn,
+}
+
+impl TerminalSpec<'_> {
+    /// What it takes to bring terminals running `self` to `new`. A split's presence alone never
+    /// costs the primary its PTY; its content (`split_startup`) on both sides does.
+    pub fn change_to(&self, new: &TerminalSpec) -> SpecChange {
+        if (self.dir, self.shell, self.startup, self.server)
+            != (new.dir, new.shell, new.startup, new.server)
+        {
+            return SpecChange::Respawn;
+        }
+        match (self.split_startup, new.split_startup) {
+            (None, Some(_)) => SpecChange::Split,
+            (Some(_), None) => SpecChange::Unsplit,
+            (a, b) if a != b => SpecChange::Respawn,
+            _ => SpecChange::Same,
         }
     }
 }
@@ -104,6 +134,11 @@ pub struct WindowUpdate {
     pub set_meta: Vec<(String, TabMeta)>,
     /// Kept tabs to tear down and respawn in place, each carrying its new full `Tab`.
     pub respawn_tabs: Vec<Tab>,
+    /// Kept tabs that gained a split, each carrying its new full `Tab`: the second pane is
+    /// declared and comes up beside a live primary, which keeps running.
+    pub split_tabs: Vec<Tab>,
+    /// Kept tabs (by `Tab::key`) whose split went: the second pane closes, the primary stays.
+    pub unsplit_tabs: Vec<String>,
     /// Kept tabs (by `Tab::key`) whose `load_on_open` turned on: spawn now if cold. A live
     /// tab is left running.
     pub spawn_tabs: Vec<String>,
@@ -139,7 +174,10 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 ///     `kill`, `suspend`, `resume`, `colour`, split `side`/`size` or, on a Rex tab, its pane stack (a live re-layout), or the dir of the
 ///     `[[window.root]]` it was discovered under (its sidebar nesting derives from it).
 ///   - `respawn_tabs` — torn down and respawned in place, since a terminal can't migrate its
-///     cwd/session: a kept tab's [`TerminalSpec`].
+///     cwd/session: a kept tab's [`TerminalSpec`] ([`SpecChange::Respawn`]) — including a
+///     plain tab's split `cmd`/last pane while the split stays.
+///   - `split_tabs` / `unsplit_tabs` — a kept tab's split appeared / went with nothing else in
+///     its `TerminalSpec` changing: the second pane opens / closes and the primary keeps its PTY.
 ///   - `spawn_tabs` — a kept tab's `load_on_open` turned on. `load_on_open` says only when a
 ///     tab comes up, so it never respawns one: turning it on spawns a cold tab, and turning
 ///     it off leaves a live one running until the next launch.
@@ -213,6 +251,8 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 // `respawn_tabs` (the fields behind each are listed on this fn's docblock).
                 let mut set_meta: Vec<(String, TabMeta)> = Vec::new();
                 let mut respawn_tabs: Vec<Tab> = Vec::new();
+                let mut split_tabs: Vec<Tab> = Vec::new();
+                let mut unsplit_tabs: Vec<String> = Vec::new();
                 let mut spawn_tabs: Vec<String> = Vec::new();
                 for nt in &np.tabs {
                     if let Some(ot) = op.tabs.iter().find(|ot| ot.key == nt.key) {
@@ -251,10 +291,15 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                                 },
                             ));
                         }
-                        if ot.terminal_spec() != nt.terminal_spec() {
+                        let change = ot.terminal_spec().change_to(&nt.terminal_spec());
+                        match change {
                             // A respawn already honours the new load_on_open.
-                            respawn_tabs.push(nt.clone());
-                        } else if !ot.load_on_open && nt.load_on_open {
+                            SpecChange::Respawn => respawn_tabs.push(nt.clone()),
+                            SpecChange::Split => split_tabs.push(nt.clone()),
+                            SpecChange::Unsplit => unsplit_tabs.push(nt.key.clone()),
+                            SpecChange::Same => {}
+                        }
+                        if change != SpecChange::Respawn && !ot.load_on_open && nt.load_on_open {
                             spawn_tabs.push(nt.key.clone());
                         }
                     }
@@ -267,6 +312,8 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     || order_changed
                     || !set_meta.is_empty()
                     || !respawn_tabs.is_empty()
+                    || !split_tabs.is_empty()
+                    || !unsplit_tabs.is_empty()
                     || !spawn_tabs.is_empty()
                 {
                     update.push(WindowUpdate {
@@ -279,6 +326,8 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                         tab_order,
                         set_meta,
                         respawn_tabs,
+                        split_tabs,
+                        unsplit_tabs,
                         spawn_tabs,
                     });
                 }
@@ -955,11 +1004,7 @@ colour = "#0f8a8a"
         assert_eq!((s.side, s.size), (crate::SplitSide::Left, 0.4));
     }
 
-    /// Adding/removing the split, or changing its cmd, is a terminal-spec change → respawn.
-    #[test]
-    fn split_presence_or_cmd_change_rides_respawn() {
-        let none = cfg(BASE);
-        let with = cfg(r##"
+    const WITH_SPLIT_CMD: &str = r##"
 [[window]]
 title = "work"
 colour = "#0f8a8a"
@@ -968,25 +1013,68 @@ colour = "#0f8a8a"
   dir = "/tmp/alpha"
   [window.tab.split]
   cmd = "scratch"
-"##);
-        let other_cmd = cfg(r##"
-[[window]]
-title = "work"
-colour = "#0f8a8a"
-  [[window.tab]]
-  title = "alpha"
-  dir = "/tmp/alpha"
-  [window.tab.split]
-  cmd = "other"
-"##);
-        for (a, b) in [(&none, &with), (&with, &none), (&with, &other_cmd)] {
-            let r = reconcile(a, b);
-            assert_eq!(r.update.len(), 1);
-            assert_eq!(r.update[0].respawn_tabs.len(), 1, "{a:?} → {b:?}");
-            assert!(r.update[0].set_meta.is_empty(), "{a:?} → {b:?}");
-        }
+"##;
+
+    /// Adding a split brings the second pane up beside the running primary — never a respawn.
+    #[test]
+    fn adding_split_is_split_tabs_not_respawn() {
+        let with = cfg(WITH_SPLIT_CMD);
+        let r = reconcile(&cfg(BASE), &with);
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert!(u.respawn_tabs.is_empty());
+        assert!(u.set_meta.is_empty() && u.unsplit_tabs.is_empty());
+        assert_eq!(u.split_tabs, vec![with.windows[0].tabs[0].clone()]);
         // Identical splits → no update at all.
         assert!(reconcile(&with, &with).update.is_empty());
+    }
+
+    #[test]
+    fn removing_split_is_unsplit_tabs() {
+        let r = reconcile(&cfg(WITH_SPLIT_CMD), &cfg(BASE));
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert!(u.respawn_tabs.is_empty() && u.split_tabs.is_empty());
+        assert_eq!(u.unsplit_tabs, vec!["/tmp/alpha".to_string()]);
+    }
+
+    /// A plain tab's split content is its second pane's startup: changing it respawns.
+    #[test]
+    fn plain_tab_split_cmd_change_still_respawns() {
+        let other = cfg(&WITH_SPLIT_CMD.replace("\"scratch\"", "\"other\""));
+        let r = reconcile(&cfg(WITH_SPLIT_CMD), &other);
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert_eq!(u.respawn_tabs.len(), 1);
+        assert!(u.split_tabs.is_empty() && u.unsplit_tabs.is_empty());
+        assert!(u.set_meta.is_empty());
+    }
+
+    #[test]
+    fn rex_tab_split_add_is_split_tabs() {
+        let unsplit = REX_STACK
+            .split("  [[window.tab.split.pane]]")
+            .next()
+            .unwrap();
+        let with = cfg(REX_STACK);
+        let r = reconcile(&cfg(unsplit), &with);
+        assert_eq!(r.update.len(), 1);
+        let u = &r.update[0];
+        assert!(u.respawn_tabs.is_empty());
+        assert_eq!(u.split_tabs, vec![with.windows[0].tabs[0].clone()]);
+    }
+
+    /// A split added alongside another terminal-spec change rides the respawn, which brings
+    /// both panes up from the new tab.
+    #[test]
+    fn split_added_with_a_dir_change_respawns_once() {
+        let mut moved = WITH_SPLIT_CMD.replace("dir = \"/tmp/alpha\"", "dir = \"/tmp/beta\"");
+        moved = moved.replace("title = \"alpha\"", "title = \"alpha\"\n  id = \"a\"");
+        let base = BASE.replace("title = \"alpha\"", "title = \"alpha\"\n  id = \"a\"");
+        let r = reconcile(&cfg(&base), &cfg(&moved));
+        let u = &r.update[0];
+        assert_eq!(u.respawn_tabs.len(), 1);
+        assert!(u.split_tabs.is_empty() && u.unsplit_tabs.is_empty());
     }
 
     /// A kept discovered tab under a root whose `dir` moved re-derives its sidebar nesting, so it

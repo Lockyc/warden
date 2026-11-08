@@ -42,25 +42,27 @@ not warden's, the moment the surface is warden's own.
 
 A tab holds a **primary pane plus an optional scratch column**. On a plain tab the column is
 one pane — two panes, not N-way; on a Rex tab it is a Rex session that stacks and tabs its own
-panes (below). A split comes from one of two places, and which one decides where its geometry
-is remembered:
+panes (below). The config is the one source of a tab's split:
 
 - **Declared in config** (`split` — cascading global → window → tab, and root → window →
   global for discovered projects; schema in `docs/config.md`). The tab is created with its
   second pane already declared, both spawn together (also under `load_on_open`), the
   second pane runs `split.cmd` (bare shell when absent) in the tab's own shell and dir, and
   `split.size`/`split.side` seed the divider. A drag overrides the ratio **in memory only**,
-  for as long as the tab's terminals are live: unload, a child exit, a hot-reload respawn
-  and an app restart all bring the config ratio back. `exit` in the second shell closes the
-  pane for the same lifetime — `Registry::unload` re-declares it, so it is back on the next
-  spawn — and ⌘D recreates it from config. This is the frame-less shape of an `amux --frame` tab: the
-  scratch shell beside the agent, with warden owning the split instead of tmux.
-- **Created at runtime** (⌘D / Tab ▸ Split) on a tab with no config split. Its ratio and
-  existence persist per tab in `localStorage` (keyed on window label + tab id, same home as
-  sidebar width) and are restored on the next activation. A config-split tab never touches
-  that store — the config is its source of truth — and a stale key for one is evicted.
+  for as long as the tab's terminals are live: unload, a child exit, a hot-reload respawn,
+  a new `size` in the config and an app restart all bring the config ratio back. `exit` in
+  the second shell closes the pane for the same lifetime — `Registry::unload` re-declares it,
+  so it is back on the next spawn — and ⌘D recreates it from config. This is the frame-less
+  shape of an `amux --frame` tab: the scratch shell beside the agent, with warden owning the
+  split instead of tmux.
+- **⌘D (Tab ▸ Split) on a tab with no split saves one**: `split = true` onto the tab's own
+  config entry (a `[[window.root.tab]]` override for a discovered project —
+  `split_write::save_split`), and the hot-reload brings the second pane up beside the running
+  primary (`reconcile`'s `split_tabs` → `Registry::split_from_config`); removing the split
+  from the config closes it (`unsplit_tabs`). Neither touches the primary's PTY. While the
+  config doesn't parse, the save is refused with a banner.
 
-Both are closed only by the column's shells exiting (`exit` in it), and resized by dragging
+A split is closed by the column's shells exiting (`exit` in it) or by the config dropping it, and resized by dragging
 the divider — a 1px line in a 5px grab strip that carries no close control, by choice: the
 one route out of a split is the shell's own end, docked or popped out alike. ⌘W (unload) and ⌘⇧O (pop-out) both act on the **whole
 tab** — unloading drops every pane to cold together, and popping out carries both surfaces
@@ -79,7 +81,7 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
 - **Config declares the first scratch tab's blocks** as a vertical stack (`[[…split.pane]]`,
   schema in `docs/config.md`); warden creates the session in that layout
   (`layout::stack_layout`), and after that Rex holds it, so a stack edit reaches only sessions
-  created afterwards. No stack (a runtime ⌘D, `split = true`) is one bare shell.
+  created afterwards. No stack (`split = true`, what ⌘D saves) is one bare shell.
 - **`+`** or Tab ▸ New Scratch Tab (⌃⌘T) opens a new Rex window with a bare shell; clicking a
   number shows that scratch tab and leaves the main pane alone.
 - **⌘D in a block** is `session.new_split` below it, and focus moves to the new block when
@@ -148,17 +150,16 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
   rule is scoped to `#terminal-hole.split`. **`applySplitShape` is the only writer** of `.split`
   and `hidden` — `setSplitVisible` for the active tab; `measureTabs` borrows it per hidden tab and
   restores the saved state in the same task (keep that restore synchronous).
-- **A config split's ratio never reaches `localStorage`** — `saveSplit`/`loadSplit` route it to
-  the in-memory `ratioOverride`, cleared wherever the tab goes cold.
+- **A split's ratio never reaches `localStorage`** — a drag lands in the in-memory
+  `ratioOverride`, cleared wherever the tab goes cold or its declared `size` changes.
 - **Report the pane's content box, and paint the border box's own background** — both, together:
   the border box lets the surface occlude the focus border; the content box without an opaque
   outer ground leaks wallpaper round every pane. `ui/index.html` (`contentRect` + the `.pane` CSS).
 - **The per-pane backstop ground is always on; only the illustration toggles**
   (`#empty-state`, each block's `.scratch-empty`). Behind a live surface it is invisible, so an uncovered hole is
   unrepresentable on every transient.
-- **Every split `localStorage` access is wrapped whole, `.length` and `.key()` included**
-  (`evictSplits`) — unavailable storage throws on every member, and an unguarded read inside
-  `toComponentDto` stops the tab bar refreshing for good.
+- **Every `localStorage` access is wrapped whole, `.length` and `.key()` included** —
+  unavailable storage throws on every member, and an unguarded read stops the chrome's script.
 
 ## Verifying splits by eye
 
@@ -175,19 +176,17 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - Typing `exit` in the scratch (secondary) pane collapses the split; the primary fills the
   whole hole with no uncovered region at any point during the collapse, while the tab stays
   live — docked, and inside a popped-out window alike (the detached window drops to one hole;
-  the origin forgets the persisted ratio).
+  the origin forgets the dragged ratio).
 - A popped-out tab whose primary shell exits comes home cold: the detached window closes,
   the origin row goes hollow (click to respawn), and the sidebar leans to a live neighbour
   exactly as a docked exit does.
-- The ratio survives an app restart (persisted in `localStorage`, keyed per tab).
 - Popping out an unsplit tab is unchanged — one hole, no `panes` in the detach payload.
 - Popping out a split tab carries both panes into the detached window at the same ratio,
   with the same divider and focus ring; `exit` in the second pane closes it there too, and
   clicking either pane moves the ring.
 - Popping out a `side = "left"` split keeps the second pane on the LEFT (same sides as
   docked — `PaneIdx::hole`); dragging the divider there resizes the pane under the cursor,
-  and `exit` in the left pane collapses the window to the primary alone. A ⌘D (runtime)
-  split pops out secondary-right, as docked.
+  and `exit` in the left pane collapses the window to the primary alone.
 - Closing the detached window returns both panes to the origin, still live.
 - Arrow keys pressed in the second pane stay in it: the cursor, the focus ring and the
   keystroke all remain on the pane you typed in (arrows travel a different AppKit route
@@ -205,11 +204,12 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - `exit` in a config split's second pane closes it; ⌘W then re-clicking the tab brings it
   back; ⌘D on the closed split brings it back immediately, still on the left at 30%.
 - Editing `size` in the config re-lays out the live split on save without respawning either
-  terminal (scrollback survives) — with no drag on record for that tab (a dragged ratio holds
-  until the terminals relaunch, per the rule above). Editing `split.cmd` or removing the block
-  respawns the tab.
-- A tab with no config split still ⌘D-splits on the right at 50/50, and that split survives
-  a restart (the `localStorage` path is untouched).
+  terminal (scrollback survives), replacing any dragged ratio. Editing `split.cmd` respawns
+  the tab; removing the block closes the second pane and leaves the primary running.
+- ⌘D on a tab with no split writes `split = true` onto its entry in the config file, and the
+  second pane opens once, on the right at 50/50, while the primary keeps its scrollback; the
+  split survives a restart. With the config broken mid-edit, ⌘D shows a banner and nothing
+  splits.
 - With a local Rex running, `just run`'s `stack` tab opens its column stacked at the declared
   sizes; `+` adds scratch tab 2 with one shell, and clicking `1`/`2` swaps the column while the
   agent pane stays put; ⌘D in a block adds a block below it, focused; dragging an inner divider

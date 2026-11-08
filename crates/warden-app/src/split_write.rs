@@ -16,8 +16,10 @@ pub enum SplitEdit {
     /// Turn the split on (`split = true`); nothing to write when the tab already resolves one.
     Enable,
     /// Save the second pane's share; dropped from the file when it equals what the tab inherits.
+    #[allow(dead_code)] // the pane right-click menu's, wired next
     Size(f64),
     /// Drop the tab's own `size`, back to the inherited one.
+    #[allow(dead_code)] // the pane right-click menu's, wired next
     ResetSize,
 }
 
@@ -170,6 +172,15 @@ pub fn write_split(
         SplitEdit::ResetSize => remove_size(&cascade, own),
     };
     apply(config, window, &origin, keys, new)
+}
+
+/// [`write_split`] onto the config warden runs from (`config_path`), parsed as it stands now.
+pub fn save_split(window: &str, tab: &Tab, edit: SplitEdit) -> Result<(), String> {
+    let config = warden_config::config_path();
+    let not_saved = |e: &dyn std::fmt::Display| format!("config not saved: {e}");
+    let text = std::fs::read_to_string(&config).map_err(|e| not_saved(&e))?;
+    let raw = warden_config::raw::parse(&text).map_err(|e| not_saved(&e))?;
+    write_split(&config, &raw, window, tab, edit)
 }
 
 type CascadeFn<'a> = &'a dyn Fn(Option<&RawSplit>) -> Result<Option<warden_config::Split>, String>;

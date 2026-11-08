@@ -491,8 +491,9 @@
         </div>
         <!-- Hidden when unsplit — the common case, identical to the single-hole layout — via
              setSplitVisible(false), the SOLE toggle for both `.split` and `hidden` (see the
-             CSS comment above #terminal-hole). `split_pane` and a config split turn it on; the
-             second shell exiting (`warden:pane-closed`) turns it off. -->
+             CSS comment above #terminal-hole). A snapshot with the tab split turns it on; the
+             second shell exiting (`warden:pane-closed`) or the config dropping the split turns it
+             off. -->
         <div id="pane-divider" hidden></div>
         <!-- The scratch column: the scratch tab strip and the shown scratch tab's blocks, both
              built by `scratchRender`. -->
@@ -577,15 +578,13 @@
       // this id, so onSelect's call and a later `warden:refresh` would race to set visibility.
       // Written only by writers that KNOW the true answer — every snapshot (`toComponentDto`
       // rebuilds it from `TabDto.split`, the registry's own structural fact), onSelect's
-      // `res.split`, `splitActiveTab` (`Registry::split` is infallible, so structurally true the
-      // instant it's called), and `collapseSplit` (false) — and read by EVERY `setActiveId` call,
+      // `res.split`, and `collapseSplit` (false) — and read by EVERY `setActiveId` call,
       // hinted or not, so all of them converge on the same value once any one of them has
       // recorded it.
       const splitById = new Map();
-      // tab id → { side, size } from `TabDto.split_layout`, rebuilt on every snapshot. Presence
-      // here is the chrome's one test for "this tab's split is declared in config": such a tab
-      // never touches localStorage (the config is its memory), a closed pane holds only until relaunch, and
-      // a drag is remembered in `ratioOverride` below rather than persisted.
+      // tab id → { side, size } from `TabDto.split_layout`, rebuilt on every snapshot: the split
+      // the tab's config declares. A closed pane holds only until relaunch, and a drag is
+      // remembered in `ratioOverride` below rather than persisted.
       const splitLayoutById = new Map();
       // tab id → the PRIMARY's dragged fraction for a config-split tab, held only while the
       // tab's terminals are live — cleared when it goes cold (applyUnloaded, a snapshot with no
@@ -600,41 +599,19 @@
       // them from a boolean; presence has been 3-state since exit 3 ("recoverable") shipped.
       const session = new Map();
 
-      // A RUNTIME split persists here, outside the TOML; a config split's memory is the config
-      // itself (see `splitLayoutById`). Same home as the sidebar width. Key presence IS the
-      // split flag; the value carries only the divider ratio.
-      const splitKey = (tabId) => `split:${myLabel}:${tabId}`;
-
-      function saveSplit(tabId, ratio) {
-        if (splitLayoutById.has(tabId)) { ratioOverride.set(tabId, ratio); return; }
-        try { localStorage.setItem(splitKey(tabId), JSON.stringify({ ratio })); } catch (e) {}
-      }
-      function clearSplit(tabId) {
-        ratioOverride.delete(tabId);
-        try { localStorage.removeItem(splitKey(tabId)); } catch (e) {}
-      }
-      // The ratio a split of `tabId` should show: a config split's in-memory override, else its
-      // declared size; a runtime split's persisted ratio. `null` = no split on record.
+      // The ratio a split of `tabId` should show: its in-memory drag override, else its declared
+      // size. `null` = no split declared.
       function loadSplit(tabId) {
         const layout = splitLayoutById.get(tabId);
-        if (layout) {
-          const o = ratioOverride.get(tabId);
-          return { ratio: Number.isFinite(o) ? o : primaryFracFromLayout(layout) };
-        }
-        try {
-          const raw = localStorage.getItem(splitKey(tabId));
-          if (!raw) return null;
-          const v = JSON.parse(raw);
-          const r = Number(v && v.ratio);
-          return Number.isFinite(r) && r >= splitBand[0] && r <= splitBand[1] ? { ratio: r } : { ratio: 0.5 };
-        } catch (e) { return null; }
+        if (!layout) return null;
+        const o = ratioOverride.get(tabId);
+        return { ratio: Number.isFinite(o) ? o : primaryFracFromLayout(layout) };
       }
       // The divider ratio a pop-out of `tabId` should carry, or null for an unsplit tab.
       // Pop-out is whole-tab, so a split tab's second pane goes with it and the detached
       // window has to lay out two holes at the SAME ratio the tab has here — otherwise the
       // terminal visibly jumps width the moment it pops out. Read via `loadSplit`, which
-      // resolves a config split to its in-memory override (or its declared `size` if none)
-      // and a runtime split to its persisted ratio. The backend treats this as advisory: it
+      // resolves to the in-memory override (or the declared `size` if none). The backend treats this as advisory: it
       // decides the hole count from the surfaces it actually detached, so a stale or absent
       // value can only cost the right WIDTH, never a hole with no terminal.
       function popOutRatio(tabId) {
@@ -647,29 +624,14 @@
         invoke("pop_out_tab", { id, ratio: popOutRatio(id) }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
       }
 
-      // Drop keys for tabs this window no longer has. Without it a scanned-project tab that
-      // disappears leaves its key behind forever, and a later tab reusing the id inherits a
-      // split nobody asked for.
-      //
-      // The WHOLE body is wrapped, not just removeItem — where localStorage throws, it throws on
-      // EVERY member, including `.length` and `.key()`. This runs inside the snapshot builder
-      // (toComponentDto), which neither init() nor the warden:refresh listener wraps, so an
-      // unguarded read here would throw out of the builder and stop the tab bar refreshing for
-      // good wherever storage is unavailable.
-      function evictSplits(currentTabIds) {
-        try {
-          const prefix = `split:${myLabel}:`;
-          // A tab that gained a config split evicts too — its key would otherwise re-split it
-          // from stale memory if the config split were later removed.
-          const live = new Set([...currentTabIds].filter((id) => !splitLayoutById.has(id)));
-          for (let i = localStorage.length - 1; i >= 0; i--) {
-            const k = localStorage.key(i);
-            if (k && k.startsWith(prefix) && !live.has(k.slice(prefix.length))) {
-              localStorage.removeItem(k);
-            }
-          }
-        } catch (e) {}
-      }
+      // Splits live in the config, so no `split:` key is read here; sweep any left in storage.
+      // Wrapped whole: where localStorage throws, it throws on `.length` and `.key()` too.
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith("split:")) localStorage.removeItem(k);
+        }
+      } catch (e) {}
 
       // In-app updates are a chrome-core capability (check / install / relaunch + the 6h re-check
       // cadence); see chrome-core's dividing-line decision. This controller only passes warden's
@@ -1040,8 +1002,8 @@
       // — see that comment) and keeps the `hidden` attribute in lockstep on both elements purely
       // for semantics/JS convenience, so the two mechanisms can never contradict each other.
       // Closing always resets the drag ratio. Its real callers: `setActiveId`
-      // (every tab switch/refresh re-asserts THIS tab's own split state), `splitActiveTab`/
-      // `collapseSplit` (⌘D / a secondary exiting on its own). Never poke
+      // (every tab switch/refresh re-asserts THIS tab's own split state) and `collapseSplit`
+      // (a secondary exiting on its own). Never poke
       // `hidden`/`.split` directly.
       function setSplitVisible(isSplit) {
         // Ahead of reportRect so the first report is right.
@@ -1141,9 +1103,8 @@
         secondarySpawnedById.set(id, false);
         splitById.set(id, false); // the authoritative answer, not just the liveness proxy
         focusedPaneById.set(id, 0);
-        clearSplit(id); // the split is gone — drop its persisted ratio AND its in-memory
-                        // override; dropping the override is what lets a later ⌘D come back
-                        // at the declared ratio instead of a stale drag position
+        ratioOverride.delete(id); // what lets a later ⌘D come back at the declared ratio
+                                  // instead of a stale drag position
         if (id === activeId) {
           secondaryLive = false; // kept in step with the map read above, not just left for the
                                   // next setActiveId to notice
@@ -1193,12 +1154,17 @@
           // over a tab with no secondary, self-healing only on the next `onSelect` for that tab
           // — which never comes if that tab stays selected. `res.split` is now a fast path, not
           // the sole reconciler.
+          // A new declared `size` (a config edit, live via set_meta) replaces a dragged ratio, and
+          // a split the config dropped takes its drag with it.
+          const was = splitLayoutById.get(t.id);
+          if (!t.split_layout || (was && was.size !== t.split_layout.size)) ratioOverride.delete(t.id);
           if (t.split_layout) splitLayoutById.set(t.id, t.split_layout); else splitLayoutById.delete(t.id);
           // Cold everywhere (a respawn, a child exit, a fresh window) → the dragged ratio is gone.
           if (!t.spawned && !t.secondary_spawned && !t.detached) ratioOverride.delete(t.id);
+          // No column → the backend's focus is on the primary (`close_block`/`close_column`).
+          if (!t.split) focusedPaneById.set(t.id, 0);
           splitById.set(t.id, !!t.split);
         });
-        evictSplits(ids); // same sweep — drop persisted ratios for tabs this window doesn't have
         return {
           title: dto.title,
           colour: dto.colour ?? null,
@@ -1331,40 +1297,17 @@
         });
       }
 
-      // ⌘D / Tab ▸ Split: give the active tab a second pane. Optimistic — `Registry::split` always
-      // succeeds in creating the secondary entry, so the layout shows immediately (its
-      // own empty-state backstop covers it until `activate` finishes spawning) and `splitById` is
-      // recorded as the authoritative answer right away, not left to a later refresh.
-      //
-      // On a genuine `split_pane` failure — the WINDOW wasn't found, or the tab can't split (an
-      // unclaimed Rex session's) — (see the Rust doc comment on `split_pane`'s early returns — the
-      // "could not open the second pane" arm still means `Registry::split` ran, so the secondary
-      // genuinely exists there) — NOTHING was actually created server-side, so the optimistic
-      // split above must be undone: without this, nothing would ever run `collapseSplit` (there
-      // is no secondary whose exit could), leaving the layout stuck split until an unrelated tab
-      // switch happened to reset it.
+      // ⌘D / Tab ▸ Split: ask for the active tab's second pane. Not optimistic — the split shows
+      // when a snapshot says the tab has one: `split_pane`'s own refresh when it reopens a
+      // declared split, the hot-reload's when it saves a new one to the config. A failure is the
+      // banner's (a failed save arrives as `warden:error`).
       async function splitActiveTab() {
         if (!activeId) return;
-        const id = activeId;
-        // Read the PREVIOUS split state before overwriting it. The Rust side tolerates a stray
-        // second ⌘D on an already-split tab as a normal no-op — this persistence must extend that
-        // tolerance: unguarded, a redundant ⌘D on a tab dragged to a custom ratio would overwrite
-        // the persisted ratio with 0.5, invisibly until the next restart reopened it flattened.
-        const alreadySplit = splitById.get(id) === true;
-        splitById.set(id, true);
-        // Key presence IS the split flag (see saveSplit) — persist immediately rather
-        // than only once the divider is dragged, so an un-dragged 50/50 split still survives a
-        // restart. Undone by collapseSplit's clearSplit below if split_pane actually fails.
-        // Only seed the default for a genuinely NEW split — see the guard above. A config-split
-        // tab already has a declared ratio; saving 0.5 here would wrongly override it.
-        if (!alreadySplit && !splitLayoutById.has(id)) saveSplit(id, 0.5);
-        setSplitVisible(true);
         try {
-          await invoke("split_pane", { id });
+          await invoke("split_pane", { id: activeId });
         } catch (err) {
           console.error("warden: IPC split_pane failed", err);
           if (sb) sb.setError("⚠ " + err);
-          collapseSplit(id);
         }
       }
 
@@ -1967,48 +1910,14 @@
                 console.error("warden: IPC activate_tab failed", err);
                 return { live: false, split: false, focused: 0 };
               });
-              if (activeId === id) {
-                // A RUNTIME (⌘D) split is not in the TOML, so the backend has no memory of it
-                // across a restart — only localStorage remembers it. `res.split` is the
-                // backend's authoritative CURRENT answer; when it says no but a ratio is on
-                // record for a tab with no config split, recreate the split structurally. (A
-                // config split needs no restore: `Registry::add` declares it from `TabSpec.split`.)
-                //
-                // Bookkeeping (`splitById`, `res.split`) lands for `id` UNCONDITIONALLY — even if
-                // the user has switched to a different tab while split_pane was in flight —
-                // because `res.split` staying false otherwise means the tab's split itself is lost, not just its ratio: the backend really
-                // does have it, but the `!res.split` gate below would never fire for this tab
-                // again this session, so this is the only chance to record it. Only the DOM
-                // write (further down, gated on `activeId === id` again) is unsafe to do for a
-                // tab that isn't on screen — #pane-primary/#pane-secondary are the one shared
-                // element pair every tab's layout reuses.
-                const persisted = loadSplit(id);
-                // A config split the backend says is closed had its shell exit on purpose and holds
-                // closed until relaunch — never re-split it from here.
-                if (!res.split && persisted && !splitLayoutById.has(id)) {
-                  try {
-                    await invoke("split_pane", { id });
-                    splitById.set(id, true);
-                    res.split = true;
-                  } catch (err) {
-                    console.error("warden: IPC split_pane (restore) failed", err);
-                    clearSplit(id);
-                  }
-                }
-                if (activeId === id) {
-                  // Re-apply the persisted ratio on EVERY activation that ends up split, not
-                  // just a freshly-restored one: the shared pane elements keep whatever flex the
-                  // last split tab shown left them at, so a tab reactivated after the race above
-                  // (or simply after another split tab's own drag) needs repainting too. Ahead
-                  // of setActiveId so it's correct on the first reportRect, never a 50/50 flash.
-                  focusedPaneById.set(id, res.focused);
-                  setActiveId(id, res.live, res.split); // ignore a stale reply for an old click
-                  // Repaint the row's live/cold dot now the spawn has settled. setActiveId only
-                  // tracks selection + the empty-state; without this an unloaded tab that a cold
-                  // start just brought live keeps showing a hollow (cold) dot until the next full
-                  // refresh (the "cold-start indicator never lights up" bug).
-                  sb.setLive(id, res.live);
-                }
+              if (activeId === id) { // ignore a stale reply for an old click
+                focusedPaneById.set(id, res.focused);
+                setActiveId(id, res.live, res.split);
+                // Repaint the row's live/cold dot now the spawn has settled. setActiveId only
+                // tracks selection + the empty-state; without this an unloaded tab that a cold
+                // start just brought live keeps showing a hollow (cold) dot until the next full
+                // refresh (the "cold-start indicator never lights up" bug).
+                sb.setLive(id, res.live);
               }
               // A row clicked from a filtered list: the activated terminal just took first
               // responder, so hand it back to the search — Esc clears, typing replaces the filter.
@@ -2240,11 +2149,10 @@
         let dragging = false;
         let startX = 0;
         let startFrac = 0.5;
-        let currentFrac = 0.5; // last-applied ratio; saved to localStorage when the drag ends
+        let currentFrac = 0.5; // last-applied ratio; held in `ratioOverride` when the drag ends
         // The tab being dragged, captured at mousedown — mouse and
-        // keyboard are independent, so reading `activeId` live at mouseup would save the dragged
-        // ratio under whichever tab a keyboard jump made active while the button was still held,
-        // fabricating a persisted split key for a tab the user never split.
+        // keyboard are independent, so reading `activeId` live at mouseup would hold the dragged
+        // ratio under whichever tab a keyboard jump made active while the button was still held.
         let dragTabId = null;
         function setSplit(frac) {
           currentFrac = applySplitFlex(frac); // shared clamp/apply with split restoration
@@ -2273,11 +2181,10 @@
           window.removeEventListener("mousemove", onMove);
           window.removeEventListener("mouseup", end);
           window.removeEventListener("blur", end);
-          // Persist whatever ratio the drag settled on. A click-without-move still saves
-          // the split's actual (unchanged) ratio, since currentFrac was seeded from startFrac.
-          // Saved under `dragTabId` (captured at mousedown), not the live `activeId` — see that
-          // declaration.
-          if (dragTabId !== null) saveSplit(dragTabId, currentFrac);
+          // Hold whatever ratio the drag settled on. A click-without-move holds the split's
+          // actual (unchanged) ratio, since currentFrac was seeded from startFrac. Held under
+          // `dragTabId` (captured at mousedown), not the live `activeId` — see that declaration.
+          if (dragTabId !== null) ratioOverride.set(dragTabId, currentFrac);
           dragTabId = null;
         }
         divider.addEventListener("mousedown", (e) => {

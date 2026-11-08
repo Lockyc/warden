@@ -15,7 +15,7 @@ use std::os::raw::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
-use warden_config::{Colour, Config, Reconciliation};
+use warden_config::{Colour, Config, Reconciliation, SpecChange};
 
 /// Initial surface rect: offset by the 160px sidebar so the surface never
 /// overlaps it before the first JS rect report arrives. (Matches the spike.)
@@ -330,8 +330,8 @@ pub struct DetachedSurface {
     /// for a plain tab's block and an unsplit tab.
     pub block: Option<String>,
     /// The tab's config split declares `side = "left"` — its second pane sits BEFORE the
-    /// primary, docked and popped out alike. `false` for a right-side split, a runtime (⌘D)
-    /// split (no `side`, always right) and an unsplit tab. Read only through [`Self::mirrored`].
+    /// primary, docked and popped out alike. `false` for a right-side split and an unsplit tab.
+    /// Read only through [`Self::mirrored`].
     pub secondary_left: bool,
     /// The spec the travelling surfaces were spawned from — what they still run. `redock`
     /// compares the config against this, not the origin registry's spec, which a hot-reload's
@@ -1113,8 +1113,8 @@ impl WindowManager {
     ///    dropped. A window holding the origin's old label under another title is not its home.
     ///
     /// Every step treats the pair as one unit: both surfaces reparent into the origin, both
-    /// go back through one `attach`, and case 3 drops both. A runtime split returning to a window
-    /// case 2 rebuilt from config keeps its second pane — `mark_detached` declared it.
+    /// go back through one `attach`, and case 3 drops both. A split returning to a window case 2
+    /// rebuilt from config keeps its second pane — `mark_detached` declared it.
     ///
     /// Once home, the tab is reconciled against `last_good` (`reconcile_returned_tab`): every
     /// config edit or rescan that touched it while it was out was skipped for it, so this is
@@ -1278,6 +1278,8 @@ impl WindowManager {
                 order,
                 set_meta,
                 respawn_tabs,
+                split_tabs,
+                unsplit_tabs,
                 spawn_tabs,
                 open_tabs_section,
                 background_tabs_section,
@@ -1300,6 +1302,8 @@ impl WindowManager {
                     && order == current_order
                     && set_meta.is_empty()
                     && respawn_tabs.is_empty()
+                    && split_tabs.is_empty()
+                    && unsplit_tabs.is_empty()
                     && spawn_tabs.is_empty()
                 {
                     continue;
@@ -1339,6 +1343,7 @@ impl WindowManager {
                     ws.registry
                         .set_meta(&m.id, &m.meta, m.tree, m.tree_path.clone());
                 }
+                apply_split_changes(&mut ws.registry, &split_tabs, &unsplit_tabs);
                 // load_on_open turned on: bring a cold tab up now, as a launch
                 // would. A live tab is untouched, and a popped-out one is live.
                 for id in &spawn_tabs {
@@ -1391,9 +1396,11 @@ impl WindowManager {
 /// - Gone → unloaded, then removed: the unload is what leans the selection to a live neighbour
 ///   when this was the visible tab, exactly as unloading it by hand does. Returns
 ///   `Some(new_active)` (`Registry::unload`'s answer) so the caller can tell the chrome.
-/// - [`warden_config::TerminalSpec`] changed → respawned through `apply_tab_reconcile`, exactly
-///   as a docked tab would have been. The entry moves to the end; the caller reorders.
-/// - Otherwise → `set_meta` from the plan (title/group/probe/kill/suspend/split layout/tree).
+/// - [`warden_config::TerminalSpec`] changed → [`SpecChange`] decides, exactly as for a docked
+///   tab: a respawn goes through `apply_tab_reconcile` (the entry moves to the end; the caller
+///   reorders), a split appearing or going through `apply_split_changes`.
+/// - Otherwise, and after a split change → `set_meta` from the plan (title/group/probe/kill/
+///   suspend/split layout/tree).
 ///
 /// `None` whenever the tab stays.
 fn reconcile_returned_tab(
@@ -1417,9 +1424,14 @@ fn reconcile_returned_tab(
         )
     }
     let n = &tp.spec;
-    if terminal(spawned) != terminal(n) {
-        apply_tab_reconcile(registry, &[], &[], std::slice::from_ref(tp));
-        return None;
+    match terminal(spawned).change_to(&terminal(n)) {
+        SpecChange::Respawn => {
+            apply_tab_reconcile(registry, &[], &[], std::slice::from_ref(tp));
+            return None;
+        }
+        SpecChange::Split => apply_split_changes(registry, std::slice::from_ref(tp), &[]),
+        SpecChange::Unsplit => apply_split_changes(registry, &[], &[id.to_string()]),
+        SpecChange::Same => {}
     }
     let meta = warden_config::TabMeta {
         group: n.group.clone(),
@@ -1433,6 +1445,26 @@ fn reconcile_returned_tab(
     };
     registry.set_meta(id, &meta, n.tree, n.tree_path.clone());
     None
+}
+
+/// Open the second pane of each tab in `split_tabs` beside its running primary, and close it on
+/// each tab in `unsplit_tabs` — skipping a popped-out tab, as `apply_tab_reconcile` does:
+/// `redock` brings it in line once home.
+fn apply_split_changes(registry: &mut Registry, split_tabs: &[TabPlan], unsplit_tabs: &[String]) {
+    for tp in split_tabs {
+        if registry.is_detached(&tp.spec.id) {
+            continue;
+        }
+        if let Some(split) = &tp.spec.split {
+            registry.split_from_config(&tp.spec.id, split);
+        }
+    }
+    for id in unsplit_tabs {
+        if registry.is_detached(id) {
+            continue;
+        }
+        registry.unsplit(id);
+    }
 }
 
 /// Apply a hot-reload's tab-set reconcile ops (from the config diff) to one
@@ -1784,6 +1816,33 @@ mod tests {
         // config order) — so the move is the observable proof the respawn ran.
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["t1".to_string(), "t0".to_string()]);
+    }
+
+    #[test]
+    fn a_returned_tab_whose_split_appeared_or_went_keeps_its_primary() {
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = r.add(&tab_spec("t0", "/tmp/a"), false);
+        let _ = r.add(&tab_spec("t1", "/tmp/b"), false);
+        let mut split = tab_spec("t0", "/tmp/a");
+        split.split = Some(warden_config::Split {
+            side: warden_config::SplitSide::Right,
+            size: 0.5,
+            panes: vec![warden_config::StackPane {
+                size: 1.0,
+                startup: None,
+            }],
+        });
+        reconcile_returned_tab(
+            &mut r,
+            "t0",
+            &tab_spec("t0", "/tmp/a"),
+            Some(&plan(split.clone())),
+        );
+        assert!(r.is_split("t0"));
+        reconcile_returned_tab(&mut r, "t0", &split, Some(&plan(tab_spec("t0", "/tmp/a"))));
+        assert!(!r.is_split("t0"));
+        let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["t0".to_string(), "t1".to_string()], "no respawn");
     }
 
     #[test]

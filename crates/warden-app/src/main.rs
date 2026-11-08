@@ -27,7 +27,6 @@ mod registry;
 
 #[cfg(target_os = "macos")]
 mod session;
-#[allow(dead_code)] // called by the menu and ⌘D wiring that follows
 mod split_write;
 
 #[cfg(target_os = "macos")]
@@ -852,18 +851,30 @@ fn unload_tab(
     new_active
 }
 
-/// Split tab `id`: give it a second pane (the tab's own shell, running the config split's `cmd`
-/// when the tab has one, else no startup command — `secondary_spec` decides) and bring it
-/// live. `Registry::split` only *declares* the pane Cold; `activate` is what actually spawns and
-/// shows it, so the pair is what makes the second terminal appear on screen. Splitting is
-/// idempotent, so a double-fire from the chrome (e.g. a stray second ⌘D) can't produce a third
-/// pane — it just re-activates an already-live one.
+/// What ⌘D does on a tab with no Rex block focused: reopen the split the config declares, or
+/// declare one.
+enum SplitAction {
+    /// The tab resolves a split: (re)declare its column and bring it live.
+    Reopen,
+    /// It resolves none: save `split = true` onto this tab's entry in window `0`'s config.
+    Save(String, Box<warden_config::Tab>),
+}
+
+/// Split tab `id`. The config is the one source of a tab's split:
 ///
-/// Once `split` has run the registry holds the split, so this returns `Ok` whatever `activate`
-/// reports; the chrome collapses its split only on `Err` (`window not found`, or a tab that can't
-/// split, which the chrome's banner shows). `activate`'s `Err`
-/// is the *primary's* spawn failure (the secondary's is discarded), so it goes to this window's
-/// banner as a label-stamped `warden:error`, exactly as `activate_tab` reports it.
+/// - **No split resolved** → `split_write::save_split` writes `split = true` onto the tab's
+///   config entry, and the watcher's hot-reload brings the second pane up beside the running
+///   primary (`reconcile`'s `split_tabs` → `Registry::split_from_config`). Nothing is split
+///   here — the reload is the one path. A failed write (the file broken mid-edit) goes to this
+///   window's banner and changes nothing.
+/// - **A split resolved but its column closed** (its shell exited) → `Registry::split` re-declares
+///   it Cold and `activate_user` spawns and shows it; on an open column the pair is a no-op
+///   re-activation, so a stray second ⌘D can't make a third pane. `activate`'s `Err` is the
+///   *primary's* spawn failure, so it goes to the banner as a label-stamped `warden:error`,
+///   exactly as `activate_tab` reports it.
+///
+/// `Err` only for `window not found` and a tab that can't split (an unclaimed Rex session's),
+/// which the chrome's banner shows.
 ///
 /// With focus in a block of a Rex scratch column, the split is Rex's instead: a bare shell
 /// stacked below that block ([`ScratchOp::Split`]), shown when Rex's next view lands.
@@ -875,6 +886,12 @@ fn split_pane(
     id: String,
 ) -> Result<(), String> {
     use tauri::Emitter;
+    let banner = |message: String| {
+        let _ = window.emit(
+            "warden:error",
+            serde_json::json!({ "label": window.label(), "message": message }),
+        );
+    };
     let block = state
         .lock()
         .windows
@@ -889,28 +906,47 @@ fn split_pane(
         }
         return Ok(());
     }
+    let action = {
+        let m = state.lock();
+        let ws = m.windows.get(window.label()).ok_or("window not found")?;
+        let spec = ws.registry.spec_of(&id).ok_or("tab not found")?;
+        if spec.split.is_some() {
+            SplitAction::Reopen
+        } else if rex::unclaimed::is_unclaimed(&spec.id, &spec.dir, spec.server.as_deref()) {
+            return Err(
+                "this tab can't split: it shows a Rex session opened from the sidebar".into(),
+            );
+        } else {
+            let tab = m
+                .last_good
+                .windows
+                .iter()
+                .find(|w| w.title == ws.title)
+                .and_then(|w| w.tabs.iter().find(|t| t.key == id))
+                .ok_or_else(|| format!("no config entry for tab {:?}", spec.title))?;
+            SplitAction::Save(ws.title.clone(), Box::new(tab.clone()))
+        }
+    };
+    if let SplitAction::Save(title, tab) = action {
+        // Outside the lock: the write's own reload takes it.
+        if let Err(e) = split_write::save_split(&title, &tab, split_write::SplitEdit::Enable) {
+            log::error!("split of tab {id:?} not saved: {e}");
+            banner(e);
+        }
+        return Ok(());
+    }
     let primary = {
         let mut m = state.lock();
         let ws = m
             .windows
             .get_mut(window.label())
             .ok_or("window not found")?;
-        if !ws.registry.split(&id) {
-            return Err(
-                "this tab can't split: it shows a Rex session opened from the sidebar".into(),
-            );
-        }
+        ws.registry.split(&id);
         ws.registry.activate_user(&id)
     };
     if let Err(e) = primary {
         log::error!("surface spawn failed for tab {id:?}: {e}");
-        let _ = window.emit(
-            "warden:error",
-            serde_json::json!({
-                "label": window.label(),
-                "message": format!("couldn't open terminal: {e}"),
-            }),
-        );
+        banner(format!("couldn't open terminal: {e}"));
     }
     // `activate` attempts BOTH panes regardless of the primary's own Result (see its doc
     // comment) — the secondary's spawn outcome is exactly what the chrome's `secondarySpawnedById`
@@ -1162,7 +1198,7 @@ fn pop_out_tab(
         let colour = ws.colour.clone();
         // The side is the registry's (config) fact, not the chrome's: the docked chrome
         // derives `.secondary-left` from the same `split_layout`, so the two agree by
-        // construction, and a runtime split has no side (never mirrored).
+        // construction.
         let secondary_left = ws.registry.split_side(&id) == Some(warden_config::SplitSide::Left);
         // Two holes iff two surfaces actually came back. Keyed on the surfaces, not on
         // `is_split`: a split tab whose secondary was cold detaches with one surface, and a
@@ -3075,7 +3111,7 @@ mod tests {
     #[test]
     fn hole_ratios_put_the_secondary_first_only_when_mirrored() {
         // Hole order is the detach page's left-to-right order; `primary` is the primary's
-        // share. A right-side split (and a runtime one) lists it first; a left-side split
+        // share. A right-side split lists it first; a left-side split
         // lists the secondary's share first, so the popped-out tab keeps its config's side.
         assert_eq!(hole_ratios(0.3, false), vec![0.3, 0.7]);
         assert_eq!(hole_ratios(0.3, true), vec![0.7, 0.3]);

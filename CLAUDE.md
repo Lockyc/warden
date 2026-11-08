@@ -65,7 +65,7 @@ raw.rs       serde structs mirroring the TOML schema + parse()
 resolve.rs   validate + fill defaults + expand ~ → (Config, Vec<Warning>); ResolveError
   ↓
 model.rs     resolved types: Config / Window / Tab / Warning
-reconcile.rs reconcile(old, new) → Reconciliation (open/close windows; per-window colour, tab add/remove/reorder, set_meta relabel, respawn_tabs)
+reconcile.rs reconcile(old, new) → Reconciliation (open/close windows; per-window colour, tab add/remove/reorder, set_meta relabel, respawn_tabs, split_tabs/unsplit_tabs)
 load.rs      load(path); config_path() (WARDEN_CONFIG else ~/.config/warden/config.toml); LoadError
 watch.rs     Watcher — parent-dir notify watcher; fires load() on change
 bin/warden.rs  `warden validate` (warden's schema) + `warden fmt` (delegates to config-core's shared fmt_cli)

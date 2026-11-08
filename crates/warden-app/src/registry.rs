@@ -207,18 +207,15 @@ pub struct TabDto {
     /// `.scratch-empty` illustration.
     pub secondary_spawned: bool,
     /// Whether this tab STRUCTURALLY has a second pane — distinct from `secondary_spawned`
-    /// above, which is that pane's LIVENESS. Both are needed: a hot-reload `respawn_tabs`
-    /// rebuilds a split tab via `remove` + `add`, i.e. **unsplit** for a runtime (⌘D) split
-    /// (only a config split survives, since `add` re-declares it from `TabSpec.split`), and
-    /// liveness alone can't tell the chrome its `splitById` is now `false` — it would render a
-    /// divider and an empty second pane until the next `onSelect`, which never comes if the tab
-    /// stays selected. Carried on every snapshot, so `activate_tab`'s `res.split` is a fast path
+    /// above, which is that pane's LIVENESS. Both are needed: a hot-reload can open or close the
+    /// column on a tab that stays selected (`split_tabs` / `unsplit_tabs`), and liveness alone
+    /// can't tell the chrome its `splitById` flipped — it would render a divider over no second
+    /// pane, or none beside one, until the next `onSelect`, which never comes if the tab stays
+    /// selected. Carried on every snapshot, so `activate_tab`'s `res.split` is a fast path
     /// rather than the sole reconciler.
     pub split: bool,
-    /// The declared (config) split's layout, or `None` for a tab with no config split — a
-    /// runtime ⌘D split reports `None` here and `split: true` above. The chrome keys its
-    /// "config split vs runtime split" behaviour (where the ratio is remembered, whether a
-    /// closed pane stays closed) on this field's presence.
+    /// The config split's layout, or `None` for a tab whose config declares none. Present with
+    /// `split: false` while a declared split's pane is closed (its shell exited).
     pub split_layout: Option<SplitLayoutDto>,
     /// The scratch column's tabs and blocks; `None` for an unsplit tab.
     pub column: Option<ColumnDto>,
@@ -766,20 +763,20 @@ impl Column {
 }
 
 /// The spec a tab's SECOND pane — its scratch column — runs: the tab's own shell, in the tab's
-/// own dir, with the config split's `cmd` as its startup (a runtime split has none — the frame's
-/// scratch terminal), under the distinct id `"<tab>::2"`: a plain block's surface id, which
-/// surface→tab routing (`locate_surface`) and the surface event sink key on, and, for a Rex tab,
-/// its column's Rex pane key, so a runtime (⌘D) split reattaches the same session a config split
-/// would. The tab's `server` carries over: a whole project lives on one server.
+/// own dir, with the config split's `cmd` as its startup (none for a bare `split = true` — the
+/// frame's scratch terminal), under the distinct id `"<tab>::2"`: a plain block's surface id,
+/// which surface→tab routing (`locate_surface`) and the surface event sink key on, and, for a Rex
+/// tab, its column's Rex pane key, so a reopened split reattaches the same session. The tab's
+/// `server` carries over: a whole project lives on one server.
 ///
-/// Every site that declares the column goes through here — `split` (the ⌘D path), `attach` and
+/// Every site that declares the column goes through here — `split`, `attach` and
 /// `mark_detached` (which recreate it for a popped-out split whose origin was rebuilt from
 /// config). None may re-derive it: two spellings of one spec would drift the second pane's
 /// surface id, and a mismatched id routes its bell, notification and child-exit to nothing.
 fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
     spec.id = secondary_id(tab_id);
-    // A config split names what the second pane runs; a runtime split is a bare scratch shell.
+    // The config split names what the second pane runs; without one it is a bare scratch shell.
     spec.startup = primary
         .split
         .as_ref()
@@ -1160,10 +1157,11 @@ impl Registry {
     }
 
     /// Give tab `id` its scratch column ([`Column::new`] over `secondary_spec`): a plain tab's one
-    /// block runs the config split's `cmd` when the tab has one, else no startup command — the
+    /// block runs the config split's `cmd` when it has one, else no startup command — the
     /// frame's scratch terminal; a Rex tab's opens its session when it first spawns. Idempotent:
     /// splitting an already split tab is a no-op, even if the chrome double-fires. Unknown tab is
-    /// a no-op.
+    /// a no-op. Callers declare the split the tab's config resolves (`add`, `unload`,
+    /// [`split_from_config`](Self::split_from_config), ⌘D reopening a closed one).
     ///
     /// The column is created **Cold**, not spawned: `activate` brings cold panes live, exactly
     /// as a lazily-added tab (`add(load_on_open = false)`) already works. Spawning here would
@@ -1187,6 +1185,47 @@ impl Registry {
         }
         t.column = Some(Column::new(secondary_spec(&t.primary.spec, id)));
         true
+    }
+
+    /// Give tab `id` the split its config just gained: record `split` on its spec and declare the
+    /// column from it ([`split`](Self::split)). Beside a live primary the column comes up now —
+    /// hidden on a background tab, shown on the active one — and the primary's PTY is never
+    /// touched; a cold tab just gets the declaration and spawns both on activation. Returns
+    /// whether the tab is split now (`false` for an unknown tab).
+    pub fn split_from_config(&mut self, id: &str, split: &warden_config::Split) -> bool {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return false;
+        };
+        self.tabs[idx].primary.spec.split = Some(split.clone());
+        if !self.split(id) {
+            return false;
+        }
+        if self.tabs[idx].primary.live() {
+            if let Err(e) = self.ensure_column(idx, true) {
+                log::error!(
+                    "column spawn failed for tab {:?}: {e}",
+                    self.tabs[idx].title
+                );
+            }
+            if self.active.as_deref() == Some(id) {
+                self.show_active();
+            } else {
+                let column = self.tabs[idx].column.iter();
+                column.flat_map(Column::surfaces).for_each(|s| s.hide());
+            }
+        }
+        true
+    }
+
+    /// Take away the split tab `id`'s config dropped: its column closes
+    /// ([`close_column`](Self::close_column)) and its spec forgets the split, so a relaunch no
+    /// longer re-declares it. Returns whether there was a column to close.
+    pub fn unsplit(&mut self, id: &str) -> bool {
+        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        t.primary.spec.split = None;
+        self.close_column(id)
     }
 
     /// Drop block `block` of tab `id`'s selected scratch tab, freeing its surface; a scratch tab
@@ -1883,11 +1922,10 @@ impl Registry {
         }
     }
 
-    /// Which side tab `id`'s CONFIG split puts its second pane on, or `None` for an unknown
-    /// tab, an unsplit one, or a runtime (⌘D) split — that one has no `side` and always sits
-    /// on the right, exactly as the docked chrome draws it (`.secondary-left` keys off
-    /// `split_layout`, which a runtime split never carries). Pop-out reads this to decide
-    /// whether the detached window's holes are mirrored (`PaneIdx::hole`).
+    /// Which side tab `id`'s config split puts its second pane on, or `None` for an unknown
+    /// tab or one whose config declares no split. Pop-out reads this to decide whether the
+    /// detached window's holes are mirrored (`PaneIdx::hole`), as the docked chrome's
+    /// `.secondary-left` keys off the same `split_layout`.
     pub fn split_side(&self, id: &str) -> Option<warden_config::SplitSide> {
         self.tabs
             .iter()
@@ -3945,12 +3983,34 @@ mod tests {
     }
 
     #[test]
-    fn runtime_split_on_unsplit_config_has_no_layout_and_no_cmd() {
+    fn split_from_config_declares_the_column_with_the_new_split() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
-        r.split("a");
-        assert_eq!(r.secondary_spec_for_test("a").unwrap().startup, None);
+        let split = spec_with_split("a", Some("scratch")).split.unwrap();
+        assert!(r.split_from_config("a", &split));
+        assert!(r.is_split("a"));
+        assert_eq!(
+            r.secondary_spec_for_test("a").unwrap().startup.as_deref(),
+            Some("scratch")
+        );
+        let dto = &r.tab_dtos()[0];
+        assert_eq!(dto.split_layout.as_ref().unwrap().side, "left");
+        // A cold tab only gets the declaration: nothing spawned.
+        assert!(!dto.spawned && !dto.secondary_spawned);
+        assert!(!r.split_from_config("nope", &split));
+    }
+
+    #[test]
+    fn unsplit_closes_the_column_and_forgets_the_split() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec_with_split("a", None), false).unwrap();
+        assert!(r.unsplit("a"));
+        assert!(!r.is_split("a"));
         assert!(r.tab_dtos()[0].split_layout.is_none());
+        // Gone for good: a relaunch no longer re-declares it.
+        r.unload("a");
+        assert!(!r.is_split("a"));
+        assert!(!r.unsplit("a"), "nothing left to close");
     }
 
     #[test]
@@ -4287,7 +4347,7 @@ mod tests {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec_with_split("a", None), false).unwrap(); // side = Left
         r.add(&spec("b", "/tmp/b"), false).unwrap();
-        r.split("b"); // a runtime ⌘D split has no side — it is never mirrored
+        r.split("b"); // a column with no declared split has no side — never mirrored
         assert_eq!(r.split_side("a"), Some(warden_config::SplitSide::Left));
         assert_eq!(r.split_side("b"), None);
         assert_eq!(r.split_side("nope"), None);

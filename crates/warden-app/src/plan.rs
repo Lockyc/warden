@@ -178,6 +178,10 @@ pub struct TabOp {
     pub set_meta: Vec<MetaPlan>,
     // Kept tabs whose terminal spec changed — respawn in place (remove+add by id).
     pub respawn_tabs: Vec<TabPlan>,
+    // Kept tabs that gained a split — the second pane opens beside the running primary.
+    pub split_tabs: Vec<TabPlan>,
+    // Kept tab ids whose split went — the second pane closes, the primary stays.
+    pub unsplit_tabs: Vec<String>,
     // Kept tab ids whose load_on_open turned on — spawn if cold, never respawn.
     pub spawn_tabs: Vec<String>,
 }
@@ -250,6 +254,8 @@ pub fn tab_ops(
                 order: u.tab_order.clone(),
                 set_meta,
                 respawn_tabs: plans(&u.respawn_tabs),
+                split_tabs: plans(&u.split_tabs),
+                unsplit_tabs: u.unsplit_tabs.clone(),
                 spawn_tabs: u.spawn_tabs.clone(),
             })
         })
@@ -618,6 +624,8 @@ colour = "#0f8a8a"
                 tab_order: vec!["/r/Dev/gh/lockyc/warden".into()],
                 set_meta: Vec::new(),
                 respawn_tabs: Vec::new(),
+                split_tabs: Vec::new(),
+                unsplit_tabs: Vec::new(),
                 spawn_tabs: Vec::new(),
             }],
         };

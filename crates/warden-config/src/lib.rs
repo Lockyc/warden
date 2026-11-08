@@ -28,7 +28,7 @@ pub use config_core::{
 };
 pub use load::{config_path, load, load_with, login_shell, LoadError, Loaded};
 pub use model::{Config, Root, RootTab, Split, SplitSide, StackPane, Tab, Window};
-pub use reconcile::{reconcile, Reconciliation, TabMeta, TerminalSpec, WindowUpdate};
+pub use reconcile::{reconcile, Reconciliation, SpecChange, TabMeta, TerminalSpec, WindowUpdate};
 pub use resolve::{apply_resume, normalize_dir_key, ResolveError};
 pub use watch::Watcher;
 
