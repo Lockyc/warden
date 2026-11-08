@@ -118,7 +118,8 @@ surface-destroying or lock-taking action takes the same path.
   hands arrows to the wrong pane, or to a terminal while the sidebar search has focus.
 - **The app menu gets first refusal** at the top of `performKeyEquivalent:`, or libghostty
   swallows the tab chords. `⌘\`` is reserved for macOS window cycling: return `NO`, never forward
-  (a Kitty-protocol TUI would eat it).
+  (a Kitty-protocol TUI would eat it). ⌘W is the exception to "a disabled item leaves its chord to
+  the terminal": it never reaches libghostty, whose own binding ends the pane (`is_close_chord`).
 - **Native focus is reported, never inferred by the chrome.** A click on live content is consumed
   by the `NSView`, so `becomeFirstResponder` raises `SurfaceSignal::Focused` — deferred a main-queue
   turn, since it also fires inside `activate`'s `focus()` under the `ManagerState` lock — and
