@@ -249,6 +249,12 @@ pub enum ResolveError {
     Window(#[from] WindowError),
     #[error("window {window:?} has two tabs with the same identity: {identity:?} (give one an `id` to disambiguate, or change its dir)")]
     DuplicateTabIdentity { window: String, identity: String },
+    #[error("window {window:?} root {root:?} has two tab overrides for the same dir: {dir:?}")]
+    DuplicateRootTab {
+        window: String,
+        root: String,
+        dir: String,
+    },
     #[error("window {window:?} has a tab with an empty dir")]
     EmptyDir { window: String },
     #[error("window {window:?} has a tab with an empty explicit title")]
@@ -830,22 +836,29 @@ fn resolve_root(
         &rp.title,
         warnings,
     );
-    let overrides = rr
-        .tabs
-        .iter()
-        .map(|t| {
-            resolve_root_tab(
-                t,
-                rr,
-                rp,
-                default_shell,
-                globals,
-                window_split,
-                server.as_deref(),
-                warnings,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut seen = HashSet::new();
+    let mut overrides = Vec::with_capacity(rr.tabs.len());
+    for t in &rr.tabs {
+        let o = resolve_root_tab(
+            t,
+            rr,
+            rp,
+            default_shell,
+            globals,
+            window_split,
+            server.as_deref(),
+            warnings,
+        )?;
+        let key = normalize_dir_key(&o.dir);
+        if !seen.insert(key.clone()) {
+            return Err(ResolveError::DuplicateRootTab {
+                window: rp.title.clone(),
+                root: root_dir.name.clone(),
+                dir: key,
+            });
+        }
+        overrides.push(o);
+    }
     Ok(Some(Root {
         name: root_dir.name,
         dir: root_dir.dir,
@@ -3330,5 +3343,32 @@ colour = "#000000"
         .unwrap();
         assert!(cfg.windows[0].roots[0].split.is_some());
         assert!(cfg.windows[0].roots[0].overrides[0].split.is_none());
+    }
+
+    #[test]
+    fn duplicate_root_tab_dir_is_an_error() {
+        let err = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.root]]
+  name = "R"
+  dir = "/tmp/roots"
+    [[window.root.tab]]
+    dir = "/tmp/roots/p"
+    [[window.root.tab]]
+    dir = "/tmp/roots/p/"
+"##,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::DuplicateRootTab {
+                window: "w".into(),
+                root: "R".into(),
+                dir: "/tmp/roots/p".into()
+            }
+        );
     }
 }
