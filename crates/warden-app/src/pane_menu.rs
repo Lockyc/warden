@@ -1,12 +1,19 @@
 //! The terminal right-click menu: what a pane offers (Copy, Paste, Split, Size ▸), as a pure
-//! item list, and the Tauri menu built from it. Each item's id stamps its window label and tab,
-//! `pane-menu:<op>:<label>:<tab>`, so `main.rs::on_menu_event` acts on the clicked pane's tab
-//! whichever window is focused when the event lands.
+//! item list, and the Tauri menu built from it. Each item's id stamps the clicked pane, its
+//! window label and tab, `pane-menu:<op>:<pane>:<label>:<tab>` (label and tab escaped — a
+//! pop-out's label holds a `:`), so `main.rs::on_menu_event` acts on that pane whichever window
+//! is focused when the event lands.
 
 use crate::registry::PaneIdx;
 
 /// The fixed choices under Size ▸, the second pane's share, ascending.
 pub const PRESETS: [f64; 4] = [0.25, 1.0 / 3.0, 0.5, 2.0 / 3.0];
+
+/// Why a popped-out tab's Split is disabled.
+pub const DOCK_TO_SPLIT: &str = "Dock the tab to split";
+/// Why a popped-out tab's Size ▸ is disabled: its divider is the detach page's, which keeps no
+/// ratio warden can read.
+pub const DOCK_TO_RESIZE: &str = "Dock the tab to resize";
 
 /// How close a size must be to another to count as the same one (the file keeps two decimals).
 const SAME_SIZE: f64 = 0.005;
@@ -35,14 +42,31 @@ pub struct SizeState {
 pub struct PaneMenuCtx {
     pub label: String,
     pub tab: String,
-    /// The clicked pane. No item depends on it yet; a scratch-column-only item will.
-    #[allow(dead_code)]
     pub pane: PaneIdx,
     pub has_selection: bool,
     /// `Err` is why the tab can't split, shown on the disabled item.
     pub can_split: Result<SplitKind, String>,
-    /// `None` while the tab shows no split.
-    pub split: Option<SizeState>,
+    /// `None` while the tab shows no split; `Err` is why Size ▸ is disabled.
+    pub split: Option<Result<SizeState, String>>,
+}
+
+/// The menu for pane `pane` of tab `tab` popped out into window `label`: Copy and Paste act on
+/// its surface; Split and Size ▸ act on a docked tab only.
+pub fn detached_ctx(
+    label: &str,
+    tab: &str,
+    pane: PaneIdx,
+    has_selection: bool,
+    split_shown: bool,
+) -> PaneMenuCtx {
+    PaneMenuCtx {
+        label: label.to_owned(),
+        tab: tab.to_owned(),
+        pane,
+        has_selection,
+        can_split: Err(DOCK_TO_SPLIT.to_owned()),
+        split: split_shown.then(|| Err(DOCK_TO_RESIZE.to_owned())),
+    }
 }
 
 /// One menu entry. `checked` is `Some` for a checkable item.
@@ -65,6 +89,8 @@ pub enum Op {
     Size(usize),
     /// Back to the inherited size.
     SizeDefault,
+    /// Size ▸ itself, disabled: nothing to choose.
+    SizeUnavailable,
 }
 
 impl Op {
@@ -75,6 +101,7 @@ impl Op {
             Op::Split => "split".into(),
             Op::Size(i) => format!("size-{i}"),
             Op::SizeDefault => "size-default".into(),
+            Op::SizeUnavailable => "size-none".into(),
         }
     }
 
@@ -84,6 +111,7 @@ impl Op {
             "paste" => Op::Paste,
             "split" => Op::Split,
             "size-default" => Op::SizeDefault,
+            "size-none" => Op::SizeUnavailable,
             _ => {
                 let i: usize = s.strip_prefix("size-")?.parse().ok()?;
                 (i < PRESETS.len()).then_some(Op::Size(i))?
@@ -91,6 +119,7 @@ impl Op {
         })
     }
 
+    /// An item under Size ▸.
     fn is_size(self) -> bool {
         matches!(self, Op::Size(_) | Op::SizeDefault)
     }
@@ -106,30 +135,75 @@ impl Op {
     }
 }
 
-/// The id of item `op` for tab `tab` in window `label`.
-fn item_id(op: Op, label: &str, tab: &str) -> String {
-    format!("{PREFIX}{}:{label}:{tab}", op.name())
+/// A decoded item id: what to do, on which pane of which tab in which window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    pub op: Op,
+    pub pane: PaneIdx,
+    pub label: String,
+    pub tab: String,
 }
 
-/// Decode a menu id into `(op, label, tab)`; `None` for any other menu's id. The tab id is the
-/// rest of the id, so one holding a `:` (a path) survives.
-pub fn parse(id: &str) -> Option<(Op, String, String)> {
-    let mut parts = id.strip_prefix(PREFIX)?.splitn(3, ':');
+/// `s` with `%` and `:` percent-escaped, so it holds no field separator.
+fn escape(s: &str) -> String {
+    s.replace('%', "%25").replace(':', "%3A")
+}
+
+/// Inverse of [`escape`]; `None` for a `%` that isn't one of its two escapes.
+fn unescape(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let code = rest.get(i..i + 3)?;
+        out.push(match code {
+            "%25" => '%',
+            "%3A" => ':',
+            _ => return None,
+        });
+        rest = &rest[i + 3..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+fn item_id(op: Op, pane: PaneIdx, label: &str, tab: &str) -> String {
+    format!(
+        "{PREFIX}{}:{}:{}:{}",
+        op.name(),
+        pane.index(),
+        escape(label),
+        escape(tab)
+    )
+}
+
+/// Decode a menu id; `None` for any other menu's id.
+pub fn parse(id: &str) -> Option<Target> {
+    let mut parts = id.strip_prefix(PREFIX)?.split(':');
     let op = Op::parse(parts.next()?)?;
-    let label = parts.next()?;
-    let tab = parts.next()?;
-    Some((op, label.to_owned(), tab.to_owned()))
+    let pane = PaneIdx::from_index(parts.next()?.parse().ok()?);
+    let label = unescape(parts.next()?)?;
+    let tab = unescape(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(Target {
+        op,
+        pane,
+        label,
+        tab,
+    })
 }
 
 fn percent(size: f64) -> String {
     format!("{}%", (size * 100.0).round())
 }
 
-/// The menu for `ctx`, in order: Copy, Paste — Split — Size ▸ (flattened here; every size item
-/// carries a size op, and [`build`] nests them).
+/// The menu for `ctx`, in order: Copy, Paste — Split — Size ▸ (flattened here; every item
+/// under it carries a size op, and [`build`] nests them).
 pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
     let item = |op: Op, title: String, enabled: bool, separator_before: bool| Item {
-        id: item_id(op, &ctx.label, &ctx.tab),
+        id: item_id(op, ctx.pane, &ctx.label, &ctx.tab),
         title,
         enabled,
         checked: None,
@@ -144,25 +218,34 @@ pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
         Ok(SplitKind::SplitBelow) => item(Op::Split, "Split Below".into(), true, true),
         Err(why) => item(Op::Split, format!("Split ({why})"), false, true),
     });
-    if let Some(s) = ctx.split {
-        let same = |a: f64, b: f64| (a - b).abs() < SAME_SIZE;
-        let mut sizes: Vec<(f64, Op)> = PRESETS
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| !same(**p, s.inherited))
-            .map(|(i, p)| (*p, Op::Size(i)))
-            .collect();
-        sizes.push((s.inherited, Op::SizeDefault));
-        sizes.sort_by(|a, b| a.0.total_cmp(&b.0));
-        for (i, (size, op)) in sizes.into_iter().enumerate() {
-            let title = match op {
-                Op::SizeDefault => format!("{} (default)", percent(size)),
-                _ => percent(size),
-            };
-            out.push(Item {
-                checked: Some(same(size, s.current)),
-                ..item(op, title, true, i == 0)
-            });
+    match &ctx.split {
+        None => {}
+        Some(Err(why)) => out.push(item(
+            Op::SizeUnavailable,
+            format!("Size ({why})"),
+            false,
+            true,
+        )),
+        Some(Ok(s)) => {
+            let same = |a: f64, b: f64| (a - b).abs() < SAME_SIZE;
+            let mut sizes: Vec<(f64, Op)> = PRESETS
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| !same(**p, s.inherited))
+                .map(|(i, p)| (*p, Op::Size(i)))
+                .collect();
+            sizes.push((s.inherited, Op::SizeDefault));
+            sizes.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (i, (size, op)) in sizes.into_iter().enumerate() {
+                let title = match op {
+                    Op::SizeDefault => format!("{} (default)", percent(size)),
+                    _ => percent(size),
+                };
+                out.push(Item {
+                    checked: Some(same(size, s.current)),
+                    ..item(op, title, true, i == 0)
+                });
+            }
         }
     }
     out
@@ -179,7 +262,14 @@ pub fn build<R: tauri::Runtime>(
     let menu = Menu::new(app)?;
     let mut size: Option<SubmenuBuilder<R, _>> = None;
     for it in items {
-        let op = parse(&it.id).map(|(op, ..)| op);
+        let op = parse(&it.id).map(|t| t.op);
+        if it.separator_before && !(size.is_some() && op.is_some_and(Op::is_size)) {
+            menu.append(&PredefinedMenuItem::separator(app)?)?;
+        }
+        if op == Some(Op::SizeUnavailable) {
+            menu.append(&SubmenuBuilder::new(app, &it.title).enabled(false).build()?)?;
+            continue;
+        }
         let entry: Box<dyn IsMenuItem<R>> = match it.checked {
             Some(checked) => Box::new(
                 CheckMenuItemBuilder::with_id(&it.id, &it.title)
@@ -196,17 +286,11 @@ pub fn build<R: tauri::Runtime>(
             }
         };
         if op.is_some_and(Op::is_size) {
-            if size.is_none() && it.separator_before {
-                menu.append(&PredefinedMenuItem::separator(app)?)?;
-            }
             size = Some(
                 size.unwrap_or_else(|| SubmenuBuilder::new(app, "Size"))
                     .item(&*entry),
             );
             continue;
-        }
-        if it.separator_before {
-            menu.append(&PredefinedMenuItem::separator(app)?)?;
         }
         menu.append(&*entry)?;
     }
@@ -214,6 +298,16 @@ pub fn build<R: tauri::Runtime>(
         menu.append(&size.build()?)?;
     }
     Ok(menu)
+}
+
+/// Pop `ctx`'s menu over its window at `(x, y)` (content-view points, top-left origin).
+pub fn popup(app: &tauri::AppHandle, ctx: &PaneMenuCtx, x: f64, y: f64) -> Result<(), String> {
+    use tauri::Manager;
+    let window = app.get_window(&ctx.label).ok_or("window not found")?;
+    let menu = build(app, &items(ctx)).map_err(|e| e.to_string())?;
+    window
+        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -231,15 +325,25 @@ mod tests {
         }
     }
 
-    fn find<'a>(items: &'a [Item], op: &str) -> &'a Item {
-        let id = format!("pane-menu:{op}:w0:/tmp/a");
-        items.iter().find(|i| i.id == id).unwrap()
+    fn sized(current: f64, inherited: f64) -> PaneMenuCtx {
+        PaneMenuCtx {
+            split: Some(Ok(SizeState { current, inherited })),
+            ..ctx()
+        }
+    }
+
+    fn op_of(i: &Item) -> Op {
+        parse(&i.id).unwrap().op
+    }
+
+    fn find(items: &[Item], op: Op) -> &Item {
+        items.iter().find(|i| op_of(i) == op).unwrap()
     }
 
     fn sizes(items: &[Item]) -> Vec<(String, Option<bool>)> {
         items
             .iter()
-            .filter(|i| i.id.starts_with("pane-menu:size"))
+            .filter(|i| op_of(i).is_size())
             .map(|i| (i.title.clone(), i.checked))
             .collect()
     }
@@ -247,13 +351,13 @@ mod tests {
     #[test]
     fn copy_disabled_without_selection() {
         let on = items(&ctx());
-        assert!(find(&on, "copy").enabled);
+        assert!(find(&on, Op::Copy).enabled);
         let off = items(&PaneMenuCtx {
             has_selection: false,
             ..ctx()
         });
-        assert!(!find(&off, "copy").enabled);
-        assert!(find(&off, "paste").enabled);
+        assert!(!find(&off, Op::Copy).enabled);
+        assert!(find(&off, Op::Paste).enabled);
         assert_eq!(
             off.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
             ["Copy", "Paste", "Split"]
@@ -267,7 +371,7 @@ mod tests {
             can_split: Ok(SplitKind::SplitBelow),
             ..ctx()
         });
-        let s = find(&m, "split");
+        let s = find(&m, Op::Split);
         assert_eq!((s.title.as_str(), s.enabled), ("Split Below", true));
         assert!(s.separator_before);
     }
@@ -278,7 +382,7 @@ mod tests {
             can_split: Err("a Rex session opened from the sidebar can't split".into()),
             ..ctx()
         });
-        let s = find(&m, "split");
+        let s = find(&m, Op::Split);
         assert!(!s.enabled);
         assert_eq!(
             s.title,
@@ -288,32 +392,17 @@ mod tests {
 
     #[test]
     fn size_lists_presets_plus_inherited_default() {
-        let m = items(&PaneMenuCtx {
-            split: Some(SizeState {
-                current: 0.3,
-                inherited: 0.3,
-            }),
-            ..ctx()
-        });
+        let m = items(&sized(0.3, 0.3));
         assert_eq!(
             sizes(&m).into_iter().map(|(t, _)| t).collect::<Vec<_>>(),
             ["25%", "30% (default)", "33%", "50%", "67%"]
         );
-        assert_eq!(find(&m, "size-default").title, "30% (default)");
-        let first = m
-            .iter()
-            .find(|i| i.id.starts_with("pane-menu:size"))
-            .unwrap();
+        assert_eq!(find(&m, Op::SizeDefault).title, "30% (default)");
+        let first = m.iter().find(|i| op_of(i).is_size()).unwrap();
         assert!(first.separator_before);
 
         // An inherited size that is a preset takes that preset's place.
-        let m = items(&PaneMenuCtx {
-            split: Some(SizeState {
-                current: 0.5,
-                inherited: 0.5,
-            }),
-            ..ctx()
-        });
+        let m = items(&sized(0.5, 0.5));
         assert_eq!(
             sizes(&m).into_iter().map(|(t, _)| t).collect::<Vec<_>>(),
             ["25%", "33%", "50% (default)", "67%"]
@@ -322,15 +411,8 @@ mod tests {
 
     #[test]
     fn current_size_checked() {
-        let m = items(&PaneMenuCtx {
-            split: Some(SizeState {
-                current: 0.334,
-                inherited: 0.5,
-            }),
-            ..ctx()
-        });
         assert_eq!(
-            sizes(&m),
+            sizes(&items(&sized(0.334, 0.5))),
             [
                 ("25%".to_string(), Some(false)),
                 ("33%".to_string(), Some(true)),
@@ -339,39 +421,79 @@ mod tests {
             ]
         );
         // A drag between presets ticks none.
-        let m = items(&PaneMenuCtx {
-            split: Some(SizeState {
-                current: 0.27,
-                inherited: 0.5,
-            }),
-            ..ctx()
-        });
-        assert!(sizes(&m).iter().all(|(_, c)| *c == Some(false)));
+        assert!(sizes(&items(&sized(0.27, 0.5)))
+            .iter()
+            .all(|(_, c)| *c == Some(false)));
     }
 
     #[test]
     fn no_size_section_when_unsplit() {
         let m = items(&ctx());
-        assert!(sizes(&m).is_empty());
+        assert!(m.iter().all(|i| !matches!(
+            op_of(i),
+            Op::Size(_) | Op::SizeDefault | Op::SizeUnavailable
+        )));
         assert!(m.iter().all(|i| i.checked.is_none()));
     }
 
     #[test]
-    fn ids_round_trip_with_a_colon_in_the_tab() {
+    fn size_without_a_config_entry_is_disabled_with_the_reason() {
         let m = items(&PaneMenuCtx {
-            tab: "/tmp/a:b".into(),
-            split: Some(SizeState {
-                current: 0.5,
-                inherited: 0.3,
-            }),
+            split: Some(Err("no config entry for tab \"x\"".into())),
             ..ctx()
+        });
+        let s = find(&m, Op::SizeUnavailable);
+        assert_eq!(
+            (s.title.as_str(), s.enabled, s.separator_before),
+            ("Size (no config entry for tab \"x\")", false, true)
+        );
+        assert!(sizes(&m).is_empty());
+    }
+
+    #[test]
+    fn pop_out_offers_copy_paste_and_dock_reasons() {
+        let c = detached_ctx("shell-detach:k1", "/tmp/a", PaneIdx::Block(0), false, true);
+        let m = items(&c);
+        assert!(!find(&m, Op::Copy).enabled);
+        assert!(find(&m, Op::Paste).enabled);
+        let split = find(&m, Op::Split);
+        assert_eq!(
+            (split.title.as_str(), split.enabled),
+            ("Split (Dock the tab to split)", false)
+        );
+        let size = find(&m, Op::SizeUnavailable);
+        assert_eq!(
+            (size.title.as_str(), size.enabled),
+            ("Size (Dock the tab to resize)", false)
+        );
+        // An unsplit pop-out has no Size ▸ at all.
+        let m = items(&detached_ctx(
+            "shell-detach:k1",
+            "/tmp/a",
+            PaneIdx::Primary,
+            true,
+            false,
+        ));
+        assert!(m.iter().all(|i| op_of(i) != Op::SizeUnavailable));
+    }
+
+    #[test]
+    fn ids_round_trip_a_pop_out_label_and_a_colon_in_the_tab() {
+        let m = items(&PaneMenuCtx {
+            label: "shell-detach:k%1".into(),
+            tab: "/tmp/a:b".into(),
+            pane: PaneIdx::Block(2),
+            ..sized(0.5, 0.3)
         });
         let ops: Vec<Op> = m
             .iter()
             .map(|i| {
-                let (op, label, tab) = parse(&i.id).unwrap();
-                assert_eq!((label.as_str(), tab.as_str()), ("w0", "/tmp/a:b"));
-                op
+                let t = parse(&i.id).unwrap();
+                assert_eq!(
+                    (t.pane, t.label.as_str(), t.tab.as_str()),
+                    (PaneIdx::Block(2), "shell-detach:k%1", "/tmp/a:b")
+                );
+                t.op
             })
             .collect();
         assert_eq!(
@@ -387,7 +509,7 @@ mod tests {
                 Op::Size(3)
             ]
         );
-        assert_eq!(parse("pane-menu:size-9:w0:t"), None);
+        assert_eq!(parse("pane-menu:size-9:0:w0:t"), None);
         assert_eq!(parse("warden:split-pane"), None);
     }
 }

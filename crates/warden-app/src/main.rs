@@ -1011,26 +1011,18 @@ fn pane_menu(
     let (has_selection, can_split, tab) = {
         let m = state.lock();
         let ws = m.windows.get(&label).ok_or("window not found")?;
-        let has_selection = ws
-            .registry
-            .shown_surface(&id, pane)
+        let has_selection = m
+            .pane_surface(&label, &id, pane)
             .is_some_and(|s| s.has_selection());
-        let tab = size.and_then(|_| config_tab(&m, &label, &id).ok());
+        let tab = size.map(|_| config_tab(&m, &label, &id));
         (has_selection, split_kind(&ws.registry, &id), tab)
     };
     // Read outside the lock: it parses the file.
-    let split = match (size, tab) {
-        (Some(current), Some((title, tab))) => {
-            match split_write::current_inherited_size(&title, &tab) {
-                Ok(inherited) => Some(pane_menu::SizeState { current, inherited }),
-                Err(e) => {
-                    log::warn!("pane menu of tab {id:?}: no size section: {e}");
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
+    let split = size.zip(tab).map(|(current, tab)| {
+        tab.and_then(|(title, tab)| split_write::current_inherited_size(&title, &tab))
+            .map(|inherited| pane_menu::SizeState { current, inherited })
+            .inspect_err(|e| log::warn!("pane menu of tab {id:?}: Size disabled: {e}"))
+    });
     let ctx = pane_menu::PaneMenuCtx {
         label,
         tab: id,
@@ -1039,18 +1031,21 @@ fn pane_menu(
         can_split,
         split,
     };
-    let app = tauri::Manager::app_handle(&window);
-    let menu = pane_menu::build(app, &pane_menu::items(&ctx)).map_err(|e| e.to_string())?;
-    window
-        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
-        .map_err(|e| e.to_string())
+    pane_menu::popup(tauri::Manager::app_handle(&window), &ctx, x, y)
 }
 
-/// A right-click menu item was chosen, for tab `tab` of window `label`.
+/// A right-click menu item was chosen.
 #[cfg(target_os = "macos")]
-fn on_pane_menu(app: &tauri::AppHandle, op: pane_menu::Op, label: &str, tab: &str) {
+fn on_pane_menu(app: &tauri::AppHandle, target: pane_menu::Target) {
     use pane_menu::{Op, PRESETS};
     use tauri::{Emitter, Manager};
+    let pane_menu::Target {
+        op,
+        pane,
+        label,
+        tab,
+    } = target;
+    let (label, tab) = (label.as_str(), tab.as_str());
     let banner = |message: String| {
         let _ = app.emit_to(
             label,
@@ -1060,16 +1055,9 @@ fn on_pane_menu(app: &tauri::AppHandle, op: pane_menu::Op, label: &str, tab: &st
     };
     let state = app.state::<ManagerState>();
     match op {
-        // The right-click focused the pane, so the tab's focused pane is the clicked one.
         Op::Copy | Op::Paste => {
             let m = state.lock();
-            let Some(reg) = m.windows.get(label).map(|ws| &ws.registry) else {
-                return;
-            };
-            let surface = reg
-                .focused_pane(tab)
-                .and_then(|p| reg.shown_surface(tab, p));
-            match (surface, op) {
+            match (m.pane_surface(label, tab, pane), op) {
                 (Some(s), Op::Copy) => s.copy(),
                 (Some(s), _) => s.paste(),
                 (None, _) => {}
@@ -1083,6 +1071,7 @@ fn on_pane_menu(app: &tauri::AppHandle, op: pane_menu::Op, label: &str, tab: &st
                 banner(e);
             }
         }
+        Op::SizeUnavailable => {}
         Op::Size(_) | Op::SizeDefault => {
             let found = config_tab(&state.lock(), label, tab);
             let saved = found.and_then(|(title, t)| {
@@ -2737,8 +2726,8 @@ fn main() {
             }
 
             // A terminal's right-click menu: its id names the window and tab it was popped for.
-            if let Some((op, label, tab)) = pane_menu::parse(id) {
-                on_pane_menu(app, op, &label, &tab);
+            if let Some(target) = pane_menu::parse(id) {
+                on_pane_menu(app, target);
                 return;
             }
 

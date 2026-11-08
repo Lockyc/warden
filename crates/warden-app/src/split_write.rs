@@ -199,7 +199,7 @@ fn inherited(cascade: CascadeFn, own: Option<&RawSplit>) -> Result<f64, String> 
 /// The config warden runs from (`config_path`), parsed as it stands now.
 fn current() -> Result<(PathBuf, RawConfig), String> {
     let config = warden_config::config_path();
-    let not_read = |e: &dyn std::fmt::Display| format!("config not saved: {e}");
+    let not_read = |e: &dyn std::fmt::Display| format!("config not read: {e}");
     let text = std::fs::read_to_string(&config).map_err(|e| not_read(&e))?;
     let raw = warden_config::raw::parse(&text).map_err(|e| not_read(&e))?;
     Ok((config, raw))
@@ -207,7 +207,7 @@ fn current() -> Result<(PathBuf, RawConfig), String> {
 
 /// [`write_split`] onto the config warden runs from.
 pub fn save_split(window: &str, tab: &Tab, edit: SplitEdit) -> Result<(), String> {
-    let (config, raw) = current()?;
+    let (config, raw) = current().map_err(|e| format!("config not saved: {e}"))?;
     write_split(&config, &raw, window, tab, edit)
 }
 

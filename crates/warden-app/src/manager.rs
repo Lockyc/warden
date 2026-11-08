@@ -952,15 +952,34 @@ impl WindowManager {
         );
     }
 
-    /// A right-click asked for warden's menu at `(x, y)` on a surface. The page holds the one
-    /// thing the menu can't learn here — the split's live ratio, a divider drag included — so it
-    /// gets `warden:pane-menu` and answers with `pane_menu`, which pops the menu. A pop-out's
-    /// surface has no sidebar page to answer, so its right-click shows nothing.
+    /// A right-click asked for warden's menu at `(x, y)` on a surface. In a docked window the page
+    /// holds the one thing the menu can't learn here — the split's live ratio, a divider drag
+    /// included — so it gets `warden:pane-menu` and answers with `pane_menu`, which pops the menu.
+    /// A pop-out's menu is built and popped here: Copy and Paste, Split and Size ▸ disabled.
     pub fn handle_context_menu(app: &AppHandle, surface_id: usize, x: f64, y: f64) {
         let state = app.state::<ManagerState>();
         let lock = state.lock();
         let Some((label, _, _)) = lock.locate_surface(surface_id) else {
-            log::debug!("context menu on surface {surface_id}: not in a docked window");
+            let Some((dlabel, pane)) = lock.locate_detached_surface(surface_id) else {
+                return;
+            };
+            let Some(ds) = lock.detached.get(&dlabel) else {
+                return;
+            };
+            let has_selection = lock
+                .pane_surface(&dlabel, &ds.tab_id, pane)
+                .is_some_and(|s| s.has_selection());
+            let ctx = crate::pane_menu::detached_ctx(
+                &dlabel,
+                &ds.tab_id,
+                pane,
+                has_selection,
+                ds.secondary.is_some(),
+            );
+            drop(lock);
+            if let Err(e) = crate::pane_menu::popup(app, &ctx, x, y) {
+                log::error!("pop-out {dlabel:?}: right-click menu not shown: {e}");
+            }
             return;
         };
         let Some((tab_id, which)) = lock
@@ -1024,6 +1043,25 @@ impl WindowManager {
                 None
             }
         })
+    }
+
+    /// The live surface pane `pane` of tab `tab` shows in window `label`, docked or popped out.
+    pub fn pane_surface(
+        &self,
+        label: &str,
+        tab: &str,
+        pane: crate::registry::PaneIdx,
+    ) -> Option<&GhosttySurface> {
+        use crate::registry::PaneIdx;
+        if let Some(ds) = self.detached.get(label) {
+            return match pane {
+                _ if ds.tab_id != tab => None,
+                PaneIdx::Primary => Some(&ds.surface),
+                PaneIdx::Block(0) => ds.secondary.as_ref(),
+                PaneIdx::Block(_) => None,
+            };
+        }
+        self.windows.get(label)?.registry.shown_surface(tab, pane)
     }
 
     /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and
