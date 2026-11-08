@@ -1109,14 +1109,21 @@ fn pane_menu(
 ) -> Result<(), String> {
     let pane = registry::PaneIdx::from_index(pane);
     let label = window.label().to_owned();
-    let (has_selection, can_split, tab) = {
+    let (has_selection, can_split, close_pane, tab) = {
         let m = state.lock();
         let ws = m.windows.get(&label).ok_or("window not found")?;
         let has_selection = m
             .pane_surface(&label, &id, pane)
             .is_some_and(|s| s.has_selection());
         let tab = size.map(|_| config_tab(&m, &label, &id));
-        (has_selection, split_kind(&ws.registry, &id), tab)
+        // An agent tab never makes Close Pane, so whether one is closable doesn't matter here.
+        let close_pane = pane_menu::close_pane_of(ws.registry.close_target(&id, false));
+        (
+            has_selection,
+            split_kind(&ws.registry, &id),
+            close_pane,
+            tab,
+        )
     };
     // Read outside the lock: it parses the file.
     let split = size.zip(tab).map(|(current, tab)| {
@@ -1131,6 +1138,7 @@ fn pane_menu(
         has_selection,
         can_split,
         split,
+        close_pane,
     };
     pane_menu::popup(tauri::Manager::app_handle(&window), &ctx, x, y)
 }

@@ -4,7 +4,7 @@
 //! pop-out's label holds a `:`), so `main.rs::on_menu_event` acts on that pane whichever window
 //! is focused when the event lands.
 
-use crate::registry::PaneIdx;
+use crate::registry::{CloseTarget, PaneIdx, COLUMN_OPENING};
 
 /// The fixed choices under Size ▸, the second pane's share, ascending.
 pub const PRESETS: [f64; 4] = [0.25, 1.0 / 3.0, 0.5, 2.0 / 3.0];
@@ -48,16 +48,31 @@ pub struct PaneMenuCtx {
     pub can_split: Result<SplitKind, String>,
     /// `None` while the tab shows no split; `Err` is why Size ▸ is disabled.
     pub split: Option<Result<SizeState, String>>,
+    /// Close Pane ([`close_pane_of`]): `None` for no item, `Err` why it is disabled.
+    pub close_pane: Option<Result<(), String>>,
+}
+
+/// Close Pane as ⌘W's target for the clicked pane decides it (a right-click focuses the pane):
+/// offered when ⌘W would close a scratch block, disabled with the reason while there is no block
+/// to close yet (`None`), absent when ⌘W closes an agent or the project tab instead.
+pub fn close_pane_of(target: Option<CloseTarget>) -> Option<Result<(), String>> {
+    match target {
+        None => Some(Err(COLUMN_OPENING.to_owned())),
+        Some(CloseTarget::Block { .. }) => Some(Ok(())),
+        Some(CloseTarget::Agent | CloseTarget::Project) => None,
+    }
 }
 
 /// The menu for pane `pane` of tab `tab` popped out into window `label`: Copy, Paste and Close
-/// Pane act on its surface; Split and Size ▸ act on a docked tab only.
+/// Pane act on its surface; Split and Size ▸ act on a docked tab only. `close` is the pop-out's
+/// ⌘W target.
 pub fn detached_ctx(
     label: &str,
     tab: &str,
     pane: PaneIdx,
     has_selection: bool,
     split_shown: bool,
+    close: CloseTarget,
 ) -> PaneMenuCtx {
     PaneMenuCtx {
         label: label.to_owned(),
@@ -66,6 +81,7 @@ pub fn detached_ctx(
         has_selection,
         can_split: Err(DOCK_TO_SPLIT.to_owned()),
         split: split_shown.then(|| Err(DOCK_TO_RESIZE.to_owned())),
+        close_pane: close_pane_of(Some(close)),
     }
 }
 
@@ -204,7 +220,7 @@ fn percent(size: f64) -> String {
     format!("{}%", (size * 100.0).round())
 }
 
-/// The menu for `ctx`, in order: Copy, Paste — Split, Close Pane (a scratch pane only) — Size ▸
+/// The menu for `ctx`, in order: Copy, Paste — Split, Close Pane (a scratch pane's) — Size ▸
 /// (flattened here; every item under it carries a size op, and [`build`] nests them).
 pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
     let item = |op: Op, title: String, enabled: bool, separator_before: bool| Item {
@@ -223,8 +239,15 @@ pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
         Ok(SplitKind::SplitBelow) => item(Op::Split, "Split Below".into(), true, true),
         Err(why) => item(Op::Split, format!("Split ({why})"), false, true),
     });
-    if matches!(ctx.pane, PaneIdx::Block(_)) {
-        out.push(item(Op::ClosePane, "Close Pane".into(), true, false));
+    match &ctx.close_pane {
+        None => {}
+        Some(Ok(())) => out.push(item(Op::ClosePane, "Close Pane".into(), true, false)),
+        Some(Err(why)) => out.push(item(
+            Op::ClosePane,
+            format!("Close Pane ({why})"),
+            false,
+            false,
+        )),
     }
     match &ctx.split {
         None => {}
@@ -330,6 +353,7 @@ mod tests {
             has_selection: true,
             can_split: Ok(SplitKind::Split),
             split: None,
+            close_pane: None,
         }
     }
 
@@ -389,9 +413,15 @@ mod tests {
         assert!(items(&sized(0.5, 0.5))
             .iter()
             .all(|i| op_of(i) != Op::ClosePane));
+        assert_eq!(close_pane_of(Some(CloseTarget::Project)), None);
+        assert_eq!(close_pane_of(Some(CloseTarget::Agent)), None);
         let m = items(&PaneMenuCtx {
             pane: PaneIdx::Block(1),
             can_split: Ok(SplitKind::SplitBelow),
+            close_pane: close_pane_of(Some(CloseTarget::Block {
+                tab: "/tmp/a".into(),
+                block: 1,
+            })),
             ..sized(0.5, 0.5)
         });
         assert_eq!(
@@ -411,8 +441,27 @@ mod tests {
             PaneIdx::Block(0),
             false,
             true,
+            CloseTarget::Block {
+                tab: "/tmp/a".into(),
+                block: 0,
+            },
         ));
         assert!(find(&d, Op::ClosePane).enabled);
+    }
+
+    /// While the column's open is in flight ⌘W has no block to close, and neither does the item.
+    #[test]
+    fn close_pane_disabled_with_the_reason_while_the_column_opens() {
+        let m = items(&PaneMenuCtx {
+            pane: PaneIdx::Block(0),
+            close_pane: close_pane_of(None),
+            ..ctx()
+        });
+        let c = find(&m, Op::ClosePane);
+        assert_eq!(
+            (c.title.as_str(), c.enabled),
+            ("Close Pane (Scratch column is still opening)", false)
+        );
     }
 
     #[test]
@@ -491,7 +540,14 @@ mod tests {
 
     #[test]
     fn pop_out_offers_copy_paste_and_dock_reasons() {
-        let c = detached_ctx("shell-detach:k1", "/tmp/a", PaneIdx::Block(0), false, true);
+        let c = detached_ctx(
+            "shell-detach:k1",
+            "/tmp/a",
+            PaneIdx::Block(0),
+            false,
+            true,
+            CloseTarget::Project,
+        );
         let m = items(&c);
         assert!(!find(&m, Op::Copy).enabled);
         assert!(find(&m, Op::Paste).enabled);
@@ -512,6 +568,7 @@ mod tests {
             PaneIdx::Primary,
             true,
             false,
+            CloseTarget::Project,
         ));
         assert!(m.iter().all(|i| op_of(i) != Op::SizeUnavailable));
     }
@@ -522,6 +579,7 @@ mod tests {
             label: "shell-detach:k%1".into(),
             tab: "/tmp/a:b".into(),
             pane: PaneIdx::Block(2),
+            close_pane: Some(Ok(())),
             ..sized(0.5, 0.3)
         });
         let ops: Vec<Op> = m

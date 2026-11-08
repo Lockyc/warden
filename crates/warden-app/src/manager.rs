@@ -1003,6 +1003,7 @@ impl WindowManager {
                 pane,
                 has_selection,
                 ds.secondary.is_some(),
+                detached_close_target(&ds.tab_id, pane, ds.secondary.is_some()),
             );
             drop(lock);
             if let Err(e) = crate::pane_menu::popup(app, &ctx, x, y) {
