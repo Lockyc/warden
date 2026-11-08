@@ -232,12 +232,20 @@ pub fn announce_detached_secondary_closed(
 ) {
     let _ = shell_core::detach::set_panes(app, dlabel, &[]);
     if let Some(origin_label) = origin_label {
-        let _ = app.emit_to(
-            origin_label,
-            "warden:pane-closed",
-            serde_json::json!({ "label": origin_label, "id": tab_id }),
-        );
+        announce_pane_closed(app, origin_label, tab_id);
     }
+}
+
+/// Tell window `label`'s chrome that tab `tab_id`'s scratch column is gone — a plain tab's one
+/// pane exited or was closed, a Rex column's session ended — so it collapses the split for exactly
+/// that tab. Not `warden:tab-exited`,
+/// which means the whole tab went cold (`applyUnloaded`): the tab and its primary are still live.
+pub fn announce_pane_closed(app: &AppHandle, label: &str, tab_id: &str) {
+    let _ = app.emit_to(
+        label,
+        "warden:pane-closed",
+        serde_json::json!({ "label": label, "id": tab_id }),
+    );
 }
 
 /// A popped-out tab [`WindowManager::end_detached`] ended, for [`announce_detached_ended`].
@@ -803,16 +811,7 @@ impl WindowManager {
                 (crate::registry::PaneIdx::Block(i), _) => {
                     ws.registry.close_block(&tab_id, i);
                     drop(lock);
-                    // `warden:tab-exited` means "the whole tab went cold" to the chrome
-                    // (`applyUnloaded`) — wrong here, since the tab and its primary are still
-                    // live. `warden:pane-closed` is the narrower signal: it tells the chrome to
-                    // collapse the split (`setSplitVisible(false)`) for exactly this tab, without
-                    // touching the tab-level dot/highlight.
-                    let _ = app.emit_to(
-                        label.as_str(),
-                        "warden:pane-closed",
-                        serde_json::json!({ "label": label, "id": tab_id }),
-                    );
+                    announce_pane_closed(app, &label, &tab_id);
                     return;
                 }
                 (crate::registry::PaneIdx::Primary, None) => ws.registry.unload(&tab_id),
@@ -1019,8 +1018,7 @@ impl WindowManager {
     /// Retire a popped-out tab's second pane: close its surface and forget it. Returns the
     /// `(origin_label, tab_id)` the caller announces with [`announce_detached_secondary_closed`]
     /// once the lock is released (it emits). `None` if `dlabel` isn't a detached window or has
-    /// no live secondary. The scratch shell exiting on its own is what lands here (the detached
-    /// page's divider carries no close control).
+    /// no live secondary. The scratch shell exiting, or its right-click Close Pane, lands here.
     pub fn close_detached_secondary(&mut self, dlabel: &str) -> Option<(String, String)> {
         let ds = self.detached.get_mut(dlabel)?;
         let s = ds.secondary.take()?;

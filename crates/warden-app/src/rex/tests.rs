@@ -2333,7 +2333,7 @@ fn column_resize_names_first_leaves() {
 }
 
 #[test]
-fn column_exit_closes_block() {
+fn close_block_sends_block_close() {
     let (fake, _inst, _) = column_fake(column_view(
         1,
         json!({"rect": [0, 0, 1, 1], "split": {
@@ -2350,7 +2350,7 @@ fn column_exit_closes_block() {
     hub.open_column(&column_req(Vec::new()))
         .expect("open_column");
 
-    let exit = hub.column_block_exited("t::2", "b2").expect("exit");
+    let exit = hub.column_close_block("t::2", "b2").expect("close");
     assert_eq!(exit, super::column::ColumnExit::Closed);
     let p = &fake.requests_for("block.close")[0].payload;
     assert_eq!(*p, json!({"session_id": "session:new", "block_id": "b2"}));
@@ -2363,12 +2363,61 @@ fn column_exit_closes_block() {
 }
 
 #[test]
+fn close_scratch_tab_sends_close_window() {
+    let (fake, _inst, _) = column_fake(windows_view(
+        "session:new",
+        1,
+        &[("window:1", "one", "b1"), ("window:2", "two", "b2")],
+    ));
+    fake.reply("session.list_blocks", blocks(&["b1", "b2"]));
+    fake.reply("session.close_window", json!({"revision": 2}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, path) = hub_on(fake.endpoint(), &dir);
+    hub.open_column(&column_req(Vec::new()))
+        .expect("open_column");
+
+    let exit = hub.column_close_tab("t::2", "window:2").expect("close");
+    assert_eq!(exit, super::column::ColumnExit::Closed);
+    let p = &fake.requests_for("session.close_window")[0].payload;
+    assert_eq!(
+        *p,
+        json!({"session_id": "session:new", "window_id": "window:2"})
+    );
+    assert!(fake.requests_for("session.destroy").is_empty());
+    assert!(!block_bound(&hub, "b2"), "its blocks' keys go");
+    assert!(block_bound(&hub, "b1"));
+    let column = hub.column("local", "session:new").expect("still viewed");
+    assert_eq!(
+        column
+            .windows
+            .iter()
+            .map(|w| w.window_id.as_str())
+            .collect::<Vec<_>>(),
+        ["window:1"]
+    );
+    assert!(RexStore::load(path).get("t::2").is_some());
+}
+
+#[test]
+fn closing_the_last_scratch_tab_ends_the_session() {
+    let (fake, hub, _, dir) = opened_column();
+    fake.reply("session.list_blocks", blocks(&["b1"]));
+    fake.reply("session.destroy", json!({}));
+    let exit = hub.column_close_tab("t::2", "window:1").expect("close");
+    assert_eq!(exit, super::column::ColumnExit::SessionEnded);
+    assert!(fake.requests_for("session.close_window").is_empty());
+    assert_eq!(fake.requests_for("session.destroy").len(), 1);
+    let path = dir.path().join("rex-sessions.json");
+    assert!(RexStore::load(path).get("t::2").is_none(), "forgotten");
+}
+
+#[test]
 fn column_exit_of_a_windows_last_block_closes_only_it() {
     let (fake, hub, _, _dir) = opened_column();
     // Another scratch tab holds b9.
     fake.reply("session.list_blocks", blocks(&["b1", "b9"]));
     fake.reply("block.close", json!({"revision": 2}));
-    let exit = hub.column_block_exited("t::2", "b1").expect("exit");
+    let exit = hub.column_close_block("t::2", "b1").expect("exit");
     assert_eq!(exit, super::column::ColumnExit::Closed);
     assert_eq!(fake.requests_for("block.close").len(), 1);
     assert!(fake.requests_for("session.destroy").is_empty());
@@ -2379,7 +2428,7 @@ fn column_exit_of_last_block_ends_session() {
     let (fake, hub, _, dir) = opened_column();
     fake.reply("session.list_blocks", blocks(&["b1"]));
     fake.reply("session.destroy", json!({}));
-    let exit = hub.column_block_exited("t::2", "b1").expect("exit");
+    let exit = hub.column_close_block("t::2", "b1").expect("exit");
     assert_eq!(exit, super::column::ColumnExit::SessionEnded);
     assert!(fake.requests_for("block.close").is_empty());
     assert_eq!(fake.requests_for("session.destroy").len(), 1);

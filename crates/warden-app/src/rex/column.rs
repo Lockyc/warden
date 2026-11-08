@@ -221,17 +221,17 @@ impl RexHub {
         budgeted(deadline, resize()).map(|_| ())
     }
 
-    /// `block_id` of `column_key`'s session has exited: close it, so its window reflows (or closes,
-    /// when it was the window's last) — or, when it was the session's last block, destroy the
-    /// session and unmap the column. The caller has established the exit.
-    pub fn column_block_exited(
+    /// Close `block_id` of `column_key`'s session, ending the program in it — one that exited, or
+    /// a pane the user closed — so its window reflows (or closes, when it was the window's last);
+    /// when it is the session's last block, destroy the session and unmap the column instead.
+    pub fn column_close_block(
         &self,
         column_key: &str,
         block_id: &str,
     ) -> Result<ColumnExit, RexError> {
         let _held = self.inner.hold_pane(column_key, None)?;
         let rec = self.column_record(column_key)?;
-        if !self.inner.holds_other_block(&rec, block_id) {
+        if !self.inner.holds_other_block(&rec, &[block_id]) {
             self.inner.destroy(column_key)?;
             return Ok(ColumnExit::SessionEnded);
         }
@@ -242,11 +242,44 @@ impl RexHub {
             Err(RexError::Api { code, .. }) if code == "not_found" => {}
             Err(e) => return Err(e),
         }
-        let key = block_key(column_key, block_id);
-        let mut st = self.inner.lock();
-        st.blocks.remove(&key);
-        st.requested.remove(&key);
+        self.unbind_blocks(column_key, &[block_id]);
         Ok(ColumnExit::Closed)
+    }
+
+    /// Close scratch tab `window_id` of `column_key`'s session and every block in it, ending their
+    /// programs; when they are the session's last blocks, destroy the session and unmap the column
+    /// instead.
+    pub fn column_close_tab(
+        &self,
+        column_key: &str,
+        window_id: &str,
+    ) -> Result<ColumnExit, RexError> {
+        let _held = self.inner.hold_pane(column_key, None)?;
+        let rec = self.column_record(column_key)?;
+        let window: Vec<AgentWindow> = self
+            .windows(&rec.server, &rec.session_id)
+            .into_iter()
+            .filter(|w| w.window_id == window_id)
+            .collect();
+        let blocks = window_blocks(&window);
+        let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
+        if !self.inner.holds_other_block(&rec, &blocks) {
+            self.inner.destroy(column_key)?;
+            return Ok(ColumnExit::SessionEnded);
+        }
+        self.close_window(&rec.server, &rec.session_id, window_id)?;
+        self.unbind_blocks(column_key, &blocks);
+        Ok(ColumnExit::Closed)
+    }
+
+    /// Forget `blocks` of `column_key`, closed: their keys and the sizes asked for them.
+    fn unbind_blocks(&self, column_key: &str, blocks: &[&str]) {
+        let mut st = self.inner.lock();
+        for b in blocks {
+            let key = block_key(column_key, b);
+            st.blocks.remove(&key);
+            st.requested.remove(&key);
+        }
     }
 
     /// [`RexHub::open_column`]'s work, every call waiting until `deadline`.

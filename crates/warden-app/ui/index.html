@@ -218,6 +218,11 @@
       #scratch-tabs button:disabled { cursor: default; opacity: 0.4; }
       #scratch-tabs button.sel { background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.55);
         color: #e6edf3; }
+      /* The selected tab's ×, set against it: no gap, so the pair reads as one tab. */
+      #scratch-tabs button.sel:has(+ .close) { border-radius: 4px 0 0 4px; }
+      #scratch-tabs button.close { min-width: 16px; padding: 0 4px; margin-left: -3px;
+        border-radius: 0 4px 4px 0; background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.35);
+        color: #c3ccd8; }
       #scratch-body { flex: 1 1 0; min-height: 0; position: relative; }
       #scratch-body > .block { position: absolute; }
       /* An inner divider: the outer one's strip, turned to its split. `.divider-v` splits a
@@ -708,13 +713,22 @@
         const strip = document.getElementById("scratch-tabs");
         strip.hidden = !view.rex;
         if (view.rex) {
-          const btns = view.tabs.map((t, i) => {
+          // The selected scratch tab carries its close button (×) beside it.
+          const btns = view.tabs.flatMap((t, i) => {
+            const name = t.label || "Scratch tab " + (i + 1);
             const b = document.createElement("button");
             b.textContent = String(i + 1);
-            b.title = t.label || "Scratch tab " + (i + 1);
+            b.title = name;
             b.classList.toggle("sel", i === view.selected);
             b.addEventListener("click", () => scratchSelect(i));
-            return b;
+            if (i !== view.selected) return [b];
+            const close = document.createElement("button");
+            close.className = "close";
+            close.textContent = "×";
+            close.title = "Close " + name;
+            close.setAttribute("aria-label", close.title);
+            close.addEventListener("click", () => scratchCloseTab(i));
+            return [b, close];
           });
           const add = document.createElement("button");
           add.textContent = "+";
@@ -780,6 +794,11 @@
       function scratchNew() {
         if (!activeId) return;
         invoke("scratch_new", { id: activeId }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
+      }
+      // Close scratch tab `index` of the active tab's column; Rex's next view re-renders it.
+      function scratchCloseTab(index) {
+        if (!activeId) return;
+        invoke("scratch_close_tab", { id: activeId, index }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
       }
       // The split ratio for divider `d` dragged to `pointer` (a column fraction along its axis):
       // relative to the split's own rect, kept to `scratchBand`.

@@ -287,7 +287,7 @@ fn reopen_restarted(app: &AppHandle, server: &str) {
 /// For an agent's key (`agent` names its tab and record) only that agent's window is let go
 /// ([`RexHub::end_agent_if_exited`]), and its record closes, or drops when it can't resume, as an
 /// op on its pane ([`AgentOp::Exited`]). For a column block's key ([`block_key`]) only that block
-/// closes ([`RexHub::column_block_exited`]): its window reflows, or closes with it, and the
+/// closes ([`RexHub::column_close_block`]): its window reflows, or closes with it, and the
 /// session's next view brings the column along; when it was the session's last block the column
 /// itself goes ([`column_ended`]).
 ///
@@ -301,21 +301,13 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
                 match agent {
                     None => match column_of(&pane_key) {
                         Some(column) => {
-                            let block = &pane_key[column.len() + 1..];
-                            // Read before the exit: a session that ends takes its mapping along.
-                            let session = hub.column_session(column);
                             if hub.block_exited(&pane_key) {
-                                match (hub.column_block_exited(column, block), session) {
-                                    (Ok(ColumnExit::SessionEnded), Some((server, sid))) => {
-                                        let main = app.clone();
-                                        let _ = app.run_on_main_thread(move || {
-                                            column_ended(&main, &server, &sid)
-                                        });
-                                    }
-                                    (Ok(_), _) => {}
-                                    (Err(e), _) => {
-                                        log::error!("couldn't close Rex block {pane_key:?}: {e}")
-                                    }
+                                let block = &pane_key[column.len() + 1..];
+                                let closed = close_column_part(&app, &hub, column, |hub| {
+                                    hub.column_close_block(column, block)
+                                });
+                                if let Err(e) = closed {
+                                    log::error!("couldn't close Rex block {pane_key:?}: {e}")
                                 }
                             }
                         }
@@ -335,6 +327,56 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
     if let Err(e) = spawned {
         log::error!("couldn't start checking whether a Rex session ended: {e}");
     }
+}
+
+/// The user closed scratch block `pane_key` ([`block_key`]) of a column in window `label` — ⌘W or
+/// Close Pane: Rex closes it on a worker ([`RexHub::column_close_block`]), and it lands as a
+/// program's exit there does — its relay exits, the session's next view drops it, and the
+/// session's last block ends the column ([`column_ended`]). A failure shows in `label`'s banner.
+///
+/// [`block_key`]: super::column::block_key
+pub fn close_block(app: &AppHandle, label: &str, pane_key: String) {
+    let (app, label) = (app.clone(), label.to_owned());
+    let spawned = std::thread::Builder::new()
+        .name("warden-rex-close".into())
+        .spawn(move || {
+            let Some(hub) = app.try_state::<RexHub>() else {
+                return;
+            };
+            let Some(column) = column_of(&pane_key) else {
+                log::error!("couldn't close Rex pane {pane_key:?}: not a scratch block");
+                return;
+            };
+            let block = &pane_key[column.len() + 1..];
+            let closed = close_column_part(&app, &hub, column, |hub| {
+                hub.column_close_block(column, block)
+            });
+            if let Err(e) = closed {
+                log::error!("couldn't close Rex block {pane_key:?}: {e}");
+                super::lifecycle::banner(&app, &label, &format!("couldn't close the pane: {e}"));
+            }
+            hub_changed(&app, None);
+        });
+    if let Err(e) = spawned {
+        log::error!("couldn't start closing a Rex block: {e}");
+    }
+}
+
+/// Close part of column `column`'s session with `close` (a block, or a scratch tab), and when
+/// that ended the session, end the column on the main thread ([`column_ended`]). Worker thread.
+pub(crate) fn close_column_part(
+    app: &AppHandle,
+    hub: &RexHub,
+    column: &str,
+    close: impl FnOnce(&RexHub) -> Result<ColumnExit, RexError>,
+) -> Result<(), RexError> {
+    // Read before the close: a session that ends takes its mapping along.
+    let session = hub.column_session(column);
+    if let (ColumnExit::SessionEnded, Some((server, sid))) = (close(hub)?, session) {
+        let main = app.clone();
+        let _ = app.run_on_main_thread(move || column_ended(&main, &server, &sid));
+    }
+    Ok(())
 }
 
 /// `server`'s session `session_id` — a column's — ended with its last block (main thread): every
@@ -358,11 +400,7 @@ fn column_ended(app: &AppHandle, server: &str, session_id: &str) {
     }
     drop(m);
     for (label, id) in closed {
-        let _ = app.emit_to(
-            label.as_str(),
-            "warden:pane-closed",
-            serde_json::json!({ "label": label, "id": id }),
-        );
+        crate::manager::announce_pane_closed(app, &label, &id);
     }
 }
 

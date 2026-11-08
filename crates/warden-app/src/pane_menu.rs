@@ -1,4 +1,4 @@
-//! The terminal right-click menu: what a pane offers (Copy, Paste, Split, Size ▸), as a pure
+//! The terminal right-click menu: what a pane offers (Copy, Paste, Split, Close Pane, Size ▸), as a pure
 //! item list, and the Tauri menu built from it. Each item's id stamps the clicked pane, its
 //! window label and tab, `pane-menu:<op>:<pane>:<label>:<tab>` (label and tab escaped — a
 //! pop-out's label holds a `:`), so `main.rs::on_menu_event` acts on that pane whichever window
@@ -50,8 +50,8 @@ pub struct PaneMenuCtx {
     pub split: Option<Result<SizeState, String>>,
 }
 
-/// The menu for pane `pane` of tab `tab` popped out into window `label`: Copy and Paste act on
-/// its surface; Split and Size ▸ act on a docked tab only.
+/// The menu for pane `pane` of tab `tab` popped out into window `label`: Copy, Paste and Close
+/// Pane act on its surface; Split and Size ▸ act on a docked tab only.
 pub fn detached_ctx(
     label: &str,
     tab: &str,
@@ -85,6 +85,8 @@ pub enum Op {
     Copy,
     Paste,
     Split,
+    /// The clicked scratch pane closes, as ⌘W closes the focused one.
+    ClosePane,
     /// `PRESETS[i]`.
     Size(usize),
     /// Back to the inherited size.
@@ -99,6 +101,7 @@ impl Op {
             Op::Copy => "copy".into(),
             Op::Paste => "paste".into(),
             Op::Split => "split".into(),
+            Op::ClosePane => "close".into(),
             Op::Size(i) => format!("size-{i}"),
             Op::SizeDefault => "size-default".into(),
             Op::SizeUnavailable => "size-none".into(),
@@ -110,6 +113,7 @@ impl Op {
             "copy" => Op::Copy,
             "paste" => Op::Paste,
             "split" => Op::Split,
+            "close" => Op::ClosePane,
             "size-default" => Op::SizeDefault,
             "size-none" => Op::SizeUnavailable,
             _ => {
@@ -130,6 +134,7 @@ impl Op {
             Op::Copy => Some("CmdOrCtrl+C"),
             Op::Paste => Some("CmdOrCtrl+V"),
             Op::Split => Some("CmdOrCtrl+D"),
+            Op::ClosePane => Some("CmdOrCtrl+W"),
             _ => None,
         }
     }
@@ -199,8 +204,8 @@ fn percent(size: f64) -> String {
     format!("{}%", (size * 100.0).round())
 }
 
-/// The menu for `ctx`, in order: Copy, Paste — Split — Size ▸ (flattened here; every item
-/// under it carries a size op, and [`build`] nests them).
+/// The menu for `ctx`, in order: Copy, Paste — Split, Close Pane (a scratch pane only) — Size ▸
+/// (flattened here; every item under it carries a size op, and [`build`] nests them).
 pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
     let item = |op: Op, title: String, enabled: bool, separator_before: bool| Item {
         id: item_id(op, ctx.pane, &ctx.label, &ctx.tab),
@@ -218,6 +223,9 @@ pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
         Ok(SplitKind::SplitBelow) => item(Op::Split, "Split Below".into(), true, true),
         Err(why) => item(Op::Split, format!("Split ({why})"), false, true),
     });
+    if matches!(ctx.pane, PaneIdx::Block(_)) {
+        out.push(item(Op::ClosePane, "Close Pane".into(), true, false));
+    }
     match &ctx.split {
         None => {}
         Some(Err(why)) => out.push(item(
@@ -377,6 +385,37 @@ mod tests {
     }
 
     #[test]
+    fn close_pane_only_in_the_scratch_column() {
+        assert!(items(&sized(0.5, 0.5))
+            .iter()
+            .all(|i| op_of(i) != Op::ClosePane));
+        let m = items(&PaneMenuCtx {
+            pane: PaneIdx::Block(1),
+            can_split: Ok(SplitKind::SplitBelow),
+            ..sized(0.5, 0.5)
+        });
+        assert_eq!(
+            m.iter()
+                .map(|i| i.title.as_str())
+                .take(5)
+                .collect::<Vec<_>>(),
+            ["Copy", "Paste", "Split Below", "Close Pane", "25%"]
+        );
+        let c = find(&m, Op::ClosePane);
+        assert!(c.enabled && !c.separator_before);
+        assert_eq!(parse(&c.id).unwrap().pane, PaneIdx::Block(1));
+        // A pop-out's scratch pane closes too.
+        let d = items(&detached_ctx(
+            "shell-detach:k1",
+            "/tmp/a",
+            PaneIdx::Block(0),
+            false,
+            true,
+        ));
+        assert!(find(&d, Op::ClosePane).enabled);
+    }
+
+    #[test]
     fn sidebar_rex_session_split_disabled_with_reason() {
         let m = items(&PaneMenuCtx {
             can_split: Err("a Rex session opened from the sidebar can't split".into()),
@@ -502,6 +541,7 @@ mod tests {
                 Op::Copy,
                 Op::Paste,
                 Op::Split,
+                Op::ClosePane,
                 Op::Size(0),
                 Op::SizeDefault,
                 Op::Size(1),
