@@ -714,6 +714,7 @@ define_class!(
                 mouse_shape: Cell::new(0),
                 tracking_area: RefCell::new(None),
                 rex: Cell::new(false),
+                menu_press: Cell::new(false),
             });
             unsafe { msg_send![super(this), initWithFrame: frame] }
         }
@@ -1020,12 +1021,23 @@ define_class!(
         fn mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
-            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT) };
+            // ⌃-click is the Mac's right-click: warden's menu, never a selection start.
+            let ctrl = event.modifierFlags().0 & NS_FLAG_CONTROL != 0;
+            let forward = if ctrl {
+                self.route_menu_press(event)
+            } else {
+                begin_press(&self.ivars().menu_press, Route::Program)
+            };
+            if forward {
+                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT) };
+            }
         }
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
-            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT) };
+            if end_press(&self.ivars().menu_press) {
+                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT) };
+            }
         }
         #[unsafe(method(mouseDragged:))]
         fn mouse_dragged(&self, event: &NSEvent) {
@@ -1035,12 +1047,16 @@ define_class!(
         fn right_mouse_down(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
-            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) };
+            if self.route_menu_press(event) {
+                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) };
+            }
         }
         #[unsafe(method(rightMouseUp:))]
         fn right_mouse_up(&self, event: &NSEvent) {
             use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
-            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) };
+            if end_press(&self.ivars().menu_press) {
+                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) };
+            }
         }
         #[unsafe(method(rightMouseDragged:))]
         fn right_mouse_dragged(&self, event: &NSEvent) {
@@ -1125,9 +1141,91 @@ struct HostIvars {
     /// Whether this surface shows a Rex pane (its spec has a `server`), so it raises
     /// `SurfaceSignal::UserInput`. Set once in `new`; a plain pane leaves it false.
     rex: Cell<bool>,
+    /// The current button press opened warden's menu, so its release is swallowed too
+    /// (`begin_press` / `end_press`).
+    menu_press: Cell<bool>,
+}
+
+/// Where a right-click (or ⌃-click) goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// warden's menu at the click: libghostty sees neither press nor release.
+    Menu,
+    /// The terminal program, as any other button press.
+    Program,
+}
+
+/// A program that captured the mouse (tmux, vim, less) gets its right-click; otherwise the click
+/// opens warden's menu. ⌃ always opens the menu — the escape hatch past a capturing program.
+fn right_click_route(captured: bool, ctrl: bool) -> Route {
+    if ctrl || !captured {
+        Route::Menu
+    } else {
+        Route::Program
+    }
+}
+
+/// Record a press's route; true when the press goes to libghostty. Every press overwrites the
+/// flag, so a menu press whose release the popped menu's tracking loop consumed can't swallow
+/// the next press's release.
+fn begin_press(menu_press: &Cell<bool>, route: Route) -> bool {
+    menu_press.set(route == Route::Menu);
+    route == Route::Program
+}
+
+/// True when the release goes to libghostty — i.e. its press did.
+fn end_press(menu_press: &Cell<bool>) -> bool {
+    !menu_press.replace(false)
 }
 
 impl WardenHostView {
+    /// Route a right-button press, or a left one with ⌃, by [`right_click_route`]; true when the
+    /// caller forwards it to libghostty. A menu press focuses this pane as a click does — AppKit
+    /// only makes a view first responder on a left press, so the right button needs it done —
+    /// then raises `ContextMenu` at the click, DEFERRED like `user_input` (this runs inside an
+    /// AppKit event method, which can arrive with `ManagerState` held).
+    fn route_menu_press(&self, event: &NSEvent) -> bool {
+        let surface = self.ivars().surface.get();
+        if surface.is_null() {
+            return false;
+        }
+        let ctrl = event.modifierFlags().0 & NS_FLAG_CONTROL != 0;
+        let captured = unsafe { ffi::ghostty_surface_mouse_captured(surface) };
+        let route = right_click_route(captured, ctrl);
+        if begin_press(&self.ivars().menu_press, route) {
+            return true;
+        }
+        let Some(window) = self.window() else {
+            return false;
+        };
+        window.makeFirstResponder(Some(self));
+        let Some(content) = window.contentView() else {
+            return false;
+        };
+        let local = content.convertPoint_fromView(event.locationInWindow(), None);
+        // The bottom-left → top-left flip is its own inverse, so the web → view converter
+        // applied to a zero-size rect at the click maps it the other way.
+        let at = geometry::web_rect_to_view(
+            geometry::WebRect {
+                x: local.x,
+                y: local.y,
+                width: 0.0,
+                height: 0.0,
+            },
+            content.bounds().size.height,
+        );
+        unsafe {
+            defer_event(
+                self,
+                SurfaceEvent {
+                    surface_id: surface as usize,
+                    signal: SurfaceSignal::ContextMenu { x: at.x, y: at.y },
+                },
+            )
+        };
+        false
+    }
+
     fn set_surface(&self, surface: ffi::ghostty_surface_t) {
         self.ivars().surface.set(surface);
     }
@@ -1941,7 +2039,8 @@ impl Drop for GhosttySurface {
 
 #[cfg(test)]
 mod tests {
-    use super::is_printable_text;
+    use super::{begin_press, end_press, is_printable_text, right_click_route, Route};
+    use std::cell::Cell;
 
     /// `SURFACE_CORNER_RADIUS` restates the page's `--pane-radius` − `--ring-w` across the
     /// native/web seam; editing either side alone shows as a sliver at every window corner.
@@ -1959,6 +2058,47 @@ mod tests {
             super::SURFACE_CORNER_RADIUS,
             px("--pane-radius") - px("--ring-w")
         );
+    }
+
+    #[test]
+    fn uncaptured_right_click_is_menu() {
+        assert_eq!(right_click_route(false, false), Route::Menu);
+    }
+
+    #[test]
+    fn captured_right_click_forwards_press_and_release() {
+        let menu_press = Cell::new(false);
+        let route = right_click_route(true, false);
+        assert_eq!(route, Route::Program);
+        assert!(begin_press(&menu_press, route), "press forwards");
+        assert!(!menu_press.get());
+        assert!(end_press(&menu_press), "release forwards");
+    }
+
+    #[test]
+    fn ctrl_click_is_menu_even_when_captured() {
+        assert_eq!(right_click_route(true, true), Route::Menu);
+        assert_eq!(right_click_route(false, true), Route::Menu);
+    }
+
+    #[test]
+    fn right_click_does_not_forward_when_menu_shown() {
+        let menu_press = Cell::new(false);
+        assert!(!begin_press(&menu_press, Route::Menu), "press swallowed");
+        assert!(!end_press(&menu_press), "release swallowed");
+        // The pair is spent: the next press/release pair forwards normally.
+        assert!(begin_press(&menu_press, Route::Program));
+        assert!(end_press(&menu_press));
+    }
+
+    #[test]
+    fn a_press_after_an_unreleased_menu_press_forwards_its_release() {
+        // The popped menu's tracking loop can eat the menu press's release; the next press
+        // must not inherit the swallow, or its release never reaches libghostty.
+        let menu_press = Cell::new(false);
+        assert!(!begin_press(&menu_press, Route::Menu));
+        assert!(begin_press(&menu_press, Route::Program));
+        assert!(end_press(&menu_press));
     }
 
     #[test]

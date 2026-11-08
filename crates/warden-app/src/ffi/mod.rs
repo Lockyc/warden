@@ -535,6 +535,10 @@ extern "C" {
     // `initial_input`. Length-delimited (not a C string), so embedded NULs are fine.
     pub fn ghostty_surface_text(surface: ghostty_surface_t, text: *const c_char, len: usize);
 
+    // bool ghostty_surface_mouse_captured(ghostty_surface_t);
+    // True while the running program has turned on a mouse-reporting mode (tmux, vim, less).
+    pub fn ghostty_surface_mouse_captured(surface: ghostty_surface_t) -> bool;
+
     // bool ghostty_surface_mouse_button(ghostty_surface_t, state_e, button_e, mods_e);
     pub fn ghostty_surface_mouse_button(
         surface: ghostty_surface_t,

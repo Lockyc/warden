@@ -44,6 +44,10 @@ pub enum SurfaceSignal {
     /// state freezes at whatever it last saw. This is the only signal that the pointer left, and
     /// the app layer forwards it to the sidebar (`chrome-core`'s `pointerAway()`).
     PointerEntered,
+    /// The user asked for warden's menu at a point in the surface: a right-click while the
+    /// program has not captured the mouse, or a ⌃-click whether it has or not. `x`/`y` are the
+    /// click in the window's content-view points, top-left origin — where the menu pops.
+    ContextMenu { x: f64, y: f64 },
 }
 
 /// A signal from a specific surface. `surface_id` is the opaque surface handle as a `usize`
