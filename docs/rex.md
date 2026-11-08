@@ -78,7 +78,7 @@ site omits it.
 - **A pane's Rex identity is its spec id** (`registry::rex_pane_key`): the tab key for the main
   pane, `registry::secondary_id` of it for the split, `rex:<session id>` for an unclaimed row
   (`unclaimed::is_unclaimed`); an agent's is `registry::agent_key`, bound to its block by the
-  open. A runtime ⌘D split therefore reattaches the same session a config split would. Two
+  open. A split removed from the config and added back therefore reattaches its session. Two
   windows holding the same tab key share one session.
 - **Rex owns windows; warden owns records.** Which sessions and windows exist, who owns a block,
   whether a program exited and each block's status are read from Rex. warden keeps only what Rex
@@ -121,7 +121,7 @@ site omits it.
 
 | Event | The pane's Rex session | Where |
 |---|---|---|
-| ⌘W unload, closing a window, quitting warden | Detached: the relay exits, the session keeps running. The next open reattaches. | `Registry::unload` |
+| ⌘W unload, closing a window, quitting warden; the split removed from the config (its column's session) | Detached: the relay exits, the session keeps running. The next open reattaches. | `Registry::unload`, `Registry::unsplit` |
 | ☠ destroy | Both panes' sessions destroyed, and the tab's agent records dropped. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
 | An agent tab sleeps or closes | Its window closes; the record stays asleep, or goes to the closed fold, to wake later typing its resume command. One that never reported a resume command can't sleep, and closes for good only once confirmed. | `lifecycle::run` → `RexHub::agent_op` |
 | An agent tab forks | A new window types its fork command (`agents::fork_command`: the resume command plus the harness's fork words), as a new record directly below it in its group; the source is left as it is, live or asleep. The fork reports its own resume command when its hook runs. One without a resume command, or whose harness has no fork form, can't fork. | `AgentOp::Fork` |

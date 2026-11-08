@@ -1845,6 +1845,34 @@ mod tests {
         assert_eq!(ids, vec!["t0".to_string(), "t1".to_string()], "no respawn");
     }
 
+    /// A popped-out tab's split is `redock`'s to bring in line once home: a hot-reload's split
+    /// change leaves its placeholder exactly as it was.
+    #[test]
+    fn split_changes_skip_a_popped_out_tab() {
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let split = warden_config::Split {
+            side: warden_config::SplitSide::Right,
+            size: 0.5,
+            panes: vec![warden_config::StackPane {
+                size: 1.0,
+                startup: None,
+            }],
+        };
+        let mut gains = tab_spec("t0", "/tmp/a");
+        let _ = r.add(&gains, false);
+        let mut loses = tab_spec("t1", "/tmp/b");
+        loses.split = Some(split.clone());
+        let _ = r.add(&loses, false);
+        r.force_detached_pane("t0", crate::registry::PaneIdx::Primary);
+        r.force_detached_pane("t1", crate::registry::PaneIdx::Primary);
+        gains.split = Some(split);
+        apply_split_changes(&mut r, &[plan(gains)], &["t1".to_string()]);
+        assert!(!r.is_split("t0"));
+        assert_eq!(r.split_side("t0"), None);
+        assert!(r.is_split("t1"));
+        assert!(r.split_side("t1").is_some());
+    }
+
     #[test]
     fn a_returned_tab_with_only_metadata_changes_is_relabelled_in_place() {
         let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);

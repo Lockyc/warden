@@ -59,7 +59,8 @@ panes (below). The config is the one source of a tab's split:
   config entry (a `[[window.root.tab]]` override for a discovered project —
   `split_write::save_split`), and the hot-reload brings the second pane up beside the running
   primary (`reconcile`'s `split_tabs` → `Registry::split_from_config`); removing the split
-  from the config closes it (`unsplit_tabs`). Neither touches the primary's PTY. While the
+  from the config closes its pane (`unsplit_tabs`) — on a Rex tab the column's session only
+  detaches, and adding the split back reattaches it. Neither touches the primary's PTY. While the
   config doesn't parse, the save is refused with a banner.
 
 A split is closed by the column's shells exiting (`exit` in it) or by the config dropping it, and resized by dragging

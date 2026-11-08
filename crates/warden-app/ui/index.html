@@ -624,15 +624,6 @@
         invoke("pop_out_tab", { id, ratio: popOutRatio(id) }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
       }
 
-      // Splits live in the config, so no `split:` key is read here; sweep any left in storage.
-      // Wrapped whole: where localStorage throws, it throws on `.length` and `.key()` too.
-      try {
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith("split:")) localStorage.removeItem(k);
-        }
-      } catch (e) {}
-
       // In-app updates are a chrome-core capability (check / install / relaunch + the 6h re-check
       // cadence); see chrome-core's dividing-line decision. This controller only passes warden's
       // `auto_update` gate (below, `autoUpdate` in the mount config) and forwards the menu event to
