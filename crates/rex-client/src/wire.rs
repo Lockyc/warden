@@ -238,6 +238,17 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
 /// CSI > … c), mode reports (CSI … $ y), kitty keyboard flag reports (CSI ? … u — key reports
 /// carry no `?`), window reports (CSI … t), and OSC/DCS/APC strings. The Rex server answers
 /// queries itself, so forwarding these would type garbage into the program.
+/// Whether CSI `params` R is a modified F3 key (`1;<mods>`, mods 2–16) rather than a cursor
+/// position report: the legacy encoding makes the two byte-identical, so a report with the cursor
+/// at row 1, column 2–16 passes as an F3 — rare, since it needs a query while the cursor is there.
+fn modified_f3(params: &[u8]) -> bool {
+    params
+        .strip_prefix(b"1;")
+        .and_then(|m| std::str::from_utf8(m).ok())
+        .and_then(|m| m.parse::<u8>().ok())
+        .is_some_and(|m| (2..=16).contains(&m))
+}
+
 pub fn strip_terminal_replies(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -255,7 +266,7 @@ pub fn strip_terminal_replies(b: &[u8]) -> Vec<u8> {
                         let fin = b[j];
                         let private = params.first().is_some_and(|c| *c == b'?' || *c == b'>');
                         let reply = (params.is_empty() && (fin == b'I' || fin == b'O'))
-                            || (fin == b'R' && params.contains(&b';'))
+                            || (fin == b'R' && params.contains(&b';') && !modified_f3(params))
                             || (fin == b'c' && private)
                             || (fin == b'u' && params.first() == Some(&b'?'))
                             || (fin == b'y' && params.last() == Some(&b'$'))
@@ -497,6 +508,16 @@ mod tests {
     fn strip_replies_keeps_keys() {
         let input = b"\x1b[A\x1b[1;5D\x1b[97;5u";
         assert_eq!(strip_terminal_replies(input), input.to_vec());
+    }
+
+    #[test]
+    fn strip_replies_keeps_modified_f3_but_not_a_row_one_report_past_it() {
+        for input in [&b"\x1b[1;2R"[..], b"\x1b[1;5R", b"\x1b[1;16R"] {
+            assert_eq!(strip_terminal_replies(input), input.to_vec());
+        }
+        for input in [&b"\x1b[1;1R"[..], b"\x1b[1;40R", b"\x1b[2;5R"] {
+            assert!(strip_terminal_replies(input).is_empty(), "{input:?}");
+        }
     }
 
     #[test]
