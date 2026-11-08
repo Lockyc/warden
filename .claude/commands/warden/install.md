@@ -195,6 +195,6 @@ Print:
 **Next steps**
 - Edit `~/.config/warden/config.toml` to define your windows + tabs (hot-reloads on save).
 - Each `[[window]]` is a native macOS window with a colour + title banner; each `[[window.tab]]`
-  is a terminal opened in `dir` running `cmd`. Pairs well with
-  [agentmux](https://github.com/lockyc/agentmux) (`amux`) as the tab command.
+  is a terminal opened in `dir` running `cmd`. With Rex installed, `server = "local"` keeps a
+  tab's terminals in Rex sessions and lists its agents (`cmd = "claude"`) beside the main pane.
 - Update any time by re-running `/warden:install` (or `curl … | bash`) — it git-pulls and rebuilds.
