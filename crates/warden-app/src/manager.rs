@@ -1268,6 +1268,7 @@ impl WindowManager {
         let ops = tab_ops(recon, &new_config, label_of);
         self.last_good = new_config;
         let mut refreshed: Vec<String> = Vec::new();
+        let mut exited: Vec<(String, String, Option<String>)> = Vec::new();
         for op in ops {
             let crate::plan::TabOp {
                 label,
@@ -1307,6 +1308,18 @@ impl WindowManager {
                 }
                 if let Some(o) = background_tabs_section {
                     ws.background_tabs_section = o;
+                }
+                // Removing the visible tab: unload it first so the selection leans to a live
+                // neighbour, and tell the chrome before the refresh drops its row — otherwise
+                // chrome-core falls back to the first tab and spawns it if cold (`redock` does
+                // the same for a tab that left the config while out).
+                if let Some(active) = was_active.as_deref() {
+                    if remove_tabs.iter().any(|id| id == active)
+                        && !ws.registry.is_detached(active)
+                    {
+                        let new_active = ws.registry.unload(active);
+                        exited.push((label.clone(), active.to_string(), new_active));
+                    }
                 }
                 // Add/remove/respawn tabs, skipping any that are currently
                 // popped out (Detached) — see `apply_tab_reconcile`.
@@ -1354,6 +1367,13 @@ impl WindowManager {
         // Push each updated window's new snapshot so the chrome rebuilds its sidebar.
         // `emit_to(label, …)`, never `Emitter::emit` (a global broadcast in Tauri 2.11.3,
         // whatever the receiver): emitting on the window would fire every sibling's listener.
+        for (label, id, new_active) in exited {
+            let _ = app.emit_to(
+                label.as_str(),
+                "warden:tab-exited",
+                serde_json::json!({ "label": label, "id": id, "newActive": new_active }),
+            );
+        }
         for label in refreshed {
             if let Some(dto) = self.init_dto(&label) {
                 let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
