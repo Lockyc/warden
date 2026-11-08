@@ -237,7 +237,8 @@ fn relay_stream(
                 continue;
             }
         };
-        backoff.reset();
+        // A fresh stream redraws the pane anyway (`restart`), notice or not.
+        let _ = backoff.reset();
         let mut feed = Feed::new(stream.nonce(), restart, resizes);
         restart = true;
         loop {
@@ -264,7 +265,14 @@ fn relay_stream(
                 End::Closed(BLOCK_CLOSED) => return Err(Stop(0)),
                 End::Closed(RECONNECT_REQUIRED) => break,
                 End::Closed(_) => match resume(args, &stream, &mut backoff, out)? {
-                    Some(s) => stream = s,
+                    Some((s, noticed)) => {
+                        stream = s;
+                        // The reconnect notice sits in the pane, so the program's next
+                        // incremental output would paint over a screen it doesn't know.
+                        if noticed {
+                            feed.redraw.at = Some(Instant::now());
+                        }
+                    }
                     None => break,
                 },
             }
@@ -338,20 +346,18 @@ fn open_stream(args: &Args, link: &Link) -> Result<DataStream, RexError> {
 }
 
 /// Resumes `old` within its resume window. `None` when the server refused (or the window passed):
-/// the stream must start over.
+/// the stream must start over. With the stream, whether the outage's notice was written into the
+/// pane — bytes the program never wrote, so the pane must be redrawn.
 fn resume(
     args: &Args,
     old: &DataStream,
     backoff: &mut Backoff,
     out: &mut impl Write,
-) -> Result<Option<DataStream>, Stop> {
+) -> Result<Option<(DataStream, bool)>, Stop> {
     let deadline = Instant::now() + old.resume_window();
     loop {
         match DataStream::resume(&args.endpoint, old.token(), old.received()) {
-            Ok(s) => {
-                backoff.reset();
-                return Ok(Some(s));
-            }
+            Ok(s) => return Ok(Some((s, backoff.reset()))),
             Err(RexError::Rejected(_)) => return Ok(None),
             Err(_) if Instant::now() >= deadline => return Ok(None),
             Err(_) => backoff.wait(out)?,
@@ -490,8 +496,9 @@ impl Backoff {
         Ok(())
     }
 
-    fn reset(&mut self) {
-        self.attempt = 0;
+    /// Ends the outage; whether its notice was written into the pane.
+    fn reset(&mut self) -> bool {
+        std::mem::take(&mut self.attempt) > 0
     }
 }
 
