@@ -4,7 +4,7 @@
 
 # warden
 
-**A curator for your terminals** — windows, projects, and (mostly) muxers all the way down.
+**A curator for your terminals** — windows, projects, and the agents running in them.
 
 [![Release](https://img.shields.io/github/v/release/Lockyc/warden?sort=semver&label=release)](https://github.com/Lockyc/warden/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
