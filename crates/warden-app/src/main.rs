@@ -93,13 +93,13 @@ const MENU_AGENT_PREV_ALIAS: &str = "warden:agent-prev-alias";
 const MENU_AGENT_NEXT_ALIAS: &str = "warden:agent-next-alias";
 const ALIAS_TITLES: [&str; 2] = ["Previous Agent Tab (⌘K)", "Next Agent Tab (⌘J)"];
 
-/// ⌘W in a Rex tab with a selected agent tab, from any of its panes: the spine's Close Tab,
+/// ⌘W in a Rex tab's main pane with a selected agent tab: the spine's Close Tab,
 /// retitled Close Agent Tab by [`sync_agent_menu`], closes that agent instead of unloading the
 /// project tab. The event the chrome runs the row's own Close from, confirm included.
 const EVENT_AGENT_CLOSE: &str = "warden:agent-close";
 
-/// Tab ▸ Close Project Tab (⌥⌘W): ⌘W's unload, kept on a key while a Rex tab with agent tabs
-/// holds ⌘W — enabled only there.
+/// Tab ▸ Close Project Tab (⌥⌘W): ⌘W's unload, kept on a key — enabled whenever ⌘W closes
+/// something other than the project tab ([`focused_close_target`]).
 const MENU_TAB_CLOSE_PROJECT: &str = "warden:close-project-tab";
 
 /// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
@@ -295,7 +295,14 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     let agent = focused_agent_tab(app);
     let keys = focused_tab_keys(app);
     let list = keys.as_ref().and_then(|k| k.2.as_ref());
-    let close = focused_close_target(app, list).map(|(_, t)| t);
+    let close = focused_close_target(app, list);
+    // ⌥⌘W unloads a docked tab; a pop-out's main pane docks it with ⌘W instead.
+    let popped_out = close.as_ref().is_some_and(|(label, _)| {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.detached.contains_key(label)
+    });
+    let close = close.map(|(_, t)| t);
     let reopen_window = reopen_target(app).is_some();
     let scratch = focused_scratch_column(app).is_some();
     let pop_out_blocked = focused_label(app).and_then(|label| {
@@ -337,7 +344,7 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         });
         let _ = i
             .close_project
-            .set_enabled(close != Some(CloseTarget::Project));
+            .set_enabled(!popped_out && close != Some(CloseTarget::Project));
         let _ = i
             .fork
             .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
@@ -364,7 +371,9 @@ fn agent_closable(list: &rex::lifecycle::AgentListDto) -> bool {
 
 /// What ⌘W closes in the focused window, `list` being its active tab's agent list
 /// ([`registry::Registry::close_target`]), with that window's label; `None` while it waits on a
-/// scratch column's open. A pop-out, or no window focused, is `Project`: the spine's route.
+/// scratch column's open. In a pop-out its focused pane decides
+/// ([`manager::DetachedSurface::close_target`]): its scratch pane closes, its main pane is
+/// `Project` — the spine's route, which docks it. No window focused is `Project` too.
 #[cfg(target_os = "macos")]
 fn focused_close_target(
     app: &tauri::AppHandle,
@@ -377,6 +386,10 @@ fn focused_close_target(
     };
     let st = app.state::<ManagerState>();
     let m = st.lock();
+    if let Some(ds) = m.detached.get(&label) {
+        let target = ds.close_target();
+        return Some((label, target));
+    }
     let Some(reg) = m.windows.get(&label).map(|ws| &ws.registry) else {
         return project(label);
     };
@@ -417,6 +430,7 @@ fn close_pane(
         };
         drop(m);
         manager::announce_detached_secondary_closed(app, label, Some(&origin), &tab_id);
+        sync_agent_menu(app);
         return Ok(());
     }
     let reg = &mut m.windows.get_mut(label).ok_or("window not found")?.registry;
@@ -1392,7 +1406,7 @@ fn pop_out_tab(
 
     // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
     // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, secondary, secondary_left, tab_spec, spec, token, agent, block) = {
+    let (surface, secondary, secondary_left, tab_spec, spec, token, agent, block, focused) = {
         let mut m = state.lock();
         let ws = m
             .windows
@@ -1422,6 +1436,11 @@ fn pop_out_tab(
         let agent = ws.registry.selected_agent(&id).map(str::to_string);
         // Likewise the Rex block whose surface travels, so its size and exit name the block.
         let block = ws.registry.column_block(&id);
+        // The pane with focus keeps it out there: the surface keeps first responder.
+        let focused = ws
+            .registry
+            .focused_pane(&id)
+            .unwrap_or(registry::PaneIdx::Primary);
         let (surface, secondary) = ws
             .registry
             .detach(&id)
@@ -1472,6 +1491,7 @@ fn pop_out_tab(
             token,
             agent,
             block,
+            focused,
         )
     };
 
@@ -1635,6 +1655,12 @@ fn pop_out_tab(
             label.clone(),
             manager::DetachedSurface {
                 surface,
+                focused: match focused {
+                    registry::PaneIdx::Block(_) if secondary.is_some() => {
+                        registry::PaneIdx::Block(0)
+                    }
+                    _ => registry::PaneIdx::Primary,
+                },
                 secondary_went_out: secondary.is_some(),
                 secondary,
                 secondary_left,
@@ -2979,7 +3005,7 @@ fn main() {
                 }
                 return;
             }
-            // ⌥⌘W: ⌘W's unload, from a tab with agent tabs.
+            // ⌥⌘W: ⌘W's unload, enabled whenever ⌘W closes something other than the project tab.
             if id == MENU_TAB_CLOSE_PROJECT {
                 let _ = app.emit_to(
                     label.as_str(),

@@ -538,8 +538,11 @@ unsafe extern "C" fn write_clipboard_cb(
 ///
 /// `userdata` is the surface's own host view (set in `new`) — the only identity this callback
 /// carries; its `surface` ivar is the handle the app layer routes on. `process_alive == true` is
-/// a close *request* for a live process (a libghostty keybind such as `close_surface`) and is
-/// ignored: warden never lets libghostty end a running terminal — its own ⌘W/✕ do that.
+/// a close *request* for a live process that libghostty wants confirmed, and is ignored. A
+/// `close_surface` keybind on a terminal needing no confirmation (idle at a prompt, or
+/// `confirm-close-surface = false`) arrives with `process_alive == false` and ends the pane like
+/// an exit — which is why `performKeyEquivalent:` keeps ⌘W, libghostty's default for it, away
+/// from libghostty (`is_close_chord`).
 /// Deferred to the next main-queue turn exactly like the action path: this is called from inside
 /// libghostty, which is still standing on the surface.
 unsafe extern "C" fn close_surface_cb(userdata: *mut c_void, process_alive: bool) {
@@ -905,6 +908,11 @@ define_class!(
             // warden owns no cmd+` binding of its own by design — window cycling is macOS's, and
             // fighting it would be a losing battle. SAFETY: delivered on the main thread.
             if unsafe { is_window_cycle_chord(event) } {
+                return objc2::runtime::Bool::NO;
+            }
+            // ⌘W is warden's menu's alone, even while its item is disabled (`is_close_chord`).
+            let unmodified = event.charactersIgnoringModifiers().map(|s| s.to_string());
+            if is_close_chord(event.modifierFlags().0, unmodified.as_deref()) {
                 return objc2::runtime::Bool::NO;
             }
 
@@ -1352,6 +1360,17 @@ unsafe fn is_window_cycle_chord(event: &NSEvent) -> bool {
         && flags & NS_FLAG_CONTROL == 0
         && flags & NS_FLAG_OPTION == 0
         && event.keyCode() == NS_KEYCODE_GRAVE
+}
+
+/// True for ⌘W with or without ⇧ / ⌥ (`flags` an AppKit modifier mask, `unmodified` the event's
+/// `charactersIgnoringModifiers`): Close Tab / Pane, Close Project Tab and Close Window, all
+/// warden's menu's. Matched by character, as the menu matches its own key equivalents.
+/// `performKeyEquivalent:` never forwards one to libghostty, whose default `close_surface`
+/// binding would otherwise end the pane whenever warden's item is disabled.
+fn is_close_chord(flags: usize, unmodified: Option<&str>) -> bool {
+    flags & NS_FLAG_COMMAND != 0
+        && flags & NS_FLAG_CONTROL == 0
+        && unmodified.is_some_and(|s| s.eq_ignore_ascii_case("w"))
 }
 
 /// Map an AppKit event's modifier flags to ghostty's mods bitset. Shared by the key and
@@ -2078,8 +2097,25 @@ impl Drop for GhosttySurface {
 
 #[cfg(test)]
 mod tests {
-    use super::{begin_press, end_press, is_printable_text, right_click_route, Button, Route};
+    use super::{
+        begin_press, end_press, is_close_chord, is_printable_text, right_click_route, Button,
+        Route, NS_FLAG_COMMAND, NS_FLAG_CONTROL, NS_FLAG_OPTION, NS_FLAG_SHIFT,
+    };
     use std::cell::Cell;
+
+    /// ⌘W in every form warden's menu owns (⌘W, ⌥⌘W, ⌘⇧W) never reaches libghostty, whose own
+    /// `close_surface` would end the pane even while warden's item is disabled.
+    #[test]
+    fn close_chord_is_warden_s() {
+        let cmd = NS_FLAG_COMMAND;
+        assert!(is_close_chord(cmd, Some("w")));
+        assert!(is_close_chord(cmd | NS_FLAG_OPTION, Some("w")));
+        assert!(is_close_chord(cmd | NS_FLAG_SHIFT, Some("W")));
+        assert!(!is_close_chord(0, Some("w")), "a bare w is typing");
+        assert!(!is_close_chord(cmd | NS_FLAG_CONTROL, Some("w")));
+        assert!(!is_close_chord(cmd, Some("q")));
+        assert!(!is_close_chord(cmd, None));
+    }
 
     /// `SURFACE_CORNER_RADIUS` restates the page's `--pane-radius` − `--ring-w` across the
     /// native/web seam; editing either side alone shows as a sliver at every window corner.

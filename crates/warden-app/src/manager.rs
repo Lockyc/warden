@@ -248,6 +248,23 @@ pub fn announce_pane_closed(app: &AppHandle, label: &str, tab_id: &str) {
     );
 }
 
+/// What ⌘W closes in a pop-out of tab `tab` whose `focused` pane has focus: its scratch pane
+/// (`Block`, while `has_secondary`), else `Project` — the spine's route, which docks the tab.
+pub fn detached_close_target(
+    tab: &str,
+    focused: crate::registry::PaneIdx,
+    has_secondary: bool,
+) -> crate::registry::CloseTarget {
+    use crate::registry::{CloseTarget, PaneIdx};
+    match focused {
+        PaneIdx::Block(_) if has_secondary => CloseTarget::Block {
+            tab: tab.to_owned(),
+            block: 0,
+        },
+        _ => CloseTarget::Project,
+    }
+}
+
 /// A popped-out tab [`WindowManager::end_detached`] ended, for [`announce_detached_ended`].
 pub struct DetachedTabEnded {
     dlabel: String,
@@ -324,6 +341,10 @@ pub struct Redocked {
 /// pop up while a detached window is the only thing on screen.
 pub struct DetachedSurface {
     pub surface: GhosttySurface,
+    /// The pane with keyboard focus here: seeded from the origin's at pop-out, then each
+    /// `SurfaceSignal::Focused` ([`WindowManager::handle_surface_focused`]). ⌘W reads it
+    /// ([`Self::close_target`]).
+    pub focused: crate::registry::PaneIdx,
     /// The tab's second pane, when it had a live one at pop-out time. `None` for an
     /// unsplit tab (and for a split tab whose secondary was still cold — nothing live to
     /// carry, so the window opens with one hole rather than one it can't fill).
@@ -359,6 +380,11 @@ pub struct DetachedSurface {
 }
 
 impl DetachedSurface {
+    /// What ⌘W closes in this pop-out ([`detached_close_target`]).
+    pub fn close_target(&self) -> crate::registry::CloseTarget {
+        detached_close_target(&self.tab_id, self.focused, self.secondary.is_some())
+    }
+
     /// The Rex key pane `which`'s travelling surface answers to: the agent's own for an agent,
     /// the block's for a column block, else the pane's (`registry::shown_rex_key`). `None` for a
     /// plain tab.
@@ -926,8 +952,11 @@ impl WindowManager {
             };
             // The page's ring is per HOLE, not per pane — a left-side split's primary is
             // its second hole.
-            let hole = match lock.detached.get(&dlabel) {
-                Some(ds) => which.hole(ds.mirrored()),
+            let hole = match lock.detached.get_mut(&dlabel) {
+                Some(ds) => {
+                    ds.focused = which;
+                    which.hole(ds.mirrored())
+                }
                 None => return,
             };
             drop(lock);
@@ -1023,6 +1052,7 @@ impl WindowManager {
         let ds = self.detached.get_mut(dlabel)?;
         let s = ds.secondary.take()?;
         s.close();
+        ds.focused = crate::registry::PaneIdx::Primary;
         Some((ds.origin_label.clone(), ds.tab_id.clone()))
     }
 
@@ -1183,6 +1213,7 @@ impl WindowManager {
     /// where a deleted tab goes, a changed `dir`/`cmd` respawns, and a relabel lands.
     pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<Redocked> {
         let DetachedSurface {
+            focused: _,
             secondary_left: _,
             secondary_went_out: _,
             mut surface,
@@ -1657,6 +1688,29 @@ mod tests {
             .map(|w| w.title.as_str())
             .collect();
         assert_eq!(titles, ["gone", "job"]);
+    }
+
+    #[test]
+    fn pop_out_close_target_follows_focus() {
+        use crate::registry::{CloseTarget, PaneIdx};
+        assert_eq!(
+            detached_close_target("t", PaneIdx::Block(0), true),
+            CloseTarget::Block {
+                tab: "t".into(),
+                block: 0
+            },
+            "⌘W in the scratch pane closes it"
+        );
+        assert_eq!(
+            detached_close_target("t", PaneIdx::Primary, true),
+            CloseTarget::Project,
+            "⌘W in the main pane docks the tab"
+        );
+        assert_eq!(
+            detached_close_target("t", PaneIdx::Block(0), false),
+            CloseTarget::Project,
+            "a scratch pane already gone"
+        );
     }
 
     #[test]

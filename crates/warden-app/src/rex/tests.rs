@@ -2363,6 +2363,22 @@ fn close_block_sends_block_close() {
 }
 
 #[test]
+fn closing_a_block_of_an_ended_column_is_already_closed() {
+    let (fake, hub, _, _dir) = opened_column();
+    fake.reply("session.list_blocks", blocks(&["b1"]));
+    fake.reply("session.destroy", json!({}));
+    hub.column_close_block("t::2", "b1")
+        .expect("the last block ends it");
+    // Its relay's exit races in after: nothing is left to close.
+    assert_eq!(
+        hub.column_close_block("t::2", "b1")
+            .expect("already closed"),
+        super::column::ColumnExit::Closed
+    );
+    assert!(fake.requests_for("block.close").is_empty());
+}
+
+#[test]
 fn close_scratch_tab_sends_close_window() {
     let (fake, _inst, _) = column_fake(windows_view(
         "session:new",

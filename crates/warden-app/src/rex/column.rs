@@ -223,14 +223,19 @@ impl RexHub {
 
     /// Close `block_id` of `column_key`'s session, ending the program in it — one that exited, or
     /// a pane the user closed — so its window reflows (or closes, when it was the window's last);
-    /// when it is the session's last block, destroy the session and unmap the column instead.
+    /// when it is the session's last block, destroy the session and unmap the column instead. A
+    /// column already unmapped — its session ended by another close racing this one — is
+    /// `Closed`: nothing is left to close.
     pub fn column_close_block(
         &self,
         column_key: &str,
         block_id: &str,
     ) -> Result<ColumnExit, RexError> {
         let _held = self.inner.hold_pane(column_key, None)?;
-        let rec = self.column_record(column_key)?;
+        let Ok(rec) = self.column_record(column_key) else {
+            log::debug!("Rex block {block_id:?} of {column_key:?}: its column already ended");
+            return Ok(ColumnExit::Closed);
+        };
         if !self.inner.holds_other_block(&rec, &[block_id]) {
             self.inner.destroy(column_key)?;
             return Ok(ColumnExit::SessionEnded);
