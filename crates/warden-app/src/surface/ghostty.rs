@@ -837,6 +837,10 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            let unmodified = event.charactersIgnoringModifiers().map(|s| s.to_string());
+            if !key_down_forwards(event.modifierFlags().0, unmodified.as_deref()) {
+                return;
+            }
             self.user_input();
             // A held key is a repeat, not a fresh press — Kitty event-type reporting tells them apart.
             let action = if event.isARepeat() {
@@ -1362,15 +1366,24 @@ unsafe fn is_window_cycle_chord(event: &NSEvent) -> bool {
         && event.keyCode() == NS_KEYCODE_GRAVE
 }
 
-/// True for ⌘W with or without ⇧ / ⌥ (`flags` an AppKit modifier mask, `unmodified` the event's
-/// `charactersIgnoringModifiers`): Close Tab / Pane, Close Project Tab and Close Window, all
-/// warden's menu's. Matched by character, as the menu matches its own key equivalents.
-/// `performKeyEquivalent:` never forwards one to libghostty, whose default `close_surface`
-/// binding would otherwise end the pane whenever warden's item is disabled.
+/// True for ⌘W with any of ⇧ / ⌥ (`flags` an AppKit modifier mask, `unmodified` the event's
+/// `charactersIgnoringModifiers`): Close Tab / Pane, Close Project Tab and Close Window are
+/// warden's menu's, and the combos with no warden item (⇧⌥⌘W) are kept from libghostty too,
+/// whose bindings on them close surfaces or windows. Matched by character, as the menu matches
+/// its own key equivalents. Neither `performKeyEquivalent:` nor `keyDown:` (`key_down_forwards`)
+/// forwards one to libghostty, whose default `close_surface` would otherwise end the pane
+/// whenever warden's item is disabled.
 fn is_close_chord(flags: usize, unmodified: Option<&str>) -> bool {
     flags & NS_FLAG_COMMAND != 0
         && flags & NS_FLAG_CONTROL == 0
         && unmodified.is_some_and(|s| s.eq_ignore_ascii_case("w"))
+}
+
+/// Whether `keyDown:` forwards a press to libghostty. AppKit delivers a key equivalent nothing
+/// claimed (a disabled ⌘W item, ⇧⌥⌘W) to the first responder's `keyDown:` after
+/// `performKeyEquivalent:` declines it, so a close chord is dropped here as well.
+fn key_down_forwards(flags: usize, unmodified: Option<&str>) -> bool {
+    !is_close_chord(flags, unmodified)
 }
 
 /// Map an AppKit event's modifier flags to ghostty's mods bitset. Shared by the key and
@@ -2098,7 +2111,8 @@ impl Drop for GhosttySurface {
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_press, end_press, is_close_chord, is_printable_text, right_click_route, Button,
+        begin_press, end_press, is_close_chord, is_printable_text, key_down_forwards,
+        right_click_route, Button,
         Route, NS_FLAG_COMMAND, NS_FLAG_CONTROL, NS_FLAG_OPTION, NS_FLAG_SHIFT,
     };
     use std::cell::Cell;
@@ -2115,6 +2129,19 @@ mod tests {
         assert!(!is_close_chord(cmd | NS_FLAG_CONTROL, Some("w")));
         assert!(!is_close_chord(cmd, Some("q")));
         assert!(!is_close_chord(cmd, None));
+    }
+
+    /// AppKit hands a key equivalent nothing claimed (⌘W with its item disabled, ⇧⌥⌘W with no
+    /// item at all) to the first responder's `keyDown:`; that path keeps every close chord from
+    /// libghostty too, and still forwards everything else.
+    #[test]
+    fn key_down_never_forwards_a_close_chord() {
+        let cmd = NS_FLAG_COMMAND;
+        assert!(!key_down_forwards(cmd, Some("w")));
+        assert!(!key_down_forwards(cmd | NS_FLAG_SHIFT | NS_FLAG_OPTION, Some("W")));
+        assert!(key_down_forwards(0, Some("w")));
+        assert!(key_down_forwards(cmd, Some("q")));
+        assert!(key_down_forwards(0, None));
     }
 
     /// `SURFACE_CORNER_RADIUS` restates the page's `--pane-radius` − `--ring-w` across the
