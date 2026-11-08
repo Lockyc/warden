@@ -136,7 +136,7 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 ///     changed with no explicit `id` changes key, so it is a remove + add.
 ///   - `tab_order`: when kept tabs reorder; an emitted update always carries the full new key list.
 ///   - `set_meta` — a live update, no respawn: a kept tab's display `title`, `group`, `probe`,
-///     `kill`, `suspend`, `resume`, `colour`, split `side`/`size` (a live re-layout), or the dir of the
+///     `kill`, `suspend`, `resume`, `colour`, split `side`/`size` or, on a Rex tab, its pane stack (a live re-layout), or the dir of the
 ///     `[[window.root]]` it was discovered under (its sidebar nesting derives from it).
 ///   - `respawn_tabs` — torn down and respawned in place, since a terminal can't migrate its
 ///     cwd/session: a kept tab's [`TerminalSpec`].
