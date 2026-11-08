@@ -1260,6 +1260,34 @@ fn eventually(what: &str, f: impl Fn() -> bool) {
 }
 
 #[test]
+fn a_view_on_a_new_connection_replaces_a_higher_revision() {
+    let (fake, held) = windowed(&[("window:1", "main", "block:new")]);
+    held.lock().unwrap().0 = 7;
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let rx = hub.subscribe();
+    hub.ensure_session("tab-a", "local", Path::new("/w"), None, "w · main")
+        .expect("ensure_session");
+    assert_eq!(
+        hub.windows("local", "session:new"),
+        [viewed("window:1", "block:new", "main")]
+    );
+    // A restarted Rex counts the restored session's revisions from zero again.
+    *held.lock().unwrap() = (
+        0,
+        vec![("window:1".into(), "after".into(), "block:new".into())],
+    );
+    fake.drop_control();
+    next_event(
+        &rx,
+        |e| matches!(e, HubEvent::Reconnected { server } if server == "local"),
+    );
+    eventually("the new connection's view", || {
+        hub.windows("local", "session:new") == [viewed("window:1", "block:new", "after")]
+    });
+}
+
+#[test]
 fn windows_follow_created_and_closed() {
     let (fake, held) = windowed(&[("window:1", "main", "block:new")]);
     let dir = tempfile::tempdir().unwrap();

@@ -95,8 +95,9 @@ pub(super) struct SessionWindows {
     /// The view's revision, and the highest a `session.view` has been asked for.
     revision: u64,
     asked: u64,
-    /// The highest revision a `session_view_changed` named.
+    /// The highest revision a `session_view_changed` named, on connection `heard_gen`.
     heard: u64,
+    heard_gen: u64,
     /// The connection and response seq the view came from: window events at or below it are in it.
     gen: u64,
     seq: u64,
@@ -533,20 +534,27 @@ impl Inner {
                 .windows
                 .entry((server.to_owned(), session_id.to_owned()))
                 .or_default();
-            let changed = if entry.viewed && revision < entry.revision {
+            // Revisions order views only within one connection: a restarted Rex counts a restored
+            // session's from zero again, so a view on a new connection replaces the held one.
+            let new_conn = entry.gen != gen;
+            let changed = if entry.viewed && !new_conn && revision < entry.revision {
                 false
             } else {
                 let changed = !entry.viewed || entry.list != list || entry.active != active;
                 entry.viewed = true;
                 entry.revision = revision;
-                entry.asked = entry.asked.max(revision);
+                entry.asked = if new_conn {
+                    revision
+                } else {
+                    entry.asked.max(revision)
+                };
                 entry.gen = gen;
                 entry.seq = seq;
                 entry.list = list;
                 entry.active = active;
                 changed
             };
-            if entry.heard > entry.asked {
+            if entry.heard_gen == gen && entry.heard > entry.asked {
                 entry.asked = entry.heard;
                 refresh = true;
             }
@@ -703,8 +711,11 @@ pub(super) fn apply_event(
             let w = windows.get_mut(&(server.to_owned(), session.to_owned()))?;
             if ev.kind == "session_view_changed" {
                 let revision = fields["revision"].as_u64()?;
+                if w.heard_gen != gen {
+                    (w.heard_gen, w.heard) = (gen, 0);
+                }
                 w.heard = w.heard.max(revision);
-                if w.viewed && revision > w.asked {
+                if w.viewed && (w.gen != gen || revision > w.asked) {
                     w.asked = revision;
                     return Some(session.to_owned());
                 }
