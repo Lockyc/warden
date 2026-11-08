@@ -68,24 +68,30 @@ fn locate<'a>(window: &'a RawWindow, tab: &Tab, base: &Path) -> Result<Origin<'a
             t.id.as_deref().is_none_or(|i| i.trim().is_empty()) && dir_key(&t.dir, base) == tab.key
         }
     };
-    let by = |t: &RawTab| match &tab.id {
-        Some(id) => ("id", id.clone()),
-        None => ("dir", t.dir.trim().to_string()),
+    // The file edit addresses an id-less tab by its dir, which finds the owner array's FIRST tab
+    // with that dir — so an earlier same-dir tab (one given an `id` to tell them apart) would
+    // take the write.
+    let curated = |tabs: &'a [RawTab], group: Option<&'a str>| {
+        let i = tabs.iter().position(|t| matches(t))?;
+        let t = &tabs[i];
+        let by = match &tab.id {
+            Some(id) => ("id", id.clone()),
+            None => {
+                let dir = t.dir.trim();
+                if tabs[..i].iter().any(|e| e.dir.trim() == dir) {
+                    return Some(Err("give this tab an `id` to save its split".to_string()));
+                }
+                ("dir", dir.to_string())
+            }
+        };
+        Some(Ok(Origin::Curated { group, by, raw: t }))
     };
-    if let Some(t) = window.extra.tabs.iter().find(|t| matches(t)) {
-        return Ok(Origin::Curated {
-            group: None,
-            by: by(t),
-            raw: t,
-        });
+    if let Some(found) = curated(&window.extra.tabs, None) {
+        return found;
     }
     for g in &window.groups {
-        if let Some(t) = g.tabs.iter().find(|t| matches(t)) {
-            return Ok(Origin::Curated {
-                group: Some(g.name.trim()),
-                by: by(t),
-                raw: t,
-            });
+        if let Some(found) = curated(&g.tabs, Some(g.name.trim())) {
+            return found;
         }
     }
     let root = window
@@ -458,6 +464,16 @@ split = { size = 0.4, side = "left" }
         let c = warden_config::load(&p).unwrap().config;
         assert!(tab_titled(&c, "Two").split.is_some());
         assert!(tab_titled(&c, "One").split.is_none());
+    }
+
+    #[test]
+    fn idless_tab_sharing_an_earlier_tabs_dir_refuses() {
+        let toml = "[[window]]\ntitle = \"W\"\n\n[[window.tab]]\nid = \"one\"\ndir = \"/tmp/a\"\ntitle = \"One\"\n\n[[window.tab]]\ndir = \"/tmp/a\"\ntitle = \"Two\"\n";
+        let (_d, p) = setup(toml);
+        let before = std::fs::read_to_string(&p).unwrap();
+        let err = run(&p, "W", |c| tab_titled(c, "Two"), SplitEdit::Enable).unwrap_err();
+        assert_eq!(err, "give this tab an `id` to save its split");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
     }
 
     #[test]
