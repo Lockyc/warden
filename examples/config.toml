@@ -1,22 +1,20 @@
 # Example warden config. `just run` loads THIS file (via WARDEN_CONFIG) so iterating on the
 # app never touches your real ~/.config/warden/config.toml.
 #
-# A [[window]] is a window (colour + title banner). A [[window.tab]] is a terminal opened in
-# `dir` running a `shell`; a tab's optional `cmd` is auto-run *inside* that shell (typed in, not
-# exec'd — so a shell function like agentmux's `amux` works and you drop back to a live shell when
-# it exits). `load_on_open` spawns the tab at launch and keeps it running for background work; other
-# tabs spawn lazily on first focus.
+# A [[window]] is a window (colour + title banner). A [[window.tab]] is a project tab opened in
+# `dir`. With `server` set, the tab's terminals live in sessions on that Rex server: its main pane
+# lists its agents (each started with `cmd`), and the split beside it is a column of scratch shells.
+# Without `server`, a tab is a plain terminal running `shell`, with `cmd` typed into it.
 #
-# `shell`, `cmd`, and `probe` CASCADE: set them globally, per-window, or per-tab — the nearest
-# level wins. A missing value inherits from above; `cmd = ""` opts a level out of an inherited cmd.
+# `shell`, `cmd`, `server`, `split` and `probe` CASCADE: set them globally, per-window, or per-tab —
+# the nearest level wins. A missing value inherits from above; `""` opts a level out.
 #
 # Tabs can be grouped: a [[window.group]] (with a `name`) holds its own [[window.group.tab]]s and
 # renders as a labelled section in the sidebar. Loose [[window.tab]]s (no group) render first, in a
 # headerless section. See the "work" window below.
 #
 # A [[window.root]] auto-discovers git projects under a `dir` instead of listing tabs by hand —
-# each one becomes a tab in a collapsible tree section. Roots cascade shell/cmd/probe/kill just
-# like tabs (root -> window -> global, no tab level). See the "projects" window at the bottom.
+# each one becomes a tab in a collapsible tree section. See the "projects" window at the bottom.
 #
 # The `dir`s point at examples/projects/ (tracked mock dirs), relative to this file, so this demo
 # validates warning-free from any cwd. `just run` first `git init`s those mock dirs (`just
@@ -24,7 +22,8 @@
 # at your actual projects, usually absolute or ~/-prefixed.
 
 shell          = "fish -l"     # global default shell for every tab
-cmd            = "amux"        # global default: launch agentmux in each tab (shell stays live on exit)
+server         = "local"       # every tab keeps its terminals in sessions on this Mac's Rex server
+cmd            = "claude"      # the agent a tab starts; + New tab (⌘T) starts another
 format_on_save = true          # warden rewrites THIS file tidy on each save (opt-in; default off)
 tab_digit_keys = "jump"        # ⌘1–⌘9 jump to tab position ("cycle" = ⌘1 next / ⌘2 prev instead)
 density        = "comfortable" # chrome sizing: "comfortable" (default) or "compact" (condensed)
@@ -35,82 +34,26 @@ auto_update    = true          # check for a new release on launch (default on; 
 # its own window — in an "Open" section above the main list. The mirrored tab keeps its row in its
 # own group/tree too, so the list below never shuffles as terminals come and go. Default off, and
 # it cascades global -> window: set it inside a [[window]] to override this for that window alone.
-open_tabs_section = false
+open_tabs_section = true
 
-# Pin a "Background" section below "Open": the unloaded tabs whose probe reports a restorable
-# session (the ghost dot), collapsed until you open it from its header. Default on; cascades like
-# open_tabs_section.
+# Pin a "Background" section below "Open": the unloaded tabs whose sessions are still running or
+# asleep, collapsed until you open it from its header. Default on; cascades like open_tabs_section.
 background_tabs_section = true
 
-# Bring each window back the way it was left: the tabs that had a terminal open respawn when the
+# Bring each window back the way it was left: the tabs that had a terminal open reopen when the
 # window opens (at launch, or on a reopen), and the tab you were on is reselected. Default off, and
 # it cascades global -> window.
 remember_tabs = false
 
-# Per-tab "session exists" dot: warden runs this (cwd = the tab's dir) on a timer and lights a cyan
-# dot when it exits 0. `amux --probe` exits 0 when the tab's amux session exists — the agent OR a
-# lingering frame (so the dot stays lit if the agent exits but the frame wrapper is still up). amux
-# owns the session naming + socket layout, so this stays a one-liner that can't drift from it.
-# probe_interval is in seconds (0 = check on window focus / hot-reload).
-#
-# Name amux by ABSOLUTE path: warden runs the probe via `sh -c` with warden.app's own env, and a
-# Finder/Dock-launched .app has a minimal PATH. (amux's internal `tmux` calls then resolve via
-# warden's login-PATH import; under `just run` everything's on PATH anyway.) Not using agentmux?
-# Point `probe` at any check that exits 0 when your session exists.
-probe          = '"$HOME/.agentmux/bin/amux" --probe'
-probe_interval = 5
-# `kill` and `suspend` (optional, cascade like `probe`) end a tab's session: click the cyan presence
-# dot to arm, then ☠ runs `kill` or ⏻ runs `suspend`, and the tab unloads either way. Both amux
-# commands tear down the WHOLE project — the agent session plus its frame + scratch terminal —
-# matching everything the probe can detect. `--kill` ends the agent tabs for good; `--suspend` keeps
-# them restorable: the dot ghosts, and reopening the tab offers them in amux's restore picker. They
-# shell bare `tmux`, resolved via warden's login-PATH import; absolute paths stay the robust
-# fallback. Only reachable on a tab that also sets `probe` (no probe ⇒ no dot to click).
-kill    = '"$HOME/.agentmux/bin/amux" --kill'
-suspend = '"$HOME/.agentmux/bin/amux" --suspend'
 # resume = "my-launcher"  # agent tabs: swap the first word of a reported resume command (cascades; "" opts out)
-# server = "local"  # keep tabs' panes in Rex sessions: "local" or a host label (cascades; "" opts out)
 
-[split] # every tab opens split: a scratch shell on the left, 30% wide
-  side = "left"
+[split] # every tab opens split: a column of scratch shells on the right, 30% wide
+  side = "right"
   size = 0.3
 
 [[window]]
-  title  = "personal"
-  colour = "#1f9e8a"
-  [[window.tab]]
-    title = "dotfiles"
-    dir   = "projects/personal/dotfiles"
-  [[window.tab]] # cmd = "" opts out of amux → plain shell; load_on_open runs it from launch;
-    # split = false opts out of the global split so ⌘D's runtime split stays exercisable
-    title        = "blog"
-    dir          = "projects/personal/blog"
-    cmd          = ""
-    load_on_open = true
-    split        = false
-  [[window.tab]] # a Rex tab's split can stack scratch panes: sized panes keep their share, unsized share the rest
-    title  = "stack"
-    id     = "stack"
-    dir    = "projects/personal/notes"
-    server = "local"
-
-    [[window.tab.split.pane]]
-      cmd  = "htop"
-      size = 0.25
-
-    [[window.tab.split.pane]]
-
-    [[window.tab.split.pane]]
-      size = 0.15
-  [[window.tab]] # also a plain shell (no agent) for quick notes
-    title = "notes"
-    dir   = "projects/personal/notes"
-    cmd   = ""
-
-[[window]]
-  title         = "work"
-  colour        = "#4063c4"
-  open_on_start = false     # starts closed — open from the launcher
+  title  = "work"
+  colour = "#4063c4"
   [[window.tab]] # loose tab → renders before any group
     title        = "planning"
     dir          = "projects/work/planning"
@@ -135,15 +78,51 @@ suspend = '"$HOME/.agentmux/bin/amux" --suspend'
       dir   = "projects/work/mobile"
       shell = "zsh"
 
+[[window]]
+  title         = "personal"
+  colour        = "#1f9e8a"
+  open_on_start = false      # starts closed — open from the home surface or the Window menu
+  [[window.tab]]
+    title = "dotfiles"
+    dir   = "projects/personal/dotfiles"
+  [[window.tab]] # a Rex tab's split can stack scratch panes: sized panes keep their share, unsized share the rest
+    title = "stack"
+    id    = "stack"
+    dir   = "projects/personal/notes"
+
+    [[window.tab.split.pane]]
+      cmd  = "htop"
+      size = 0.25
+
+    [[window.tab.split.pane]]
+
+    [[window.tab.split.pane]]
+      size = 0.15
+  [[window.tab]] # a plain terminal: no Rex session, no agent; load_on_open runs it from launch;
+    # split = false opts out of the global split so ⌘D's runtime split stays exercisable
+    title        = "blog"
+    dir          = "projects/personal/blog"
+    server       = ""
+    cmd          = ""
+    load_on_open = true
+    split        = false
+  [[window.tab]] # a plain terminal whose dot comes from a probe: cyan while its tmux session exists
+    title  = "notes"
+    dir    = "projects/personal/notes"
+    server = ""
+    cmd    = "tmux new-session -A -s notes"
+    probe  = "tmux has-session -t {title}"
+    kill   = "tmux kill-session -t {title}"
+
 # A project-tree window: instead of listing tabs, point a [[window.root]] at a dir and warden
 # discovers every git project under it, rendering them as a collapsible tree (folders collapse,
 # each git repo is a tab). Here it scans examples/projects/ → a "personal" and a "work" folder,
-# each holding the mock repos `just seed-examples` created. shell/cmd/probe/kill cascade from the
-# globals, so every discovered project spawns fish + amux and gets a session dot. Your own config
-# points `dir` at ~/Developer (or wherever your repos live).
+# each holding the mock repos `just seed-examples` created. Your own config points `dir` at
+# ~/Developer (or wherever your repos live).
 [[window]]
-  title  = "projects"
-  colour = "#8a5cf6"
+  title         = "projects"
+  colour        = "#8a5cf6"
+  open_on_start = false
 
   [[window.root]]
     dir = "projects" # name defaults to the dir's basename ("projects")
