@@ -108,8 +108,8 @@
          one scoped to `#terminal-hole.split`: author-origin CSS always beats the UA stylesheet,
          so an unscoped `display` would override the `hidden` attribute's UA `display: none` and
          render the divider on EVERY unsplit tab. `hidden` is kept in lockstep with `.split` purely for
-         semantics/JS convenience (`secEl.hidden` reads) — setSplitVisible is the only place that
-         ever sets either, so they cannot diverge. */
+         semantics/JS convenience (`secEl.hidden` reads) — applySplitShape is the only writer of
+         either (measureTabs' same-task save/restore aside), so they cannot diverge. */
       /* The hole paints the pane ground itself: a pane's window corners are rounded
          (`--pane-radius`), so the notch outside each is the hole's own canvas. The window's own
          corner mask trims exactly that notch today, but the ground is on regardless — the same
@@ -719,6 +719,7 @@
           selected: c ? c.selected : 0,
           tiles: c && c.tiles.length ? c.tiles : SCRATCH_FULL,
           dividers: c ? c.dividers : [],
+          new_blocked: c ? c.new_blocked : null,
         };
       }
       const SCRATCH_EPS = 1e-6;
@@ -989,7 +990,7 @@
         if (id !== null && splitHint !== undefined) splitById.set(id, !!splitHint);
         const split = id !== null && splitById.has(id) ? splitById.get(id) : secondaryLive;
         // THIS tab's own split state, not whatever `#terminal-hole` was left showing for the tab
-        // switched away from — `setSplitVisible` is the sole authority, so
+        // switched away from — `setSplitVisible` owns the active tab's, so
         // every path that lands here (tab switch, refresh, unload's neighbour-follow) re-asserts
         // it rather than leaving a split tab's layout bleeding into the next tab's single hole.
         // Subsumes paintEmptyState()/updateFocusMarker()/reportRect(), which it already calls.
