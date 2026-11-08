@@ -484,16 +484,23 @@ impl Inner {
                             !adopted && st.store.get(pane_key).is_some_and(|r| st.restored(r))
                         };
                         // A restored terminal is a bare shell: type what a new one would get.
-                        // Stamped only once it's typed, so a failed write retries next open.
+                        // Stamped only once it's typed, so a failed write retries next open —
+                        // except a timeout, whose write was sent and may have landed: typing it
+                        // again would land in the program the first one started.
                         if restored {
                             if let Some(s) = startup.filter(|s| !s.is_empty()) {
                                 log::info!("Rex {server}: restored session; retyping ({pane_key})");
-                                client.write_input_until(
+                                if let Err(e) = client.write_input_until(
                                     &rec.session_id,
                                     &block_id,
                                     format!("{s}\n").as_bytes(),
                                     deadline,
-                                )?;
+                                ) {
+                                    if matches!(e, RexError::Timeout) && !adopted {
+                                        inner.lock().stamp(pane_key);
+                                    }
+                                    return Err(e);
+                                }
                             }
                         }
                         if !adopted {

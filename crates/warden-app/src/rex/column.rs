@@ -259,7 +259,13 @@ impl RexHub {
         let session_id = match self.find_session_until(key, server, deadline)? {
             Some((_, sid)) => {
                 if self.is_restored(key) {
-                    self.retype_stack(req, &sid, deadline)?;
+                    if let Err(e) = self.retype_stack(req, &sid, deadline) {
+                        // A timed-out write may have landed; never type the stack twice.
+                        if matches!(e, RexError::Timeout) {
+                            self.inner.lock().stamp(key);
+                        }
+                        return Err(e);
+                    }
                 }
                 sid
             }
@@ -267,7 +273,7 @@ impl RexHub {
         };
         {
             let mut st = self.inner.lock();
-            // Stamped only once retyped, so a failed write retries next open.
+            // Stamped only once retyped (or timed out), so a failed write retries next open.
             st.stamp(key);
             st.bind_columns(server, &session_id);
         }

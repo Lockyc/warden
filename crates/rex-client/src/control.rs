@@ -414,6 +414,11 @@ impl ControlClient {
         payload: Value,
         deadline: Instant,
     ) -> Result<(u64, Value), RexError> {
+        // Past the deadline the answer is `Timeout` whatever happens — so don't send a request
+        // the server would still carry out behind the caller's back.
+        if Instant::now() >= deadline {
+            return Err(RexError::Timeout);
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
         let mut msg = json!({"type": "request", "id": id, "method": method});
         if !payload.is_null() {
