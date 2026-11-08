@@ -27,6 +27,8 @@ mod registry;
 
 #[cfg(target_os = "macos")]
 mod session;
+#[allow(dead_code)] // called by the menu and ⌘D wiring that follows
+mod split_write;
 
 #[cfg(target_os = "macos")]
 mod rex;

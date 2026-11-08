@@ -363,6 +363,24 @@ impl Config {
     }
 }
 
+/// The split a level stack resolves to: `near` (nearest first — a tab, or a root's project then
+/// its root) then `window`'s and the global level, through the same [`cascade_split`] a load
+/// uses. Lets a writer ask what a tab would inherit with some of its own keys removed.
+pub fn cascade_split_over(
+    raw: &RawConfig,
+    window: &RawWindow,
+    near: &[Option<&RawSplit>],
+) -> Result<Option<Split>, ResolveError> {
+    let mut levels = near
+        .iter()
+        .map(|r| resolve_split_level(*r))
+        .collect::<Result<Vec<_>, _>>()?;
+    levels.push(resolve_split_level(window.extra.split.as_ref())?);
+    levels.push(resolve_split_level(raw.split.as_ref())?);
+    let levels: Vec<Option<&SplitLevel>> = levels.iter().map(Option::as_ref).collect();
+    Ok(cascade_split(&levels))
+}
+
 /// Resolve a raw config, defaulting an unset `shell` (at every cascade level) to
 /// `default_shell` — the caller's detected **login shell**. warden is a terminal, so the app
 /// passes your `$SHELL` here; this keeps the crate pure (no env access) by taking the default

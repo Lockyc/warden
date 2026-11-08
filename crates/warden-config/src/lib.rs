@@ -22,9 +22,9 @@ pub mod watch;
 // `edit` is config-core's comment-preserving config writer: warden-app's window form writes
 // through it (`WardenHost::write`).
 pub use config_core::{
-    discover_projects, edit, fmt_cli, format_file, format_str, toggle_tab_digit_keys, tree_path,
-    write_default_config, Colour, ColourError, Density, DiscoveredProject, RootDir, SeedError,
-    TabDigitKeys, Warning, DEFAULT_ROOT_DEPTH,
+    discover_projects, edit, expand_tilde, fmt_cli, format_file, format_str, resolve_root_dir,
+    toggle_tab_digit_keys, toml_edit, tree_path, write_default_config, Colour, ColourError,
+    Density, DiscoveredProject, RootDir, SeedError, TabDigitKeys, Warning, DEFAULT_ROOT_DEPTH,
 };
 pub use load::{config_path, load, load_with, login_shell, LoadError, Loaded};
 pub use model::{Config, Root, RootTab, Split, SplitSide, StackPane, Tab, Window};
