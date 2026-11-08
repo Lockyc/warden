@@ -485,6 +485,7 @@ colour = "#0f8a8a"
                 resume: None,
                 server: None,
                 split: None,
+                overrides: Vec::new(),
             }],
         };
         let spec = window_to_spec(&win, "dev".into());
@@ -643,6 +644,7 @@ colour = "#0f8a8a"
                     resume: None,
                     server: None,
                     split: None,
+                    overrides: Vec::new(),
                 }],
             }],
             format_on_save: false,
@@ -688,6 +690,7 @@ colour = "#0f8a8a"
             resume: None,
             server: None,
             split: None,
+            overrides: Vec::new(),
         };
         let mk_window = |tabs: Vec<Tab>| Window {
             title: "w".into(),

@@ -27,22 +27,29 @@ pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| proj.path.to_string_lossy().into_owned());
+            let key = warden_config::normalize_dir_key(&proj.path);
+            // An override replaces the root's cascaded values wholesale (it was resolved over
+            // them); identity, group and server stay the root's.
+            let over = root
+                .overrides
+                .iter()
+                .find(|o| warden_config::normalize_dir_key(&o.dir) == key);
             Tab {
                 colour: None,
                 id: None,
-                key: warden_config::normalize_dir_key(&proj.path),
+                key,
                 title,
                 dir: proj.path,
-                shell: root.shell.clone(),
-                startup: root.startup.clone(),
+                shell: over.map_or(&root.shell, |o| &o.shell).clone(),
+                startup: over.map_or(&root.startup, |o| &o.startup).clone(),
                 load_on_open: false,
                 group: Some(root.name.clone()),
-                probe: root.probe.clone(),
-                kill: root.kill.clone(),
-                suspend: root.suspend.clone(),
-                resume: root.resume.clone(),
+                probe: over.map_or(&root.probe, |o| &o.probe).clone(),
+                kill: over.map_or(&root.kill, |o| &o.kill).clone(),
+                suspend: over.map_or(&root.suspend, |o| &o.suspend).clone(),
+                resume: over.map_or(&root.resume, |o| &o.resume).clone(),
                 server: root.server.clone(),
-                split: root.split.clone(),
+                split: over.map_or(&root.split, |o| &o.split).clone(),
             }
         })
         .collect()
@@ -82,6 +89,7 @@ mod tests {
             resume: None,
             server: None,
             split: None,
+            overrides: Vec::new(),
         };
         // Two roots pointing at the SAME dir → the same project discovered twice.
         let cfg = Config {
@@ -131,6 +139,7 @@ mod tests {
             resume: None,
             server: None,
             split: None,
+            overrides: Vec::new(),
         };
         // A curated tab with no explicit `id`, whose `dir` is the SAME project the root
         // discovers: its key collapses to the normalized dir (`resolve.rs::normalize_dir_key`),
@@ -210,6 +219,7 @@ mod tests {
             resume: None,
             server: None,
             split: None,
+            overrides: Vec::new(),
         };
         let mut tabs = synthesize_tabs(&root);
         tabs.sort_by(|a, b| a.key.cmp(&b.key));
@@ -221,5 +231,53 @@ mod tests {
         assert_eq!(warden.startup.as_deref(), Some("run"));
         assert_eq!(warden.probe.as_deref(), Some("p"));
         assert!(!warden.load_on_open);
+    }
+
+    #[test]
+    fn root_tab_override_applies_and_keeps_tree_placement() {
+        use warden_config::{Root, RootTab};
+        let base = tmp("override");
+        git(&base.join("gh/lockyc/warden"));
+        git(&base.join("solo"));
+        let root = Root {
+            name: "Developer".into(),
+            dir: base.clone(),
+            depth: 6,
+            shell: "gsh -l".into(),
+            startup: Some("run".into()),
+            probe: None,
+            kill: None,
+            suspend: None,
+            resume: None,
+            server: None,
+            split: None,
+            overrides: vec![RootTab {
+                // A trailing slash still matches: dirs compare by normalised key.
+                dir: base.join("gh/lockyc/warden/"),
+                shell: "gsh -l".into(),
+                startup: Some("other".into()),
+                probe: None,
+                kill: None,
+                suspend: None,
+                resume: None,
+                split: Some(warden_config::Split {
+                    side: warden_config::SplitSide::Left,
+                    size: 0.25,
+                    panes: vec![warden_config::StackPane {
+                        size: 1.0,
+                        startup: None,
+                    }],
+                }),
+            }],
+        };
+        let tabs = synthesize_tabs(&root);
+        let warden = tabs.iter().find(|t| t.title == "warden").unwrap();
+        assert_eq!(warden.startup.as_deref(), Some("other"));
+        assert_eq!(warden.split.as_ref().unwrap().size, 0.25);
+        assert_eq!(warden.group.as_deref(), Some("Developer"));
+        assert_eq!(warden.key, base.join("gh/lockyc/warden").to_string_lossy());
+        let solo = tabs.iter().find(|t| t.title == "solo").unwrap();
+        assert_eq!(solo.startup.as_deref(), Some("run"));
+        assert!(solo.split.is_none());
     }
 }

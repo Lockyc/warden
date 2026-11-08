@@ -1,4 +1,4 @@
-use crate::model::{Config, Root, Split, SplitSide, StackPane, Tab, Window};
+use crate::model::{Config, Root, RootTab, Split, SplitSide, StackPane, Tab, Window};
 use crate::raw::{RawConfig, RawSplit, RawWindow};
 use crate::Colour;
 use config_core::{Density, TabDigitKeys, Warning, WindowError};
@@ -634,7 +634,7 @@ fn resolve_tab(
         resume,
         split,
     } = resolve_cascade(
-        NearestLevel {
+        &[NearestLevel {
             shell: rt.shell.as_deref(),
             cmd: rt.cmd.as_deref(),
             probe: rt.probe.as_deref(),
@@ -642,7 +642,7 @@ fn resolve_tab(
             suspend: rt.suspend.as_deref(),
             resume: rt.resume.as_deref(),
             split: rt.split.as_ref(),
-        },
+        }],
         rp,
         default_shell,
         globals,
@@ -719,26 +719,57 @@ struct Cascaded {
 /// shell) when unset everywhere; `cmd` is a startup command run *inside* the shell (None =
 /// bare shell).
 fn resolve_cascade(
-    near: NearestLevel,
+    near: &[NearestLevel],
     rp: &RawWindow,
     default_shell: &str,
     globals: &Globals,
     window_split: Option<&SplitLevel>,
 ) -> Result<Cascaded, ResolveError> {
+    // `near` is nearest first; the nearest level that sets a key stands in for the "tab" level.
     let level =
         |n: Option<&str>, w: Option<&str>, g: Option<&str>| cascade(n, w, g).map(String::from);
-    let near_split = resolve_split_level(near.split)?;
+    let near_splits = near
+        .iter()
+        .map(|n| resolve_split_level(n.split))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut split_levels: Vec<Option<&SplitLevel>> =
+        near_splits.iter().map(Option::as_ref).collect();
+    split_levels.push(window_split);
+    split_levels.push(globals.split);
     let w = &rp.extra;
     Ok(Cascaded {
-        shell: cascade(near.shell, w.shell.as_deref(), globals.shell)
-            .unwrap_or(default_shell)
-            .to_string(),
-        startup: level(near.cmd, w.cmd.as_deref(), globals.cmd),
-        probe: level(near.probe, w.probe.as_deref(), globals.probe),
-        kill: level(near.kill, w.kill.as_deref(), globals.kill),
-        suspend: level(near.suspend, w.suspend.as_deref(), globals.suspend),
-        resume: level(near.resume, w.resume.as_deref(), globals.resume),
-        split: cascade_split(&[near_split.as_ref(), window_split, globals.split]),
+        shell: level(
+            near.iter().find_map(|n| n.shell),
+            w.shell.as_deref(),
+            globals.shell,
+        )
+        .unwrap_or_else(|| default_shell.to_string()),
+        startup: level(
+            near.iter().find_map(|n| n.cmd),
+            w.cmd.as_deref(),
+            globals.cmd,
+        ),
+        probe: level(
+            near.iter().find_map(|n| n.probe),
+            w.probe.as_deref(),
+            globals.probe,
+        ),
+        kill: level(
+            near.iter().find_map(|n| n.kill),
+            w.kill.as_deref(),
+            globals.kill,
+        ),
+        suspend: level(
+            near.iter().find_map(|n| n.suspend),
+            w.suspend.as_deref(),
+            globals.suspend,
+        ),
+        resume: level(
+            near.iter().find_map(|n| n.resume),
+            w.resume.as_deref(),
+            globals.resume,
+        ),
+        split: cascade_split(&split_levels),
     })
 }
 
@@ -765,6 +796,9 @@ fn resolve_root(
     if server.as_deref().is_some_and(|s| s != LOCAL_SERVER) {
         // A skipped root still validates its own split, like every other level.
         resolve_split_level(rr.split.as_ref())?;
+        for t in &rr.tabs {
+            resolve_split_level(t.split.as_ref())?;
+        }
         warnings.push(Warning {
             window: rp.title.clone(),
             message: format!(
@@ -788,21 +822,7 @@ fn resolve_root(
         suspend,
         resume,
         split,
-    } = resolve_cascade(
-        NearestLevel {
-            shell: rr.shell.as_deref(),
-            cmd: rr.cmd.as_deref(),
-            probe: rr.probe.as_deref(),
-            kill: rr.kill.as_deref(),
-            suspend: rr.suspend.as_deref(),
-            resume: rr.resume.as_deref(),
-            split: rr.split.as_ref(),
-        },
-        rp,
-        default_shell,
-        globals,
-        window_split,
-    )?;
+    } = resolve_cascade(&[root_level(rr)], rp, default_shell, globals, window_split)?;
     let split = collapse_for_plain(
         split,
         server.as_deref(),
@@ -810,6 +830,22 @@ fn resolve_root(
         &rp.title,
         warnings,
     );
+    let overrides = rr
+        .tabs
+        .iter()
+        .map(|t| {
+            resolve_root_tab(
+                t,
+                rr,
+                rp,
+                default_shell,
+                globals,
+                window_split,
+                server.as_deref(),
+                warnings,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(Root {
         name: root_dir.name,
         dir: root_dir.dir,
@@ -822,7 +858,92 @@ fn resolve_root(
         resume,
         server,
         split,
+        overrides,
     }))
+}
+
+/// The root's own keys as the cascade's nearest level.
+fn root_level(rr: &crate::raw::RawRoot) -> NearestLevel<'_> {
+    NearestLevel {
+        shell: rr.shell.as_deref(),
+        cmd: rr.cmd.as_deref(),
+        probe: rr.probe.as_deref(),
+        kill: rr.kill.as_deref(),
+        suspend: rr.suspend.as_deref(),
+        resume: rr.resume.as_deref(),
+        split: rr.split.as_ref(),
+    }
+}
+
+/// Resolve one `[[window.root.tab]]`: tab → root → window → global. Whether the project
+/// exists under the root is the scanner's to match; here only its dir is checked.
+#[allow(clippy::too_many_arguments)]
+fn resolve_root_tab(
+    rt: &crate::raw::RawRootTab,
+    rr: &crate::raw::RawRoot,
+    rp: &RawWindow,
+    default_shell: &str,
+    globals: &Globals,
+    window_split: Option<&SplitLevel>,
+    server: Option<&str>,
+    warnings: &mut Vec<Warning>,
+) -> Result<RootTab, ResolveError> {
+    let dir_str = rt.dir.trim();
+    if dir_str.is_empty() {
+        return Err(ResolveError::EmptyDir {
+            window: rp.title.clone(),
+        });
+    }
+    let dir = anchor(globals.base, config_core::expand_tilde(dir_str));
+    if !dir.exists() {
+        warnings.push(Warning {
+            window: rp.title.clone(),
+            message: format!("dir does not exist: {}", dir.display()),
+        });
+    }
+    let Cascaded {
+        shell,
+        startup,
+        probe,
+        kill,
+        suspend,
+        resume,
+        split,
+    } = resolve_cascade(
+        &[
+            NearestLevel {
+                shell: rt.shell.as_deref(),
+                cmd: rt.cmd.as_deref(),
+                probe: rt.probe.as_deref(),
+                kill: rt.kill.as_deref(),
+                suspend: rt.suspend.as_deref(),
+                resume: rt.resume.as_deref(),
+                split: rt.split.as_ref(),
+            },
+            root_level(rr),
+        ],
+        rp,
+        default_shell,
+        globals,
+        window_split,
+    )?;
+    let split = collapse_for_plain(
+        split,
+        server,
+        &format!("root tab {}", dir.display()),
+        &rp.title,
+        warnings,
+    );
+    Ok(RootTab {
+        dir,
+        shell,
+        startup,
+        probe,
+        kill,
+        suspend,
+        resume,
+        split,
+    })
 }
 
 #[cfg(test)]
@@ -3112,5 +3233,102 @@ title = "a"
             3
         );
         assert!(warnings.iter().all(|w| !w.message.contains("stacked")));
+    }
+
+    #[test]
+    fn tab_size_only_keeps_window_pane_stack() {
+        let s = tab_split(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+server = "s"
+  [[window.split.pane]]
+  cmd = "a"
+  size = 0.25
+  [[window.split.pane]]
+  cmd = "b"
+  [[window.tab]]
+  dir = "/tmp/a"
+  [window.tab.split]
+  size = 0.3
+"##,
+        )
+        .unwrap();
+        assert_eq!(s.size, 0.3);
+        let cmds: Vec<_> = s.panes.iter().map(|p| p.startup.as_deref()).collect();
+        assert_eq!(cmds, [Some("a"), Some("b")]);
+        assert_eq!(s.panes[0].size, 0.25);
+    }
+
+    #[test]
+    fn root_tab_split_size_inherits_root_and_window() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [window.split]
+  side = "left"
+  [[window.root]]
+  dir = "/tmp/roots"
+  cmd = "r"
+    [[window.root.tab]]
+    dir = "/tmp/roots/proj"
+    [window.root.tab.split]
+    size = 0.25
+"##,
+        )
+        .unwrap();
+        let root = &cfg.windows[0].roots[0];
+        assert_eq!(root.overrides.len(), 1);
+        let o = &root.overrides[0];
+        assert_eq!(o.dir, PathBuf::from("/tmp/roots/proj"));
+        assert_eq!(o.startup.as_deref(), Some("r"));
+        let s = o.split.as_ref().unwrap();
+        assert_eq!((s.side, s.size), (SplitSide::Left, 0.25));
+        // The root's own split (window side, default size) is untouched.
+        assert_eq!(root.split.as_ref().unwrap().size, DEFAULT_SPLIT_SIZE);
+    }
+
+    #[test]
+    fn root_tab_for_missing_project_is_a_warning() {
+        let (cfg, warnings) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.root]]
+  dir = "/tmp/roots"
+    [[window.root.tab]]
+    dir = "/tmp/roots/definitely-not-here"
+    cmd = "x"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.windows[0].roots[0].overrides.len(), 1);
+        assert!(warnings
+            .iter()
+            .any(|w| w.message.contains("definitely-not-here")));
+    }
+
+    #[test]
+    fn root_tab_split_false_opts_out_of_root_split() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#000000"
+  [[window.root]]
+  dir = "/tmp/roots"
+  split = true
+    [[window.root.tab]]
+    dir = "/tmp/roots/p"
+    split = false
+"##,
+        )
+        .unwrap();
+        assert!(cfg.windows[0].roots[0].split.is_some());
+        assert!(cfg.windows[0].roots[0].overrides[0].split.is_none());
     }
 }

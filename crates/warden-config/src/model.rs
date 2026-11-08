@@ -121,6 +121,23 @@ pub struct Root {
     pub server: Option<String>,
     /// Resolved second-pane split for discovered projects (`None` = no split).
     pub split: Option<Split>,
+    /// Per-project overrides (`[[window.root.tab]]`), each already cascaded over the root.
+    pub overrides: Vec<RootTab>,
+}
+
+/// One discovered project's overrides under a root, fully resolved: tab → root → window →
+/// global. Matched to a project by normalised `dir`; the project keeps its root's tree
+/// placement, `server` and identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RootTab {
+    pub dir: PathBuf,
+    pub shell: String,
+    pub startup: Option<String>,
+    pub probe: Option<String>,
+    pub kill: Option<String>,
+    pub suspend: Option<String>,
+    pub resume: Option<String>,
+    pub split: Option<Split>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

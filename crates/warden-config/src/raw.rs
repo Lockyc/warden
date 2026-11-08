@@ -159,6 +159,23 @@ pub struct RawRoot {
     pub resume: Option<String>,
     pub server: Option<String>,
     pub split: Option<RawSplit>,
+    /// `[[window.root.tab]]`: overrides for one discovered project.
+    #[serde(default, rename = "tab")]
+    pub tabs: Vec<RawRootTab>,
+}
+
+/// A discovered project's overrides under a root. Identity stays the `dir`, so no `title`/`id`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawRootTab {
+    pub dir: String,
+    pub shell: Option<String>,
+    pub cmd: Option<String>,
+    pub probe: Option<String>,
+    pub kill: Option<String>,
+    pub suspend: Option<String>,
+    pub resume: Option<String>,
+    pub split: Option<RawSplit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

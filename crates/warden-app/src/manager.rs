@@ -1707,6 +1707,7 @@ mod tests {
             resume: None,
             server: None,
             split: None,
+            overrides: Vec::new(),
         };
         let cfg = Config {
             windows: vec![Window {
