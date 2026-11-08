@@ -181,15 +181,38 @@ unsafe extern "C" fn tick_trampoline(context: *mut c_void) {
     }
 }
 
-/// GCD work item: emit one `SurfaceEvent` (leaked from a `Box` by `action_cb`) on a *later* main-
-/// thread turn than the libghostty callback that produced it. Used for the one signal whose handler
-/// frees the surface libghostty is still standing on — see `action_cb`.
+/// A `SurfaceEvent` in flight to a later main-queue turn, with the host view it came from.
+struct Deferred {
+    view: Retained<WardenHostView>,
+    event: SurfaceEvent,
+}
+
+/// Emit `event` on a *later* main-thread turn than the call that produced it (see `action_cb`
+/// and the focus/user-input paths for why each defers). The event is routed by surface address,
+/// and a freed surface's address can be reused by the next `ghostty_surface_new` before the turn
+/// runs — so the view rides along, and the trampoline drops the event unless the view still hosts
+/// that surface (teardown nulls the ivar). A null `view` drops the event now.
+unsafe fn defer_event(view: *const WardenHostView, event: SurfaceEvent) {
+    let Some(view) = Retained::retain(view as *mut WardenHostView) else {
+        return;
+    };
+    let deferred = Box::new(Deferred { view, event });
+    dispatch_async_f(
+        main_queue(),
+        Box::into_raw(deferred) as *mut c_void,
+        emit_event_trampoline,
+    );
+}
+
+/// GCD work item for [`defer_event`]: emit the event if its surface is still the view's.
 unsafe extern "C" fn emit_event_trampoline(context: *mut c_void) {
     if context.is_null() {
         return;
     }
-    let event: Box<SurfaceEvent> = Box::from_raw(context as *mut SurfaceEvent);
-    super::emit_surface_event(*event);
+    let Deferred { view, event } = *Box::from_raw(context as *mut Deferred);
+    if view.ivars().surface.get() as usize == event.surface_id {
+        super::emit_surface_event(event);
+    }
 }
 
 // --- Runtime callbacks ------------------------------------------------------
@@ -241,16 +264,19 @@ unsafe extern "C" fn action_cb(
     // might raise synchronously from a warden call.) Bell/notification stay direct — they free
     // nothing.
     if let Some(exit_code) = action.child_exited() {
-        let event = Box::new(SurfaceEvent {
-            surface_id: surface as usize,
-            signal: SurfaceSignal::ChildExited {
-                exit_code: Some(exit_code),
+        let view = SURFACE_VIEWS
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&(surface as usize)).copied())
+            .unwrap_or(0);
+        defer_event(
+            view as *const WardenHostView,
+            SurfaceEvent {
+                surface_id: surface as usize,
+                signal: SurfaceSignal::ChildExited {
+                    exit_code: Some(exit_code),
+                },
             },
-        });
-        dispatch_async_f(
-            main_queue(),
-            Box::into_raw(event) as *mut c_void,
-            emit_event_trampoline,
         );
         return true;
     }
@@ -524,14 +550,12 @@ unsafe extern "C" fn close_surface_cb(userdata: *mut c_void, process_alive: bool
     if surface.is_null() {
         return;
     }
-    let event = Box::new(SurfaceEvent {
-        surface_id: surface as usize,
-        signal: SurfaceSignal::ChildExited { exit_code: None },
-    });
-    dispatch_async_f(
-        main_queue(),
-        Box::into_raw(event) as *mut c_void,
-        emit_event_trampoline,
+    defer_event(
+        userdata as *const WardenHostView,
+        SurfaceEvent {
+            surface_id: surface as usize,
+            signal: SurfaceSignal::ChildExited { exit_code: None },
+        },
     );
 }
 
@@ -722,15 +746,13 @@ define_class!(
                 // `Registry::activate` calls while the `ManagerState` lock is held — a sink that
                 // re-locked from inside it would deadlock. Same trampoline as the child-exit
                 // path, for the same reason.
-                let event = Box::new(SurfaceEvent {
-                    surface_id: surface as usize,
-                    signal: SurfaceSignal::Focused,
-                });
                 unsafe {
-                    dispatch_async_f(
-                        main_queue(),
-                        Box::into_raw(event) as *mut c_void,
-                        emit_event_trampoline,
+                    defer_event(
+                        self,
+                        SurfaceEvent {
+                            surface_id: surface as usize,
+                            signal: SurfaceSignal::Focused,
+                        },
                     )
                 };
                 // Focus landing in the key window is a claim edge for a Rex pane; in a
@@ -932,7 +954,7 @@ define_class!(
         // pointer at the boundary, so on a fast flick out of the sidebar the page gets no further
         // event and its CSS `:hover` freezes where it was (symptom: the de-emphasised main list
         // stays lit). Report it so the app layer can tell the sidebar. Emitted directly, not via
-        // the `dispatch_async_f` trampoline the focus/child-exit paths use: AppKit delivers this
+        // `defer_event`, which the focus/child-exit paths use: AppKit delivers this
         // from the event loop, never re-entrantly from inside our own `ManagerState` lock.
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, _event: &NSEvent) {
@@ -1119,15 +1141,13 @@ impl WardenHostView {
         if surface.is_null() || !self.ivars().rex.get() {
             return;
         }
-        let event = Box::new(SurfaceEvent {
-            surface_id: surface as usize,
-            signal: SurfaceSignal::UserInput,
-        });
         unsafe {
-            dispatch_async_f(
-                main_queue(),
-                Box::into_raw(event) as *mut c_void,
-                emit_event_trampoline,
+            defer_event(
+                self,
+                SurfaceEvent {
+                    surface_id: surface as usize,
+                    signal: SurfaceSignal::UserInput,
+                },
             )
         };
     }
