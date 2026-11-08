@@ -377,12 +377,18 @@
       .a-newdrop.over { border-color: #56b4e9; color: #c3ccd8; }
       /* A row's dots and its confirm are chrome-core's (`agentControls`); armed, ⋯ steps aside. */
       .a-row.confirming .a-more { display: none; }
-      /* The head: `+` and the fold, at the band's foot, so the first row starts where the
+      /* The head: the tally over `+` and the fold, at the band's foot, so the first row starts where the
          sidebar's first section does. The band's height is the sidebar's Search box bottom
          (`--agents-head-h`, `syncAgentsHead`); what it leaves above the controls drags the window. */
       #agents-head { flex: none; box-sizing: border-box; min-height: var(--agents-head-h, 0px);
         display: flex; flex-direction: column; justify-content: flex-end; padding: 4px;
         border-bottom: 1px solid #313640; }
+      #agents-tally { display: flex; align-items: baseline; gap: 5px; padding: 0 6px 4px;
+        font-size: 0.9em; color: #6b7280; white-space: nowrap; overflow: hidden; }
+      #agents-tally .t-next { color: #f0883e; padding: 0 4px; margin-left: -4px; border-radius: 4px; }
+      #agents-tally .t-next:hover:not(:disabled) { background: #22272e; }
+      #agents-tally .t-next:disabled { color: #6b7280; opacity: 1; }
+      #agents.narrow #agents-tally { display: none; }
       #agents-foot { flex: none; border-top: 1px solid #313640; padding: 4px; }
       .a-foot-row { display: flex; gap: 4px; }
       #agents-new { flex: 1; text-align: left; padding: 4px 6px; border-radius: 5px;
@@ -463,6 +469,7 @@
              `summarySync`); shown by `syncAgentsColumn`. -->
         <aside id="agents" class="cc-ctl-host">
           <div id="agents-head" data-tauri-drag-region>
+            <div id="agents-tally"></div>
             <div class="a-foot-row">
               <button id="agents-new" title="New agent tab (⌘T)">+ New tab</button>
               <button id="agents-rail"></button>
@@ -1371,13 +1378,14 @@
       const AGENT_ARM_LAPSE_MS = 4000;
       // An agent row as chrome-core's slots read it: amber when it needs you (blocked, or finished
       // and not yet seen), cyan for its session — pulsing while it works, the ghost while asleep.
+      const agentNeedsYou = (r) => r.state === "blocked" || !!r.unread;
       function agentControlRecord(r) {
         const reason = r.canSleep ? null : r.sleepReason;
         return {
           id: r.id,
           presence: r.state === "asleep" ? "ghost" : "on",
           busy: r.state === "working",
-          attention: r.state === "blocked" || r.unread ? true : null,
+          attention: agentNeedsYou(r) ? true : null,
           killable: true,
           suspendable: true,
           startable: true,
@@ -1626,6 +1634,7 @@
         const closedBox = document.getElementById("agents-closed");
         list.textContent = "";
         closedBox.textContent = "";
+        document.getElementById("agents-tally").textContent = "";
         if (tab === null) return agentControls.disarm();
         const dto = agentLists.get(tab);
         if (!dto) return; // `agents_init` in flight
@@ -1647,6 +1656,33 @@
         });
         if (!dto.rows.length) list.append(agentEl("div", "a-empty", "No agent tabs"));
         renderClosed(tab, dto);
+        renderTally(tab, dto);
+      }
+
+      // The rows in list order: ungrouped first, then each group's, folded or not.
+      const agentOrder = (dto) => [
+        ...dto.rows.filter((r) => !r.group),
+        ...dto.groups.flatMap((g) => dto.rows.filter((r) => r.group === g.name)),
+      ];
+      // The head's tally: each agent counted once — needing you, else working, else asleep. "Need
+      // you" selects the next agent needing you after the selected one, in list order.
+      function renderTally(tab, dto) {
+        const box = document.getElementById("agents-tally");
+        box.textContent = "";
+        const rows = agentOrder(dto);
+        const waiting = rows.filter(agentNeedsYou);
+        const working = rows.filter((r) => !agentNeedsYou(r) && r.state === "working").length;
+        const asleep = rows.filter((r) => !agentNeedsYou(r) && r.state === "asleep").length;
+        const next = agentButton(`${waiting.length} need${waiting.length === 1 ? "s" : ""} you`, () => {
+          const from = rows.findIndex((r) => r.selected);
+          const after = rows.slice(from + 1).concat(rows.slice(0, from + 1));
+          const r = after.find(agentNeedsYou);
+          if (r) agentSelect(tab, r.id);
+        }, "t-next");
+        next.disabled = waiting.length === 0;
+        next.title = waiting.length ? "Go to the next agent needing you" : "No agent is waiting on you";
+        box.append(next, agentEl("span", "t-sep", "·"), agentEl("span", "t-count", `${working} working`),
+          agentEl("span", "t-sep", "·"), agentEl("span", "t-count", `${asleep} asleep`));
       }
       // Repaint for a change from outside the list (`warden:agents`, a snapshot) — held while the
       // user is mid-drag or typing a name in it, since a repaint would drop the drag or the field;
