@@ -376,6 +376,12 @@
       .a-newdrop.over { border-color: #56b4e9; color: #c3ccd8; }
       /* A row's dots and its confirm are chrome-core's (`agentControls`); armed, ⋯ steps aside. */
       .a-row.confirming .a-more { display: none; }
+      /* The head: `+` and the fold, at the band's foot, so the first row starts where the
+         sidebar's first section does. The band's height is the sidebar's Search box bottom
+         (`--agents-head-h`, `syncAgentsHead`); what it leaves above the controls drags the window. */
+      #agents-head { flex: none; box-sizing: border-box; min-height: var(--agents-head-h, 0px);
+        display: flex; flex-direction: column; justify-content: flex-end; padding: 4px;
+        border-bottom: 1px solid #313640; }
       #agents-foot { flex: none; border-top: 1px solid #313640; padding: 4px; }
       .a-foot-row { display: flex; gap: 4px; }
       #agents-new { flex: 1; text-align: left; padding: 4px 6px; border-radius: 5px;
@@ -451,16 +457,18 @@
       </div>
       <div id="terminal-hole">
         <div id="main-col">
-        <!-- The agent tab list (a Rex tab's main pane only): rows, groups, the foot's `+` and
-             Closed fold, and the identity tile. Rendered by `renderAgents` (the tile by
+        <!-- The agent tab list (a Rex tab's main pane only): the head's `+` and fold, rows, groups,
+             the foot's Closed fold, and the identity tile. Rendered by `renderAgents` (the tile by
              `summarySync`); shown by `syncAgentsColumn`. -->
         <aside id="agents" class="cc-ctl-host">
-          <div id="agents-list"></div>
-          <div id="agents-foot">
+          <div id="agents-head" data-tauri-drag-region>
             <div class="a-foot-row">
               <button id="agents-new" title="New agent tab (⌘T)">+ New tab</button>
               <button id="agents-rail"></button>
             </div>
+          </div>
+          <div id="agents-list"></div>
+          <div id="agents-foot">
             <div id="agents-closed"></div>
           </div>
           <div id="agents-tile"><div class="t-name"></div><div class="t-where"></div></div>
@@ -1442,6 +1450,7 @@
         document.getElementById("terminal-hole").classList.toggle("agents", tab !== null);
         summarySync();
         if (tab === null) return;
+        syncAgentsHead();
         syncRail();
         refreshAgents();
         if (!agentLists.has(tab)) {
@@ -1453,6 +1462,24 @@
             })
             .catch((err) => console.error("warden: IPC agents_init failed", err));
         }
+      }
+
+      // The head band ends where the sidebar's Search box does (0 with the sidebar collapsed: its
+      // strip already sits above the hole). Re-measured when anything above Search changes size —
+      // banner, error and update bars — and with the hole (`#terminal-hole`'s observer).
+      let headObserved = false;
+      function syncAgentsHead() {
+        const search = document.getElementById("cc-search");
+        const agents = document.getElementById("agents");
+        if (!search || agents.offsetParent === null) return;
+        if (!headObserved) {
+          headObserved = true;
+          const ro = new ResizeObserver(() => syncAgentsHead());
+          for (let n = search; n; n = n.previousElementSibling) ro.observe(n);
+        }
+        const collapsed = document.getElementById("terminal-hole").classList.contains("cc-hole-collapsed");
+        const h = collapsed ? 0 : search.getBoundingClientRect().bottom - agents.getBoundingClientRect().top;
+        agents.style.setProperty("--agents-head-h", `${Math.max(0, h)}px`);
       }
 
       function railPref() {
@@ -2118,7 +2145,10 @@
       // observer above re-reports.
       // The hidden tabs' holes follow the window and sidebar too (`measureTabs`).
       new ResizeObserver(() => {
-        if (agentsTab() !== null) syncRail();
+        if (agentsTab() !== null) {
+          syncAgentsHead();
+          syncRail();
+        }
         scheduleMeasure();
       }).observe(document.getElementById("terminal-hole"));
 
