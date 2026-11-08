@@ -803,7 +803,12 @@ impl WindowManager {
             let rex_key = ws.registry.rex_key_of_surface(surface_id);
             if let Some(key) = &rex_key {
                 let owner = agent.clone().map(|r| (tab_id.clone(), r));
-                crate::rex::spawn::end_if_exited(app, key.clone(), owner);
+                let dir = ws
+                    .registry
+                    .spec_of(&tab_id)
+                    .map(|s| s.dir.clone())
+                    .unwrap_or_default();
+                crate::rex::spawn::end_if_exited(app, key.clone(), owner, dir);
             }
             let new_active = match (which, agent) {
                 (crate::registry::PaneIdx::Primary, Some(record)) => {
@@ -867,7 +872,7 @@ impl WindowManager {
                     .clone()
                     .filter(|_| which == crate::registry::PaneIdx::Primary)
                     .map(|r| (d.tab_id.clone(), r));
-                crate::rex::spawn::end_if_exited(app, key, owner);
+                crate::rex::spawn::end_if_exited(app, key, owner, d.spec.dir.clone());
             }
         }
         match which {
@@ -876,8 +881,8 @@ impl WindowManager {
                     return;
                 };
                 drop(lock);
-                // A Rex block's column outlives it while its session holds other windows; the
-                // session's end collapses the origin's split itself (`rex::spawn::column_ended`).
+                // A Rex block's column outlives it: its session's last block gives way to a
+                // fresh scratch tab (`RexHub::column_close_block`), so the origin keeps its split.
                 let origin = (!rex).then_some(origin_label.as_str());
                 announce_detached_secondary_closed(app, &dlabel, origin, &tab_id);
             }

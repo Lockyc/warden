@@ -94,7 +94,7 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
   `session.resize_pane`, sent on release.
 - **`exit` in a block**, or ⌘W / Close Pane on it (`block.close`), closes it: its scratch tab
   reflows, or goes with its last block and the selection leans to a neighbour; the session's
-  last block ends the column and collapses the split (`docs/rex.md`, *Lifecycle*). While the
+  last block gives way to a fresh scratch tab, so the split stays (`docs/rex.md`, *Lifecycle*). While the
   column's open is in flight, ⌘W in it is disabled with the reason.
 - **Pop-out carries at most one block** — a fuller column is refused, with Tab ▸ Pop Out Tab
   disabled and titled with the reason (`Registry::pop_out_blocked`; the unlock is in
@@ -221,7 +221,8 @@ only by eye. Each step below is written to actually fail if the feature regresse
   agent pane stays put; ⌘D in a block adds a block below it, focused; dragging an inner divider
   resizes only its two sides and survives a tab switch; `exit` in a non-last block reflows the
   rest; `exit` in tab 2's only block returns to tab 1, and ⌘W and the shown tab's × do the
-  same as `exit`, for a block and a whole tab; a split made in Rex.app on the same
+  same as `exit`, for a block and a whole tab; closing the last scratch tab leaves a fresh one
+  with a bare shell in its place; a split made in Rex.app on the same
   session appears in warden; Tab ▸ Pop Out Tab on the stacked tab is disabled with its reason.
 
 Expect no look change to a live terminal: each surface's own render layer is already opaque

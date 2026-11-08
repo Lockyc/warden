@@ -436,8 +436,9 @@ fn close_pane(
             return Err("this pop-out has no such scratch pane".into());
         }
         if let Some(key) = ds.rex_key(pane) {
+            let dir = ds.spec.dir.clone();
             drop(m);
-            rex::spawn::close_block(app, label, key);
+            rex::spawn::close_block(app, label, key, dir);
             return Ok(());
         }
         let Some((origin, tab_id)) = m.close_detached_secondary(label) else {
@@ -455,8 +456,9 @@ fn close_pane(
             i + 1
         )),
         Some(registry::BlockClose::Rex(key)) => {
+            let dir = reg.spec_of(tab).map(|s| s.dir.clone()).unwrap_or_default();
             drop(m);
-            rex::spawn::close_block(app, label, key);
+            rex::spawn::close_block(app, label, key, dir);
             sync_agent_menu(app);
             Ok(())
         }
@@ -2274,12 +2276,7 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                     hub.column_resize(&key, d, *ratio).map(|_| None)
                 }
                 (ScratchOp::Resize { .. }, None) => Ok(None),
-                (ScratchOp::CloseTab(w), _) => {
-                    rex::spawn::close_column_part(&app, &hub, &key, |hub| {
-                        hub.column_close_tab(&key, w)
-                    })
-                    .map(|()| None)
-                }
+                (ScratchOp::CloseTab(w), _) => hub.column_close_tab(&key, w, &dir).map(|()| None),
             };
             let done = done.map_err(|e| rex::spawn::open_error(&server, &e));
             // A resize that took has nothing to land: the page already shows the dragged layout,

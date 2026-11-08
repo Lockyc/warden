@@ -40,15 +40,6 @@ pub struct ColumnOpened {
     pub revision: (u64, u64),
 }
 
-/// What a block's exit did to its column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColumnExit {
-    /// The block closed; its window reflowed, or closed with it when it was the window's last.
-    Closed,
-    /// It was the session's last block: the session is destroyed and the column unmapped.
-    SessionEnded,
-}
-
 /// The size and claim key of `block_id` in the column `column_key`.
 pub(crate) fn block_key(column_key: &str, block_id: &str) -> String {
     format!("{column_key}#{block_id}")
@@ -222,24 +213,22 @@ impl RexHub {
     }
 
     /// Close `block_id` of `column_key`'s session, ending the program in it — one that exited, or
-    /// a pane the user closed — so its window reflows (or closes, when it was the window's last);
-    /// when it is the session's last block, destroy the session and unmap the column instead. A
-    /// column already unmapped — its session ended by another close racing this one — is
-    /// `Closed`: nothing is left to close.
+    /// a pane the user closed — so its window reflows (or closes, when it was the window's last).
+    /// The column never empties: closing the session's last block first opens a fresh scratch
+    /// tab in `dir` ([`Self::keep_column_open`]). A column already unmapped — its session ended
+    /// by ☠ racing this close — has nothing left to close.
     pub fn column_close_block(
         &self,
         column_key: &str,
         block_id: &str,
-    ) -> Result<ColumnExit, RexError> {
+        dir: &Path,
+    ) -> Result<(), RexError> {
         let _held = self.inner.hold_pane(column_key, None)?;
         let Ok(rec) = self.column_record(column_key) else {
             log::debug!("Rex block {block_id:?} of {column_key:?}: its column already ended");
-            return Ok(ColumnExit::Closed);
+            return Ok(());
         };
-        if !self.inner.holds_other_block(&rec, &[block_id]) {
-            self.inner.destroy(column_key)?;
-            return Ok(ColumnExit::SessionEnded);
-        }
+        self.keep_column_open(column_key, &rec, &[block_id], dir)?;
         let (client, _) = self.inner.conn(&rec.server)?;
         let args = json!({ "session_id": rec.session_id, "block_id": block_id });
         match client.call("block.close", args) {
@@ -248,17 +237,18 @@ impl RexHub {
             Err(e) => return Err(e),
         }
         self.unbind_blocks(column_key, &[block_id]);
-        Ok(ColumnExit::Closed)
+        Ok(())
     }
 
     /// Close scratch tab `window_id` of `column_key`'s session and every block in it, ending their
-    /// programs; when they are the session's last blocks, destroy the session and unmap the column
-    /// instead.
+    /// programs. When they are the session's last blocks a fresh scratch tab in `dir` opens first
+    /// ([`Self::keep_column_open`]).
     pub fn column_close_tab(
         &self,
         column_key: &str,
         window_id: &str,
-    ) -> Result<ColumnExit, RexError> {
+        dir: &Path,
+    ) -> Result<(), RexError> {
         let _held = self.inner.hold_pane(column_key, None)?;
         let rec = self.column_record(column_key)?;
         let window: Vec<AgentWindow> = self
@@ -268,13 +258,36 @@ impl RexHub {
             .collect();
         let blocks = window_blocks(&window);
         let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
-        if !self.inner.holds_other_block(&rec, &blocks) {
-            self.inner.destroy(column_key)?;
-            return Ok(ColumnExit::SessionEnded);
-        }
+        self.keep_column_open(column_key, &rec, &blocks, dir)?;
         self.close_window(&rec.server, &rec.session_id, window_id)?;
         self.unbind_blocks(column_key, &blocks);
-        Ok(ColumnExit::Closed)
+        Ok(())
+    }
+
+    /// When `closing` are every block of `column_key`'s session, open a fresh scratch tab — one
+    /// bare shell in `dir` — before they close, so the session and the split outlive them, as a
+    /// scratch terminal respawns in place of its last shell. Holding the pane is the caller's.
+    fn keep_column_open(
+        &self,
+        column_key: &str,
+        rec: &PaneRecord,
+        closing: &[&str],
+        dir: &Path,
+    ) -> Result<(), RexError> {
+        if self.inner.holds_other_block(rec, closing) {
+            return Ok(());
+        }
+        let deadline = Instant::now() + OPEN_BUDGET;
+        let made =
+            self.inner
+                .new_window_until(&rec.server, &rec.session_id, dir, None, None, deadline);
+        let made = budgeted(deadline, made)?;
+        log::info!(
+            "Rex {}: {column_key:?}'s last scratch tab closing; opened {} in its place",
+            rec.server,
+            made.window_id
+        );
+        Ok(())
     }
 
     /// Forget `blocks` of `column_key`, closed: their keys and the sizes asked for them.

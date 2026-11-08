@@ -15,7 +15,7 @@ use rex_client::RexError;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::AgentStore;
-use super::column::{column_of, ColumnExit};
+use super::column::column_of;
 use super::lifecycle::AgentOp;
 use super::server::LOCAL;
 use super::{unclaimed, HubEvent, PaneTarget, RexHub};
@@ -288,11 +288,16 @@ fn reopen_restarted(app: &AppHandle, server: &str) {
 /// ([`RexHub::end_agent_if_exited`]), and its record closes, or drops when it can't resume, as an
 /// op on its pane ([`AgentOp::Exited`]). For a column block's key ([`block_key`]) only that block
 /// closes ([`RexHub::column_close_block`]): its window reflows, or closes with it, and the
-/// session's next view brings the column along; when it was the session's last block the column
-/// itself goes ([`column_ended`]).
+/// session's next view brings the column along; the session's last block gives way to a fresh
+/// scratch tab in `dir`, the tab's.
 ///
 /// [`block_key`]: super::column::block_key
-pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, String)>) {
+pub fn end_if_exited(
+    app: &AppHandle,
+    pane_key: String,
+    agent: Option<(String, String)>,
+    dir: PathBuf,
+) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("warden-rex-exit".into())
@@ -303,10 +308,7 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
                         Some(column) => {
                             if hub.block_exited(&pane_key) {
                                 let block = &pane_key[column.len() + 1..];
-                                let closed = close_column_part(&app, &hub, column, |hub| {
-                                    hub.column_close_block(column, block)
-                                });
-                                if let Err(e) = closed {
+                                if let Err(e) = hub.column_close_block(column, block, &dir) {
                                     log::error!("couldn't close Rex block {pane_key:?}: {e}")
                                 }
                             }
@@ -332,10 +334,11 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
 /// The user closed scratch block `pane_key` ([`block_key`]) of a column in window `label` — ⌘W or
 /// Close Pane: Rex closes it on a worker ([`RexHub::column_close_block`]), and it lands as a
 /// program's exit there does — its relay exits, the session's next view drops it, and the
-/// session's last block ends the column ([`column_ended`]). A failure shows in `label`'s banner.
+/// session's last block gives way to a fresh scratch tab in `dir`, the tab's. A failure shows in
+/// `label`'s banner.
 ///
 /// [`block_key`]: super::column::block_key
-pub fn close_block(app: &AppHandle, label: &str, pane_key: String) {
+pub fn close_block(app: &AppHandle, label: &str, pane_key: String, dir: PathBuf) {
     let (app, label) = (app.clone(), label.to_owned());
     let spawned = std::thread::Builder::new()
         .name("warden-rex-close".into())
@@ -348,10 +351,7 @@ pub fn close_block(app: &AppHandle, label: &str, pane_key: String) {
                 return;
             };
             let block = &pane_key[column.len() + 1..];
-            let closed = close_column_part(&app, &hub, column, |hub| {
-                hub.column_close_block(column, block)
-            });
-            if let Err(e) = closed {
+            if let Err(e) = hub.column_close_block(column, block, &dir) {
                 log::error!("couldn't close Rex block {pane_key:?}: {e}");
                 super::lifecycle::banner(&app, &label, &format!("couldn't close the pane: {e}"));
             }
@@ -359,48 +359,6 @@ pub fn close_block(app: &AppHandle, label: &str, pane_key: String) {
         });
     if let Err(e) = spawned {
         log::error!("couldn't start closing a Rex block: {e}");
-    }
-}
-
-/// Close part of column `column`'s session with `close` (a block, or a scratch tab), and when
-/// that ended the session, end the column on the main thread ([`column_ended`]). Worker thread.
-pub(crate) fn close_column_part(
-    app: &AppHandle,
-    hub: &RexHub,
-    column: &str,
-    close: impl FnOnce(&RexHub) -> Result<ColumnExit, RexError>,
-) -> Result<(), RexError> {
-    // Read before the close: a session that ends takes its mapping along.
-    let session = hub.column_session(column);
-    if let (ColumnExit::SessionEnded, Some((server, sid))) = (close(hub)?, session) {
-        let main = app.clone();
-        let _ = app.run_on_main_thread(move || column_ended(&main, &server, &sid));
-    }
-    Ok(())
-}
-
-/// `server`'s session `session_id` — a column's — ended with its last block (main thread): every
-/// tab whose column is on it drops the column, and its window's chrome collapses the split
-/// (`warden:pane-closed`), as a plain tab's scratch shell exiting does.
-fn column_ended(app: &AppHandle, server: &str, session_id: &str) {
-    let Some(st) = app.try_state::<ManagerState>() else {
-        return;
-    };
-    let mut m = st.lock();
-    let mut closed = Vec::new();
-    for (label, ws) in m.windows.iter_mut() {
-        for id in ws.registry.columns_on(server, session_id) {
-            if ws.registry.close_column(&id) {
-                closed.push((label.clone(), id));
-            }
-        }
-    }
-    for (label, _) in &closed {
-        m.record_session(app, label);
-    }
-    drop(m);
-    for (label, id) in closed {
-        crate::manager::announce_pane_closed(app, &label, &id);
     }
 }
 
