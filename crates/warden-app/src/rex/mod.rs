@@ -1101,14 +1101,26 @@ impl Inner {
             .get(server)
             .map(|a| a.iter().cloned().collect())
             .unwrap_or_default();
-        for id in attached {
-            if let Err(RexError::Api { code, .. }) = self.attach(server, &client, &id, deadline) {
-                if code == "session_not_found" {
-                    if let Some(a) = self.lock().attached.get_mut(server) {
-                        a.remove(&id);
+        // Re-attach the sessions the last connection held on a worker, unbounded: under an
+        // open's deadline, many sessions on a slow server spent that open's budget (it then
+        // reported "unreachable") and the ones past it skipped learning their views. One that
+        // fails other than `session_not_found` stays in `attached`, so the next install retries.
+        if !attached.is_empty() {
+            let weak = Arc::downgrade(self);
+            let (server, client) = (server.to_owned(), client.clone());
+            thread::spawn(move || {
+                for id in attached {
+                    let Some(hub) = weak.upgrade() else { return };
+                    if let Err(RexError::Api { code, .. }) = hub.attach(&server, &client, &id, None)
+                    {
+                        if code == "session_not_found" {
+                            if let Some(a) = hub.lock().attached.get_mut(&server) {
+                                a.remove(&id);
+                            }
+                        }
                     }
                 }
-            }
+            });
         }
         if restarted {
             log::info!("Rex {server}: restarted; its sessions came back as bare shells");
