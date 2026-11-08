@@ -34,6 +34,9 @@ pub const SPLIT_SIZE_MAX: f64 = 0.9;
 pub const PANE_SIZE_MIN: f64 = 0.05;
 pub const PANE_SIZE_MAX: f64 = 0.9;
 pub const MAX_PANES: usize = 8;
+/// The largest `probe_interval` (one year, in seconds) — a floor that long already means "never
+/// steady-poll", and the scheduler adds it to an `Instant`, which panics on overflow.
+pub const PROBE_INTERVAL_MAX: u64 = 365 * 24 * 3600;
 
 /// The `server` value naming this machine's own Rex server; any other value is a remote host label.
 pub const LOCAL_SERVER: &str = "local";
@@ -134,6 +137,15 @@ fn resolve_stack(
             }
         }
     };
+    // An all-sized stack is scaled to sum 1, which can push a declared-in-band share below the
+    // floor (`0.05, 0.9, 0.9` → 0.027): check the scaled shares, not just the declared ones.
+    if unsized_n == 0
+        && raw
+            .iter()
+            .any(|p| p.size.unwrap_or(0.0) / sized < PANE_SIZE_MIN - 1e-9)
+    {
+        return Err(ResolveError::PaneSizesOverflow);
+    }
     let mut panes = raw
         .iter()
         .map(|p| {
@@ -224,7 +236,7 @@ pub enum ResolveError {
     TooManyPanes(usize),
     #[error("invalid pane size {0} (expected {min}..={max})", min = PANE_SIZE_MIN, max = PANE_SIZE_MAX)]
     BadPaneSize(f64),
-    #[error("stacked pane sizes leave less than {min} for each unsized pane", min = PANE_SIZE_MIN)]
+    #[error("stacked pane sizes leave a pane less than {min}", min = PANE_SIZE_MIN)]
     PaneSizesOverflow,
 }
 
@@ -267,14 +279,21 @@ pub fn apply_resume(program: Option<&str>, reported: &str) -> String {
     format!("{}{}{}", &reported[..lead], program, &body[word_end..])
 }
 
-/// Render a resolved dir to its identity string: the lossy path with any single trailing
-/// separator stripped (so `~/a` and `~/a/` are one identity) — except a bare root `/`.
+/// Render a resolved dir to its identity string, lexically normalised: repeated and trailing
+/// separators collapse and `.` components drop (so `~/a`, `~/a/`, `~/./a` and `~//a` are one
+/// identity); `..` is kept, since resolving it lexically is wrong under a symlink. No
+/// `canonicalize` — the dir may not exist, or may be a path on a remote server.
 /// The one dir-identity scheme: curated tabs and warden-app's discovered projects both key
 /// through it, so a curated tab and a same-dir discovered project share one key.
 pub fn normalize_dir_key(dir: &Path) -> String {
-    let s = dir.to_string_lossy();
-    let trimmed = s.strip_suffix('/').filter(|t| !t.is_empty()).unwrap_or(&s);
-    trimmed.to_string()
+    let clean: PathBuf = dir
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    match clean.as_os_str().is_empty() {
+        true if !dir.as_os_str().is_empty() => ".".to_string(),
+        _ => clean.to_string_lossy().into_owned(),
+    }
 }
 
 /// Resolve with the built-in [`DEFAULT_SHELL`] as the unset-`shell` fallback and relative dirs
@@ -339,7 +358,7 @@ pub fn resolve_with(
             windows,
             format_on_save: raw.format_on_save.unwrap_or(false),
             tab_digit_keys,
-            probe_interval: raw.probe_interval.unwrap_or(5),
+            probe_interval: raw.probe_interval.unwrap_or(5).min(PROBE_INTERVAL_MAX),
             density,
             sidebar_drag: raw.sidebar_drag.unwrap_or(true),
             auto_update: raw.auto_update.unwrap_or(true),
@@ -701,6 +720,8 @@ fn resolve_root(
         globals.server,
     );
     if server.as_deref().is_some_and(|s| s != LOCAL_SERVER) {
+        // A skipped root still validates its own split, like every other level.
+        resolve_split_level(rr.split.as_ref())?;
         warnings.push(Warning {
             window: rp.title.clone(),
             message: format!(
@@ -2741,6 +2762,30 @@ title = "a"
             == "root \"projects\": server must be \"local\" (remote roots aren't discovered yet)"));
     }
 
+    #[test]
+    fn remote_root_still_validates_its_split() {
+        let err = resolve_str(
+            r#"
+[[window]]
+title = "a"
+  [[window.root]]
+  name = "projects"
+  dir = "/srv/projects"
+  server = "remote-host"
+  [window.root.split]
+  size = 5.0
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ResolveError::BadSplitSize(5.0));
+    }
+
+    #[test]
+    fn probe_interval_is_capped() {
+        let (cfg, _) = resolve_str("probe_interval = 9223372036854775807\n").unwrap();
+        assert_eq!(cfg.probe_interval, PROBE_INTERVAL_MAX);
+    }
+
     fn stack_of(split_toml: &str) -> Result<Vec<StackPane>, ResolveError> {
         let (cfg, _) = resolve_str(&format!(
             "[[window]]\ntitle = \"w\"\ncolour = \"#000000\"\n  [[window.tab]]\n  dir = \"/tmp/a\"\n  server = \"local\"\n  [window.tab.split]\n{split_toml}"
@@ -2830,6 +2875,36 @@ title = "a"
             .unwrap_err(),
             ResolveError::PaneSizesOverflow
         );
+    }
+
+    #[test]
+    fn all_sized_stack_scaled_below_floor_rejected() {
+        assert_eq!(
+            stack_of(
+                "[[window.tab.split.pane]]\nsize = 0.05\n[[window.tab.split.pane]]\nsize = 0.9\n[[window.tab.split.pane]]\nsize = 0.9\n"
+            )
+            .unwrap_err(),
+            ResolveError::PaneSizesOverflow
+        );
+    }
+
+    #[test]
+    fn dir_key_is_lexically_normalised() {
+        for (a, b) in [
+            ("/tmp/a", "/tmp//a"),
+            ("/tmp/a", "/tmp/./a"),
+            ("/tmp/a", "/tmp/a//"),
+            ("a", "./a"),
+            ("~/x", "~/x/."),
+        ] {
+            assert_eq!(
+                normalize_dir_key(Path::new(a)),
+                normalize_dir_key(Path::new(b)),
+                "{a} vs {b}"
+            );
+        }
+        assert_eq!(normalize_dir_key(Path::new("/")), "/");
+        assert_eq!(normalize_dir_key(Path::new("/tmp/../a")), "/tmp/../a");
     }
 
     const THREE: &str = "  [[window.tab.split.pane]]\n  cmd = \"a\"\n  [[window.tab.split.pane]]\n  cmd = \"b\"\n  [[window.tab.split.pane]]\n  cmd = \"c\"\n";
