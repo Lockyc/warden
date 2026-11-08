@@ -136,7 +136,8 @@ site omits it.
 | The pane or its block changes size | Once the size settles, the relay ends its stream and redraws from a fresh snapshot fitted to the pane — output laid out for one size garbles a pane of another. | `warden-relay` `Redraw` |
 | The hub's control connection drops | Reconnected with the reconnect token; the session list is reread and claimed sessions reattached. | the hub's watcher |
 
-**Presence.** A Rex tab's dot is whether its session is in its server's session list — the
+**Presence.** A Rex tab's dot is whether either pane's session (main or scratch column,
+`RexHub::tab_alive`) is in its server's session list — the
 last heard while the hub's connection is down: cyan; else a ghost while it holds asleep agents to
 wake (`AgentStore::has_wakeable`); else hollow. It never offers ▶
 start, which types `cmd`: opening the tab is its start. Its `probe` is not run

@@ -429,6 +429,13 @@ impl RexHub {
         }
     }
 
+    /// Whether Rex tab `tab_id` holds a live session in either pane ([`Self::session_alive`]):
+    /// its main pane's, or its scratch column's. The main pane's session ends with its last
+    /// agent while the column's terminals run on, and those are the tab's too.
+    pub fn tab_alive(&self, tab_id: &str) -> bool {
+        self.session_alive(tab_id) || self.session_alive(&crate::registry::secondary_id(tab_id))
+    }
+
     /// Whether `pane_key`'s stored session is one its server restored after a restart
     /// ([`State::restored`]).
     pub(crate) fn is_restored(&self, pane_key: &str) -> bool {

@@ -205,7 +205,7 @@ pub fn refresh_presence(app: &AppHandle, server: Option<&str>) {
             .is_some_and(|s| super::lock(s).has_wakeable(id))
     };
     for (label, id) in tabs {
-        let p = if hub.session_alive(&id) {
+        let p = if hub.tab_alive(&id) {
             Presence::Present
         } else if asleep(&id) {
             Presence::Recoverable

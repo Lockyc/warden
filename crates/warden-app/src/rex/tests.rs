@@ -698,6 +698,25 @@ fn session_alive_reads_the_live_list() {
     assert!(!hub.session_alive("tab-a"));
 }
 
+#[test]
+fn tab_alive_counts_the_scratch_column_without_the_main_session() {
+    let fake = scripted(json!([{"session_id": "session:new", "label": "w · scratch"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    assert!(!hub.tab_alive("tab-a"), "neither pane mapped");
+    let column = crate::registry::secondary_id("tab-a");
+    hub.ensure_session(&column, "local", Path::new("/w"), None, "w · scratch")
+        .expect("ensure_session");
+    assert!(
+        !hub.session_alive("tab-a"),
+        "no main-pane session (no agents)"
+    );
+    assert!(
+        hub.tab_alive("tab-a"),
+        "the column's terminals keep the tab live"
+    );
+}
+
 /// [`scripted`] whose `session.attach` shows each block owned by `owner(fake)` (read when the
 /// attach arrives, so a test can name the hub's own client id), and whose `session.own_block`
 /// hands every asked-for block to the caller.
