@@ -213,7 +213,7 @@ fn current() -> Result<(PathBuf, RawConfig), String> {
 
 /// [`write_split`] onto the config warden runs from.
 pub fn save_split(window: &str, tab: &Tab, edit: SplitEdit) -> Result<(), String> {
-    let (config, raw) = current().map_err(|e| format!("config not saved: {e}"))?;
+    let (config, raw) = current()?;
     write_split(&config, &raw, window, tab, edit)
 }
 
