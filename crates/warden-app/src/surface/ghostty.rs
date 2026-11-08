@@ -2112,8 +2112,8 @@ impl Drop for GhosttySurface {
 mod tests {
     use super::{
         begin_press, end_press, is_close_chord, is_printable_text, key_down_forwards,
-        right_click_route, Button,
-        Route, NS_FLAG_COMMAND, NS_FLAG_CONTROL, NS_FLAG_OPTION, NS_FLAG_SHIFT,
+        right_click_route, Button, Route, NS_FLAG_COMMAND, NS_FLAG_CONTROL, NS_FLAG_OPTION,
+        NS_FLAG_SHIFT,
     };
     use std::cell::Cell;
 
@@ -2138,7 +2138,10 @@ mod tests {
     fn key_down_never_forwards_a_close_chord() {
         let cmd = NS_FLAG_COMMAND;
         assert!(!key_down_forwards(cmd, Some("w")));
-        assert!(!key_down_forwards(cmd | NS_FLAG_SHIFT | NS_FLAG_OPTION, Some("W")));
+        assert!(!key_down_forwards(
+            cmd | NS_FLAG_SHIFT | NS_FLAG_OPTION,
+            Some("W")
+        ));
         assert!(key_down_forwards(0, Some("w")));
         assert!(key_down_forwards(cmd, Some("q")));
         assert!(key_down_forwards(0, None));
