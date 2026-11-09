@@ -122,7 +122,7 @@ site omits it.
 | Event | The pane's Rex session | Where |
 |---|---|---|
 | ⌘W unload, closing a window, quitting warden; the split removed from the config (its column's session) | Detached: the relay exits, the session keeps running. The next open reattaches. | `Registry::unload`, `Registry::unsplit` |
-| ☠ destroy | Both panes' sessions destroyed, and the tab's agent records dropped. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
+| ☠ destroy | Both panes' sessions destroyed; the tab's resumable agents go to the closed fold, the rest drop. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
 | An agent tab sleeps or closes | Its window closes; the record stays asleep, or goes to the closed fold, to wake later typing its resume command. One that never reported a resume command can't sleep, and closes for good only once confirmed. Closing the last leaves the session empty — Rex keeps it — and the next agent tab opens in it (`RexHub::ensure_until`); the tab stays open while its scratch column runs. | `lifecycle::run` → `RexHub::agent_op` |
 | An agent tab forks | A new window types its fork command (`agents::fork_command`: the resume command plus the harness's fork words), as a new record directly below it in its group; the source is left as it is, live or asleep. The fork reports its own resume command when its hook runs. One without a resume command, or whose harness has no fork form, can't fork. | `AgentOp::Fork` |
 | A window opens or closes elsewhere (Rex.app, the phone) | Appended as a tab, ungrouped; a closed one goes to the closed fold if resumable, else drops, and the selection leans to a live neighbour. | `lifecycle::watch_agents` → `AgentOp::Refresh` |

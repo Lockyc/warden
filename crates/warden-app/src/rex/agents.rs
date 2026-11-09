@@ -248,21 +248,40 @@ impl AgentStore {
         });
         let cleared = self.records.len() != before;
         if cleared {
+            self.drop_orphan_folds();
             self.save();
         }
         cleared
     }
 
-    /// Forget every record and fold of `project`. Returns whether a record went.
-    pub fn remove_project(&mut self, project: &str) -> bool {
-        let before = self.records.len();
-        self.records.retain(|r| r.project != project);
-        self.folded.retain(|f| f.project != project);
-        let removed = self.records.len() != before;
-        if removed {
+    /// `project`'s sessions ended (☠): every resumable record goes to the closed fold, stamped
+    /// `now` unless it was already there, and the rest drop. Returns whether a record changed.
+    pub fn close_project(&mut self, project: &str, now: u64) -> bool {
+        let before = self.records.clone();
+        self.records
+            .retain(|r| r.project != project || r.resume.is_some());
+        for r in self.records.iter_mut().filter(|r| r.project == project) {
+            if r.state != RecordState::Closed {
+                r.state = RecordState::Closed;
+                r.closed_at = Some(now);
+            }
+            r.window_id = None;
+            r.block_id = None;
+            r.selected = false;
+        }
+        let changed = self.records != before;
+        if changed {
+            self.drop_orphan_folds();
             self.save();
         }
-        removed
+        changed
+    }
+
+    /// Forget the folds of projects that no longer hold a record.
+    fn drop_orphan_folds(&mut self) {
+        let records = &self.records;
+        self.folded
+            .retain(|f| records.iter().any(|r| r.project == f.project));
     }
 
     /// Whether `project`, its session gone, has an agent a user open can wake — the ghost on its
@@ -847,8 +866,63 @@ mod tests {
         assert!(!s.clear_closed("p", Some("a")), "only closed records clear");
         assert!(s.clear_closed("p", None));
         assert_eq!(ids(&s), ["a", "b", "c"]);
-        assert!(s.remove_project("p"));
-        assert!(s.records("p").is_empty());
+    }
+
+    #[test]
+    fn ending_a_project_closes_its_resumable_agents_and_drops_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = AgentStore::load(dir.path().join("agents.json"));
+        let mut live = rec(
+            "live",
+            RecordState::Live,
+            Some("w1"),
+            Some("claude --resume l"),
+        );
+        live.selected = true;
+        s.upsert(live);
+        s.upsert(rec(
+            "asleep",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume a"),
+        ));
+        let mut was = rec("was", RecordState::Closed, None, Some("claude --resume w"));
+        was.closed_at = Some(5);
+        s.upsert(was);
+        s.upsert(rec("bare", RecordState::Live, Some("w2"), None));
+        let mut other = rec("other", RecordState::Live, Some("w3"), Some("claude"));
+        other.project = "q".into();
+        s.upsert(other);
+        s.set_folded("p", "g", true);
+
+        assert!(s.close_project("p", 9));
+        let by = |id: &str| s.records("p").into_iter().find(|r| r.id == id);
+        for id in ["live", "asleep"] {
+            let r = by(id).unwrap();
+            assert_eq!(r.state, RecordState::Closed, "{id}");
+            assert_eq!(r.closed_at, Some(9), "{id}");
+            assert_eq!((r.window_id, r.block_id, r.selected), (None, None, false));
+        }
+        assert_eq!(
+            by("was").unwrap().closed_at,
+            Some(5),
+            "already closed keeps its stamp"
+        );
+        assert_eq!(by("bare"), None, "nothing to reopen it with: dropped");
+        assert_eq!(
+            s.records("q")[0].state,
+            RecordState::Live,
+            "other projects untouched"
+        );
+        assert!(!s.has_wakeable("p"), "nothing left to ghost the dot");
+        assert_eq!(s.folded("p"), ["g"], "groups keep their fold for a reopen");
+        assert!(!s.close_project("p", 10), "a second end changes nothing");
+
+        s.clear_closed("p", None);
+        assert!(
+            s.folded("p").is_empty(),
+            "the last record takes its project's folds"
+        );
     }
 
     #[test]

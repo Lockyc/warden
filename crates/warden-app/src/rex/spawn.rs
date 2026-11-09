@@ -356,18 +356,19 @@ pub fn close_block(app: &AppHandle, label: &str, pane_key: String) {
     }
 }
 
-/// Destroy the Rex sessions of `pane_keys` (☠ on tab `id` of window `label`) on a worker, drop
-/// the tab's agent records with them, then refresh ([`hub_changed`]) and burst the window's probes
-/// the way a `kill` command's end does.
+/// Destroy the Rex sessions of `pane_keys` (☠ on tab `id` of window `label`) on a worker, close
+/// the tab's agents with them ([`AgentStore::close_project`]: the closed fold keeps the resumable
+/// ones), then refresh ([`hub_changed`]) and burst the window's probes the way a `kill`
+/// command's end does.
 pub fn destroy(app: &AppHandle, label: String, id: String, pane_keys: Vec<String>) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("warden-rex-destroy".into())
         .spawn(move || {
-            // Records first: the session list changing repaints the dot, and records still held
+            // Records first: the session list changing repaints the dot, and agents still asleep
             // then would ghost it for a moment on the way to hollow.
             if let Some(store) = app.try_state::<Mutex<AgentStore>>() {
-                if super::lock(&store).remove_project(&id) {
+                if super::lock(&store).close_project(&id, unix_now()) {
                     super::lifecycle::emit_agents(&app, &id);
                 }
             }
