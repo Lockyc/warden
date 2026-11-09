@@ -72,7 +72,9 @@ const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 /// window's active tab, enabled only while there is one ([`sync_agent_menu`]). The id doubles as
 /// the event name, sent with the tab's id. ⌘T follows focus as ⌘W does: in a Rex scratch column
 /// it is New Scratch Tab ([`focused_new_target`]). ⌘⇧T reaches the same list as
-/// `warden:agent-reopen` when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
+/// `warden:agent-reopen` when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler)
+/// — from a scratch pane too: a closed scratch tab is gone from Rex, so there is nothing of the
+/// column's to reopen.
 const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
