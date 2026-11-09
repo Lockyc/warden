@@ -88,6 +88,15 @@ enum Failed {
     Rex(RexError),
 }
 
+/// A close's window, asked of Rex once the list without it is shown and the pane released, and
+/// its record as it was, to put back if Rex refuses.
+struct Closing {
+    session: Option<(Endpoint, String)>,
+    sid: String,
+    window: String,
+    before: AgentRecord,
+}
+
 impl From<RexError> for Failed {
     fn from(e: RexError) -> Self {
         Failed::Rex(e)
@@ -116,6 +125,8 @@ impl RexHub {
     /// and shows its list before asking Rex to close the window — Rex answers only once the
     /// program in it has exited, which an agent shutting down cleanly makes take a second — and,
     /// if Rex then refuses, shows the record put back as it was before returning the refusal.
+    /// That wait is outside the pane's hold, so the next op (⌘T right after ⌘W) doesn't queue
+    /// behind the exit; the window is closing ([`RexHub::windows`] leaves it out) meanwhile.
     pub fn agent_op_shown(
         &self,
         store: &Mutex<AgentStore>,
@@ -128,7 +139,11 @@ impl RexHub {
         let done = match self.inner.hold_pane(&req.pane_key, Some(deadline)) {
             Ok(_held) => self.agent_op_until(store, req, op, now, deadline, &mut shown),
             Err(e) => Err(Failed::Rex(e)),
-        };
+        }
+        .and_then(|closing| match closing {
+            Some(c) => self.finish_close(store, req, c, &mut shown),
+            None => Ok(()),
+        });
         match done {
             Ok(()) => Ok(()),
             Err(Failed::Refused(why)) => Err(why.to_owned()),
@@ -164,7 +179,7 @@ impl RexHub {
         now: u64,
         deadline: Instant,
         shown: &mut dyn FnMut(AgentsOpened),
-    ) -> Result<(), Failed> {
+    ) -> Result<Option<Closing>, Failed> {
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
         let mut held = lock(store).records(project);
         if let Some(why) = refusal(op, &held) {
@@ -349,21 +364,45 @@ impl RexHub {
                 }
             }
         }
-        let session = session.as_ref();
-        shown(self.store_settled(store, project, session, &held, records, want, drop));
-        let Some((sid, window, before)) = closing else {
+        if let Some((_, window, _)) = &closing {
+            self.mark_closing(server, window);
+        }
+        shown(self.store_settled(store, project, session.as_ref(), &held, records, want, drop));
+        Ok(closing.map(|(sid, window, before)| Closing {
+            session,
+            sid,
+            window,
+            before,
+        }))
+    }
+
+    /// Ask Rex to close `c`'s window, waiting for its program to exit, outside the pane's hold.
+    /// A refusal takes the hold again and puts the record back as it was, shown.
+    fn finish_close(
+        &self,
+        store: &Mutex<AgentStore>,
+        req: &RexOpen,
+        c: Closing,
+        shown: &mut dyn FnMut(AgentsOpened),
+    ) -> Result<(), Failed> {
+        let (project, server) = (req.pane_key.as_str(), req.server.as_str());
+        let Err(e) = self.close_window(server, &c.sid, &c.window) else {
             return Ok(());
         };
-        if let Err(e) = self.close_window(server, &sid, &window) {
-            let held = lock(store).records(project);
-            let mut records: Vec<AgentRecord> =
-                held.iter().filter(|r| r.id != before.id).cloned().collect();
-            records.push(before);
-            let want = Some(records.len() - 1);
-            shown(self.store_settled(store, project, session, &held, records, want, None));
-            return Err(e.into());
-        }
-        Ok(())
+        let _held = self
+            .inner
+            .hold_pane(project, Some(Instant::now() + OPEN_BUDGET))?;
+        let held = lock(store).records(project);
+        let mut records: Vec<AgentRecord> = held
+            .iter()
+            .filter(|r| r.id != c.before.id)
+            .cloned()
+            .collect();
+        records.push(c.before);
+        let want = Some(records.len() - 1);
+        let session = c.session.as_ref();
+        shown(self.store_settled(store, project, session, &held, records, want, None));
+        Err(e.into())
     }
 
     /// Settle `records` (`project`'s, changed from `held`) as [`settle`] does around `want`, drop
@@ -2056,6 +2095,66 @@ mod tests {
             "leaned to its neighbour"
         );
         assert_eq!(f.requests_for("session.close_window").len(), 1);
+    }
+
+    /// A new agent tab doesn't wait for a close still waiting on Rex (its program exiting), and
+    /// never takes the closing window for an agent tab of its own.
+    #[test]
+    fn new_does_not_wait_for_a_closing_window() {
+        let f = fake(
+            Some("session:old"),
+            vec![("window:1", "block:1", "a"), ("window:2", "block:2", "b")],
+        );
+        let slow = Duration::from_millis(800);
+        f.on("session.close_window", move |_, _| {
+            Reply::ok(json!({})).after(slow)
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut a = record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        );
+        a.selected = true;
+        let s = store(vec![
+            a,
+            record("b", RecordState::Live, Some("window:2"), None),
+        ]);
+        let close = AgentOp::Close {
+            id: "a".into(),
+            confirmed: false,
+        };
+
+        let started = Instant::now();
+        let (shown_tx, shown_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let closing = scope.spawn(|| {
+                hub.agent_op_shown(&s, &open(false, None), &close, 7, |_| {
+                    let _ = shown_tx.send(());
+                })
+            });
+            shown_rx.recv().expect("the close shows");
+            hub.agent_op(&s, &open(false, None), &AgentOp::New, 8)
+                .expect("new");
+            assert!(
+                started.elapsed() < slow / 2,
+                "new done at {:?}, behind the close",
+                started.elapsed()
+            );
+            closing.join().unwrap().expect("close");
+        });
+        let records = s.lock().unwrap().records("t");
+        assert!(
+            !records
+                .iter()
+                .any(|r| r.id != "a" && r.window_id.as_deref() == Some("window:1")),
+            "the closing window adopted: {records:?}"
+        );
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Closed);
+        assert_eq!(records.len(), 3, "a closed, b, and the new tab");
     }
 
     /// A close Rex refuses puts the record back as it was, shown, and reports the refusal.

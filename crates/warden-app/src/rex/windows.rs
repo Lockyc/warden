@@ -226,15 +226,26 @@ fn rex_label(window_id: &str) -> Option<String> {
 }
 
 impl RexHub {
-    /// `session_id`'s windows on `server`, in `session.view` order. Empty for a session no pane
-    /// has attached.
+    /// `session_id`'s windows on `server`, in `session.view` order, less those closing. Empty for
+    /// a session no pane has attached.
     pub fn windows(&self, server: &str, session_id: &str) -> Vec<AgentWindow> {
+        let st = self.inner.lock();
+        let closing = |w: &AgentWindow| {
+            st.closing
+                .contains(&(server.to_owned(), w.window_id.clone()))
+        };
+        st.windows
+            .get(&(server.to_owned(), session_id.to_owned()))
+            .map(|w| w.list.iter().filter(|w| !closing(w)).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Leave `window_id` out of [`RexHub::windows`] until its close answers.
+    pub(super) fn mark_closing(&self, server: &str, window_id: &str) {
         self.inner
             .lock()
-            .windows
-            .get(&(server.to_owned(), session_id.to_owned()))
-            .map(|w| w.list.clone())
-            .unwrap_or_default()
+            .closing
+            .insert((server.to_owned(), window_id.to_owned()));
     }
 
     /// `session_id`'s windows on `server` as Rex has them now (`session.view`), without following
@@ -308,25 +319,32 @@ impl RexHub {
         window_id: &str,
         deadline: Option<Instant>,
     ) -> Result<(), RexError> {
-        let (client, _) = self.inner.conn(server)?;
-        let args = json!({ "session_id": session_id, "window_id": window_id });
-        let closed = match deadline {
-            Some(d) => client
-                .call_seq_until("session.close_window", args, d)
-                .map(|_| ()),
-            None => client.call("session.close_window", args).map(|_| ()),
-        };
-        match closed {
-            Ok(_) => {}
-            Err(e) if matches!(api_code(&e), Some("not_found" | "session_not_found")) => {}
-            Err(e) => return Err(e),
-        }
-        self.inner.edit_windows(server, session_id, |list| {
-            let before = list.len();
-            list.retain(|w| w.window_id != window_id);
-            list.len() != before
+        self.mark_closing(server, window_id);
+        let closed = self.inner.conn(server).and_then(|(client, _)| {
+            let args = json!({ "session_id": session_id, "window_id": window_id });
+            match deadline {
+                Some(d) => client
+                    .call_seq_until("session.close_window", args, d)
+                    .map(|_| ()),
+                None => client.call("session.close_window", args).map(|_| ()),
+            }
         });
-        Ok(())
+        let closed = match closed {
+            Err(e) if matches!(api_code(&e), Some("not_found" | "session_not_found")) => Ok(()),
+            r => r,
+        };
+        if closed.is_ok() {
+            self.inner.edit_windows(server, session_id, |list| {
+                let before = list.len();
+                list.retain(|w| w.window_id != window_id);
+                list.len() != before
+            });
+        }
+        self.inner
+            .lock()
+            .closing
+            .remove(&(server.to_owned(), window_id.to_owned()));
+        closed
     }
 
     /// Relabel `window_id`, waiting only until `deadline`. Rex trims the label; an empty one

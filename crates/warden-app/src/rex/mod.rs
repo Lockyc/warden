@@ -182,6 +182,10 @@ struct State {
     statuses: HashMap<String, windows::Tracked>,
     /// Windows being relabelled from their program's title ([`Inner::name_windows`]).
     naming: HashSet<String>,
+    /// (server, window) warden has asked Rex to close and Rex hasn't yet answered for — it does
+    /// once the window's program has exited. [`RexHub::windows`] leaves them out, so nothing
+    /// takes one for a live window meanwhile.
+    closing: HashSet<(String, String)>,
     /// Agent key → the main pane whose session holds that agent's window, bound by
     /// [`RexHub::open_agents`]; the agent's block is in `blocks` under the agent key.
     agents: HashMap<String, String>,
