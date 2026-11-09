@@ -70,8 +70,9 @@ const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
 /// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) — act on the agent tab list of the focused
 /// window's active tab, enabled only while there is one ([`sync_agent_menu`]). The id doubles as
-/// the event name, sent with the tab's id. ⌘⇧T reaches the same list as `warden:agent-reopen`
-/// when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
+/// the event name, sent with the tab's id. ⌘T follows focus as ⌘W does: in a Rex scratch column
+/// it is New Scratch Tab ([`focused_new_target`]). ⌘⇧T reaches the same list as
+/// `warden:agent-reopen` when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler).
 const MENU_AGENT_NEW: &str = "warden:agent-new";
 const MENU_AGENT_SLEEP: &str = "warden:agent-sleep";
 const EVENT_AGENT_REOPEN: &str = "warden:agent-reopen";
@@ -126,11 +127,25 @@ const MENU_PANE_RIGHT: &str = "warden:pane-right";
 /// scratch column ([`scratch_run`]), enabled only while it has one.
 const MENU_SCRATCH_NEW: &str = "warden:scratch-new";
 
+/// Titles [`sync_agent_menu`] retitles from, appending a reason or naming what the item does in
+/// the focused pane.
+const SPLIT_TITLE: &str = "Split";
+const SUSPEND_TITLE: &str = "Suspend Session";
+const TERMINATE_TITLE: &str = "Terminate Session…";
+const AGENT_NEW_TITLE: &str = "New Agent Tab";
+const SCRATCH_NEW_TITLE: &str = "New Scratch Tab";
+
 /// The items whose enabled state follows the focused window's active tab, kept from the last menu
 /// build so [`sync_agent_menu`] can set it without a rebuild.
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct AgentItems {
+    /// Split (⌘D), titled for what it does in the focused pane ([`focused_split`]).
+    split: tauri::menu::MenuItem<tauri::Wry>,
+    /// Suspend / Terminate Session, disabled in a pop-out, whose page can't end a session.
+    suspend: tauri::menu::MenuItem<tauri::Wry>,
+    terminate: tauri::menu::MenuItem<tauri::Wry>,
+    /// New Agent Tab (⌘T), retitled New Scratch Tab in a scratch column ([`focused_new_target`]).
     new: tauri::menu::MenuItem<tauri::Wry>,
     sleep: tauri::menu::MenuItem<tauri::Wry>,
     reopen: tauri::menu::MenuItem<tauri::Wry>,
@@ -254,37 +269,87 @@ fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bo
     Some((label, tab, sleep, reopen))
 }
 
-/// What the focused window's active tab offers the agent-step and pane items: `(label, tab,
-/// agent list when it holds agent tabs, pane to the left, pane to the right)`. The agent list
-/// answers from any of the tab's panes, so the agent keys beat libghostty's defaults for the same
-/// chords (⌘↑ / ⌘↓ / ⌘K / ⌘J) in a scratch shell too.
+/// What ⌘T makes in the focused window's active tab ([`registry::Registry::new_target`]), with
+/// that window's label and the tab; `None` when it makes nothing there (a pop-out among them).
 #[cfg(target_os = "macos")]
-#[allow(clippy::type_complexity)]
-fn focused_tab_keys(
-    app: &tauri::AppHandle,
-) -> Option<(
-    String,
-    String,
-    Option<rex::lifecycle::AgentListDto>,
-    Option<registry::PaneIdx>,
-    Option<registry::PaneIdx>,
-)> {
+fn focused_new_target(app: &tauri::AppHandle) -> Option<(String, String, registry::NewTarget)> {
     use tauri::Manager;
     let label = focused_label(app)?;
-    let (tab, agents, left, right) = {
+    let st = app.state::<ManagerState>();
+    let m = st.lock();
+    let reg = &m.windows.get(&label)?.registry;
+    let tab = reg.active_tab()?.to_owned();
+    let agents = reg.active_agent_tab() == Some(tab.as_str());
+    let target = reg.new_target(&tab, agents)?;
+    Some((label, tab, target))
+}
+
+/// What the focused window's active tab offers the agent-step items: `(label, tab, agent list
+/// when it holds agent tabs)`. The agent list answers from any of the tab's panes, so the agent
+/// keys beat libghostty's defaults for the same chords (⌘↑ / ⌘↓ / ⌘K / ⌘J) in a scratch shell too.
+#[cfg(target_os = "macos")]
+fn focused_tab_keys(
+    app: &tauri::AppHandle,
+) -> Option<(String, String, Option<rex::lifecycle::AgentListDto>)> {
+    use tauri::Manager;
+    let label = focused_label(app)?;
+    let (tab, agents) = {
         let st = app.state::<ManagerState>();
         let m = st.lock();
         let reg = &m.windows.get(&label)?.registry;
         let tab = reg.active_tab()?.to_owned();
         let agents = reg.active_agent_tab() == Some(tab.as_str());
-        let left = reg.pane_to(&tab, registry::Side::Left);
-        let right = reg.pane_to(&tab, registry::Side::Right);
-        (tab, agents, left, right)
+        (tab, agents)
     };
     let list = agents
         .then(|| rex::lifecycle::current_list(app, &tab))
         .flatten();
-    Some((label, tab, list, left, right))
+    Some((label, tab, list))
+}
+
+/// The pane to `side` of the focused pane in the focused window — its active tab's, or a
+/// pop-out's ([`manager::DetachedSurface::pane_to`]) — and, with `focus`, give it keyboard focus.
+/// Whether there is one.
+#[cfg(target_os = "macos")]
+fn focused_pane_to(app: &tauri::AppHandle, side: registry::Side, focus: bool) -> bool {
+    use tauri::Manager;
+    let Some(label) = focused_label(app) else {
+        return false;
+    };
+    let st = app.state::<ManagerState>();
+    let m = st.lock();
+    if let Some(ds) = m.detached.get(&label) {
+        return match ds.pane_to(side) {
+            Some(pane) => !focus || ds.focus_pane(pane),
+            None => false,
+        };
+    }
+    let Some(reg) = m.windows.get(&label).map(|ws| &ws.registry) else {
+        return false;
+    };
+    let Some(tab) = reg.active_tab() else {
+        return false;
+    };
+    match reg.pane_to(tab, side) {
+        Some(pane) => !focus || reg.focus_pane_surface(tab, pane),
+        None => false,
+    }
+}
+
+/// What the menu bar's Split (⌘D) does in the focused window: `None` with no tab to split there;
+/// `Err` is why it can't, shown on the disabled item — a pop-out never splits, as its right-click
+/// menu says.
+#[cfg(target_os = "macos")]
+fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, String>> {
+    use tauri::Manager;
+    let label = focused_label(app)?;
+    let st = app.state::<ManagerState>();
+    let m = st.lock();
+    if m.detached.contains_key(&label) {
+        return Some(Err(pane_menu::DOCK_TO_SPLIT.to_owned()));
+    }
+    let reg = &m.windows.get(&label)?.registry;
+    Some(split_kind(reg, reg.active_tab()?))
 }
 
 /// Enable the agent tab menu items for the focused window's active tab: New Agent Tab while it
@@ -308,8 +373,12 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         return;
     };
     let agent = focused_agent_tab(app);
+    let new = focused_new_target(app).map(|n| n.2);
+    let split = focused_split(app);
     let keys = focused_tab_keys(app);
     let list = keys.as_ref().and_then(|k| k.2.as_ref());
+    let pane_left = focused_pane_to(app, registry::Side::Left, false);
+    let pane_right = focused_pane_to(app, registry::Side::Right, false);
     let close = focused_close_target(app, list);
     // ⌥⌘W unloads a docked tab; a pop-out's main pane docks it with ⌘W instead.
     let popped_out = close.as_ref().is_some_and(|(label, _)| {
@@ -330,7 +399,32 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(i) = items {
-        let _ = i.new.set_enabled(agent.is_some());
+        use pane_menu::SplitKind;
+        use registry::NewTarget;
+        let _ = i.split.set_enabled(!matches!(split, Some(Err(_))));
+        let _ = i.split.set_text(match &split {
+            Some(Ok(SplitKind::SplitBelow)) => "Split Below".into(),
+            Some(Err(why)) => format!("{SPLIT_TITLE} ({why})"),
+            _ => SPLIT_TITLE.to_owned(),
+        });
+        for (item, title) in [(&i.suspend, SUSPEND_TITLE), (&i.terminate, TERMINATE_TITLE)] {
+            let _ = item.set_enabled(!popped_out);
+            let _ = item.set_text(if popped_out {
+                format!("{title} (Dock the tab first)")
+            } else {
+                title.to_owned()
+            });
+        }
+        let _ = i
+            .new
+            .set_enabled(matches!(new, Some(NewTarget::Agent | NewTarget::Scratch)));
+        let _ = i.new.set_text(match new {
+            Some(NewTarget::Scratch) => SCRATCH_NEW_TITLE.to_owned(),
+            Some(NewTarget::Opening) => {
+                format!("{SCRATCH_NEW_TITLE} ({})", registry::COLUMN_OPENING)
+            }
+            Some(NewTarget::Agent) | None => AGENT_NEW_TITLE.to_owned(),
+        });
         let _ = i.sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
         let _ = i
             .reopen
@@ -363,12 +457,8 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let _ = i
             .fork
             .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
-        let _ = i
-            .pane_left
-            .set_enabled(keys.as_ref().is_some_and(|k| k.3.is_some()));
-        let _ = i
-            .pane_right
-            .set_enabled(keys.as_ref().is_some_and(|k| k.4.is_some()));
+        let _ = i.pane_left.set_enabled(pane_left);
+        let _ = i.pane_right.set_enabled(pane_right);
         let _ = i.scratch_new.set_enabled(scratch);
         let _ = i.pop_out.set_enabled(pop_out_blocked.is_none());
         let _ = i.pop_out.set_text(match &pop_out_blocked {
@@ -475,66 +565,54 @@ fn close_pane(
 #[cfg(target_os = "macos")]
 fn agent_key(app: &tauri::AppHandle, id: &str) {
     use rex::lifecycle::{agent_move, agent_step, Step};
-    use tauri::{Emitter, Manager};
-    let Some((label, tab, list, left, right)) = focused_tab_keys(app) else {
+    use tauri::Emitter;
+    if id == MENU_PANE_LEFT || id == MENU_PANE_RIGHT {
+        let side = if id == MENU_PANE_LEFT {
+            registry::Side::Left
+        } else {
+            registry::Side::Right
+        };
+        focused_pane_to(app, side, true);
+        return;
+    }
+    let Some((label, tab, Some(list))) = focused_tab_keys(app) else {
         return;
     };
     let step = |up| if up { Step::Prev } else { Step::Next };
     let done = match id {
-        MENU_PANE_LEFT | MENU_PANE_RIGHT => {
-            let pane = if id == MENU_PANE_LEFT { left } else { right };
-            if let Some(pane) = pane {
-                let st = app.state::<ManagerState>();
-                let m = st.lock();
-                if let Some(ws) = m.windows.get(&label) {
-                    ws.registry.focus_pane_surface(&tab, pane);
-                }
+        MENU_AGENT_PREV | MENU_AGENT_NEXT | MENU_AGENT_PREV_ALIAS | MENU_AGENT_NEXT_ALIAS => {
+            let up = id == MENU_AGENT_PREV || id == MENU_AGENT_PREV_ALIAS;
+            match agent_step(&list, step(up)) {
+                Some(to) => rex::lifecycle::select(app, &label, &tab, &to),
+                None => Ok(()),
             }
-            Ok(())
         }
-        _ => {
-            let Some(list) = list else {
-                return;
-            };
-            match id {
-                MENU_AGENT_PREV
-                | MENU_AGENT_NEXT
-                | MENU_AGENT_PREV_ALIAS
-                | MENU_AGENT_NEXT_ALIAS => {
-                    let up = id == MENU_AGENT_PREV || id == MENU_AGENT_PREV_ALIAS;
-                    match agent_step(&list, step(up)) {
-                        Some(to) => rex::lifecycle::select(app, &label, &tab, &to),
-                        None => Ok(()),
-                    }
-                }
-                MENU_AGENT_MOVE_UP | MENU_AGENT_MOVE_DOWN => {
-                    match agent_move(&list, step(id == MENU_AGENT_MOVE_UP)) {
-                        Some((record, group, index)) => rex::lifecycle::edit(app, &tab, |s| {
-                            s.set_group(&tab, &record, group.as_deref(), Some(index))
-                        }),
-                        None => Ok(()),
-                    }
-                }
-                MENU_AGENT_FORK => match list.rows.iter().find(|r| r.selected && r.can_fork) {
-                    Some(r) => rex::lifecycle::run(
-                        app,
-                        &label,
-                        &tab,
-                        rex::lifecycle::AgentOp::Fork(r.id.clone()),
-                    ),
-                    None => Ok(()),
-                },
-                // ⌘W: the chrome runs the row's own Close, so an agent with nothing to resume asks
-                // first exactly as from its ⋯ menu.
-                _ => {
-                    let _ = app.emit_to(
-                        label.as_str(),
-                        EVENT_AGENT_CLOSE,
-                        serde_json::json!({ "label": label, "tabId": tab }),
-                    );
-                    Ok(())
-                }
+        MENU_AGENT_MOVE_UP | MENU_AGENT_MOVE_DOWN => {
+            match agent_move(&list, step(id == MENU_AGENT_MOVE_UP)) {
+                Some((record, group, index)) => rex::lifecycle::edit(app, &tab, |s| {
+                    s.set_group(&tab, &record, group.as_deref(), Some(index))
+                }),
+                None => Ok(()),
             }
+        }
+        MENU_AGENT_FORK => match list.rows.iter().find(|r| r.selected && r.can_fork) {
+            Some(r) => rex::lifecycle::run(
+                app,
+                &label,
+                &tab,
+                rex::lifecycle::AgentOp::Fork(r.id.clone()),
+            ),
+            None => Ok(()),
+        },
+        // ⌘W: the chrome runs the row's own Close, so an agent with nothing to resume asks first
+        // exactly as from its ⋯ menu.
+        _ => {
+            let _ = app.emit_to(
+                label.as_str(),
+                EVENT_AGENT_CLOSE,
+                serde_json::json!({ "label": label, "tabId": tab }),
+            );
+            Ok(())
         }
     };
     if let Err(e) = done {
@@ -608,17 +686,17 @@ fn build_app_menu(
     )?;
 
     // Split (⌘D) — warden-only (see MENU_TAB_SPLIT's doc comment).
-    let split_pane_item = MenuItemBuilder::with_id(MENU_TAB_SPLIT, "Split")
+    let split_pane_item = MenuItemBuilder::with_id(MENU_TAB_SPLIT, SPLIT_TITLE)
         .accelerator("CmdOrCtrl+D")
         .build(app)?;
-    let suspend_item = MenuItemBuilder::with_id(MENU_TAB_SUSPEND, "Suspend Session")
+    let suspend_item = MenuItemBuilder::with_id(MENU_TAB_SUSPEND, SUSPEND_TITLE)
         .accelerator("Shift+Cmd+KeyS")
         .build(app)?;
-    let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, "Terminate Session…")
+    let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, TERMINATE_TITLE)
         .accelerator("Shift+Cmd+KeyK")
         .build(app)?;
     // Enabled by `sync_agent_menu`, which `rebuild_menu` runs right after this build.
-    let agent_new_item = MenuItemBuilder::with_id(MENU_AGENT_NEW, "New Agent Tab")
+    let agent_new_item = MenuItemBuilder::with_id(MENU_AGENT_NEW, AGENT_NEW_TITLE)
         .accelerator("CmdOrCtrl+KeyT")
         .enabled(false)
         .build(app)?;
@@ -650,7 +728,7 @@ fn build_app_menu(
     let agent_fork_item = disabled(MENU_AGENT_FORK, "Fork Agent Tab", "Alt+Cmd+KeyT")?;
     let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
     let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
-    let scratch_new_item = disabled(MENU_SCRATCH_NEW, "New Scratch Tab", "Ctrl+Cmd+KeyT")?;
+    let scratch_new_item = disabled(MENU_SCRATCH_NEW, SCRATCH_NEW_TITLE, "Ctrl+Cmd+KeyT")?;
     // Sleep Server ▸ one item per server, enabled and named by `sync_server_menu`; with none, a
     // disabled line says so.
     let server_items = servers
@@ -728,6 +806,9 @@ fn build_app_menu(
     app.run_on_main_thread(hide_alias_items)?;
     if let Some(keep) = tauri::Manager::try_state::<AgentMenu>(app) {
         *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(AgentItems {
+            split: split_pane_item,
+            suspend: suspend_item,
+            terminate: terminate_item,
             new: agent_new_item,
             sleep: agent_sleep_item,
             reopen: reopen_last,
@@ -2914,10 +2995,31 @@ fn main() {
                 return;
             }
 
-            // ⌘T / ⌥⌘S / ⌘⇧T in a tab with agent tabs act on its agent tab list: the focused window's
-            // chrome gets the active tab's id. ⌘T and ⌥⌘S are disabled elsewhere (`sync_agent_menu`);
-            // ⌘⇧T falls through to reopening a window.
-            if id == MENU_AGENT_NEW || id == MENU_AGENT_SLEEP || id == MENU_WINDOW_REOPEN_LAST {
+            // ⌘T follows focus as ⌘W does: a scratch tab in a Rex scratch column, else an agent tab
+            // — the focused window's chrome gets the active tab's id.
+            if id == MENU_AGENT_NEW {
+                match focused_new_target(app) {
+                    Some((label, tab, registry::NewTarget::Scratch)) => {
+                        if let Err(e) = scratch_run(app, &label, &tab, ScratchOp::NewTab) {
+                            rex::lifecycle::banner(app, &label, &e);
+                        }
+                    }
+                    Some((label, tab, registry::NewTarget::Agent)) => {
+                        let _ = app.emit_to(
+                            label.as_str(),
+                            id,
+                            serde_json::json!({ "label": label, "tabId": tab }),
+                        );
+                    }
+                    Some((_, _, registry::NewTarget::Opening)) | None => {}
+                }
+                return;
+            }
+
+            // ⌥⌘S / ⌘⇧T in a tab with agent tabs act on its agent tab list: the focused window's
+            // chrome gets the active tab's id. ⌥⌘S is disabled elsewhere (`sync_agent_menu`); ⌘⇧T
+            // falls through to reopening a window.
+            if id == MENU_AGENT_SLEEP || id == MENU_WINDOW_REOPEN_LAST {
                 // ⌘⇧T reaches the list only when it has a closed agent tab; otherwise it reopens
                 // a window, as everywhere else.
                 let target = focused_agent_tab(app)

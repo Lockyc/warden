@@ -428,6 +428,17 @@ pub enum CloseTarget {
     Project,
 }
 
+/// What ⌘T makes in the focused pane ([`Registry::new_target`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTarget {
+    /// An agent tab in the main pane's list.
+    Agent,
+    /// A scratch tab in the Rex scratch column.
+    Scratch,
+    /// Nothing yet: focus is in a Rex scratch column whose open hasn't landed.
+    Opening,
+}
+
 /// Who closes a scratch block ([`Registry::begin_close_block`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockClose {
@@ -916,7 +927,12 @@ pub enum Side {
 
 /// The pane to `side` of `focused`: the other pane when a split puts it there — on the left for
 /// a `secondary_left` split's secondary, else on the right — or `None`.
-fn pane_toward(split: bool, secondary_left: bool, focused: PaneIdx, side: Side) -> Option<PaneIdx> {
+pub(crate) fn pane_toward(
+    split: bool,
+    secondary_left: bool,
+    focused: PaneIdx,
+    side: Side,
+) -> Option<PaneIdx> {
     if !split {
         return None;
     }
@@ -1308,6 +1324,21 @@ impl Registry {
             },
             None => main,
         })
+    }
+
+    /// What ⌘T makes in tab `id`, given whether its main pane holds agent tabs (`agents`): a
+    /// scratch tab while focus sits in its Rex scratch column, else an agent tab, else nothing
+    /// (`None`) — ⌘W's focus rule ([`close_target`](Self::close_target)).
+    pub fn new_target(&self, id: &str, agents: bool) -> Option<NewTarget> {
+        let main = agents.then_some(NewTarget::Agent);
+        let Some(t) = self.tabs.iter().find(|t| t.id == id) else {
+            return main;
+        };
+        match (t.focused, t.column.as_ref()) {
+            (PaneIdx::Block(_), Some(c)) if c.opening() => Some(NewTarget::Opening),
+            (PaneIdx::Block(_), Some(c)) if c.is_rex() => Some(NewTarget::Scratch),
+            _ => main,
+        }
     }
 
     /// Start closing shown block `i` of tab `id`'s column: a Rex block is Rex's to close, by its
@@ -5089,6 +5120,44 @@ mod tests {
         assert!(r.focus_pane("t", PaneIdx::Block(0)));
         assert_eq!(r.close_target("t", true), None);
         assert_eq!(r.begin_close_block("t", 0), None);
+    }
+
+    #[test]
+    fn new_target_follows_focus() {
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
+        assert_eq!(r.new_target("t", true), Some(NewTarget::Agent));
+        assert_eq!(r.new_target("t", false), None);
+        assert!(r.focus_pane("t", PaneIdx::Block(0)));
+        assert_eq!(r.new_target("t", true), Some(NewTarget::Scratch));
+        assert_eq!(
+            r.new_target("t", false),
+            Some(NewTarget::Scratch),
+            "a scratch column needs no agents"
+        );
+        assert_eq!(r.new_target("nope", true), Some(NewTarget::Agent));
+    }
+
+    #[test]
+    fn new_target_in_a_plain_secondary_is_the_main_panes() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp/a"), false).unwrap();
+        r.split("a");
+        assert!(r.focus_pane("a", PaneIdx::Block(0)));
+        assert_eq!(
+            r.new_target("a", false),
+            None,
+            "a plain split has no scratch tabs"
+        );
+    }
+
+    #[test]
+    fn new_target_while_column_opening_waits() {
+        let (mut r, _) = rex_registry();
+        r.add(&split_rex_spec("t", 2), false).unwrap();
+        assert_eq!(r.new_target("t", true), Some(NewTarget::Agent));
+        r.mark_detached("t", true, Some("b1"));
+        assert!(r.focus_pane("t", PaneIdx::Block(0)));
+        assert_eq!(r.new_target("t", true), Some(NewTarget::Opening));
     }
 
     #[test]

@@ -385,6 +385,28 @@ impl DetachedSurface {
         detached_close_target(&self.tab_id, self.focused, self.secondary.is_some())
     }
 
+    /// The pane to `side` of the focused one here (⌥⌘← / ⌥⌘→), as a docked tab's
+    /// (`Registry::pane_to`).
+    pub fn pane_to(&self, side: crate::registry::Side) -> Option<crate::registry::PaneIdx> {
+        crate::registry::pane_toward(
+            self.secondary.is_some(),
+            self.secondary_left,
+            self.focused,
+            side,
+        )
+    }
+
+    /// Give pane `which` keyboard focus; its `SurfaceSignal::Focused` then records it in
+    /// `focused`. False when this pop-out has no such pane.
+    pub fn focus_pane(&self, which: crate::registry::PaneIdx) -> bool {
+        let surface = match which {
+            crate::registry::PaneIdx::Primary => Some(&self.surface),
+            crate::registry::PaneIdx::Block(0) => self.secondary.as_ref(),
+            crate::registry::PaneIdx::Block(_) => None,
+        };
+        surface.map(|s| s.focus()).is_some()
+    }
+
     /// The Rex key pane `which`'s travelling surface answers to: the agent's own for an agent,
     /// the block's for a column block, else the pane's (`registry::shown_rex_key`). `None` for a
     /// plain tab.

@@ -86,7 +86,7 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
   schema in `docs/config.md`); warden creates the session in that layout
   (`layout::stack_layout`), and after that Rex holds it, so a stack edit reaches only sessions
   created afterwards. No stack (`split = true`, what ⌘D saves) is one bare shell.
-- **`+`** or Tab ▸ New Scratch Tab (⌃⌘T) opens a new Rex window with a bare shell; clicking a
+- **`+`**, Tab ▸ New Scratch Tab (⌃⌘T), or ⌘T with focus in the column opens a new Rex window with a bare shell; clicking a
   number shows that scratch tab and leaves the main pane alone; the shown one's **×** closes it
   and its blocks (`session.close_window`).
 - **⌘D in a block** is `session.new_split` below it, and focus moves to the new block when
