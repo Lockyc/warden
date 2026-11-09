@@ -101,23 +101,20 @@ const ALIAS_TITLES: [&str; 2] = ["Previous Agent Tab (⌘K)", "Next Agent Tab (�
 /// project tab. The event the chrome runs the row's own Close from, confirm included.
 const EVENT_AGENT_CLOSE: &str = "warden:agent-close";
 
-/// Tab ▸ Close Project Tab (⌥⌘W): ⌘W's unload, kept on a key — enabled whenever ⌘W closes
-/// something other than the project tab ([`focused_close_target`]).
+/// Tab ▸ Close Project Tab (⌥⌘W): unloads the active tab whatever ⌘W closes in the focused pane,
+/// so the one chord always works.
 const MENU_TAB_CLOSE_PROJECT: &str = "warden:close-project-tab";
 /// [`MENU_TAB_CLOSE_PROJECT`]'s title, which [`close_project_item`] appends a reason to.
 const CLOSE_PROJECT_TITLE: &str = "Close Project Tab";
 
-/// Close Project Tab's enabled state and title, given whether the focused window is a pop-out
-/// and what ⌘W closes there ([`focused_close_target`]): a pop-out's main pane docks the tab with
-/// ⌘W rather than unloading it, so the item says to dock first.
-fn close_project_item(popped_out: bool, close: Option<&registry::CloseTarget>) -> (bool, String) {
+/// Close Project Tab's enabled state and title, given whether the focused window is a pop-out:
+/// a pop-out's main pane docks the tab with ⌘W rather than unloading it, so the item says to dock
+/// first.
+fn close_project_item(popped_out: bool) -> (bool, String) {
     if popped_out {
         return (false, format!("{CLOSE_PROJECT_TITLE} (Dock the tab first)"));
     }
-    (
-        close != Some(&registry::CloseTarget::Project),
-        CLOSE_PROJECT_TITLE.to_owned(),
-    )
+    (true, CLOSE_PROJECT_TITLE.to_owned())
 }
 
 /// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
@@ -360,8 +357,8 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
 /// Tab while it has a Rex scratch column, and Pop Out Tab (titled with the reason) unless the
 /// column is too full to carry; ⌘W is titled for what it closes, disabled with the reason while
-/// focus waits on a scratch column's open, and ⌥⌘W enabled while ⌘W closes something other than
-/// the project tab. Runs on every
+/// focus waits on a scratch column's open, and ⌥⌘W enabled unless the window is a pop-out. Runs on
+/// every
 /// menu build, window focus, pane focus, tab activation, agent list change and scratch column
 /// change (a Rex view landing), so it also marks
 /// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
@@ -452,7 +449,7 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             Some(CloseTarget::Agent) => "Close Agent Tab".into(),
             Some(CloseTarget::Project) => "Close Tab".into(),
         });
-        let (enabled, title) = close_project_item(popped_out, close.as_ref());
+        let (enabled, title) = close_project_item(popped_out);
         let _ = i.close_project.set_enabled(enabled);
         let _ = i.close_project.set_text(title);
         let _ = i
@@ -3200,7 +3197,7 @@ fn main() {
                 }
                 return;
             }
-            // ⌥⌘W: ⌘W's unload, enabled whenever ⌘W closes something other than the project tab.
+            // ⌥⌘W: unload the active tab, whatever ⌘W closes in the focused pane.
             if id == MENU_TAB_CLOSE_PROJECT {
                 let _ = app.emit_to(
                     label.as_str(),
@@ -3581,29 +3578,15 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// ⌥⌘W in a pop-out is disabled with the reason; docked, it carries its plain title, enabled
-    /// whenever ⌘W closes something other than the tab.
+    /// ⌥⌘W in a pop-out is disabled with the reason; docked, it is enabled with its plain title.
     #[test]
     fn close_project_item_names_why_a_pop_out_disables_it() {
-        use registry::CloseTarget;
-        let block = CloseTarget::Block {
-            tab: "t".into(),
-            block: 0,
-        };
         assert_eq!(
-            close_project_item(true, Some(&block)),
+            close_project_item(true),
             (false, "Close Project Tab (Dock the tab first)".to_string())
         );
         assert_eq!(
-            close_project_item(false, Some(&block)),
-            (true, CLOSE_PROJECT_TITLE.to_string())
-        );
-        assert_eq!(
-            close_project_item(false, Some(&CloseTarget::Project)),
-            (false, CLOSE_PROJECT_TITLE.to_string())
-        );
-        assert_eq!(
-            close_project_item(false, None),
+            close_project_item(false),
             (true, CLOSE_PROJECT_TITLE.to_string())
         );
     }
