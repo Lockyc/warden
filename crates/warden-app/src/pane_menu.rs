@@ -604,14 +604,24 @@ mod tests {
         );
         assert_eq!(
             m.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
-            ["Scratch column", "25%", "30% (default)", "33%", "50%", "67%"]
+            [
+                "Scratch column",
+                "25%",
+                "30% (default)",
+                "33%",
+                "50%",
+                "67%"
+            ]
         );
         assert!(!m[0].enabled && parse(&m[0].id).is_none() && parse_divider(&m[0].id).is_none());
         assert!(m.iter().all(|i| !i.separator_before));
         assert_eq!(m[4].checked, Some(true));
         // The pane menu's own ops, so choosing one saves the size as Size ▸ does.
         let t = parse(&m[2].id).unwrap();
-        assert_eq!((t.op, t.label.as_str(), t.tab.as_str()), (Op::SizeDefault, "w0", "/tmp/a"));
+        assert_eq!(
+            (t.op, t.label.as_str(), t.tab.as_str()),
+            (Op::SizeDefault, "w0", "/tmp/a")
+        );
     }
 
     #[test]
@@ -677,7 +687,14 @@ mod tests {
                 .map(|i| i.title.as_str())
                 .take(6)
                 .collect::<Vec<_>>(),
-            ["Copy", "Paste", "Split Above", "Split Below", "Close Pane", "25%"]
+            [
+                "Copy",
+                "Paste",
+                "Split Above",
+                "Split Below",
+                "Close Pane",
+                "25%"
+            ]
         );
         let c = find(&m, Op::ClosePane);
         assert!(c.enabled && !c.separator_before);
