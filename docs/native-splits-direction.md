@@ -51,7 +51,8 @@ panes (below). The config is the one source of a tab's split:
   `split.size`/`split.side` seed the divider. A drag overrides the ratio **in memory only**,
   for as long as the tab's terminals are live: unload, a child exit, a hot-reload respawn,
   a new `size` in the config and an app restart all bring the config ratio back; the
-  right-click menu's Size ▸ saves a size, replacing the drag. `exit` in
+  Size ▸ in a terminal's right-click menu, or right-clicking the divider, saves a size,
+  replacing the drag. `exit` in
   the second shell closes the pane for the same lifetime — `Registry::unload` re-declares it,
   so it is back on the next spawn — and ⌘D recreates it from config. This is the frame-less
   shape of an `amux --frame` tab: the scratch shell beside the agent, with warden owning the
@@ -89,9 +90,11 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
 - **`+`**, Tab ▸ New Scratch Tab (⌃⌘T), or ⌘T with focus in the column opens a new Rex window with a bare shell; clicking a
   number shows that scratch tab and leaves the main pane alone; the shown one's **×** closes it
   and its blocks (`session.close_window`).
-- **⌘D in a block** is `session.new_split` below it, and focus moves to the new block when
-  Rex's next view brings it (`Registry::focus_block`); dragging an inner divider is
-  `session.resize_pane`, sent on release.
+- **⌘D in a block** (Split Above) is `session.new_split` above it, and right-click ▸ Split Below
+  the same below it (`rex::column::StackSide`); focus moves to the new block when Rex's next view
+  brings it (`Registry::focus_block`). Dragging an inner divider is `session.resize_pane`, sent on
+  release; right-clicking one sets its lower (or right) side to a preset share through the same
+  path (`scratchSetRatio`). It lasts as long as Rex keeps the session — nothing is saved.
 - **`exit` in a block**, or ⌘W / Close Pane on it (`block.close`), closes it: its scratch tab
   reflows, or goes with its last block and the selection leans to a neighbour; the session's
   last block gives way to a fresh scratch tab, so the split stays (`docs/rex.md`, *Lifecycle*). While the
@@ -218,7 +221,8 @@ only by eye. Each step below is written to actually fail if the feature regresse
   splits.
 - With a local Rex running, `just run`'s `stack` tab opens its column stacked at the declared
   sizes; `+` adds scratch tab 2 with one shell, and clicking `1`/`2` swaps the column while the
-  agent pane stays put; ⌘D in a block adds a block below it, focused; dragging an inner divider
+  agent pane stays put; ⌘D in a block adds a block above it, focused, and right-click ▸ Split
+  Below one below it; right-clicking an inner divider and picking 50% evens its two sides; dragging an inner divider
   resizes only its two sides and survives a tab switch; `exit` in a non-last block reflows the
   rest; `exit` in tab 2's only block returns to tab 1, and ⌘W and the shown tab's × do the
   same as `exit`, for a block and a whole tab; closing the last scratch tab leaves a fresh one
