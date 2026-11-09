@@ -20,6 +20,23 @@ use super::windows::AgentWindow;
 use super::{api_error, budgeted, str_field, RexHub, State, OPEN_BUDGET};
 use crate::registry::{tab_of_secondary, RexOpen};
 
+/// Which side of a scratch block a split stacks its new shell on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackSide {
+    Above,
+    Below,
+}
+
+impl StackSide {
+    /// `session.new_split`'s `side`: `before` is the top part of a vertical split.
+    fn wire(self) -> &'static str {
+        match self {
+            StackSide::Above => "before",
+            StackSide::Below => "after",
+        }
+    }
+}
+
 /// One scratch tab: a window of the column's session, and its split tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScratchWindow {
@@ -159,13 +176,14 @@ impl RexHub {
         budgeted(deadline, made).map(|w| w.window_id)
     }
 
-    /// Split `block_id` of `column_key`'s session: a bare shell in `dir` stacked below it, half
-    /// its height, focused. Returns the new block's id, bound at once; the window's layout follows
-    /// with Rex's next view.
+    /// Split `block_id` of `column_key`'s session: a bare shell in `dir` stacked on `side` of it,
+    /// half its height, focused. Returns the new block's id, bound at once; the window's layout
+    /// follows with Rex's next view.
     pub fn column_split(
         &self,
         column_key: &str,
         block_id: &str,
+        side: StackSide,
         dir: &Path,
     ) -> Result<String, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
@@ -177,7 +195,7 @@ impl RexHub {
                 "session_id": rec.session_id,
                 "anchor_id": block_id,
                 "direction": "vertical",
-                "side": "after",
+                "side": side.wire(),
                 "ratio": 0.5,
                 "layout": stack_layout(&[], dir),
                 "focus": true,

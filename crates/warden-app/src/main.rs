@@ -401,13 +401,12 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(i) = items {
-        use pane_menu::SplitKind;
         use registry::NewTarget;
         let _ = i.split.set_enabled(!matches!(split, Some(Err(_))));
         let _ = i.split.set_text(match &split {
-            Some(Ok(SplitKind::SplitBelow)) => "Split Below".into(),
+            Some(Ok(kind)) => pane_menu::split_title(*kind).to_owned(),
             Some(Err(why)) => format!("{SPLIT_TITLE} ({why})"),
-            _ => SPLIT_TITLE.to_owned(),
+            None => SPLIT_TITLE.to_owned(),
         });
         for (item, title) in [(&i.suspend, SUSPEND_TITLE), (&i.terminate, TERMINATE_TITLE)] {
             let _ = item.set_enabled(!popped_out);
@@ -1079,13 +1078,24 @@ enum SplitAction {
 /// which the chrome's banner shows.
 ///
 /// With focus in a block of a Rex scratch column, the split is Rex's instead: a bare shell
-/// stacked below that block ([`ScratchOp::Split`]), shown when Rex's next view lands.
+/// stacked above that block ([`ScratchOp::Split`]), shown when Rex's next view lands.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn split_pane(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
     id: String,
+) -> Result<(), String> {
+    split_tab(window, state, id, rex::column::StackSide::Above)
+}
+
+/// [`split_pane`], stacking a scratch column's new shell on `side` of its focused block.
+#[cfg(target_os = "macos")]
+fn split_tab(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+    side: rex::column::StackSide,
 ) -> Result<(), String> {
     use tauri::Emitter;
     let banner = |message: String| {
@@ -1098,7 +1108,7 @@ fn split_pane(
         let m = state.lock();
         let ws = m.windows.get(window.label()).ok_or("window not found")?;
         match split_kind(&ws.registry, &id)? {
-            pane_menu::SplitKind::SplitBelow => ws.registry.focused_rex_block(&id),
+            pane_menu::SplitKind::Stack => ws.registry.focused_rex_block(&id),
             pane_menu::SplitKind::Split => None,
         }
     };
@@ -1106,7 +1116,7 @@ fn split_pane(
         // The column stands whatever happens to the split, so a failure is the banner's — an
         // `Err` here would collapse the chrome's column.
         let app = tauri::Manager::app_handle(&window);
-        if let Err(e) = scratch_run(app, window.label(), &id, ScratchOp::Split(block)) {
+        if let Err(e) = scratch_run(app, window.label(), &id, ScratchOp::Split { block, side }) {
             rex::lifecycle::banner(app, window.label(), &e);
         }
         return Ok(());
@@ -1156,13 +1166,13 @@ fn split_pane(
     Ok(())
 }
 
-/// What ⌘D would do on tab `id`: stack a shell below its focused Rex scratch block, or split the
+/// What ⌘D would do on tab `id`: stack a shell on its focused Rex scratch block, or split the
 /// tab — or why it can't (a Rex session opened from the sidebar has no config entry to save a
 /// split to). [`split_pane`] acts on it and the right-click menu shows it.
 #[cfg(target_os = "macos")]
 fn split_kind(reg: &registry::Registry, id: &str) -> Result<pane_menu::SplitKind, String> {
     if reg.focused_rex_block(id).is_some() {
-        return Ok(pane_menu::SplitKind::SplitBelow);
+        return Ok(pane_menu::SplitKind::Stack);
     }
     let spec = reg.spec_of(id).ok_or("tab not found")?;
     if spec.split.is_none()
@@ -1241,6 +1251,51 @@ fn pane_menu(
     pane_menu::popup(tauri::Manager::app_handle(&window), &ctx, x, y)
 }
 
+/// A right-click on a divider of tab `id`: pop its sizes at `(x, y)` in this window. `split_id`
+/// names a scratch column divider, `None` the tab's own split; `size` is the share its after
+/// side (the second pane, or the lower or right one) shows now — a drag included.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn divider_menu(
+    window: tauri::WebviewWindow,
+    state: tauri::State<ManagerState>,
+    id: String,
+    split_id: Option<String>,
+    size: f64,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    if !size.is_finite() {
+        return Err("a divider size must be a number".into());
+    }
+    let label = window.label().to_owned();
+    let ctx = match split_id {
+        Some(split_id) => {
+            let m = state.lock();
+            let ws = m.windows.get(&label).ok_or("window not found")?;
+            let d = ws
+                .registry
+                .column_divider(&id, &split_id)
+                .ok_or("that divider is no longer on screen")?;
+            pane_menu::DividerCtx::Scratch {
+                split_id,
+                vertical: d.dir == rex::layout::Dir::Vertical,
+                after: size,
+            }
+        }
+        None => {
+            let (title, tab) = config_tab(&state.lock(), &label, &id)?;
+            // Read outside the lock: it parses the file.
+            let inherited = split_write::current_inherited_size(&title, &tab)?;
+            pane_menu::DividerCtx::Tab(pane_menu::SizeState {
+                current: size,
+                inherited,
+            })
+        }
+    };
+    pane_menu::popup_divider(tauri::Manager::app_handle(&window), &label, &id, &ctx, x, y)
+}
+
 /// A right-click menu item was chosen.
 #[cfg(target_os = "macos")]
 fn on_pane_menu(app: &tauri::AppHandle, target: pane_menu::Target) {
@@ -1270,11 +1325,15 @@ fn on_pane_menu(app: &tauri::AppHandle, target: pane_menu::Target) {
                 (None, _) => {}
             }
         }
-        Op::Split => {
+        Op::Split | Op::SplitBelow => {
             let Some(window) = app.get_webview_window(label) else {
                 return;
             };
-            if let Err(e) = split_pane(window, state, tab.to_owned()) {
+            let side = match op {
+                Op::SplitBelow => rex::column::StackSide::Below,
+                _ => rex::column::StackSide::Above,
+            };
+            if let Err(e) = split_tab(window, state, tab.to_owned(), side) {
                 banner(e);
             }
         }
@@ -2300,8 +2359,11 @@ fn scratch_resize(
 enum ScratchOp {
     /// A new window with one bare shell — a scratch tab — selected once made.
     NewTab,
-    /// A bare shell stacked below block `0`.
-    Split(String),
+    /// A bare shell stacked on `side` of `block`.
+    Split {
+        block: String,
+        side: rex::column::StackSide,
+    },
     /// A divider of the shown scratch tab, moved.
     Resize { split_id: String, ratio: f64 },
     /// Rex window `0` — a scratch tab — closed, with its blocks.
@@ -2350,8 +2412,8 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                 (ScratchOp::NewTab, _) => hub
                     .column_new_tab(&key, &dir)
                     .map(|w| Some(ScratchMade::Tab(w))),
-                (ScratchOp::Split(block), _) => hub
-                    .column_split(&key, block, &dir)
+                (ScratchOp::Split { block, side }, _) => hub
+                    .column_split(&key, block, *side, &dir)
                     .map(|b| Some(ScratchMade::Block(b))),
                 (ScratchOp::Resize { ratio, .. }, Some(d)) => {
                     hub.column_resize(&key, d, *ratio).map(|_| None)
@@ -2978,6 +3040,17 @@ fn main() {
                 on_pane_menu(app, target);
                 return;
             }
+            // A scratch column divider's size: the page resizes it as a drag's release does.
+            if let Some(t) = pane_menu::parse_divider(id) {
+                let _ = app.emit_to(
+                    t.label.as_str(),
+                    "warden:scratch-size",
+                    serde_json::json!({
+                        "label": t.label, "id": t.tab, "splitId": t.split_id, "ratio": t.ratio(),
+                    }),
+                );
+                return;
+            }
 
             // Tab ▸ Cycle Tabs: save the flip; the watcher's reload rebuilds the menu. muda already
             // flipped the tick, so a failed write rebuilds to undo it.
@@ -3176,6 +3249,7 @@ fn main() {
             shell_home_open_window,
             window_menu,
             pane_menu,
+            divider_menu,
             probe_now,
             agents_init,
             agent_new,

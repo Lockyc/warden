@@ -761,6 +761,10 @@
           const el = document.createElement("div");
           el.className = "scratch-div";
           el.addEventListener("mousedown", (e) => scratchDragStart(e, Number(el.dataset.i)));
+          el.addEventListener("contextmenu", (e) => {
+            const d = scratchView(activeId).dividers[Number(el.dataset.i)];
+            if (d) dividerMenu(e, d.split_id, 1 - d.ratio);
+          });
           body.append(el);
           divs.push(el);
         }
@@ -861,6 +865,7 @@
         return vert ? (e.clientY - body.top) / extent : (e.clientX - body.left) / extent;
       }
       function scratchDragStart(e, di) {
+        if (e.button !== 0) return; // a right-click is the divider's menu (`dividerMenu`)
         const view = scratchView(activeId);
         const d = view.dividers[di];
         if (!activeId || !d) return;
@@ -899,9 +904,13 @@
         window.removeEventListener("blur", scratchDragEnd);
         const d = g.base.dividers[g.di];
         if (Math.abs(g.ratio - d.ratio) < SCRATCH_EPS) return; // a click, not a drag
-        // Held until a snapshot shows Rex at this ratio — an unrelated refresh before then would
-        // snap the divider back — or the resize fails, or Rex never says so.
-        const hold = { tabId: g.tabId, view: scratchHeld.view, splitId: d.split_id, ratio: g.ratio };
+        scratchSetRatio(g.tabId, scratchHeld.view, d.split_id, g.ratio);
+      }
+      // Ask Rex to move divider `splitId` of `tabId`'s column to `ratio`, `view` (the column laid
+      // out at it) shown meanwhile. Held until a snapshot shows Rex at this ratio — an unrelated
+      // refresh before then would snap the divider back — or the resize fails, or Rex never says so.
+      function scratchSetRatio(tabId, view, splitId, ratio) {
+        const hold = { tabId, view, splitId, ratio };
         scratchHeld = hold;
         const release = () => {
           if (scratchHeld !== hold) return;
@@ -912,11 +921,33 @@
           }
         };
         setTimeout(release, SCRATCH_HOLD_MS);
-        invoke("scratch_resize", { id: g.tabId, splitId: d.split_id, ratio: g.ratio }).catch((err) => {
+        invoke("scratch_resize", { id: tabId, splitId, ratio }).catch((err) => {
           if (sb) sb.setError("⚠ " + err);
           release();
         });
       }
+      // A right-click on a divider of the active tab: the backend pops its sizes. `splitId` names
+      // a scratch column divider (null for the tab's own split); `size` is the share its after
+      // side shows here — the second pane's, or the lower or right one's.
+      function dividerMenu(e, splitId, size) {
+        e.preventDefault();
+        if (!activeId) return;
+        invoke("divider_menu", { id: activeId, splitId, size, x: e.clientX, y: e.clientY })
+          .catch((err) => { if (sb) sb.setError("⚠ " + err); });
+      }
+      // A size chosen for a scratch column divider: the column moves to it as a drag's release does.
+      listen("warden:scratch-size", (e) => {
+        if (!forMe(e)) return;
+        const p = e.payload;
+        if (!p || p.id !== activeId || !Number.isFinite(p.ratio)) return;
+        const view = scratchView(activeId);
+        const di = view.dividers.findIndex((d) => d.split_id === p.splitId);
+        if (di < 0) return;
+        const ratio = Math.min(scratchBand[1], Math.max(scratchBand[0], p.ratio));
+        scratchSetRatio(activeId, scratchResized(view, di, ratio), p.splitId, ratio);
+        scratchRender(scratchHeld.view);
+        reportRect();
+      });
       const SCRATCH_HOLD_MS = 2000;
       const SCRATCH_HOLD_MATCH = 0.005;
       // Whether snapshot column `c` shows Rex at hold `h`'s released ratio.
@@ -2268,6 +2299,7 @@
           dragTabId = null;
         }
         divider.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return; // a right-click is the divider's menu (`dividerMenu`)
           e.preventDefault();
           const usable = usableWidth();
           const p = primaryEl.getBoundingClientRect();
@@ -2280,6 +2312,10 @@
           window.addEventListener("mousemove", onMove);
           window.addEventListener("mouseup", end);
           window.addEventListener("blur", end);
+        });
+        divider.addEventListener("contextmenu", (e) => {
+          const s = activeId !== null && splitOf(activeId) ? loadSplit(activeId) : null;
+          if (s) dividerMenu(e, null, 1 - s.ratio);
         });
       })();
 

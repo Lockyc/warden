@@ -7,6 +7,7 @@ use rex_client::fake::{FakeServer, Reply};
 use rex_client::{ClientInfo, Endpoint, RexError};
 use serde_json::{json, Value};
 
+use super::column::StackSide;
 use super::layout::Layout;
 use super::store::{PaneRecord, RexStore};
 use super::windows::{AgentState, AgentWindow, BlockStatus};
@@ -2367,17 +2368,25 @@ fn column_new_tab_makes_one_shell_window() {
 }
 
 #[test]
-fn column_split_is_vertical_after() {
+fn column_split_stacks_vertically_on_the_chosen_side() {
     let (fake, hub, _, _dir) = opened_column();
     fake.reply(
         "session.new_split",
         json!({"anchor_id": "b1", "block_ids": ["b2"], "split_ids": ["s1"], "revision": 2}),
     );
     let b = hub
-        .column_split("t::2", "b1", Path::new("/work/t"))
+        .column_split("t::2", "b1", StackSide::Below, Path::new("/work/t"))
         .expect("column_split");
     assert_eq!(b, "b2");
-    let p = &fake.requests_for("session.new_split")[0].payload;
+    fake.reply(
+        "session.new_split",
+        json!({"anchor_id": "b2", "block_ids": ["b3"], "split_ids": ["s2"], "revision": 3}),
+    );
+    hub.column_split("t::2", "b2", StackSide::Above, Path::new("/work/t"))
+        .expect("column_split above");
+    let reqs = fake.requests_for("session.new_split");
+    assert_eq!(reqs[1].payload["side"], "before");
+    let p = &reqs[0].payload;
     assert_eq!(p["session_id"], "session:new");
     assert_eq!(p["anchor_id"], "b1");
     assert_eq!(p["direction"], "vertical");
