@@ -483,8 +483,6 @@ pub const NOT_LOCAL: &str = "stops only from its own Mac";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LossKind {
-    /// A Rex tab's terminal pane: a plain shell, with nothing to resume.
-    Shell,
     /// A live agent tab that never reported its resume command.
     Agent,
     /// A session warden doesn't own: Rex.app's, the phone's, an unclaimed row's.
@@ -539,7 +537,7 @@ impl RexHub {
     /// main pane mapped to it sleeps its live resumable agent records and loses the rest, matched
     /// against the session's windows — as the hub follows them, else read now
     /// ([`RexHub::read_windows`]), so a window no record knows is listed too; a split mapped to it
-    /// is a shell lost; one nothing maps is a session lost. `title` names a tab by its key. Reads
+    /// is scratch, and ends unlisted; one nothing maps is a session lost. `title` names a tab by its key. Reads
     /// the network (worker only); `Err` when a session's windows can't be read, since the plan
     /// would then miss what it loses.
     pub fn plan_server_sleep(
@@ -583,7 +581,7 @@ impl RexHub {
             sessions.retain(|s| mapped.iter().any(|(_, sid)| *sid == s.id));
         }
         let mut plan = SleepPlan::default();
-        let (mut agents, mut shells, mut unowned) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut agents, mut unowned) = (Vec::new(), Vec::new());
         for s in &sessions {
             let label = || match s.label.as_str() {
                 "" => s.id.clone(),
@@ -601,11 +599,7 @@ impl RexHub {
                 });
             }
             for key in panes {
-                if let Some(tab) = crate::registry::tab_of_secondary(key) {
-                    shells.push(LossItem {
-                        kind: LossKind::Shell,
-                        name: title(tab).map_or_else(label, |t| format!("{t} · terminal")),
-                    });
+                if crate::registry::tab_of_secondary(key).is_some() {
                     continue;
                 }
                 let windows = if self.inner.watching(server, &s.id) {
@@ -627,7 +621,7 @@ impl RexHub {
                 }
             }
         }
-        plan.lose = [agents, shells, unowned].concat();
+        plan.lose = [agents, unowned].concat();
         Ok(plan)
     }
 
@@ -2785,12 +2779,12 @@ mod tests {
             plan.lose,
             [
                 item(LossKind::Agent, "Proj · b"),
-                item(LossKind::Shell, "Proj · terminal"),
                 item(LossKind::Session, "phone"),
-            ]
+            ],
+            "the scratch column ends unlisted"
         );
         let v = serde_json::to_value(&plan.lose[1]).unwrap();
-        assert_eq!(v, json!({"kind": "shell", "name": "Proj · terminal"}));
+        assert_eq!(v, json!({"kind": "session", "name": "phone"}));
     }
 
     #[test]
@@ -3053,7 +3047,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_project_lists_its_shell_and_unresumable_agents_only() {
+    fn plan_project_lists_its_unresumable_agents_only() {
         use super::{LossItem, LossKind};
         let (_f, _dir, hub, s) = server_with(
             true,
@@ -3078,11 +3072,8 @@ mod tests {
         };
         assert_eq!(
             plan.lose,
-            [
-                item(LossKind::Agent, "Proj · b"),
-                item(LossKind::Shell, "Proj · terminal"),
-            ],
-            "another project's session is no loss of this one's"
+            [item(LossKind::Agent, "Proj · b")],
+            "its scratch column and another project's session are no loss"
         );
     }
 

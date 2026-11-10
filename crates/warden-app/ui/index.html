@@ -2400,7 +2400,7 @@
       // (`warden:sleep-confirm`): confirm, listing every loss by name. Confirming sends those names
       // back (`server_sleep` for a server, `project_sleep` for a tab); a loss the backend finds
       // that isn't among them asks again. Cancel does nothing.
-      const SS_KIND = { shell: "terminal", agent: "agent tab", session: "session" };
+      const SS_KIND = { agent: "agent tab", session: "session" };
       let sleepConfirm = null; // { server, tabId, names } while the confirm shows
       function placeSleepConfirm() {
         const box = document.getElementById("server-sleep");
