@@ -1637,7 +1637,9 @@ fn summary_from_the_hook_child_records() {
         "program_status_removed",
         json!({"ids": ["warden/asked", "warden/answered", "warden/said"], "reason": "clear"}),
     );
-    eventually("the clear", || summary() == (None, None) && answered().is_none());
+    eventually("the clear", || {
+        summary() == (None, None) && answered().is_none()
+    });
 
     // A removal without `ids` takes every record.
     fake.push_block_event(
