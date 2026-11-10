@@ -326,8 +326,8 @@ pub fn end_if_exited(app: &AppHandle, pane_key: String, agent: Option<(String, S
     }
 }
 
-/// The user closed scratch block `pane_key` ([`block_key`]) of a column in window `label` — ⌘W or
-/// Close Pane: Rex closes it on a worker ([`RexHub::column_close_block`]), and it lands as a
+/// The user closed scratch block `pane_key` ([`block_key`]) of a column in window `label` — Close
+/// Pane: Rex closes it on a worker ([`RexHub::column_close_block`]), and it lands as a
 /// program's exit there does — its relay exits, the session's next view drops it, and the
 /// session, emptied, is refilled ([`RexHub::column_fill`]). A failure shows in `label`'s banner.
 ///

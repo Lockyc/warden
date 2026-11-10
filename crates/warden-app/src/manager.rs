@@ -248,23 +248,6 @@ pub fn announce_pane_closed(app: &AppHandle, label: &str, tab_id: &str) {
     );
 }
 
-/// What ⌘W closes in a pop-out of tab `tab` whose `focused` pane has focus: its scratch pane
-/// (`Block`, while `has_secondary`), else `Project` — the spine's route, which docks the tab.
-pub fn detached_close_target(
-    tab: &str,
-    focused: crate::registry::PaneIdx,
-    has_secondary: bool,
-) -> crate::registry::CloseTarget {
-    use crate::registry::{CloseTarget, PaneIdx};
-    match focused {
-        PaneIdx::Block(_) if has_secondary => CloseTarget::Block {
-            tab: tab.to_owned(),
-            block: 0,
-        },
-        _ => CloseTarget::Project,
-    }
-}
-
 /// A popped-out tab [`WindowManager::end_detached`] ended, for [`announce_detached_ended`].
 pub struct DetachedTabEnded {
     dlabel: String,
@@ -342,8 +325,8 @@ pub struct Redocked {
 pub struct DetachedSurface {
     pub surface: GhosttySurface,
     /// The pane with keyboard focus here: seeded from the origin's at pop-out, then each
-    /// `SurfaceSignal::Focused` ([`WindowManager::handle_surface_focused`]). ⌘W reads it
-    /// ([`Self::close_target`]).
+    /// `SurfaceSignal::Focused` ([`WindowManager::handle_surface_focused`]). ⌥⌘← / ⌥⌘→ read it
+    /// ([`Self::pane_to`]).
     pub focused: crate::registry::PaneIdx,
     /// The tab's second pane, when it had a live one at pop-out time. `None` for an
     /// unsplit tab (and for a split tab whose secondary was still cold — nothing live to
@@ -380,11 +363,6 @@ pub struct DetachedSurface {
 }
 
 impl DetachedSurface {
-    /// What ⌘W closes in this pop-out ([`detached_close_target`]).
-    pub fn close_target(&self) -> crate::registry::CloseTarget {
-        detached_close_target(&self.tab_id, self.focused, self.secondary.is_some())
-    }
-
     /// The pane to `side` of the focused one here (⌥⌘← / ⌥⌘→), as a docked tab's
     /// (`Registry::pane_to`).
     pub fn pane_to(&self, side: crate::registry::Side) -> Option<crate::registry::PaneIdx> {
@@ -1025,7 +1003,6 @@ impl WindowManager {
                 pane,
                 has_selection,
                 ds.secondary.is_some(),
-                detached_close_target(&ds.tab_id, pane, ds.secondary.is_some()),
             );
             drop(lock);
             if let Err(e) = crate::pane_menu::popup(app, &ctx, x, y) {
@@ -1711,29 +1688,6 @@ mod tests {
             .map(|w| w.title.as_str())
             .collect();
         assert_eq!(titles, ["gone", "job"]);
-    }
-
-    #[test]
-    fn pop_out_close_target_follows_focus() {
-        use crate::registry::{CloseTarget, PaneIdx};
-        assert_eq!(
-            detached_close_target("t", PaneIdx::Block(0), true),
-            CloseTarget::Block {
-                tab: "t".into(),
-                block: 0
-            },
-            "⌘W in the scratch pane closes it"
-        );
-        assert_eq!(
-            detached_close_target("t", PaneIdx::Primary, true),
-            CloseTarget::Project,
-            "⌘W in the main pane docks the tab"
-        );
-        assert_eq!(
-            detached_close_target("t", PaneIdx::Block(0), false),
-            CloseTarget::Project,
-            "a scratch pane already gone"
-        );
     }
 
     #[test]

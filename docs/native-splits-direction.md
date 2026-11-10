@@ -65,11 +65,11 @@ panes (below). The config is the one source of a tab's split:
   detaches, and adding the split back reattaches it. Neither touches the primary's PTY. While the
   config doesn't parse, the save is refused with a banner.
 
-A split is closed by the column's panes ending — `exit` in one, ⌘W with focus in it, or the
-right-click Close Pane, which lands as the exit does — or by the config dropping it, and resized
-by dragging the divider, a 1px line in a 5px grab strip that carries no close control. ⌘W
-follows focus (`Registry::close_target`): in the main pane it unloads the **whole tab** (or
-closes a selected agent tab), and ⌘⇧O (pop-out) acts on the whole tab too — unloading drops
+A split is closed by the column's panes ending — `exit` in one, or the right-click Close Pane
+(`Registry::close_pane_item`), which lands as the exit does — or by the config dropping it, and
+resized by dragging the divider, a 1px line in a 5px grab strip that carries no close control.
+⌘W never closes a pane: from either pane it closes a selected agent tab, else unloads the
+**whole tab** (`main.rs::agent_closable`), and ⌘⇧O (pop-out) acts on the whole tab too — unloading drops
 every pane to cold together, and popping out carries both surfaces
 to the detached window at the tab's current effective ratio
 (`shell_core::detach::DetachSpec.panes`, generic on purpose: a `Vec<f64>` of hole ratios,
@@ -87,7 +87,7 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
   schema in `docs/config.md`); warden creates the session in that layout
   (`layout::stack_layout`), and after that Rex holds it, so a stack edit reaches only sessions
   created afterwards. No stack (`split = true`, what ⌘D saves) is one bare shell.
-- **`+`**, Tab ▸ New Scratch Tab (⌃⌘T), or ⌘T with focus in the column opens a new Rex window with a bare shell; clicking a
+- **`+`** or Tab ▸ New Scratch Tab (⌃⌘T, from either pane) opens a new Rex window with a bare shell; clicking a
   number shows that scratch tab and leaves the main pane alone; the shown one's **×** closes it
   and its blocks (`session.close_window`).
 - **⌘D in a block** (Split Above) is `session.new_split` above it, and right-click ▸ Split Below
@@ -95,10 +95,10 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
   brings it (`Registry::focus_block`). Dragging an inner divider is `session.resize_pane`, sent on
   release; right-clicking one sets its lower (or right) side to a preset share through the same
   path (`scratchSetRatio`). It lasts as long as Rex keeps the session — nothing is saved.
-- **`exit` in a block**, or ⌘W / Close Pane on it (`block.close`), closes it: its scratch tab
+- **`exit` in a block**, or Close Pane on it (`block.close`), closes it: its scratch tab
   reflows, or goes with its last block and the selection leans to a neighbour; the session's
   last block gives way to a fresh scratch tab, so the split stays (`docs/rex.md`, *Lifecycle*). While the
-  column's open is in flight, ⌘W in it is disabled with the reason.
+  column's open is in flight, Close Pane is disabled with the reason.
 - **Pop-out carries at most one block** — a fuller column is refused, with Tab ▸ Pop Out Tab
   disabled and titled with the reason (`Registry::pop_out_blocked`; the unlock is in
   `docs/FOLLOWUPS.md`).
@@ -224,8 +224,9 @@ only by eye. Each step below is written to actually fail if the feature regresse
   agent pane stays put; ⌘D in a block adds a block above it, focused, and right-click ▸ Split
   Below one below it; right-clicking an inner divider and picking 50% evens its two sides; dragging an inner divider
   resizes only its two sides and survives a tab switch; `exit` in a non-last block reflows the
-  rest; `exit` in tab 2's only block returns to tab 1, and ⌘W and the shown tab's × do the
-  same as `exit`, for a block and a whole tab; closing the last scratch tab leaves a fresh one
+  rest; `exit` in tab 2's only block returns to tab 1, and Close Pane and the shown tab's × do
+  the same as `exit`, for a block and a whole tab; ⌘T and ⌘W with focus in a block act on the
+  agent list, not the column; closing the last scratch tab leaves a fresh one
   with a bare shell in its place; a split made in Rex.app on the same
   session appears in warden; Tab ▸ Pop Out Tab on the stacked tab is disabled with its reason.
 

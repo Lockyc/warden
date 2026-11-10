@@ -243,7 +243,7 @@
          terminals, not a bar) and the line is #393f40, a flat neutral in the same register as the
          app's dark chrome. The strip is wider than the line because a 1px target cannot be
          grabbed; the extra width is invisible by construction. No close control rides it — a
-         split closes from its second pane (exit, ⌘W, Close Pane, the strip's ×) or the config.
+         split closes from its second pane (exit, Close Pane, the strip's ×) or the config.
          (Same values, same reasoning, as shell-core's `.divider` in the detached page.) */
       #pane-divider { flex: 0 0 5px; cursor: col-resize; display: none;
         background: linear-gradient(to right, var(--pane-ground) 2px, #393f40 2px, #393f40 3px,
@@ -1151,7 +1151,7 @@
       }
 
       // The tail for a split ending — `warden:pane-closed`, docked or in a popped-out window,
-      // whether the secondary exited or was closed (⌘W, Close Pane, the strip's ×).
+      // whether the secondary exited or was closed (Close Pane, the strip's ×).
       // Mirrors `Registry::close_block` / `close_column` resetting focus to the primary, so
       // `focusedPaneById` can't drift from backend truth (see its own doc comment). Only touches
       // the DOM when `id` is the tab actually on screen — a background tab's split collapsing

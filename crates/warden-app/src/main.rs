@@ -70,8 +70,8 @@ const MENU_TAB_TERMINATE: &str = "warden:terminate-tab";
 
 /// Tab ▸ New Agent Tab (⌘T) / Sleep Agent Tab (⌥⌘S) — act on the agent tab list of the focused
 /// window's active tab, enabled only while there is one ([`sync_agent_menu`]). The id doubles as
-/// the event name, sent with the tab's id. ⌘T follows focus as ⌘W does: in a Rex scratch column
-/// it is New Scratch Tab ([`focused_new_target`]). ⌘⇧T reaches the same list as
+/// the event name, sent with the tab's id — from either of its panes, as ⌘W's agent close; a
+/// scratch tab is ⌃⌘T's (`MENU_SCRATCH_NEW`). ⌘⇧T reaches the same list as
 /// `warden:agent-reopen` when it has a closed agent tab (see `MENU_WINDOW_REOPEN_LAST`'s handler)
 /// — from a scratch pane too: a closed scratch tab is gone from Rex, so there is nothing of the
 /// column's to reopen.
@@ -96,7 +96,7 @@ const MENU_AGENT_PREV_ALIAS: &str = "warden:agent-prev-alias";
 const MENU_AGENT_NEXT_ALIAS: &str = "warden:agent-next-alias";
 const ALIAS_TITLES: [&str; 2] = ["Previous Agent Tab (⌘K)", "Next Agent Tab (⌘J)"];
 
-/// ⌘W in a Rex tab's main pane with a selected agent tab: the spine's Close Tab,
+/// ⌘W in a Rex tab with a selected agent tab, from either of its panes: the spine's Close Tab,
 /// retitled Close Agent Tab by [`sync_agent_menu`], closes that agent instead of unloading the
 /// project tab. The event the chrome runs the row's own Close from, confirm included.
 const EVENT_AGENT_CLOSE: &str = "warden:agent-close";
@@ -144,7 +144,6 @@ struct AgentItems {
     /// Suspend / Terminate Session, disabled in a pop-out, whose page can't end a session.
     suspend: tauri::menu::MenuItem<tauri::Wry>,
     terminate: tauri::menu::MenuItem<tauri::Wry>,
-    /// New Agent Tab (⌘T), retitled New Scratch Tab in a scratch column ([`focused_new_target`]).
     new: tauri::menu::MenuItem<tauri::Wry>,
     sleep: tauri::menu::MenuItem<tauri::Wry>,
     reopen: tauri::menu::MenuItem<tauri::Wry>,
@@ -153,7 +152,8 @@ struct AgentItems {
     next: [tauri::menu::MenuItem<tauri::Wry>; 2],
     move_up: tauri::menu::MenuItem<tauri::Wry>,
     move_down: tauri::menu::MenuItem<tauri::Wry>,
-    /// The spine's Close Tab (⌘W), retitled for what it closes ([`focused_close_target`]).
+    /// The spine's Close Tab (⌘W), retitled Close Agent Tab while it closes one
+    /// ([`agent_closable`]).
     close_tab: tauri::menu::MenuItem<tauri::Wry>,
     close_project: tauri::menu::MenuItem<tauri::Wry>,
     fork: tauri::menu::MenuItem<tauri::Wry>,
@@ -268,21 +268,6 @@ fn focused_agent_tab(app: &tauri::AppHandle) -> Option<(String, String, bool, bo
     Some((label, tab, sleep, reopen))
 }
 
-/// What ⌘T makes in the focused window's active tab ([`registry::Registry::new_target`]), with
-/// that window's label and the tab; `None` when it makes nothing there (a pop-out among them).
-#[cfg(target_os = "macos")]
-fn focused_new_target(app: &tauri::AppHandle) -> Option<(String, String, registry::NewTarget)> {
-    use tauri::Manager;
-    let label = focused_label(app)?;
-    let st = app.state::<ManagerState>();
-    let m = st.lock();
-    let reg = &m.windows.get(&label)?.registry;
-    let tab = reg.active_tab()?.to_owned();
-    let agents = reg.active_agent_tab() == Some(tab.as_str());
-    let target = reg.new_target(&tab, agents)?;
-    Some((label, tab, target))
-}
-
 /// What the focused window's active tab offers the agent-step items: `(label, tab, agent list
 /// when it holds agent tabs)`. The agent list answers from any of the tab's panes, so the agent
 /// keys beat libghostty's defaults for the same chords (⌘↑ / ⌘↓ / ⌘K / ⌘J) in a scratch shell too.
@@ -356,13 +341,10 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
 /// Tab while it has a Rex scratch column, and Pop Out Tab (titled with the reason) unless the
-/// column is too full to carry; ⌘W is titled for what it closes, disabled with the reason while
-/// focus waits on a scratch column's open, and ⌥⌘W enabled unless the window is a pop-out. Runs on
-/// every
-/// menu build, window focus, pane focus, tab activation, agent list change and scratch column
-/// change (a Rex view landing), so it also marks
-/// the agent tabs now on screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so
-/// callers must not hold it.
+/// column is too full to carry; ⌘W is titled for what it closes, and ⌥⌘W enabled unless the window
+/// is a pop-out. Runs on every menu build, window focus, pane focus, tab activation, agent list
+/// change and scratch column change (a Rex view landing), so it also marks the agent tabs now on
+/// screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so callers must not hold it.
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     use rex::lifecycle::{agent_move, agent_step, Step};
@@ -372,20 +354,17 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         return;
     };
     let agent = focused_agent_tab(app);
-    let new = focused_new_target(app).map(|n| n.2);
     let split = focused_split(app);
     let keys = focused_tab_keys(app);
     let list = keys.as_ref().and_then(|k| k.2.as_ref());
     let pane_left = focused_pane_to(app, registry::Side::Left, false);
     let pane_right = focused_pane_to(app, registry::Side::Right, false);
-    let close = focused_close_target(app, list);
-    // ⌥⌘W unloads a docked tab; a pop-out's main pane docks it with ⌘W instead.
-    let popped_out = close.as_ref().is_some_and(|(label, _)| {
+    // ⌥⌘W unloads a docked tab; a pop-out docks it with ⌘W instead.
+    let popped_out = focused_label(app).is_some_and(|label| {
         let st = app.state::<ManagerState>();
         let m = st.lock();
-        m.detached.contains_key(label)
+        m.detached.contains_key(&label)
     });
-    let close = close.map(|(_, t)| t);
     let reopen_window = reopen_target(app).is_some();
     let scratch = focused_scratch_column(app).is_some();
     let pop_out_blocked = focused_label(app).and_then(|label| {
@@ -398,7 +377,6 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(i) = items {
-        use registry::NewTarget;
         let _ = i.split.set_enabled(!matches!(split, Some(Err(_))));
         let _ = i.split.set_text(match &split {
             Some(Ok(kind)) => pane_menu::split_title(*kind).to_owned(),
@@ -413,16 +391,7 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
                 title.to_owned()
             });
         }
-        let _ = i
-            .new
-            .set_enabled(matches!(new, Some(NewTarget::Agent | NewTarget::Scratch)));
-        let _ = i.new.set_text(match new {
-            Some(NewTarget::Scratch) => SCRATCH_NEW_TITLE.to_owned(),
-            Some(NewTarget::Opening) => {
-                format!("{SCRATCH_NEW_TITLE} ({})", registry::COLUMN_OPENING)
-            }
-            Some(NewTarget::Agent) | None => AGENT_NEW_TITLE.to_owned(),
-        });
+        let _ = i.new.set_enabled(agent.is_some());
         let _ = i.sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
         let _ = i
             .reopen
@@ -441,13 +410,10 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let _ = i
             .move_down
             .set_enabled(list.is_some_and(|l| agent_move(l, Step::Next).is_some()));
-        use registry::CloseTarget;
-        let _ = i.close_tab.set_enabled(close.is_some());
-        let _ = i.close_tab.set_text(match &close {
-            None => format!("Close Pane ({})", registry::COLUMN_OPENING),
-            Some(CloseTarget::Block { .. }) => "Close Pane".into(),
-            Some(CloseTarget::Agent) => "Close Agent Tab".into(),
-            Some(CloseTarget::Project) => "Close Tab".into(),
+        let _ = i.close_tab.set_text(if list.is_some_and(agent_closable) {
+            "Close Agent Tab"
+        } else {
+            "Close Tab"
         });
         let (enabled, title) = close_project_item(popped_out);
         let _ = i.close_project.set_enabled(enabled);
@@ -466,41 +432,13 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     }
 }
 
-/// Whether ⌘W closes an agent tab in this list: one is selected.
+/// Whether ⌘W closes an agent tab in this list — the focused window's active tab's
+/// ([`focused_tab_keys`]), whichever of its panes has focus: one is selected. Otherwise ⌘W takes
+/// the spine's route, unloading the tab (docking a pop-out's); a scratch pane closes from its
+/// right-click menu, `exit`, or the strip's ×.
 #[cfg(target_os = "macos")]
 fn agent_closable(list: &rex::lifecycle::AgentListDto) -> bool {
     list.rows.iter().any(|r| r.selected)
-}
-
-/// What ⌘W closes in the focused window, `list` being its active tab's agent list
-/// ([`registry::Registry::close_target`]), with that window's label; `None` while it waits on a
-/// scratch column's open. In a pop-out its focused pane decides
-/// ([`manager::DetachedSurface::close_target`]): its scratch pane closes, its main pane is
-/// `Project` — the spine's route, which docks it. No window focused is `Project` too.
-#[cfg(target_os = "macos")]
-fn focused_close_target(
-    app: &tauri::AppHandle,
-    list: Option<&rex::lifecycle::AgentListDto>,
-) -> Option<(String, registry::CloseTarget)> {
-    use tauri::Manager;
-    let project = |label: String| Some((label, registry::CloseTarget::Project));
-    let Some(label) = focused_label(app) else {
-        return project(String::new());
-    };
-    let st = app.state::<ManagerState>();
-    let m = st.lock();
-    if let Some(ds) = m.detached.get(&label) {
-        let target = ds.close_target();
-        return Some((label, target));
-    }
-    let Some(reg) = m.windows.get(&label).map(|ws| &ws.registry) else {
-        return project(label);
-    };
-    let Some(tab) = reg.active_tab() else {
-        return project(label);
-    };
-    let target = reg.close_target(tab, list.is_some_and(agent_closable))?;
-    Some((label, target))
 }
 
 /// Close scratch pane `pane` of tab `tab` in window `label` — docked, or a pop-out's — landing as
@@ -1221,8 +1159,7 @@ fn pane_menu(
             .pane_surface(&label, &id, pane)
             .is_some_and(|s| s.has_selection());
         let tab = size.map(|_| config_tab(&m, &label, &id));
-        // An agent tab never makes Close Pane, so whether one is closable doesn't matter here.
-        let close_pane = pane_menu::close_pane_of(ws.registry.close_target(&id, false));
+        let close_pane = ws.registry.close_pane_item(&id);
         (
             has_selection,
             split_kind(&ws.registry, &id),
@@ -3067,23 +3004,15 @@ fn main() {
                 return;
             }
 
-            // ⌘T follows focus as ⌘W does: a scratch tab in a Rex scratch column, else an agent tab
-            // — the focused window's chrome gets the active tab's id.
+            // ⌘T: an agent tab, from either pane — the focused window's chrome gets the active
+            // tab's id.
             if id == MENU_AGENT_NEW {
-                match focused_new_target(app) {
-                    Some((label, tab, registry::NewTarget::Scratch)) => {
-                        if let Err(e) = scratch_run(app, &label, &tab, ScratchOp::NewTab) {
-                            rex::lifecycle::banner(app, &label, &e);
-                        }
-                    }
-                    Some((label, tab, registry::NewTarget::Agent)) => {
-                        let _ = app.emit_to(
-                            label.as_str(),
-                            id,
-                            serde_json::json!({ "label": label, "tabId": tab }),
-                        );
-                    }
-                    Some((_, _, registry::NewTarget::Opening)) | None => {}
+                if let Some((label, tab, ..)) = focused_agent_tab(app) {
+                    let _ = app.emit_to(
+                        label.as_str(),
+                        id,
+                        serde_json::json!({ "label": label, "tabId": tab }),
+                    );
                 }
                 return;
             }
@@ -3125,24 +3054,13 @@ fn main() {
                 return;
             }
 
-            // ⌘W follows focus: a scratch pane closes, else a selected agent tab, else the project
-            // tab unloads (the spine's route, below).
+            // ⌘W: a selected agent tab closes, from either pane; else the project tab unloads
+            // (the spine's route, below).
             if id == shell_core::menu::ids::CLOSE_TAB {
                 let list = focused_tab_keys(app).and_then(|k| k.2);
-                match focused_close_target(app, list.as_ref()) {
-                    None => return,
-                    Some((label, registry::CloseTarget::Block { tab, block })) => {
-                        let pane = registry::PaneIdx::Block(block);
-                        if let Err(e) = close_pane(app, &label, &tab, pane) {
-                            rex::lifecycle::banner(app, &label, &e);
-                        }
-                        return;
-                    }
-                    Some((_, registry::CloseTarget::Agent)) => {
-                        agent_key(app, EVENT_AGENT_CLOSE);
-                        return;
-                    }
-                    Some((_, registry::CloseTarget::Project)) => {}
+                if list.as_ref().is_some_and(agent_closable) {
+                    agent_key(app, EVENT_AGENT_CLOSE);
+                    return;
                 }
             }
 

@@ -417,28 +417,6 @@ impl Pane {
     }
 }
 
-/// What ⌘W closes ([`Registry::close_target`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CloseTarget {
-    /// The main pane's selected agent tab.
-    Agent,
-    /// Shown block `block` of tab `tab`'s scratch column.
-    Block { tab: String, block: usize },
-    /// The project tab: it unloads.
-    Project,
-}
-
-/// What ⌘T makes in the focused pane ([`Registry::new_target`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NewTarget {
-    /// An agent tab in the main pane's list.
-    Agent,
-    /// A scratch tab in the Rex scratch column.
-    Scratch,
-    /// Nothing yet: focus is in a Rex scratch column whose open hasn't landed.
-    Opening,
-}
-
 /// Who closes a scratch block ([`Registry::begin_close_block`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockClose {
@@ -1298,47 +1276,18 @@ impl Registry {
         true
     }
 
-    /// What ⌘W closes in tab `id`, given whether its main pane has an agent tab selected to close
-    /// (`agent_closable`): the focused scratch block, else that agent tab, else the project tab.
-    /// `None` while focus sits in a Rex column whose open hasn't landed — no block to close yet.
-    /// An unknown tab is `Project`.
-    pub fn close_target(&self, id: &str, agent_closable: bool) -> Option<CloseTarget> {
-        let main = if agent_closable {
-            CloseTarget::Agent
-        } else {
-            CloseTarget::Project
-        };
-        let Some(t) = self.tabs.iter().find(|t| t.id == id) else {
-            return Some(CloseTarget::Project);
-        };
+    /// Close Pane for tab `id`'s focused pane (a right-click focuses the pane it opens on): `Ok`
+    /// on a shown scratch block, `Err` with the reason while focus waits on a Rex column's open,
+    /// `None` in the main pane — or an unknown tab.
+    pub fn close_pane_item(&self, id: &str) -> Option<Result<(), String>> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
         let (PaneIdx::Block(i), Some(column)) = (t.focused, t.column.as_ref()) else {
-            return Some(main);
+            return None;
         };
         if column.opening() {
-            return None;
+            return Some(Err(COLUMN_OPENING.to_owned()));
         }
-        Some(match column.block(i) {
-            Some(_) => CloseTarget::Block {
-                tab: id.to_owned(),
-                block: i,
-            },
-            None => main,
-        })
-    }
-
-    /// What ⌘T makes in tab `id`, given whether its main pane holds agent tabs (`agents`): a
-    /// scratch tab while focus sits in its Rex scratch column, else an agent tab, else nothing
-    /// (`None`) — ⌘W's focus rule ([`close_target`](Self::close_target)).
-    pub fn new_target(&self, id: &str, agents: bool) -> Option<NewTarget> {
-        let main = agents.then_some(NewTarget::Agent);
-        let Some(t) = self.tabs.iter().find(|t| t.id == id) else {
-            return main;
-        };
-        match (t.focused, t.column.as_ref()) {
-            (PaneIdx::Block(_), Some(c)) if c.opening() => Some(NewTarget::Opening),
-            (PaneIdx::Block(_), Some(c)) if c.is_rex() => Some(NewTarget::Scratch),
-            _ => main,
-        }
+        column.block(i).map(|_| Ok(()))
     }
 
     /// Start closing shown block `i` of tab `id`'s column: a Rex block is Rex's to close, by its
@@ -5056,15 +5005,12 @@ mod tests {
     }
 
     #[test]
-    fn close_target_scratch_focus_is_block() {
+    fn close_pane_item_on_a_scratch_block() {
         let mut r = landed_column(vec![scratch("w1", &["a", "b"])]);
+        assert_eq!(r.close_pane_item("t"), None, "the main pane has none");
+        assert_eq!(r.close_pane_item("nope"), None);
         assert!(r.focus_pane("t", PaneIdx::Block(1)));
-        let block = Some(CloseTarget::Block {
-            tab: "t".into(),
-            block: 1,
-        });
-        assert_eq!(r.close_target("t", true), block, "before an agent tab");
-        assert_eq!(r.close_target("t", false), block);
+        assert_eq!(r.close_pane_item("t"), Some(Ok(())));
         assert_eq!(
             r.begin_close_block("t", 1),
             Some(BlockClose::Rex("t::2#b".into())),
@@ -5079,85 +5025,27 @@ mod tests {
     }
 
     #[test]
-    fn close_target_main_focus_with_agents_is_agent() {
-        let r = landed_column(vec![scratch("w1", &["a"])]);
-        assert_eq!(r.focused_pane("t"), Some(PaneIdx::Primary));
-        assert_eq!(r.close_target("t", true), Some(CloseTarget::Agent));
-        assert_eq!(r.close_target("t", false), Some(CloseTarget::Project));
-        assert_eq!(r.close_target("nope", false), Some(CloseTarget::Project));
-    }
-
-    #[test]
-    fn close_target_plain_secondary_is_block() {
+    fn close_pane_item_on_a_plain_secondary() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec("a", "/tmp/a"), false).unwrap();
         r.split("a");
         assert!(r.focus_pane("a", PaneIdx::Block(0)));
-        assert_eq!(
-            r.close_target("a", false),
-            Some(CloseTarget::Block {
-                tab: "a".into(),
-                block: 0
-            })
-        );
+        assert_eq!(r.close_pane_item("a"), Some(Ok(())));
         assert_eq!(r.begin_close_block("a", 0), Some(BlockClose::Plain));
         assert!(r.close_block("a", 0));
         assert!(!r.is_split("a"));
-        assert_eq!(r.close_target("a", false), Some(CloseTarget::Project));
+        assert_eq!(r.close_pane_item("a"), None);
     }
 
     #[test]
-    fn close_target_while_column_opening_is_none() {
+    fn close_pane_item_waits_while_the_column_opens() {
         let (mut r, _) = rex_registry();
         r.add(&split_rex_spec("t", 2), false).unwrap();
-        assert_eq!(
-            r.close_target("t", false),
-            Some(CloseTarget::Project),
-            "the main pane's ⌘W stands while the column opens"
-        );
         // A popped-out block stands in the column before its session's open lands.
         r.mark_detached("t", true, Some("b1"));
         assert!(r.focus_pane("t", PaneIdx::Block(0)));
-        assert_eq!(r.close_target("t", true), None);
+        assert_eq!(r.close_pane_item("t"), Some(Err(COLUMN_OPENING.to_owned())));
         assert_eq!(r.begin_close_block("t", 0), None);
-    }
-
-    #[test]
-    fn new_target_follows_focus() {
-        let mut r = landed_column(vec![scratch("w1", &["a"])]);
-        assert_eq!(r.new_target("t", true), Some(NewTarget::Agent));
-        assert_eq!(r.new_target("t", false), None);
-        assert!(r.focus_pane("t", PaneIdx::Block(0)));
-        assert_eq!(r.new_target("t", true), Some(NewTarget::Scratch));
-        assert_eq!(
-            r.new_target("t", false),
-            Some(NewTarget::Scratch),
-            "a scratch column needs no agents"
-        );
-        assert_eq!(r.new_target("nope", true), Some(NewTarget::Agent));
-    }
-
-    #[test]
-    fn new_target_in_a_plain_secondary_is_the_main_panes() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("a", "/tmp/a"), false).unwrap();
-        r.split("a");
-        assert!(r.focus_pane("a", PaneIdx::Block(0)));
-        assert_eq!(
-            r.new_target("a", false),
-            None,
-            "a plain split has no scratch tabs"
-        );
-    }
-
-    #[test]
-    fn new_target_while_column_opening_waits() {
-        let (mut r, _) = rex_registry();
-        r.add(&split_rex_spec("t", 2), false).unwrap();
-        assert_eq!(r.new_target("t", true), Some(NewTarget::Agent));
-        r.mark_detached("t", true, Some("b1"));
-        assert!(r.focus_pane("t", PaneIdx::Block(0)));
-        assert_eq!(r.new_target("t", true), Some(NewTarget::Opening));
     }
 
     #[test]
