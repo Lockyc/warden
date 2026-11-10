@@ -1414,7 +1414,6 @@
         },
         onDestroy: (id) => agentCall("agent_close", { tabId: agentsTab(), recordId: id, confirmed: true }),
         onSuspend: (id) => agentCall("agent_sleep", { tabId: agentsTab(), recordId: id }),
-        onStart: (id) => agentSelect(agentsTab(), id),
         onDisarm: () => {
           clearTimeout(agentArmLapse);
           if (agentArmWidened) {
@@ -1430,23 +1429,24 @@
       const AGENT_ARM_LAPSE_MS = 4000;
       // An agent row as chrome-core's slots read it: amber when it needs you (blocked, or finished
       // and not yet seen), cyan for its session — pulsing while it works, the ghost while asleep.
+      // An asleep row is a project row's cold ghost: selecting the row wakes it, and its dot arms
+      // the confirm, so the dot means the same in both lists.
       const agentNeedsYou = (r) => r.state === "blocked" || !!r.unread;
       function agentControlRecord(r) {
         const reason = r.canSleep ? null : r.sleepReason;
+        const asleep = r.state === "asleep";
         return {
           id: r.id,
-          presence: r.state === "asleep" ? "ghost" : "on",
+          presence: asleep ? "ghost" : "on",
           busy: r.state === "working",
           attention: agentNeedsYou(r) ? true : null,
           killable: true,
           suspendable: true,
-          startable: true,
           suspendReason: reason ? "Can't sleep: " + reason : null,
           labels: {
-            end: "Close or sleep…",
+            end: asleep ? "Close…" : "Close or sleep…",
             destroy: reason ? "Close — " + reason + ", so it ends for good" : "Close",
             suspend: "Sleep",
-            start: "Wake",
           },
         };
       }
@@ -1770,7 +1770,7 @@
         row.append(text);
         const rec = agentControlRecord(r);
         if (rec.attention) row.append(agentControls.attention(true));
-        row.append(agentControls.presence(rec, true));
+        row.append(agentControls.presence(rec, r.state !== "asleep"));
         const more = agentButton("⋯", () => toggleActions(r.id), "a-more");
         more.title = "Fork, close, rename, group";
         row.append(more);
