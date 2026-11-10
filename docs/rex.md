@@ -44,7 +44,7 @@ public. Rex is chosen per tab.
 | `rex/windows.rs` | Each attached session's windows (new, close, relabel) and every terminal block's status: its root OSC 7501 record and its title, from Rex's events. |
 | `rex/layout.rs` | A session window's split tree (`Layout`) as tiles and dividers for the page, and a config pane stack as the layout a new session is created with (`stack_layout`). |
 | `rex/column.rs` | A split pane's scratch column: one session whose windows are scratch tabs and whose split trees are the stacked panes — opening it (created from the config stack, retyped when restored), new tab, split, divider resize, closing a block or a tab, each block's size key. |
-| `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live, waking on a user open. |
+| `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live. |
 | `rex/lifecycle.rs` | The agent tab list: new, wake, sleep, close, reopen, fork, rename (`RexHub::agent_op`), which agent shows (`settle`, an open's too), following a pane's windows and statuses, storing reported resume commands, and the list `warden:agents` carries. |
 | `rex/attention.rs` | Which agent tabs need you (blocked, or done and unseen): a group's amber, an agent row's unread, and the row badge and banner a hidden one raises (`notify::raise`). |
 
@@ -99,9 +99,9 @@ site omits it.
 - **`cmd` and each split pane's `cmd` are typed once, when warden creates the session**
   (`initial_input`); a woken agent's window types its resume command instead. Reattaching types
   nothing (`spawn::effective_spec` clears `startup`).
-- **Only a user open wakes an agent** (`RexOpen.auto`): one warden makes itself (launch,
-  `load_on_open`, `remember_tabs`, hot reload) attaches what is live, and leaves a pane holding a
-  wakeable agent for the user's click; a pane with nothing live and nothing to wake it loads.
+- **No open wakes an agent** — only selecting its row does (`lifecycle::select`). An open
+  attaches what is live and leaves a pane holding only wakeable agents blank; a pane with nothing
+  live and nothing to wake it loads.
 - **Size has one writer: warden-app.** A block's size is its owner's. warden-app claims
   (`own_block take`, then `resize`) when the user turns to a pane — focus gained in the key window,
   the window becoming key, a key or mouse press — taken from AppKit (`SurfaceSignal::UserInput`,
@@ -135,7 +135,7 @@ site omits it.
 | ⏻ sleep project | Sleep Server narrowed to one tab: its surfaces let go, its resumable agents sleep, agents with nothing to resume are confirmed by name, then both panes' sessions are destroyed — the scratch column's unasked. The records stay asleep. Its `suspend` is not run. | `lifecycle::sleep_project` → `RexHub::sleep_project` |
 | The pane's program exits (`exit`, an agent quitting) | Destroyed if its block was the session's last; otherwise the pane lets go and the session lists as unclaimed. The pane goes cold, and the next open creates a fresh session: an exited block would only leave a dead screen that reads as live. An agent's exit closes only its window (the session's last ends as above) and its record closes or drops; the pane shows a live neighbour, else empties — and the tab goes cold unless its scratch column runs. | `spawn::end_if_exited` → `RexHub::destroy_if_exited` / `end_agent_if_exited` → `AgentOp::Exited`; `Registry::close_agent` |
 | A scratch column block's program exits, or Close Pane closes it, or the strip's × closes its scratch tab | Only that block (or that window's blocks) closes: its window reflows, or closes with it as its last block; Rex keeps the session when its last window closes, and a column found holding no block — on its next view or its next open — gets a fresh scratch tab (a bare shell in the tab's `dir`), so the split stays. | `spawn::end_if_exited` / `spawn::close_block` → `RexHub::column_close_block`; `RexHub::column_close_tab`; `lifecycle::follow_column` → `RexHub::column_fill` |
-| The server restarts, crashes, or the Mac reboots | Rex restores every session with the same ids, each terminal a bare shell. A record from an earlier server instance reads as gone (hollow, or the ghost with agents to wake) until an open adopts its session: the open types `cmd` into the restored shell; a main pane's resumable agents sleep and their windows close (the session too, if nothing else was in it), the rest drop, and a user open wakes the last-selected one. A tab open when Rex restarts lets go as under Sleep Server (docked cold, popped-out ended). | `State::restored`, `RexHub::ensure_session`, `retire_restored`, `spawn::reopen_restarted` |
+| The server restarts, crashes, or the Mac reboots | Rex restores every session with the same ids, each terminal a bare shell. A record from an earlier server instance reads as gone (hollow, or the ghost with agents to wake) until an open adopts its session: the open types `cmd` into the restored shell; a main pane's resumable agents sleep and their windows close (the session too, if nothing else was in it), the rest drop, and the pane stays blank until a row's click wakes one. A tab open when Rex restarts lets go as under Sleep Server (docked cold, popped-out ended). | `State::restored`, `RexHub::ensure_session`, `retire_restored`, `spawn::reopen_restarted` |
 | Opening an unclaimed row | A temporary tab: adopted in memory, never persisted, never creates a session, can't split. ☠ ends the session. | `RexHub::adopt`, `Registry::split` |
 | The relay's stream drops | Resumed at its exact byte count; if refused, a new ticket and a full reset + redraw from a fresh snapshot. | `warden-relay` `RESET` |
 | The pane or its block changes size | Once the size settles, the relay ends its stream and redraws from a fresh snapshot fitted to the pane — output laid out for one size garbles a pane of another. | `warden-relay` `Redraw` |

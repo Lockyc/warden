@@ -216,7 +216,7 @@ impl RexHub {
             AgentOp::Exited(id) => {
                 // Gone already when its window closed in a live session without a resume command.
                 // Only an agent stored live exited: one already asleep had its window closed by
-                // warden (a restored session's open), and stays asleep for a user open to wake.
+                // warden (a restored session's open), and stays asleep for its row to wake.
                 let was_live = held
                     .iter()
                     .any(|r| r.id == *id && r.state == RecordState::Live);
@@ -667,7 +667,7 @@ impl RexHub {
     /// Sleep project `panes` (one tab's pane keys) on `server` as `plan` says: its records sleep
     /// as [`RexHub::sleep_server`]'s do, then — unless planning again
     /// ([`RexHub::plan_project_sleep`]) finds a loss `plan` didn't list — each pane's session is
-    /// destroyed. The records stay, asleep, for a user open to wake.
+    /// destroyed. The records stay, asleep, for their rows to wake.
     pub fn sleep_project(
         &self,
         store: &Mutex<AgentStore>,
@@ -764,9 +764,9 @@ fn renumber(records: &mut [AgentRecord]) {
 /// Settle which of `records` (one project's) a pane shows and which is selected — at most one:
 /// `want`, else the selected one while it is live, else its nearest live neighbour in list order,
 /// else the first live one. The one shown becomes the selected one, except that with
-/// `keep_asleep_choice` (an automatic open) an asleep selected record stays selected while its
-/// neighbour shows, so the next user open wakes it. With nothing live the choice stays for the
-/// next open, unless it closed. The one decider for both an open and every [`AgentOp`].
+/// `keep_asleep_choice` (an open) an asleep selected record stays selected while its neighbour
+/// shows, since an open never wakes it. With nothing live the choice stays, unless it closed. The
+/// one decider for both an open and every [`AgentOp`].
 pub(super) fn settle(
     records: &mut [AgentRecord],
     want: Option<usize>,
@@ -1822,7 +1822,7 @@ mod tests {
         let (hub, _) = hub(f.endpoint(), &dir);
         let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
 
-        let got = hub.agent_op(&s, &open(false, None), &AgentOp::Sleep("a".into()), 7);
+        let got = hub.agent_op(&s, &open(None), &AgentOp::Sleep("a".into()), 7);
         assert_eq!(got, Err(NO_RESUME.to_string()));
         assert_eq!(NO_RESUME, "this agent hasn't reported how to resume it");
         assert!(f.requests_for("session.close_window").is_empty());
@@ -1848,14 +1848,14 @@ mod tests {
         let mut a = record("a", RecordState::Live, Some("window:1"), resume);
         a.selected = true;
         let s = store(vec![a]);
-        hub.open_agents(&s, &open(true, None), 7).expect("open");
+        hub.open_agents(&s, &open(None), 7).expect("open");
         f.reply(
             "com.superlogical.terminal.process",
             json!({"last_exit": {"exit_code": 0}}),
         );
         assert!(hub.end_agent_if_exited(&crate::registry::agent_key("t", "a")));
         assert_eq!(f.requests_for("session.destroy").len(), 1);
-        hub.agent_op(&s, &open(false, None), &AgentOp::Exited("a".into()), 9)
+        hub.agent_op(&s, &open(None), &AgentOp::Exited("a".into()), 9)
             .expect("exited");
         (f, s)
     }
@@ -1864,7 +1864,7 @@ mod tests {
     fn an_exit_that_ends_the_session_closes_the_agent_rather_than_sleeping_it() {
         let (_f, s) = exited_alone(Some("claude --resume aaa"));
         let a = state_of(&s, "a").unwrap();
-        assert_eq!(a.state, RecordState::Closed, "a user open won't wake it");
+        assert_eq!(a.state, RecordState::Closed, "its row can't wake it");
         assert_eq!(a.closed_at, Some(9));
         assert_eq!((a.window_id, a.block_id), (None, None));
         assert!(!a.selected);
@@ -1884,7 +1884,7 @@ mod tests {
             None,
             Some("claude --resume aaa"),
         )]);
-        hub.agent_op(&s, &open(false, None), &AgentOp::Exited("a".into()), 9)
+        hub.agent_op(&s, &open(None), &AgentOp::Exited("a".into()), 9)
             .expect("exited");
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
     }
@@ -1917,7 +1917,7 @@ mod tests {
         ]);
 
         let slept = hub
-            .agent_op(&s, &open(false, None), &AgentOp::Sleep("a".into()), 7)
+            .agent_op(&s, &open(None), &AgentOp::Sleep("a".into()), 7)
             .expect("sleep");
         let closes = f.requests_for("session.close_window");
         assert_eq!(closes.len(), 1);
@@ -1935,7 +1935,7 @@ mod tests {
         let woke = hub
             .agent_op(
                 &s,
-                &open(false, Some("claude-work")),
+                &open(Some("claude-work")),
                 &AgentOp::Wake("a".into()),
                 8,
             )
@@ -1987,7 +1987,7 @@ mod tests {
 
         hub.agent_op(
             &s,
-            &open(false, None),
+            &open(None),
             &AgentOp::Close {
                 id: "a".into(),
                 confirmed: false,
@@ -2004,7 +2004,7 @@ mod tests {
         assert_eq!(list.closed[0].closed_at, 7);
         assert!(list.rows.iter().all(|r| r.id != "a"), "out of the list");
 
-        hub.agent_op(&s, &open(false, None), &AgentOp::Reopen(None), 9)
+        hub.agent_op(&s, &open(None), &AgentOp::Reopen(None), 9)
             .expect("reopen");
         let made = f.requests_for("session.new_window");
         assert_eq!(made.len(), 1);
@@ -2035,11 +2035,11 @@ mod tests {
             confirmed,
         };
 
-        let got = hub.agent_op(&s, &open(false, None), &close(false), 7);
+        let got = hub.agent_op(&s, &open(None), &close(false), 7);
         assert_eq!(got, Err(NO_RESUME.to_string()));
         assert!(f.requests_for("session.close_window").is_empty());
 
-        hub.agent_op(&s, &open(false, None), &close(true), 7)
+        hub.agent_op(&s, &open(None), &close(true), 7)
             .expect("confirmed");
         assert_eq!(f.requests_for("session.close_window").len(), 1);
         assert_eq!(state_of(&s, "a"), None, "gone for good");
@@ -2078,7 +2078,7 @@ mod tests {
 
         let started = Instant::now();
         let mut shows = Vec::new();
-        hub.agent_op_shown(&s, &open(false, None), &close, 7, |o| {
+        hub.agent_op_shown(&s, &open(None), &close, 7, |o| {
             shows.push((started.elapsed(), state_of(&s, "a").unwrap().state, o));
         })
         .expect("close");
@@ -2130,12 +2130,12 @@ mod tests {
         let (shown_tx, shown_rx) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             let closing = scope.spawn(|| {
-                hub.agent_op_shown(&s, &open(false, None), &close, 7, |_| {
+                hub.agent_op_shown(&s, &open(None), &close, 7, |_| {
                     let _ = shown_tx.send(());
                 })
             });
             shown_rx.recv().expect("the close shows");
-            hub.agent_op(&s, &open(false, None), &AgentOp::New, 8)
+            hub.agent_op(&s, &open(None), &AgentOp::New, 8)
                 .expect("new");
             assert!(
                 started.elapsed() < slow / 2,
@@ -2180,7 +2180,7 @@ mod tests {
         };
 
         let mut shows = Vec::new();
-        let got = hub.agent_op_shown(&s, &open(false, None), &close, 7, |o| shows.push(o));
+        let got = hub.agent_op_shown(&s, &open(None), &close, 7, |o| shows.push(o));
         assert!(got.is_err());
         assert_eq!(shows.len(), 2, "the close, then the tab put back");
         assert_eq!(shows[1].selected.as_deref(), Some("a"));
@@ -2215,7 +2215,7 @@ mod tests {
             b,
             record("c", RecordState::Live, Some("window:3"), None),
         ]);
-        hub.agent_op(&s, &open(true, None), &AgentOp::Refresh, 7)
+        hub.agent_op(&s, &open(None), &AgentOp::Refresh, 7)
             .expect("attach");
         assert_eq!(hub.agent_panes("local", "session:old"), ["t"]);
 
@@ -2229,7 +2229,7 @@ mod tests {
             hub.windows("local", "session:old").len() == 2
         });
         let got = hub
-            .agent_op(&s, &open(true, None), &AgentOp::Refresh, 8)
+            .agent_op(&s, &open(None), &AgentOp::Refresh, 8)
             .expect("refresh");
         let b = state_of(&s, "b").unwrap();
         assert_eq!(b.state, RecordState::Closed);
@@ -2258,7 +2258,7 @@ mod tests {
         ]);
 
         let got = hub
-            .agent_op(&s, &open(false, None), &AgentOp::New, 7)
+            .agent_op(&s, &open(None), &AgentOp::New, 7)
             .expect("new");
         let made = f.requests_for("session.new_window");
         assert_eq!(made.len(), 1);
@@ -2320,7 +2320,7 @@ mod tests {
         let before = state_of(&s, "a").unwrap();
 
         let got = hub
-            .agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .agent_op(&s, &open(None), &AgentOp::Fork("a".into()), 7)
             .expect("fork");
         let made = f.requests_for("session.new_window");
         assert_eq!(made.len(), 1);
@@ -2360,7 +2360,7 @@ mod tests {
         let (hub, _) = hub(f.endpoint(), &dir);
         hub.agent_op(
             &s,
-            &open(false, Some("claude-work")),
+            &open(Some("claude-work")),
             &AgentOp::Fork("a".into()),
             7,
         )
@@ -2386,7 +2386,7 @@ mod tests {
         )]);
 
         let got = hub
-            .agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7)
+            .agent_op(&s, &open(None), &AgentOp::Fork("a".into()), 7)
             .expect("fork");
         let created = f.requests_for("session.create");
         assert_eq!(created.len(), 1);
@@ -2425,7 +2425,7 @@ mod tests {
             Some("window:1"),
             Some("claude --resume aaa"),
         )]);
-        let got = hub.agent_op(&s, &open(false, None), &AgentOp::Fork("a".into()), 7);
+        let got = hub.agent_op(&s, &open(None), &AgentOp::Fork("a".into()), 7);
         assert_eq!(got, Err(super::NO_AGENT.to_string()));
         assert!(f.requests_for("session.new_window").is_empty());
     }
@@ -2454,7 +2454,7 @@ mod tests {
             ("gone", super::NO_AGENT),
             ("nope", super::NO_AGENT),
         ] {
-            let got = hub.agent_op(&s, &open(false, None), &AgentOp::Fork(id.into()), 7);
+            let got = hub.agent_op(&s, &open(None), &AgentOp::Fork(id.into()), 7);
             assert_eq!(got, Err(why.to_string()), "{id}");
         }
         assert!(f.requests_for("session.new_window").is_empty());
@@ -2475,7 +2475,7 @@ mod tests {
         )]);
 
         let got = hub
-            .agent_op(&s, &open(false, None), &AgentOp::New, 7)
+            .agent_op(&s, &open(None), &AgentOp::New, 7)
             .expect("new");
         assert_eq!(f.requests_for("session.create").len(), 1);
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
@@ -2756,7 +2756,7 @@ mod tests {
         }
         let (hub, _) = hub(f.endpoint(), &dir);
         let s = store(records);
-        hub.agent_op(&s, &open(true, None), &AgentOp::Refresh, 7)
+        hub.agent_op(&s, &open(None), &AgentOp::Refresh, 7)
             .expect("attach");
         (f, dir, hub, s)
     }
@@ -3438,7 +3438,7 @@ mod tests {
         ]);
         hub.agent_op(
             &s,
-            &open(false, None),
+            &open(None),
             &AgentOp::Rename("a".into(), " review ".into()),
             7,
         )
@@ -3450,7 +3450,7 @@ mod tests {
 
         hub.agent_op(
             &s,
-            &open(false, None),
+            &open(None),
             &AgentOp::Rename("b".into(), "later".into()),
             7,
         )

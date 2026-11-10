@@ -2212,7 +2212,6 @@ fn column_req(stack: Vec<warden_config::StackPane>) -> crate::registry::RexOpen 
         startup: None,
         label: "t · split".into(),
         token: 0,
-        auto: false,
         agents: false,
         resume: None,
         stack,

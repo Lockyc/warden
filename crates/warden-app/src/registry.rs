@@ -24,7 +24,7 @@ pub enum EndTarget {
 
 /// A Rex pane's session to find or create — `RexHub::ensure_session`'s arguments — and the token
 /// its answer carries back to [`Registry::rex_opened`]. A main pane holding agents (`agents`) is
-/// opened by `RexHub::open_agents` instead, which reads `auto` and `resume`; a split pane by
+/// opened by `RexHub::open_agents` instead, which reads `resume`; a split pane by
 /// `RexHub::open_column`, which reads `stack`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RexOpen {
@@ -34,9 +34,6 @@ pub struct RexOpen {
     pub startup: Option<String>,
     pub label: String,
     pub token: u64,
-    /// Opened by warden itself (launch, `load_on_open`, `remember_tabs`, hot reload) rather than
-    /// by the user selecting the tab: attaches what is live and wakes nothing.
-    pub auto: bool,
     /// The pane is a Rex tab's main pane, whose session's windows are its agent tabs.
     pub agents: bool,
     /// The tab's `resume` program as configured now.
@@ -116,16 +113,14 @@ pub enum DetachedEnded {
 #[derive(Debug, Clone, PartialEq)]
 enum RexState {
     Idle,
-    /// An open is in flight; only the answer carrying `token` lands. `wake`: the user opened the
-    /// pane meanwhile, so an answer that finds nothing live is followed by a user open.
+    /// An open is in flight; only the answer carrying `token` lands.
     Opening {
         token: u64,
-        wake: bool,
     },
     /// The session answered; the next spawn runs the relay on it.
     Ready(PaneTarget),
     /// An agent pane's open found nothing live (every agent asleep, or none yet). Only a user open
-    /// asks again, since only a user open wakes an agent.
+    /// asks again, which picks up a session made elsewhere meanwhile; no open wakes an agent.
     Asleep,
 }
 
@@ -1158,7 +1153,7 @@ impl Registry {
             let idx = self.tabs.len() - 1;
             self.split(&spec.id);
             if self.tabs[idx].primary.live() {
-                match self.ensure_column(idx, true) {
+                match self.ensure_column(idx) {
                     Ok(_) => {
                         let column = self.tabs[idx].column.iter();
                         column.flat_map(Column::surfaces).for_each(|s| s.hide());
@@ -1233,7 +1228,7 @@ impl Registry {
             return false;
         }
         if self.tabs[idx].primary.live() {
-            if let Err(e) = self.ensure_column(idx, true) {
+            if let Err(e) = self.ensure_column(idx) {
                 log::error!(
                     "column spawn failed for tab {:?}: {e}",
                     self.tabs[idx].title
@@ -1737,7 +1732,6 @@ impl Registry {
             startup: spec.startup.clone(),
             label: session_label(&t.title, PaneIdx::Primary),
             token: 0,
-            auto: false,
             agents: true,
             resume: spec.resume.clone(),
             stack: stack_of(spec),
@@ -2141,8 +2135,8 @@ impl Registry {
     ///
     /// A main pane holding agents ([`hosts_agents`]) asks once for all of them
     /// (`RexOpen.agents`) and then spawns only its selected agent's surface. `auto` says warden,
-    /// not the user, is opening it: an automatic open never wakes an agent, so after one that found
-    /// nothing live (`RexState::Asleep`) only a user open asks again.
+    /// not the user, is opening it: after an open that found nothing live (`RexState::Asleep`)
+    /// only a user open asks again.
     fn ensure_spawned(
         &mut self,
         idx: usize,
@@ -2150,7 +2144,7 @@ impl Registry {
         auto: bool,
     ) -> Result<bool, SurfaceError> {
         if let PaneIdx::Block(_) = which {
-            return self.ensure_column(idx, auto);
+            return self.ensure_column(idx);
         }
         let agents = hosts_agents(&self.tabs[idx].primary.spec, which);
         let stack = stack_of(&self.tabs[idx].primary.spec);
@@ -2180,11 +2174,8 @@ impl Registry {
                 &target,
                 self.report_socket.as_deref(),
             ),
-            (Some(_), RexState::Opening { token, wake }) => {
-                pane.rex = RexState::Opening {
-                    token,
-                    wake: wake || (agents && !auto),
-                };
+            (Some(_), RexState::Opening { token }) => {
+                pane.rex = RexState::Opening { token };
                 return Ok(false);
             }
             (Some(_), RexState::Asleep) if auto => {
@@ -2199,13 +2190,12 @@ impl Registry {
                     startup: pane.spec.startup.clone(),
                     label,
                     token: 0,
-                    auto,
                     agents,
                     resume: pane.spec.resume.clone(),
                     stack,
                 };
                 match start_open(&self.rex_opener, &mut self.next_rex_token, req) {
-                    Ok(token) => pane.rex = RexState::Opening { token, wake: false },
+                    Ok(token) => pane.rex = RexState::Opening { token },
                     Err(reason) => tab.rex_error = Some(reason),
                 }
                 return Ok(false);
@@ -2224,7 +2214,7 @@ impl Registry {
     /// column's key, carrying the tab's `stack`), and spawns when the answer lands; with one, each
     /// block runs `warden-relay` on its own Rex block. Returns whether any block spawned this
     /// call; the first block that fails to spawn stops the rest, which stay cold.
-    fn ensure_column(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
+    fn ensure_column(&mut self, idx: usize) -> Result<bool, SurfaceError> {
         let stack = stack_of(&self.tabs[idx].primary.spec);
         let tab = &mut self.tabs[idx];
         let label = session_label(&tab.title, PaneIdx::Block(0));
@@ -2242,13 +2232,12 @@ impl Registry {
                 startup: column.spec.startup.clone(),
                 label,
                 token: 0,
-                auto,
                 agents: false,
                 resume: column.spec.resume.clone(),
                 stack,
             };
             match start_open(&self.rex_opener, &mut self.next_rex_token, req) {
-                Ok(token) => column.rex = RexState::Opening { token, wake: false },
+                Ok(token) => column.rex = RexState::Opening { token },
                 Err(reason) => tab.rex_error = Some(reason),
             }
             return Ok(false);
@@ -2412,7 +2401,6 @@ impl Registry {
         }
         let tab = &mut self.tabs[idx];
         let pane = &mut tab.primary;
-        let wake = matches!(pane.rex, RexState::Opening { wake: true, .. });
         match result {
             Err(reason) => {
                 pane.rex = RexState::Idle;
@@ -2441,12 +2429,6 @@ impl Registry {
                         if pane.agents.is_empty() {
                             pane.rex = RexState::Asleep;
                             tab.rex_error = None;
-                            if wake {
-                                // The user opened it while warden's open was in flight.
-                                return RexLanded::Opened(
-                                    self.ensure_spawned(idx, which, false).map(|_| ()),
-                                );
-                            }
                             return RexLanded::Opened(Ok(()));
                         }
                         pane.rex = RexState::Idle;
@@ -2503,7 +2485,7 @@ impl Registry {
             };
         }
         let spawned = if self.tabs[idx].primary.live() {
-            self.ensure_column(idx, true).map(|_| ())
+            self.ensure_column(idx).map(|_| ())
         } else {
             Ok(())
         };
@@ -2917,7 +2899,7 @@ impl Registry {
     /// call a no-op on an already-`Detached` tab.
     ///
     /// Warden, not the user, is bringing the tab up (`load_on_open` turned on, a pop-out), so an
-    /// agent pane opens automatically: it wakes nothing.
+    /// agent pane left `Asleep` stays so.
     pub fn ensure_spawned_by_id(&mut self, id: &str) -> Result<(), SurfaceError> {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return Ok(());
@@ -2941,7 +2923,7 @@ impl Registry {
     fn spawn_panes(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
         let primary = self.ensure_spawned(idx, PaneIdx::Primary, auto);
         if self.tabs[idx].primary.live() {
-            if let Err(e) = self.ensure_column(idx, auto) {
+            if let Err(e) = self.ensure_column(idx) {
                 log::error!(
                     "column spawn failed for tab {:?}: {e}",
                     self.tabs[idx].title
@@ -3071,14 +3053,14 @@ impl Registry {
     /// retries.
     ///
     /// Warden itself shows the tab (a window's first tab, a hot reload, a landed open), so an
-    /// agent pane opens automatically and wakes nothing; [`activate_user`](Self::activate_user) is
-    /// the user selecting it.
+    /// agent pane left `Asleep` stays so; [`activate_user`](Self::activate_user) is the user
+    /// selecting it.
     pub fn activate(&mut self, id: &str) -> Result<bool, SurfaceError> {
         self.activate_as(id, true)
     }
 
-    /// [`activate`](Self::activate) for the user selecting tab `id`: an agent pane with nothing
-    /// live asks the hub to wake its last-selected agent.
+    /// [`activate`](Self::activate) for the user selecting tab `id`: an `Asleep` agent pane asks
+    /// the hub again, which still wakes nothing.
     pub fn activate_user(&mut self, id: &str) -> Result<bool, SurfaceError> {
         self.activate_as(id, false)
     }
@@ -5471,14 +5453,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_open_after_restart_wakes_nothing() {
+    fn auto_open_after_restart_asks_once() {
         let (mut r, asked) = rex_registry();
         r.add(&rex_spec("t", "local"), true).unwrap();
         let req = asked.lock().unwrap()[0].clone();
-        assert!(
-            req.auto && req.agents,
-            "an eager add is an automatic agent-pane open"
-        );
+        assert!(req.agents, "an eager add is an agent-pane open");
         // Every record came back asleep: the hub found nothing live.
         assert!(matches!(
             nothing_live(&mut r, &req),
@@ -5487,18 +5466,16 @@ mod tests {
         // build_window's activate and a hot reload's spawn don't ask again.
         let _ = r.activate("t");
         let _ = r.ensure_spawned_by_id("t");
-        let asked = asked.lock().unwrap();
-        assert_eq!(asked.len(), 1);
-        assert!(asked.iter().all(|o| o.auto), "no open woke anything");
+        assert_eq!(asked.lock().unwrap().len(), 1);
         assert!(!r.is_spawned("t"), "no surface");
         assert!(!r.is_connecting("t"));
         assert!(r.agent_keys("t").is_empty());
     }
 
     #[test]
-    fn user_open_wakes_last_selected_only() {
-        // The registry's half: only a user open asks the hub to wake, once, with the tab's
-        // `resume` as configured now. Which record wakes is the hub's (`rex::agent_open`).
+    fn a_user_open_of_an_asleep_pane_asks_again() {
+        // A user open asks the hub once more, with the tab's `resume` as configured now; the hub
+        // wakes nothing (`rex::agent_open`).
         let (mut r, asked) = rex_registry();
         let mut s = rex_spec("t", "local");
         s.resume = Some("old-wrapper".into());
@@ -5527,17 +5504,15 @@ mod tests {
         assert!(r.is_connecting("t"));
         let _ = r.activate_user("t");
         let asked = asked.lock().unwrap();
-        assert_eq!(asked.len(), 2, "one wake in flight");
-        assert!(!asked[1].auto);
+        assert_eq!(asked.len(), 2, "one open in flight");
         assert_eq!(asked[1].resume.as_deref(), Some("agent-wrapper"));
     }
 
     #[test]
-    fn a_user_open_during_an_auto_open_wakes_when_it_lands_asleep() {
+    fn a_user_open_during_an_auto_open_takes_its_asleep_answer() {
         let (mut r, asked) = rex_registry();
         r.add(&rex_spec("t", "local"), true).unwrap();
         let first = asked.lock().unwrap()[0].clone();
-        assert!(first.auto);
         // The user clicks while the automatic open is still in flight.
         let _ = r.activate_user("t");
         assert_eq!(
@@ -5546,10 +5521,8 @@ mod tests {
             "one open in flight per pane"
         );
         nothing_live(&mut r, &first);
-        let asked = asked.lock().unwrap();
-        assert_eq!(asked.len(), 2, "the click's wake follows the asleep answer");
-        assert!(!asked[1].auto);
-        assert!(r.is_connecting("t"));
+        assert_eq!(asked.lock().unwrap().len(), 1, "the pane stays blank");
+        assert!(!r.is_connecting("t"));
     }
 
     #[test]
@@ -5657,12 +5630,14 @@ mod tests {
         let _ = r.activate("t");
         assert!(
             asked.lock().unwrap().is_empty(),
-            "warden's own open wakes nothing"
+            "warden's own open doesn't ask again"
         );
         let _ = r.activate_user("t");
-        let asked = asked.lock().unwrap();
-        assert_eq!(asked.len(), 1);
-        assert!(!asked[0].auto, "the user's click wakes the last-selected");
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            1,
+            "the user's click asks again"
+        );
     }
 
     #[test]
@@ -5684,7 +5659,7 @@ mod tests {
         );
         assert_eq!(req.startup.as_deref(), Some("amux"));
         assert_eq!(req.resume.as_deref(), Some("wrapper"));
-        assert!(req.agents && !req.auto);
+        assert!(req.agents);
         assert_eq!(r.agent_request("p"), None);
         assert_eq!(r.agent_request("rex:session:x"), None);
     }

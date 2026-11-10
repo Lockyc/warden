@@ -284,7 +284,7 @@ impl AgentStore {
             .retain(|f| records.iter().any(|r| r.project == f.project));
     }
 
-    /// Whether `project`, its session gone, has an agent a user open can wake — the ghost on its
+    /// Whether `project`, its session gone, has an agent its row can wake — the ghost on its
     /// Rex tab's dot. A `Live` record counts: after a Rex crash or reboot the store reads `Live`
     /// until an open reconciles it asleep.
     pub fn has_wakeable(&self, project: &str) -> bool {

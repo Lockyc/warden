@@ -1,13 +1,12 @@
 //! Opening a Rex tab's main pane, whose session's windows are its agent tabs: which agents are
-//! live, which one to show, and — only when the user opens the pane — waking it.
+//! live and which one to show.
 //!
 //! An open reconciles the pane's records (`agents::reconcile`) with its session's windows, or with
 //! a lost session, which puts every resumable agent to sleep. A session Rex restored after a
 //! restart, crash or reboot holds only bare shells, so it counts as lost: its agents' windows
-//! close first (`retire_restored`). An automatic open never wakes: a pane holding a wakeable
-//! agent stops there. A user open shows the last-selected agent, waking it first when it is
-//! asleep, and a pane with nothing live and nothing to wake — on either open — gets a session
-//! typing `cmd`, as a plain Rex pane does. Each
+//! close first (`retire_restored`). An open never wakes an agent: a pane holding a wakeable one
+//! stops there, blank, its choice kept for the row's click (`lifecycle::select`), and a pane with
+//! nothing live and nothing to wake gets a session typing `cmd`, as a plain Rex pane does. Each
 //! live agent's key (`registry::agent_key`) is bound to its block, so size claims and exit checks
 //! resolve per agent; the main pane's own key shows no block.
 
@@ -24,8 +23,8 @@ use crate::registry::{agent_key, AgentsOpened, RexOpen};
 
 impl RexHub {
     /// Open `req`'s agent pane, reading and writing its records in `store` (never held across a
-    /// network call); a record that closes is stamped `now`. The whole open, waking included,
-    /// shares one [`OPEN_BUDGET`] and holds the pane, so two opens never wake twice.
+    /// network call); a record that closes is stamped `now`. The whole open shares one
+    /// [`OPEN_BUDGET`] and holds the pane, so two opens never create twice.
     pub fn open_agents(
         &self,
         store: &Mutex<AgentStore>,
@@ -98,44 +97,28 @@ impl RexHub {
             }
             None => agents::reconcile(project, &held, &[], false, now),
         };
-        let choice = last_selected(&records);
-        let mut woken = None;
+        // An open never wakes: a pane holding a wakeable agent waits for its row's click; one with
+        // nothing live and nothing to wake gets a session typing `cmd`.
         let wakeable = |r: &AgentRecord| r.state == RecordState::Asleep && r.resume.is_some();
         let nothing_live = !records.iter().any(|r| r.state == RecordState::Live);
-        let to_wake = choice.filter(|&i| wakeable(&records[i]));
-        // An automatic open never wakes, so it leaves a pane holding a wakeable agent to the
-        // user's click; any other pane with nothing live it loads, as a user open would.
-        let creates = nothing_live && !records.iter().any(wakeable);
-        if (!req.auto || creates) && !choice.is_some_and(|i| records[i].state == RecordState::Live)
-        {
-            match to_wake.filter(|_| !req.auto) {
-                Some(i) => {
-                    self.wake_until(req, &mut session, &mut records[i], deadline)?;
-                    woken = Some(i);
-                }
-                None if records.iter().any(|r| r.state == RecordState::Live) => {}
-                None => {
-                    let t = self.inner.ensure_until(
-                        project,
-                        server,
-                        &req.dir,
-                        req.startup.as_deref(),
-                        &req.label,
-                        None,
-                        deadline,
-                    )?;
-                    let windows = self.windows(server, &t.session_id);
-                    records = agents::reconcile(project, &records, &windows, true, now);
-                    session = Some((t.endpoint, t.session_id));
-                }
-            }
+        if nothing_live && !records.iter().any(wakeable) {
+            let t = self.inner.ensure_until(
+                project,
+                server,
+                &req.dir,
+                req.startup.as_deref(),
+                &req.label,
+                None,
+                deadline,
+            )?;
+            let windows = self.windows(server, &t.session_id);
+            records = agents::reconcile(project, &records, &windows, true, now);
+            session = Some((t.endpoint, t.session_id));
         }
-        let shown = settle(&mut records, woken, req.auto);
+        let shown = settle(&mut records, None, true);
         let opened = self.bind_agents(project, session.as_ref(), &records, shown);
         lock(store).merge(&held, records);
-        if !req.auto {
-            self.inner.lock().stamp(project);
-        }
+        self.inner.lock().stamp(project);
         Ok(opened)
     }
 
@@ -330,23 +313,6 @@ impl RexHub {
     }
 }
 
-/// The record a user open wakes when it is asleep: the one marked selected, else the first in
-/// list order, never a closed one. Which record then shows is [`settle`]'s.
-fn last_selected(records: &[AgentRecord]) -> Option<usize> {
-    let open = |r: &AgentRecord| r.state != RecordState::Closed;
-    records
-        .iter()
-        .position(|r| r.selected && open(r))
-        .or_else(|| {
-            records
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| open(r))
-                .min_by_key(|(_, r)| r.position)
-                .map(|(i, _)| i)
-        })
-}
-
 #[cfg(test)]
 pub(super) mod tests {
     use std::path::{Path, PathBuf};
@@ -359,7 +325,7 @@ pub(super) mod tests {
     use crate::registry::{agent_key, RexOpen};
     use crate::rex::agents::{AgentRecord, AgentStore, RecordState};
     use crate::rex::store::{PaneRecord, RexStore};
-    use crate::rex::{PaneTarget, RexHub};
+    use crate::rex::RexHub;
 
     pub(crate) fn hub(endpoint: Endpoint, dir: &tempfile::TempDir) -> (RexHub, PathBuf) {
         let path = dir.path().join("rex-sessions.json");
@@ -467,7 +433,7 @@ pub(super) mod tests {
         Mutex::new(s)
     }
 
-    pub(crate) fn open(auto: bool, resume: Option<&str>) -> RexOpen {
+    pub(crate) fn open(resume: Option<&str>) -> RexOpen {
         RexOpen {
             pane_key: "t".into(),
             server: "local".into(),
@@ -475,7 +441,6 @@ pub(super) mod tests {
             startup: Some("agent".into()),
             label: "t · main".into(),
             token: 0,
-            auto,
             agents: true,
             resume: resume.map(Into::into),
             stack: Vec::new(),
@@ -513,14 +478,14 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn auto_open_after_restart_creates_nothing() {
+    fn an_open_after_restart_creates_nothing() {
         let f = fake(None, vec![]);
         let dir = tempfile::tempdir().unwrap();
         map(&dir.path().join("rex-sessions.json"), "session:old");
         let (hub, _) = hub(f.endpoint(), &dir);
         let s = before_restart();
 
-        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
+        let got = hub.open_agents(&s, &open(None), 7).expect("open");
         assert!(got.agents.is_empty(), "nothing live to show");
         assert_eq!(got.selected, None);
         assert!(f.requests_for("session.create").is_empty(), "no session");
@@ -532,79 +497,6 @@ pub(super) mod tests {
             None,
             "no resume command: nothing can bring it back"
         );
-    }
-
-    #[test]
-    fn user_open_wakes_last_selected_only() {
-        let f = fake(None, vec![]);
-        let dir = tempfile::tempdir().unwrap();
-        map(&dir.path().join("rex-sessions.json"), "session:old");
-        let (hub, _) = hub(f.endpoint(), &dir);
-        let s = before_restart();
-
-        let got = hub
-            .open_agents(&s, &open(false, Some("claude-work")), 7)
-            .expect("open");
-        let creates = f.requests_for("session.create");
-        assert_eq!(
-            creates.len(),
-            1,
-            "the session comes back for the woken agent"
-        );
-        let win = &creates[0].payload["initial_windows"][0];
-        assert_eq!(win["window_label"], "b", "the tab keeps its name");
-        assert_eq!(
-            win["layout"]["block"]["options"]["initial_input"],
-            "claude-work --resume bbb\n"
-        );
-        assert!(f.requests_for("session.new_window").is_empty());
-
-        let target = PaneTarget {
-            endpoint: f.endpoint(),
-            session_id: "session:new".into(),
-            block_id: "block:new".into(),
-        };
-        assert_eq!(got.agents, vec![("b".to_string(), target)]);
-        assert_eq!(got.selected.as_deref(), Some("b"));
-        let b = state_of(&s, "b").unwrap();
-        assert_eq!(b.state, RecordState::Live);
-        assert_eq!(b.window_id.as_deref(), Some("window:new"));
-        assert_eq!(b.block_id.as_deref(), Some("block:new"));
-        assert!(b.selected);
-        assert_eq!(
-            state_of(&s, "a").unwrap().state,
-            RecordState::Asleep,
-            "only one wakes"
-        );
-    }
-
-    #[test]
-    fn user_open_wakes_into_a_live_session() {
-        let f = fake(Some("session:old"), vec![("window:1", "block:1", "a")]);
-        let dir = tempfile::tempdir().unwrap();
-        map(&dir.path().join("rex-sessions.json"), "session:old");
-        let (hub, _) = hub(f.endpoint(), &dir);
-        let mut b = record("b", RecordState::Asleep, None, Some("codex resume bbb"));
-        b.selected = true;
-        let s = store(vec![
-            record("a", RecordState::Live, Some("window:1"), None),
-            b,
-        ]);
-
-        let got = hub.open_agents(&s, &open(false, None), 7).expect("open");
-        assert!(f.requests_for("session.create").is_empty());
-        let made = f.requests_for("session.new_window");
-        assert_eq!(made.len(), 1);
-        assert_eq!(made[0].payload["session_id"], "session:old");
-        assert_eq!(made[0].payload["window_label"], "b");
-        assert_eq!(
-            made[0].payload["layout"]["block"]["options"]["initial_input"],
-            "codex resume bbb\n"
-        );
-        let ids: Vec<&str> = got.agents.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["a", "b"]);
-        assert_eq!(got.agents[1].1.block_id, "block:woke");
-        assert_eq!(got.selected.as_deref(), Some("b"));
     }
 
     #[test]
@@ -620,7 +512,7 @@ pub(super) mod tests {
             record("b", RecordState::Asleep, None, Some("claude --resume bbb")),
         ]);
 
-        let got = hub.open_agents(&s, &open(false, None), 7).expect("open");
+        let got = hub.open_agents(&s, &open(None), 7).expect("open");
         assert!(f.requests_for("session.create").is_empty());
         assert!(f.requests_for("session.new_window").is_empty());
         assert_eq!(got.agents.len(), 1);
@@ -629,7 +521,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn auto_open_attaches_every_live_window() {
+    fn an_open_attaches_every_live_window() {
         let f = fake(
             Some("session:old"),
             vec![
@@ -642,7 +534,7 @@ pub(super) mod tests {
         let (hub, _) = hub(f.endpoint(), &dir);
         let s = store(vec![]);
 
-        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
+        let got = hub.open_agents(&s, &open(None), 7).expect("open");
         assert!(f.requests_for("session.create").is_empty());
         let blocks: Vec<&str> = got
             .agents
@@ -661,7 +553,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn auto_open_keeps_an_asleep_last_selected_record_selected() {
+    fn an_open_keeps_an_asleep_last_selected_record_selected() {
         let f = fake(Some("session:old"), vec![("window:2", "block:2", "b")]);
         let dir = tempfile::tempdir().unwrap();
         map(&dir.path().join("rex-sessions.json"), "session:old");
@@ -673,7 +565,7 @@ pub(super) mod tests {
             record("b", RecordState::Live, Some("window:2"), None),
         ]);
 
-        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
+        let got = hub.open_agents(&s, &open(None), 7).expect("open");
         assert!(
             f.requests_for("session.new_window").is_empty(),
             "wakes nothing"
@@ -685,23 +577,25 @@ pub(super) mod tests {
         );
         let a = state_of(&s, "a").unwrap();
         assert_eq!(a.state, RecordState::Asleep);
-        assert!(a.selected, "the next user open wakes it");
+        assert!(a.selected, "its row's click wakes it");
         assert!(!state_of(&s, "b").unwrap().selected);
 
-        hub.open_agents(&s, &open(false, None), 8)
-            .expect("user open");
-        assert_eq!(f.requests_for("session.new_window").len(), 1);
-        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Live);
+        hub.open_agents(&s, &open(None), 8).expect("second open");
+        assert!(
+            f.requests_for("session.new_window").is_empty(),
+            "nor does the next"
+        );
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
     }
 
     #[test]
-    fn a_first_user_open_types_cmd_like_a_plain_rex_pane() {
+    fn a_first_open_types_cmd_like_a_plain_rex_pane() {
         let f = fake(None, vec![]);
         let dir = tempfile::tempdir().unwrap();
         let (hub, _) = hub(f.endpoint(), &dir);
         let s = store(vec![]);
 
-        let got = hub.open_agents(&s, &open(false, None), 7).expect("open");
+        let got = hub.open_agents(&s, &open(None), 7).expect("open");
         let creates = f.requests_for("session.create");
         assert_eq!(creates.len(), 1);
         let win = &creates[0].payload["initial_windows"][0];
@@ -720,12 +614,12 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_auto_open_with_nothing_to_wake_creates_the_session() {
+    fn an_open_with_nothing_to_wake_creates_the_session() {
         let f = fake(None, vec![]);
         let dir = tempfile::tempdir().unwrap();
         let (hub, _) = hub(f.endpoint(), &dir);
         let s = store(vec![record("gone", RecordState::Closed, None, None)]);
-        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
+        let got = hub.open_agents(&s, &open(None), 7).expect("open");
         let creates = f.requests_for("session.create");
         assert_eq!(creates.len(), 1, "the pane loads with its window");
         assert_eq!(
@@ -757,7 +651,7 @@ pub(super) mod tests {
                 Some("claude --resume bbb"),
             ),
         ]);
-        hub.open_agents(&s, &open(true, None), 7).expect("open");
+        hub.open_agents(&s, &open(None), 7).expect("open");
         let b = agent_key("t", "b");
 
         f.reply(
@@ -806,7 +700,7 @@ pub(super) mod tests {
         map(&dir.path().join("rex-sessions.json"), "session:old");
         let (hub, _) = hub(f.endpoint(), &dir);
 
-        hub.open_agents(&s, &open(true, None), 7).expect("open");
+        hub.open_agents(&s, &open(None), 7).expect("open");
         let a = state_of(&s, "a").unwrap();
         assert_eq!(
             a.resume.as_deref(),
@@ -829,7 +723,7 @@ pub(super) mod tests {
         map(&dir.path().join("rex-sessions.json"), "session:old");
         let (hub, _) = hub(f.endpoint(), &dir);
         let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
-        hub.open_agents(&s, &open(true, None), 7).expect("open");
+        hub.open_agents(&s, &open(None), 7).expect("open");
         f.reply(
             "com.superlogical.terminal.process",
             json!({"last_exit": {"exit_code": 0}}),
@@ -879,22 +773,21 @@ pub(super) mod tests {
     ];
 
     #[test]
-    fn a_restored_project_sleeps_then_wakes_its_selected_agent() {
+    fn a_restored_project_sleeps_and_wakes_nothing() {
         let (f, hub, _dir) = restored(RESTORED.to_vec());
         let s = before_restart();
-        let got = hub.open_agents(&s, &open(false, None), 7).expect("open");
+        let got = hub.open_agents(&s, &open(None), 7).expect("open");
         assert_eq!(closed_windows(&f), ["window:1", "window:2", "window:3"]);
         let destroyed = f.requests_for("session.destroy");
         assert_eq!(destroyed.len(), 1, "nothing but bare shells was left");
         assert_eq!(destroyed[0].payload["session_id"], "session:old");
-        let creates = f.requests_for("session.create");
-        assert_eq!(creates.len(), 1);
-        assert_eq!(
-            creates[0].payload["initial_windows"][0]["layout"]["block"]["options"]["initial_input"],
-            "claude --resume bbb\n"
-        );
-        assert_eq!(got.selected.as_deref(), Some("b"));
-        assert_eq!(state_of(&s, "b").unwrap().state, RecordState::Live);
+        assert!(f.requests_for("session.create").is_empty());
+        assert!(f.requests_for("session.new_window").is_empty());
+        assert!(got.agents.is_empty(), "the pane stays blank");
+        assert_eq!(got.selected, None);
+        let b = state_of(&s, "b").unwrap();
+        assert_eq!(b.state, RecordState::Asleep);
+        assert!(b.selected, "its row's click wakes it");
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
         assert_eq!(
             state_of(&s, "c"),
@@ -907,13 +800,8 @@ pub(super) mod tests {
     fn an_op_on_a_restored_project_retires_it_as_an_open_would() {
         let (f, hub, _dir) = restored(RESTORED.to_vec());
         let s = before_restart();
-        hub.agent_op(
-            &s,
-            &open(false, None),
-            &crate::rex::lifecycle::AgentOp::Refresh,
-            7,
-        )
-        .expect("refresh");
+        hub.agent_op(&s, &open(None), &crate::rex::lifecycle::AgentOp::Refresh, 7)
+            .expect("refresh");
         assert_eq!(closed_windows(&f), ["window:1", "window:2", "window:3"]);
         assert_eq!(f.requests_for("session.destroy").len(), 1);
         assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
@@ -929,17 +817,11 @@ pub(super) mod tests {
         windows.push(("window:9", "block:9", "someone's"));
         let (f, hub, _dir) = restored(windows);
         let s = before_restart();
-        hub.open_agents(&s, &open(false, None), 7).expect("open");
+        hub.open_agents(&s, &open(None), 7).expect("open");
         assert_eq!(closed_windows(&f), ["window:1", "window:2", "window:3"]);
         assert!(f.requests_for("session.destroy").is_empty());
         assert!(f.requests_for("session.create").is_empty());
-        let made = f.requests_for("session.new_window");
-        assert_eq!(made.len(), 1);
-        assert_eq!(made[0].payload["session_id"], "session:old");
-        assert_eq!(
-            made[0].payload["layout"]["block"]["options"]["initial_input"],
-            "claude --resume bbb\n"
-        );
+        assert!(f.requests_for("session.new_window").is_empty());
         assert!(hub.session_alive("t"), "opened under this instance now");
     }
 
@@ -951,42 +833,28 @@ pub(super) mod tests {
         });
         let s = before_restart();
         let started = std::time::Instant::now();
-        let got = hub.open_agents(&s, &open(false, None), 7);
+        let got = hub.open_agents(&s, &open(None), 7);
         assert!(got.is_err(), "a wedged server can't finish the open");
         assert!(started.elapsed() < std::time::Duration::from_millis(3500));
     }
 
     #[test]
-    fn auto_then_user_open_of_a_restored_project_keeps_a_window_it_didnt_make() {
+    fn two_opens_of_a_restored_project_keep_a_window_they_didnt_make() {
         let mut windows = RESTORED.to_vec();
         windows.push(("window:9", "block:9", "someone's"));
         let (f, hub, _dir) = restored(windows);
         let s = before_restart();
-        hub.open_agents(&s, &open(true, None), 7)
-            .expect("auto open");
-        hub.open_agents(&s, &open(false, None), 8)
-            .expect("user open");
+        hub.open_agents(&s, &open(None), 7).expect("first open");
+        hub.open_agents(&s, &open(None), 8).expect("second open");
         assert!(!closed_windows(&f).contains(&"window:9".to_owned()));
         assert!(f.requests_for("session.destroy").is_empty());
-    }
-
-    #[test]
-    fn an_auto_open_of_a_restored_project_wakes_nothing() {
-        let (f, hub, _dir) = restored(RESTORED.to_vec());
-        let s = before_restart();
-        let got = hub.open_agents(&s, &open(true, None), 7).expect("open");
-        assert!(got.agents.is_empty());
-        assert!(f.requests_for("session.create").is_empty());
-        assert!(f.requests_for("session.new_window").is_empty());
-        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Asleep);
-        assert_eq!(state_of(&s, "b").unwrap().state, RecordState::Asleep);
     }
 
     #[test]
     fn a_restored_agent_window_closing_leaves_its_record_asleep() {
         let (f, hub, _dir) = restored(RESTORED.to_vec());
         let s = before_restart();
-        hub.open_agents(&s, &open(false, None), 7).expect("open");
+        hub.open_agents(&s, &open(None), 7).expect("open");
         f.push_block_event(
             "session:old",
             "block:1",
