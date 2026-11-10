@@ -1465,6 +1465,7 @@ fn status_from_program_status_changed() {
             msg: Some("Allow edit?".into()),
             title: None,
             asked: None,
+            answered: None,
             said: None,
         })
     );
@@ -1552,6 +1553,7 @@ fn status_pulled_on_attach() {
                 msg: Some("Tests pass".into()),
                 title: Some("fix the parser".into()),
                 asked: None,
+                answered: None,
                 said: None,
             })
     });
@@ -1573,6 +1575,7 @@ fn summary_from_the_hook_child_records() {
             .map(|s| (s.asked, s.said))
             .unwrap_or_default()
     };
+    let answered = || hub.block_status("block:new").and_then(|s| s.answered);
     let child = |id: &str, msg: &str| {
         json!({"id": id, "record": {"id": id, "state": "idle", "msg": msg,
                "updated_at": "2026-11-07T00:00:00Z"}, "reason": "report"})
@@ -1603,14 +1606,38 @@ fn summary_from_the_hook_child_records() {
         Some((AgentState::Idle, None))
     );
 
-    // Clearing `warden` names each child it removed.
+    // A short reply sits beside the ask, and clearing it alone leaves the ask.
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        child("warden/answered", "b"),
+    );
+    eventually("the answer", || answered() == Some("b".into()));
     fake.push_block_event(
         "session:new",
         "block:new",
         "program_status_removed",
-        json!({"ids": ["warden/asked", "warden/said"], "reason": "clear"}),
+        json!({"ids": ["warden/answered"], "reason": "clear"}),
     );
-    eventually("the clear", || summary() == (None, None));
+    eventually("the answer cleared", || answered().is_none());
+    assert_eq!(summary().0, Some("fix the parser".into()));
+
+    // Clearing `warden` names each child it removed.
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_changed",
+        child("warden/answered", "b"),
+    );
+    eventually("the answer back", || answered() == Some("b".into()));
+    fake.push_block_event(
+        "session:new",
+        "block:new",
+        "program_status_removed",
+        json!({"ids": ["warden/asked", "warden/answered", "warden/said"], "reason": "clear"}),
+    );
+    eventually("the clear", || summary() == (None, None) && answered().is_none());
 
     // A removal without `ids` takes every record.
     fake.push_block_event(
@@ -1637,6 +1664,8 @@ fn summary_pulled_on_attach() {
             {"state": "working", "msg": "Reading src/lib.rs", "updated_at": "2026-11-07T00:00:00Z"},
             {"id": "warden/asked", "state": "idle", "msg": "fix the parser",
              "updated_at": "2026-11-07T00:00:00Z"},
+            {"id": "warden/answered", "state": "idle", "msg": "b",
+             "updated_at": "2026-11-07T00:00:00Z"},
             {"id": "warden/said", "state": "idle", "msg": "Looking now.",
              "updated_at": "2026-11-07T00:00:00Z"},
         ]}))
@@ -1652,6 +1681,7 @@ fn summary_pulled_on_attach() {
                 msg: Some("Reading src/lib.rs".into()),
                 title: None,
                 asked: Some("fix the parser".into()),
+                answered: Some("b".into()),
                 said: Some("Looking now.".into()),
             })
     });
@@ -1682,6 +1712,7 @@ fn title_change_updates_status_title() {
             msg: None,
             title: Some("refactor auth".into()),
             asked: None,
+            answered: None,
             said: None,
         })
     );
@@ -1698,6 +1729,7 @@ fn title_change_updates_status_title() {
                 msg: None,
                 title: Some("refactor auth".into()),
                 asked: None,
+                answered: None,
                 said: None,
             })
     });

@@ -821,9 +821,11 @@ pub struct AgentRowDto {
     pub state: &'static str,
     /// The program's status message, else its terminal title.
     pub context: Option<String>,
-    /// The summary block's rows for a live tab: the user's latest prompt, the program's status
-    /// message (its current step), and the agent's latest reply.
+    /// The summary block's rows for a live tab: the user's latest prompt and any short reply
+    /// typed since it, the program's status message (its current step), and the agent's latest
+    /// reply.
     pub asked: Option<String>,
+    pub answered: Option<String>,
     pub doing: Option<String>,
     pub said: Option<String>,
     pub selected: bool,
@@ -941,6 +943,7 @@ pub fn agent_list(
             msg: None,
             title: None,
             asked: None,
+            answered: None,
             said: None,
         });
         rows.push(AgentRowDto {
@@ -950,6 +953,7 @@ pub fn agent_list(
             state,
             context: st.msg.clone().or(st.title),
             asked: st.asked,
+            answered: st.answered,
             doing: st.msg,
             said: st.said,
             selected: r.selected,
@@ -2507,6 +2511,7 @@ mod tests {
                 msg: Some("needs you".into()),
                 title: Some("t1".into()),
                 asked: Some("fix it".into()),
+                answered: Some("b".into()),
                 said: Some("Fixed.".into()),
             }),
             "block:2" => Some(BlockStatus {
@@ -2514,6 +2519,7 @@ mod tests {
                 msg: None,
                 title: Some("finished".into()),
                 asked: None,
+                answered: None,
                 said: None,
             }),
             _ => None,
@@ -2535,18 +2541,25 @@ mod tests {
             ],
             "ungrouped above the groups"
         );
-        let summary: Vec<[Option<&str>; 3]> = list
+        let summary: Vec<[Option<&str>; 4]> = list
             .rows
             .iter()
-            .map(|r| [r.asked.as_deref(), r.doing.as_deref(), r.said.as_deref()])
+            .map(|r| {
+                [
+                    r.asked.as_deref(),
+                    r.answered.as_deref(),
+                    r.doing.as_deref(),
+                    r.said.as_deref(),
+                ]
+            })
             .collect();
         assert_eq!(
             summary,
             [
-                [Some("fix it"), Some("needs you"), Some("Fixed.")],
-                [None; 3],
-                [None; 3],
-                [None; 3],
+                [Some("fix it"), Some("b"), Some("needs you"), Some("Fixed.")],
+                [None; 4],
+                [None; 4],
+                [None; 4],
             ],
             "a live row's own words; an asleep one has none"
         );
@@ -2601,6 +2614,7 @@ mod tests {
                 msg: None,
                 title: None,
                 asked: None,
+                answered: None,
                 said: None,
             })
         };
@@ -2645,6 +2659,7 @@ mod tests {
                 msg: None,
                 title: None,
                 asked: None,
+                answered: None,
                 said: None,
             })
         };
@@ -3317,6 +3332,7 @@ mod tests {
                     context: None,
                     asked: None,
                     doing: None,
+                    answered: None,
                     said: None,
                     selected: *id == selected,
                     can_sleep: true,

@@ -7,10 +7,13 @@
 #   which rides Rex's raw data stream to warden's relay, which strips it. Unless the session is
 #   only compacting, it also clears the `warden` OSC 7501 records below: a new conversation
 #   starts with empty rows, and a resumed one refills them from its transcript.
-# - UserPromptSubmit and Stop write an OSC 7501 child record, `warden/asked` (the prompt) or
-#   `warden/said` (the agent's reply): the first non-blank line, at most 200 characters. Rex keeps
-#   the record on the block, and warden reads it from Rex. These need `jq`; without it they do
-#   nothing.
+# - UserPromptSubmit and Stop write an OSC 7501 child record: the first non-blank line, at most
+#   200 characters. Rex keeps the record on the block, and warden reads it from Rex. A prompt is
+#   `warden/asked`, and clears `warden/answered`; a short one (at most three words, 20
+#   characters: "b", "yes, go") is `warden/answered` instead, beside the ask it answers; one
+#   that opens with `<` is Claude Code's own (a background task's `<task-notification>`, a
+#   command's output) and writes nothing. The reply is `warden/said`. These need `jq`; without
+#   it they do nothing.
 #
 # Prints nothing to stdout (Claude Code adds SessionStart's and UserPromptSubmit's stdout to the
 # agent's context) and always exits 0, silently, so a hook failure never blocks the agent.
@@ -65,6 +68,24 @@ record() {
 	emit "${esc}]7501;id=$1:state=idle:msg=${b64}${esc}\\"
 }
 
+# What a prompt is: `skip` (Claude Code's own, or blank), `answer` (short) or `ask`.
+KIND='def kind: (gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ")) as $p
+	| if $p == "" or ($p | startswith("<")) then "skip"
+	elif ($p | length) <= 20 and ($p | split(" ") | length) <= 3 then "answer"
+	else "ask" end;'
+
+# Record the hook input's `prompt` as an ask or an answer, as `kind` sorts it.
+prompt() {
+	command -v jq >/dev/null 2>&1 || return 0
+	case $(printf '%s' "$input" | jq -r "$KIND"' .prompt // "" | kind' 2>/dev/null) in
+	ask)
+		record warden/asked prompt
+		emit "${esc}]7501;id=warden/answered:state=clear${esc}\\"
+		;;
+	answer) record warden/answered prompt ;;
+	esac
+}
+
 case $(field hook_event_name) in
 SessionStart)
 	[ "$(field source)" = compact ] || emit "${esc}]7501;id=warden:state=clear${esc}\\"
@@ -82,22 +103,26 @@ SessionStart)
 		printf '%s' "$apc" >"/dev/$tty"
 	) </dev/null >/dev/null 2>&1 &
 	# A resumed conversation (a woken agent: a new block, with no records) takes its rows from
-	# its transcript: the last prompt typed, and the last reply's text.
+	# its transcript: the last ask, any answer after it, and the last reply's text.
 	path=$(field transcript_path)
 	if [ "$(field source)" = resume ] && [ -r "$path" ] && command -v jq >/dev/null 2>&1; then
-		input=$(jq -cn 'reduce inputs as $l ({};
+		input=$(jq -cn "$KIND"' reduce inputs as $l ({};
 			($l.message.content // null) as $c
-			| if $l.type == "user" and ($l.isMeta | not) and ($c | type) == "string"
-				and ($c | startswith("<") | not) then .prompt = $c
+			| if $l.type == "user" and ($l.isMeta | not) and ($c | type) == "string" then
+				($c | kind) as $k
+				| if $k == "ask" then .prompt = $c | del(.answer)
+				elif $k == "answer" then .answer = $c
+				else . end
 			elif $l.type == "assistant" and ($c | type) == "array" then
 				([$c[] | select(.type == "text") | .text] | join("\n")) as $t
 				| if $t == "" then . else .last_assistant_message = $t end
 			else . end)' "$path" 2>/dev/null) || exit 0
 		record warden/asked prompt
+		record warden/answered answer
 		record warden/said last_assistant_message
 	fi
 	;;
-UserPromptSubmit) record warden/asked prompt ;;
+UserPromptSubmit) prompt ;;
 Stop) record warden/said last_assistant_message ;;
 esac
 exit 0
