@@ -57,7 +57,7 @@ A tab's optional `kill` and `suspend` commands end the session the dot represent
 
 The dot works in reverse too: when the probe reports the session **gone** on a tab whose terminal is still live — hollow or ghost alike — the same dot becomes a one-click **start**: warden types the tab's `cmd` into the existing shell, so a dead or crashed agent session restarts (or restores) in place — scrollback preserved, no terminal respawn.
 
-Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `cmd+N` tabs and windows.
+Not yet built (see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md)): ad-hoc `cmd+T` / `cmd+N` tabs and windows for plain (non-agent) tabs.
 
 ## Config
 
@@ -172,11 +172,11 @@ Full schema, validation rules, and resolution semantics: [`docs/config.md`](docs
 [latest release](https://github.com/Lockyc/warden/releases/latest), unzip, and move
 `warden.app` to `/Applications`. Release builds are signed with Developer ID and notarized,
 so they open without a Gatekeeper block. macOS only. Agent tabs' sleep, wake and summary also need the
-agent hook, which only `/warden:install` wires. Upgrading from 0.15 or earlier, re-run
+agent hook, which only `/warden:install` wires (run it in Claude Code from a clone of this repo). Upgrading from 0.15 or earlier, re-run
 `/warden:install`: the hook is now `claude-hook.sh`, and a profile still wired to the old
 `claude-session-start.sh` loses sleep and fork.
 
-**Guided (Claude Code):** run `/warden:install` — it checks prerequisites
+**Guided (Claude Code):** from a clone of this repo, run `/warden:install` — it checks prerequisites
 (Xcode Command Line Tools, Rust, the Tauri CLI), builds warden from source, installs
 it to `/Applications`, seeds your config, and wires the agent-tab hook into each Claude Code
 profile's `settings.json`.
@@ -260,14 +260,15 @@ warden is built on three shared library crates; a source build fetches them auto
 
 - **[chrome-core](https://github.com/Lockyc/chrome-core)** — the sidebar chrome (banner,
   grouped tab rows, resize drag, density tokens).
-- **[config-core](https://github.com/Lockyc/config-core)** — the TOML config engine (parse,
-  validate, format, hot-reload diff) behind warden's config and `warden fmt`.
+- **[config-core](https://github.com/Lockyc/config-core)** — the shared TOML config primitives
+  (window/group shape, validation, in-place edits, formatting) behind warden's config and `warden fmt`.
 - **[shell-core](https://github.com/Lockyc/shell-core)** — shared release tooling and app-shell
   runtime (window geometry, updater).
 
-Two **sibling apps** share the same cores: [curator](https://github.com/Lockyc/curator) curates
-**browser tabs** and [lector](https://github.com/Lockyc/lector) curates **local documentation
-sites**, the way warden curates **terminals**.
+Three **sibling apps** share the same cores: [curator](https://github.com/Lockyc/curator) curates
+**browser tabs**, [lector](https://github.com/Lockyc/lector) curates **local documentation
+sites** and [flotilla](https://github.com/Lockyc/flotilla) curates **document workspaces**, the
+way warden curates **terminals**.
 
 If you want to iterate on a shared core, `just chrome-dev` builds warden against a sibling
 `../chrome-core` checkout (including uncommitted edits) and `just chrome-pin` re-pins to its
