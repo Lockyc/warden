@@ -1298,9 +1298,9 @@
           const t = dto.tabs.find((t) => t.id === activeId);
           setActiveId(activeId, !!(t && t.spawned));
         } else {
-          // Tabs exist but nothing is selected yet — chrome-core's own onSelect will follow and
-          // call setActiveId (which reports both holes itself, via `setSplitVisible`); report here
-          // only for this one case, where neither branch above ran.
+          // Tabs exist but nothing is selected — none chosen yet (chrome-core's onSelect will follow
+          // and call setActiveId, which reports both holes itself via `setSplitVisible`) or the
+          // selection was cleared (it stays blank); report here, where neither branch above ran.
           reportRect();
         }
       }
