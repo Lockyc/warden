@@ -969,11 +969,12 @@ define_class!(
         // `defer_event`, which the focus/child-exit paths use: AppKit delivers this
         // from the event loop, never re-entrantly from inside our own `ManagerState` lock.
         #[unsafe(method(mouseEntered:))]
-        fn mouse_entered(&self, _event: &NSEvent) {
+        fn mouse_entered(&self, event: &NSEvent) {
             let surface = self.ivars().surface.get();
             if surface.is_null() {
                 return;
             }
+            unsafe { settle_webview_tooltip(self, event) };
             super::emit_surface_event(SurfaceEvent {
                 surface_id: surface as usize,
                 signal: SurfaceSignal::PointerEntered,
@@ -1424,6 +1425,62 @@ fn mouse_mods(mods: ffi::ghostty_input_mods_e) -> ffi::ghostty_input_mods_e {
 
 unsafe fn mouse_mods_from_event(event: &NSEvent) -> ffi::ghostty_input_mods_e {
     mouse_mods(mods_from_event(event))
+}
+
+/// Hand the window's WKWebView one mouse move at the point the pointer entered this view, so
+/// WebKit re-hit-tests the page there (the untitled `#terminal-hole`) and drops the `title`
+/// tooltip it was holding. WebKit registers every tooltip over a wide-open rect (±100000pt) and
+/// clears it only on a move it sees; its tracking observer ignores moves while a sibling view is
+/// topmost under the cursor, which this view always is. So leaving a titled element straight onto
+/// a terminal kept the tooltip armed, and AppKit popped it wherever the cursor next rested — over
+/// the terminal, far from its element. `_simulateMouseMove:` is WebKit's own entry past that
+/// topmost gate (WKWebViewMac.mm); a WebKit without it just keeps the old behaviour.
+unsafe fn settle_webview_tooltip(view: &WardenHostView, event: &NSEvent) {
+    let Some(superview) = view.superview() else {
+        return;
+    };
+    let Some(wk) = objc2::runtime::AnyClass::get(c"WKWebView") else {
+        return;
+    };
+    let Some(webview) = superview
+        .subviews()
+        .iter()
+        .find(|v| v.isKindOfClass(wk) && v.respondsToSelector(sel!(_simulateMouseMove:)))
+    else {
+        return;
+    };
+    let moved = mouse_moved_event(
+        event.locationInWindow(),
+        event.modifierFlags(),
+        event.timestamp(),
+        event.windowNumber(),
+    );
+    if let Some(moved) = moved {
+        let _: () = msg_send![&*webview, _simulateMouseMove: &*moved];
+    }
+}
+
+/// A synthetic `NSEventTypeMouseMoved` at `location` (window coordinates).
+fn mouse_moved_event(
+    location: NSPoint,
+    flags: objc2_app_kit::NSEventModifierFlags,
+    timestamp: f64,
+    window_number: isize,
+) -> Option<Retained<NSEvent>> {
+    unsafe {
+        msg_send![
+            class!(NSEvent),
+            mouseEventWithType: objc2_app_kit::NSEventType::MouseMoved,
+            location: location,
+            modifierFlags: flags,
+            timestamp: timestamp,
+            windowNumber: window_number,
+            context: std::ptr::null_mut::<AnyObject>(),
+            eventNumber: 0isize,
+            clickCount: 0isize,
+            pressure: 0f32,
+        ]
+    }
 }
 
 /// Forward the cursor position to libghostty. AppKit gives window coordinates with a
@@ -2139,6 +2196,17 @@ mod tests {
     };
     use crate::ffi;
     use std::cell::Cell;
+
+    /// The tooltip settle's synthetic move is a real mouse-moved event at the entry point —
+    /// and its `msg_send` passes objc2's runtime encoding check.
+    #[test]
+    fn mouse_moved_event_is_a_move_at_the_point() {
+        let at = objc2_foundation::NSPoint::new(12.0, 34.0);
+        let e = super::mouse_moved_event(at, objc2_app_kit::NSEventModifierFlags::empty(), 1.0, 0)
+            .expect("event");
+        assert_eq!(e.r#type(), objc2_app_kit::NSEventType::MouseMoved);
+        assert_eq!(e.locationInWindow(), at);
+    }
 
     /// ⌘ on a mouse event also reports ⇧, so a ⌘-click stays with libghostty (link open) even
     /// under mouse reporting; anything without ⌘ is passed through untouched.
