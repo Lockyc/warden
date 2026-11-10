@@ -301,14 +301,18 @@
          from it. */
       /* `--s-gap` is the agent column's ground between the band (tile + summary) and the list and
          terminal above it: the tile's margin over #agents' own background, the summary's border. */
-      :root { --term-font: 13px; --s-rows: 3; --s-gap: 0.5em; --agents-bg: #15191e; }
+      :root { --term-font: 13px; --s-rows: 4; --s-gap: 0.5em; --agents-bg: #15191e; }
       #summary { display: none; flex: none; font-size: var(--term-font); user-select: none;
         -webkit-user-select: none; color: var(--s-fg); background: var(--s-shade);
         border-top: var(--s-gap) solid var(--agents-bg); }
       #terminal-hole.agents #summary { display: block; }
-      #summary > div { height: 1.5em; line-height: 1.5em; padding: 0 0.8em; white-space: nowrap;
-        overflow: hidden; text-overflow: ellipsis; }
-      #summary .s-k { display: inline-block; width: 3.6em; opacity: 0.6; }
+      #summary > div { display: flex; height: 1.5em; line-height: 1.5em; padding: 0 0.8em;
+        white-space: nowrap; overflow: hidden; }
+      #summary .s-k { flex: none; width: 3.6em; opacity: 0.6; }
+      #summary .s-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      #summary [data-key="title"] .s-v { font-weight: 600; }
+      /* A short reply after the ask: never cut, so the ask's ellipsis gives way to it. */
+      #summary .s-then { flex: none; white-space: pre; opacity: 0.6; }
       /* The identity tile: the agent list's foot, beside the summary block at its height, solid
          in the project colour against the summary's shade. It belongs at the foot with the
          summary, never in the head band. */
@@ -502,9 +506,10 @@
           </div>
         </div>
         <!-- The summary block (a Rex tab's main pane only, with the agent list): the selected
-             agent's asked / doing / said. Filled by `summarySync`. -->
+             agent's title / asked / doing / said. Filled by `summarySync`. -->
         <div id="summary">
-          <div class="s-row" data-key="asked"><span class="s-k">asked</span><span class="s-v"></span></div>
+          <div class="s-row" data-key="title"><span class="s-k">title</span><span class="s-v"></span></div>
+          <div class="s-row" data-key="asked"><span class="s-k">asked</span><span class="s-v"></span><span class="s-then"></span></div>
           <div class="s-row" data-key="doing"><span class="s-k">doing</span><span class="s-v"></span></div>
           <div class="s-row" data-key="said"><span class="s-k">said</span><span class="s-v"></span></div>
         </div>
@@ -1475,7 +1480,8 @@
       // sleeping agents, nothing).
       const TILE_STATE = { on: "live", ghost: "asleep", off: "no session" };
       // Paint the summary block and identity tile for the agents tab: its selected agent's
-      // asked / doing / said (`AgentRowDto`), its title, server and session, in `TabDto.colour`.
+      // name and asked (with any short reply after it) / doing / said (`AgentRowDto`), and the
+      // tab's title, server and session, in `TabDto.colour`.
       // Shown by the same `.agents` class as the column; runs on every column sync, list render,
       // `warden:agents`, `warden:session-state` and snapshot.
       function summarySync() {
@@ -1496,9 +1502,13 @@
         const dto = agentLists.get(tab);
         const sel = dto && dto.rows.find((r) => r.selected);
         el.querySelectorAll(".s-row").forEach((row) => {
-          const text = (sel && sel[row.dataset.key]) || "";
+          const key = row.dataset.key;
+          const text = (sel && sel[key === "title" ? "name" : key]) || "";
+          const then = key === "asked" && sel && sel.answered ? ` → ${sel.answered}` : "";
           row.querySelector(".s-v").textContent = text;
-          row.title = text; // the whole line, past the ellipsis
+          const tail = row.querySelector(".s-then");
+          if (tail) tail.textContent = then;
+          row.title = text + then; // the whole line, past the ellipsis
         });
       }
 
