@@ -18,7 +18,7 @@ use super::attention::Attention;
 use super::spawn::unix_now;
 use super::windows::{AgentState, BlockStatus};
 use super::{budget_error, lock, HubEvent, RexHub, OPEN_BUDGET};
-use crate::registry::{AgentsOpened, RexOpen};
+use crate::registry::{AgentsOpened, PaneIdx, RexOpen};
 use crate::ManagerState;
 
 /// Why an agent tab can't sleep, or closes for good: it never reported its resume command.
@@ -1360,12 +1360,15 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
         req
     };
     let (app, label) = (app.clone(), label.to_owned());
+    let focus_main = matches!(op, AgentOp::New);
     std::thread::Builder::new()
         .name("warden-agent-op".into())
         .spawn(move || {
             let land_on_main = |result: Result<AgentsOpened, String>| {
                 let (main, label, pane) = (app.clone(), label.clone(), req.pane_key.clone());
-                let _ = app.run_on_main_thread(move || land(&main, Some(&label), &pane, result));
+                let _ = app.run_on_main_thread(move || {
+                    land(&main, Some(&label), &pane, result, focus_main)
+                });
             };
             let done = match (
                 app.try_state::<RexHub>(),
@@ -1446,8 +1449,16 @@ pub fn edit(
 }
 
 /// Land an op's answer for project `tab_id` (main thread): every window holding the tab follows
-/// it and repaints; a failure goes to window `label`'s error banner. Then the list.
-fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<AgentsOpened, String>) {
+/// it and repaints; a failure goes to window `label`'s error banner. Then the list. With
+/// `focus_main` (a new agent tab), window `label`'s main pane takes keyboard focus, so the agent
+/// it shows is typed into whichever pane ⌘T or `+` came from.
+fn land(
+    app: &AppHandle,
+    label: Option<&str>,
+    tab_id: &str,
+    result: Result<AgentsOpened, String>,
+    focus_main: bool,
+) {
     let st = app.state::<ManagerState>();
     let mut m = st.lock();
     let mut refreshed = Vec::new();
@@ -1455,6 +1466,10 @@ fn land(app: &AppHandle, label: Option<&str>, tab_id: &str, result: Result<Agent
         for (l, ws) in m.windows.iter_mut() {
             if ws.registry.spec_of(tab_id).is_none() {
                 continue;
+            }
+            // Before the sync, whose show focuses the pane the tab has focused.
+            if focus_main && label == Some(l.as_str()) {
+                ws.registry.focus_pane(tab_id, PaneIdx::Primary);
             }
             if let Err(e) = ws.registry.sync_agents(tab_id, found.clone()) {
                 log::error!("couldn't open an agent of tab {tab_id:?}: {e}");
@@ -1749,7 +1764,7 @@ pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
         return;
     }
     let (main, project) = (app.clone(), project.to_owned());
-    let _ = app.run_on_main_thread(move || land(&main, None, &project, result));
+    let _ = app.run_on_main_thread(move || land(&main, None, &project, result, false));
 }
 
 /// Listen for the resume commands relays report ([`super::reports`]) for the app's life, storing
