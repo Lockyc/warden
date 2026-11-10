@@ -399,6 +399,14 @@ impl Pane {
         self.surfaces().next().is_some()
     }
 
+    /// Whether this main pane is up in this registry, so its tab's column may spawn beside it: a
+    /// surface is live, or it is an agent pane whose agents are all asleep — open and blank,
+    /// waiting on a row's click. Never while popped out: the column's surfaces would be born in
+    /// a window the tab isn't showing in.
+    fn holds_column(&self) -> bool {
+        self.live() || (self.rex == RexState::Asleep && !matches!(self.slot, TabSlot::Detached))
+    }
+
     /// Close every live surface of this pane, leaving `Detached` placeholders in place. Returns
     /// whether one was closed.
     fn close_live(&mut self) -> bool {
@@ -1152,7 +1160,7 @@ impl Registry {
         if spec.split.is_some() {
             let idx = self.tabs.len() - 1;
             self.split(&spec.id);
-            if self.tabs[idx].primary.live() {
+            if self.tabs[idx].primary.holds_column() {
                 match self.ensure_column(idx) {
                     Ok(_) => {
                         let column = self.tabs[idx].column.iter();
@@ -1227,7 +1235,7 @@ impl Registry {
         if !self.split(id) {
             return false;
         }
-        if self.tabs[idx].primary.live() {
+        if self.tabs[idx].primary.holds_column() {
             if let Err(e) = self.ensure_column(idx) {
                 log::error!(
                     "column spawn failed for tab {:?}: {e}",
@@ -1803,6 +1811,15 @@ impl Registry {
             Some(r) => self.spawn_agent(idx, &r).map(|_| ()),
             None => Ok(()),
         };
+        // A pane that was blank had no column beside it yet.
+        if self.tabs[idx].primary.holds_column() {
+            if let Err(e) = self.ensure_column(idx) {
+                log::error!(
+                    "column spawn failed for tab {:?}: {e}",
+                    self.tabs[idx].title
+                );
+            }
+        }
         self.show_active();
         spawned
     }
@@ -1855,7 +1872,7 @@ impl Registry {
                     (!is_remote(spec) && !unclaimed && !spec.dir.exists())
                         .then(|| format!("directory not found: {}", spec.dir.display()))
                 }),
-                spawned: t.primary.live(),
+                spawned: t.live(),
                 group: t.primary.spec.group.clone(),
                 has_probe: t.primary.spec.probe.is_some() || t.primary.spec.server.is_some(),
                 has_kill: t.primary.spec.kill.is_some() || t.primary.spec.server.is_some(),
@@ -2426,12 +2443,12 @@ impl Registry {
                             })
                             .collect();
                         pane.selected = found.selected;
-                        if pane.agents.is_empty() {
-                            pane.rex = RexState::Asleep;
-                            tab.rex_error = None;
-                            return RexLanded::Opened(Ok(()));
-                        }
-                        pane.rex = RexState::Idle;
+                        // Every agent asleep: the pane stays blank, and the column comes up as
+                        // beside a live one.
+                        pane.rex = match pane.agents.is_empty() {
+                            true => RexState::Asleep,
+                            false => RexState::Idle,
+                        };
                     }
                 }
                 tab.rex_error = None;
@@ -2484,7 +2501,7 @@ impl Registry {
                 n => PaneIdx::Block(n - 1),
             };
         }
-        let spawned = if self.tabs[idx].primary.live() {
+        let spawned = if self.tabs[idx].primary.holds_column() {
             self.ensure_column(idx).map(|_| ())
         } else {
             Ok(())
@@ -2922,7 +2939,7 @@ impl Registry {
     /// to carry it out again.
     fn spawn_panes(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
         let primary = self.ensure_spawned(idx, PaneIdx::Primary, auto);
-        if self.tabs[idx].primary.live() {
+        if self.tabs[idx].primary.holds_column() {
             if let Err(e) = self.ensure_column(idx) {
                 log::error!(
                     "column spawn failed for tab {:?}: {e}",
@@ -5470,6 +5487,28 @@ mod tests {
         assert!(!r.is_spawned("t"), "no surface");
         assert!(!r.is_connecting("t"));
         assert!(r.agent_keys("t").is_empty());
+    }
+
+    #[test]
+    fn an_asleep_pane_still_opens_its_column() {
+        let (mut r, asked) = rex_registry();
+        let mut s = rex_spec("t", "local");
+        s.split = Some(warden_config::Split {
+            side: warden_config::SplitSide::Right,
+            size: 0.6,
+            panes: vec![warden_config::StackPane {
+                size: 1.0,
+                startup: None,
+            }],
+        });
+        r.add(&s, false).unwrap();
+        let _ = r.activate_user("t");
+        let req = asked.lock().unwrap()[0].clone();
+        assert!(req.agents);
+        nothing_live(&mut r, &req);
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 2, "the column opens beside the blank pane");
+        assert_eq!(asked[1].pane_key, secondary_id("t"));
     }
 
     #[test]

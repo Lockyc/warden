@@ -1384,6 +1384,9 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
                     follow(&app, &req.pane_key, &AgentOp::Refresh);
                 }
             }
+            // A wake can create the pane's session and a sleep or close end it: repaint the
+            // presence dot, as an open does (`spawn::opener`).
+            super::spawn::hub_changed(&app, Some(&req.server));
         })
         .map(|_| ())
         .map_err(|e| format!("couldn't start the agent tab change: {e}"))

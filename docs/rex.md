@@ -100,7 +100,8 @@ site omits it.
   (`initial_input`); a woken agent's window types its resume command instead. Reattaching types
   nothing (`spawn::effective_spec` clears `startup`).
 - **No open wakes an agent** — only selecting its row does (`lifecycle::select`). An open
-  attaches what is live and leaves a pane holding only wakeable agents blank; a pane with nothing
+  attaches what is live and leaves a pane holding only wakeable agents blank, its scratch column
+  loaded (`Pane::holds_column`); a pane with nothing
   live and nothing to wake it loads.
 - **Size has one writer: warden-app.** A block's size is its owner's. warden-app claims
   (`own_block take`, then `resize`) when the user turns to a pane — focus gained in the key window,
