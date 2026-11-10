@@ -76,6 +76,7 @@ pub fn effective_spec(spec: &TabSpec, t: &PaneTarget, report: Option<&Path>) -> 
 pub fn open_error(server: &str, e: &RexError) -> String {
     match e {
         RexError::Unreachable => format!("Rex server unreachable: {server}"),
+        RexError::Timeout => format!("Rex server {server} didn't answer"),
         RexError::Api { code, .. } if code == super::server::HOST_NOT_FOUND => {
             format!("Rex server not found: {server}")
         }
@@ -512,6 +513,10 @@ mod tests {
         assert_eq!(
             open_error(LOCAL, &RexError::Unreachable),
             "Rex server unreachable: local"
+        );
+        assert_eq!(
+            open_error(LOCAL, &RexError::Timeout),
+            "Rex server local didn't answer"
         );
         let not_installed = RexError::Api {
             code: "not_installed".into(),

@@ -9,7 +9,7 @@
 //! `cmd` retyped only while its first window still has the stack's shape.
 
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rex_client::{Endpoint, RexError};
 use serde_json::json;
@@ -19,6 +19,14 @@ use super::store::PaneRecord;
 use super::windows::AgentWindow;
 use super::{api_error, budgeted, str_field, RexHub, State, OPEN_BUDGET};
 use crate::registry::{tab_of_secondary, RexOpen};
+
+/// The longest a change to an open column (new scratch tab, split, resize, close) waits on Rex.
+/// Unlike an open it runs on a worker, so nothing waits on it but the change itself; a request
+/// Rex has been sent is carried out however late it answers, so giving up sooner reports as failed
+/// a change that then appears. Rex can stall every request for 10–20 s at a time (its macOS
+/// feedback forum: "Requests stall about 10 s right after new_window or new_split"). A timeout
+/// stays [`RexError::Timeout`]: the server answered the connection, it just didn't reply.
+pub const CHANGE_BUDGET: Duration = Duration::from_secs(30);
 
 /// Which side of a scratch block a split stacks its new shell on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,13 +175,12 @@ impl RexHub {
     /// A new scratch tab in `column_key`'s session: a window with one bare shell in `dir`, named
     /// by Rex. Returns its window id.
     pub fn column_new_tab(&self, column_key: &str, dir: &Path) -> Result<String, RexError> {
-        let deadline = Instant::now() + OPEN_BUDGET;
+        let deadline = Instant::now() + CHANGE_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
         let rec = self.column_record(column_key)?;
-        let made =
-            self.inner
-                .new_window_until(&rec.server, &rec.session_id, dir, None, None, deadline);
-        budgeted(deadline, made).map(|w| w.window_id)
+        self.inner
+            .new_window_until(&rec.server, &rec.session_id, dir, None, None, deadline)
+            .map(|w| w.window_id)
     }
 
     /// Split `block_id` of `column_key`'s session: a bare shell in `dir` stacked on `side` of it,
@@ -186,7 +193,7 @@ impl RexHub {
         side: StackSide,
         dir: &Path,
     ) -> Result<String, RexError> {
-        let deadline = Instant::now() + OPEN_BUDGET;
+        let deadline = Instant::now() + CHANGE_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
         let rec = self.column_record(column_key)?;
         let split = || {
@@ -203,7 +210,7 @@ impl RexHub {
             let (_, made) = client.call_seq_until("session.new_split", args, deadline)?;
             str_field(&made["block_ids"][0], "session.new_split block id")
         };
-        let new = budgeted(deadline, split())?;
+        let new = split()?;
         self.inner
             .lock()
             .blocks
@@ -213,7 +220,7 @@ impl RexHub {
 
     /// Move divider `d` of `column_key`'s session to `ratio` of its split.
     pub fn column_resize(&self, column_key: &str, d: &Divider, ratio: f64) -> Result<(), RexError> {
-        let deadline = Instant::now() + OPEN_BUDGET;
+        let deadline = Instant::now() + CHANGE_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
         let rec = self.column_record(column_key)?;
         let resize = || {
@@ -227,7 +234,7 @@ impl RexHub {
             });
             client.call_seq_until("session.resize_pane", args, deadline)
         };
-        budgeted(deadline, resize()).map(|_| ())
+        resize().map(|_| ())
     }
 
     /// Close `block_id` of `column_key`'s session, ending the program in it — one that exited, or
@@ -241,9 +248,10 @@ impl RexHub {
             log::debug!("Rex block {block_id:?} of {column_key:?}: its column already ended");
             return Ok(());
         };
-        let (client, _) = self.inner.conn(&rec.server)?;
+        let deadline = Instant::now() + CHANGE_BUDGET;
+        let (client, _) = self.inner.conn_with(&rec.server, deadline, false)?;
         let args = json!({ "session_id": rec.session_id, "block_id": block_id });
-        match client.call("block.close", args) {
+        match client.call_seq_until("block.close", args, deadline) {
             Ok(_) => {}
             Err(RexError::Api { code, .. }) if code == "not_found" => {}
             Err(e) => return Err(e),
@@ -264,7 +272,8 @@ impl RexHub {
             .collect();
         let blocks = window_blocks(&window);
         let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
-        self.close_window(&rec.server, &rec.session_id, window_id)?;
+        let deadline = Instant::now() + CHANGE_BUDGET;
+        self.close_window_until(&rec.server, &rec.session_id, window_id, deadline)?;
         self.unbind_blocks(column_key, &blocks);
         Ok(())
     }

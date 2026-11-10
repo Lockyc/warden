@@ -2404,8 +2404,10 @@ fn column_split_stacks_vertically_on_the_chosen_side() {
 fn column_split_waits_out_a_slow_server() {
     let (fake, hub, _, _dir) = opened_column();
     fake.on("session.new_split", |_, _| {
-        Reply::ok(json!({"anchor_id": "b1", "block_ids": ["b2"], "split_ids": ["s1"], "revision": 2}))
-            .after(super::OPEN_BUDGET + Duration::from_secs(1))
+        Reply::ok(
+            json!({"anchor_id": "b1", "block_ids": ["b2"], "split_ids": ["s1"], "revision": 2}),
+        )
+        .after(super::OPEN_BUDGET + Duration::from_secs(1))
     });
     let b = hub
         .column_split("t::2", "b1", StackSide::Below, Path::new("/work/t"))

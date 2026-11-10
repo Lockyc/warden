@@ -116,6 +116,10 @@ site omits it.
   server unreachable. Starting a stopped local Rex fits inside that budget, and **only a tab open
   starts Rex** — the launch/reload connect (to the servers `unclaimed::launch_servers` returns)
   never does, so a Rex the user quit stays quit.
+- **A change to an open scratch column waits out a slow Rex** (`column::CHANGE_BUDGET`, not
+  `OPEN_BUDGET`): a sent request is carried out however late Rex answers. A column takes one new
+  tab / split / tab close at a time (`Registry::begin_column_change`); Split and New Scratch Tab
+  show the reason meanwhile.
 
 ## Lifecycle
 

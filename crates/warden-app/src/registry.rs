@@ -164,6 +164,10 @@ pub struct ColumnDto {
 /// Why a Rex column whose open hasn't landed can't take a new scratch tab or pop out yet.
 pub const COLUMN_OPENING: &str = "Scratch column is still opening";
 
+/// Why a Rex column can't take another new scratch tab, split or tab close: Rex hasn't answered
+/// the last one ([`Registry::begin_column_change`]).
+pub const COLUMN_CHANGING: &str = "Waiting on Rex";
+
 /// One scratch tab: its Rex window's label.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScratchTabDto {
@@ -481,6 +485,8 @@ struct Column {
     selected: usize,
     /// A Rex block to take focus once the shown scratch tab holds it ([`Registry::focus_block`]).
     pending_focus: Option<String>,
+    /// A new scratch tab, split or tab close sent to Rex and not yet answered.
+    changing: bool,
 }
 
 impl Column {
@@ -505,6 +511,18 @@ impl Column {
             tabs,
             selected: 0,
             pending_focus: None,
+            changing: false,
+        }
+    }
+
+    /// Why this column can't take a new scratch tab, split or tab close now, or `None`.
+    fn change_blocked(&self) -> Option<&'static str> {
+        if self.opening() {
+            Some(COLUMN_OPENING)
+        } else if self.changing {
+            Some(COLUMN_CHANGING)
+        } else {
+            None
         }
     }
 
@@ -766,7 +784,7 @@ impl Column {
             tiles: tab.map(|t| t.layout.tiles()).unwrap_or_default(),
             dividers: tab.map(|t| t.layout.dividers()).unwrap_or_default(),
             rex: self.is_rex(),
-            new_blocked: self.opening().then(|| COLUMN_OPENING.to_owned()),
+            new_blocked: self.change_blocked().map(str::to_owned),
         }
     }
 }
@@ -2610,6 +2628,43 @@ impl Registry {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         let column = t.column.as_ref().filter(|c| c.is_rex() && !c.opening())?;
         Some((column.spec.id.clone(), column.spec.dir.clone()))
+    }
+
+    /// Why tab `id`'s Rex column can't take a new scratch tab, split or tab close now: still
+    /// opening, or Rex hasn't answered the last one. `None` when it can, or there's no Rex column.
+    pub fn column_change_blocked(&self, id: &str) -> Option<&'static str> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        t.column.as_ref().filter(|c| c.is_rex())?.change_blocked()
+    }
+
+    /// Mark tab `id`'s Rex column as waiting on a change sent to Rex, until
+    /// [`end_column_change`](Self::end_column_change): one at a time, so a press repeated while
+    /// Rex is slow doesn't queue a second split behind the first. `Err` is why it can't start.
+    pub fn begin_column_change(&mut self, id: &str) -> Result<(), String> {
+        if let Some(why) = self.column_change_blocked(id) {
+            return Err(why.to_owned());
+        }
+        let column = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id)
+            .and_then(|t| t.column.as_mut())
+            .filter(|c| c.is_rex())
+            .ok_or("this tab has no Rex scratch column")?;
+        column.changing = true;
+        Ok(())
+    }
+
+    /// Rex answered tab `id`'s column change, or it failed: the column takes the next one.
+    pub fn end_column_change(&mut self, id: &str) {
+        if let Some(c) = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id)
+            .and_then(|t| t.column.as_mut())
+        {
+            c.changing = false;
+        }
     }
 
     /// [`rex_column`](Self::rex_column) for a column holding no scratch tab: what
@@ -5002,6 +5057,30 @@ mod tests {
             landed.tab_dtos()[0].column.as_ref().unwrap().new_blocked,
             None
         );
+    }
+
+    #[test]
+    fn a_rex_column_takes_one_change_at_a_time() {
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
+        r.begin_column_change("t").expect("first change");
+        assert_eq!(r.column_change_blocked("t"), Some(COLUMN_CHANGING));
+        assert_eq!(
+            r.begin_column_change("t"),
+            Err(COLUMN_CHANGING.to_owned()),
+            "a repeat while Rex is slow queues nothing"
+        );
+        assert_eq!(
+            r.tab_dtos()[0]
+                .column
+                .as_ref()
+                .unwrap()
+                .new_blocked
+                .as_deref(),
+            Some(COLUMN_CHANGING)
+        );
+        r.end_column_change("t");
+        assert_eq!(r.column_change_blocked("t"), None);
+        r.begin_column_change("t").expect("the next change");
     }
 
     #[test]

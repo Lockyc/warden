@@ -367,6 +367,12 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     });
     let reopen_window = reopen_target(app).is_some();
     let scratch = focused_scratch_column(app).is_some();
+    let scratch_blocked = focused_label(app).and_then(|label| {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        let reg = &m.windows.get(&label)?.registry;
+        reg.column_change_blocked(reg.active_tab()?)
+    });
     let pop_out_blocked = focused_label(app).and_then(|label| {
         let st = app.state::<ManagerState>();
         let m = st.lock();
@@ -423,7 +429,13 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
         let _ = i.pane_left.set_enabled(pane_left);
         let _ = i.pane_right.set_enabled(pane_right);
-        let _ = i.scratch_new.set_enabled(scratch);
+        let _ = i
+            .scratch_new
+            .set_enabled(scratch && scratch_blocked.is_none());
+        let _ = i.scratch_new.set_text(match scratch_blocked {
+            Some(why) => format!("{SCRATCH_NEW_TITLE} ({why})"),
+            None => SCRATCH_NEW_TITLE.to_owned(),
+        });
         let _ = i.pop_out.set_enabled(pop_out_blocked.is_none());
         let _ = i.pop_out.set_text(match &pop_out_blocked {
             Some(reason) => format!("{} ({reason})", i.pop_out_title),
@@ -1042,6 +1054,13 @@ fn split_tab(
     let block = {
         let m = state.lock();
         let ws = m.windows.get(window.label()).ok_or("window not found")?;
+        if ws.registry.focused_rex_block(&id).is_some() {
+            // The column stands: a split it can't take yet is the banner's (see below).
+            if let Some(why) = ws.registry.column_change_blocked(&id) {
+                banner(format!("can't split yet: {why}"));
+                return Ok(());
+            }
+        }
         match split_kind(&ws.registry, &id)? {
             pane_menu::SplitKind::Stack => ws.registry.focused_rex_block(&id),
             pane_menu::SplitKind::Split => None,
@@ -1107,6 +1126,9 @@ fn split_tab(
 #[cfg(target_os = "macos")]
 fn split_kind(reg: &registry::Registry, id: &str) -> Result<pane_menu::SplitKind, String> {
     if reg.focused_rex_block(id).is_some() {
+        if let Some(why) = reg.column_change_blocked(id) {
+            return Err(why.to_owned());
+        }
         return Ok(pane_menu::SplitKind::Stack);
     }
     let spec = reg.spec_of(id).ok_or("tab not found")?;
@@ -2305,14 +2327,17 @@ enum ScratchOp {
 }
 
 /// Run `op` on tab `id`'s Rex scratch column in window `label` (main thread). A refusal answers at
-/// once; the Rex work runs on a worker and lands through [`scratch_landed`].
+/// once; the Rex work runs on a worker and lands through [`scratch_landed`]. Every op but a resize
+/// holds the column's change ([`registry::Registry::begin_column_change`]) until it lands, which
+/// disables Split and New Scratch Tab with the reason meanwhile.
 #[cfg(target_os = "macos")]
 fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> Result<(), String> {
-    use tauri::Manager;
-    let (key, dir, server, divider) = {
+    use tauri::{Emitter, Manager};
+    let gated = !matches!(op, ScratchOp::Resize { .. });
+    let (key, dir, server, divider, dto) = {
         let st = app.state::<ManagerState>();
-        let m = st.lock();
-        let reg = &m.windows.get(label).ok_or("window not found")?.registry;
+        let mut m = st.lock();
+        let reg = &mut m.windows.get_mut(label).ok_or("window not found")?.registry;
         let (key, dir) = reg
             .rex_column(id)
             .ok_or("this tab has no Rex scratch column")?;
@@ -2327,9 +2352,18 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
             ),
             _ => None,
         };
-        (key, dir, server, divider)
+        if gated {
+            reg.begin_column_change(id)?;
+        }
+        let dto = gated.then(|| m.init_dto(label)).flatten();
+        (key, dir, server, divider, dto)
     };
+    if let Some(dto) = dto {
+        let _ = app.emit_to(label, "warden:refresh", dto);
+        sync_agent_menu(app);
+    }
     log::info!("tab {id:?}: scratch column {op:?}");
+    let (held, held_label, held_id) = (app.clone(), label.to_owned(), id.to_owned());
     let (app, label, id) = (app.clone(), label.to_owned(), id.to_owned());
     std::thread::Builder::new()
         .name("warden-scratch-op".into())
@@ -2338,7 +2372,7 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                 let main = app.clone();
                 let message = format!("Rex server {server}: no connection to Rex");
                 let _ = app.run_on_main_thread(move || {
-                    scratch_landed(&main, &label, &id, Err(message), None)
+                    scratch_landed(&main, &label, &id, gated, Err(message), None)
                 });
                 return;
             };
@@ -2366,11 +2400,21 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                 .column_session(&key)
                 .and_then(|(server, sid)| hub.column(&server, &sid));
             let main = app.clone();
-            let _ =
-                app.run_on_main_thread(move || scratch_landed(&main, &label, &id, done, opened));
+            let _ = app.run_on_main_thread(move || {
+                scratch_landed(&main, &label, &id, gated, done, opened)
+            });
         })
         .map(|_| ())
-        .map_err(|e| format!("couldn't start the scratch column change: {e}"))
+        .map_err(|e| {
+            if gated {
+                let st = held.state::<ManagerState>();
+                let mut m = st.lock();
+                if let Some(ws) = m.windows.get_mut(&held_label) {
+                    ws.registry.end_column_change(&held_id);
+                }
+            }
+            format!("couldn't start the scratch column change: {e}")
+        })
 }
 
 /// What a scratch column change made in Rex: a window (scratch tab), or a block.
@@ -2383,12 +2427,14 @@ enum ScratchMade {
 /// A scratch column change landed (main thread): the column follows Rex's session as the hub now
 /// has it — a failed resize puts the dragged divider back — a new scratch tab is selected, a new
 /// block takes focus once a view shows it ([`registry::Registry::focus_block`]), and the window
-/// repaints. A failure shows in the window's error banner.
+/// repaints. A failure shows in the window's error banner. `gated`: the op held the column's
+/// change, released here.
 #[cfg(target_os = "macos")]
 fn scratch_landed(
     app: &tauri::AppHandle,
     label: &str,
     id: &str,
+    gated: bool,
     done: Result<Option<ScratchMade>, String>,
     opened: Option<rex::column::ColumnOpened>,
 ) {
@@ -2399,6 +2445,9 @@ fn scratch_landed(
         let Some(ws) = m.windows.get_mut(label) else {
             return;
         };
+        if gated {
+            ws.registry.end_column_change(id);
+        }
         if let Ok(Some(ScratchMade::Block(b))) = &done {
             ws.registry.focus_block(id, b);
         }
