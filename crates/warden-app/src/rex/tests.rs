@@ -2401,6 +2401,20 @@ fn column_split_stacks_vertically_on_the_chosen_side() {
 }
 
 #[test]
+fn column_split_waits_out_a_slow_server() {
+    let (fake, hub, _, _dir) = opened_column();
+    fake.on("session.new_split", |_, _| {
+        Reply::ok(json!({"anchor_id": "b1", "block_ids": ["b2"], "split_ids": ["s1"], "revision": 2}))
+            .after(super::OPEN_BUDGET + Duration::from_secs(1))
+    });
+    let b = hub
+        .column_split("t::2", "b1", StackSide::Below, Path::new("/work/t"))
+        .expect("a split Rex answers late is made, not reported unreachable");
+    assert_eq!(b, "b2");
+    assert!(block_bound(&hub, "b2"));
+}
+
+#[test]
 fn column_resize_names_first_leaves() {
     let (fake, _inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
     fake.reply("session.resize_pane", json!({"revision": 2}));
