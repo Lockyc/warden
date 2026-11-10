@@ -142,7 +142,7 @@ cmd    = "claude"            # the agent each tab starts (+ New tab starts anoth
 | `title` | *required* | Banner text + window title; unique across the config. Changing it in the file is destructive — the window is closed and reopened, so its terminals and saved size/position reset; **Edit Window…** on the banner renames it in place instead. |
 | `colour` | neutral | Banner accent, `#rgb` or `#rrggbb`. |
 | `width` / `height` | `1500` / `1000` | Initial size in px; the window's saved size/position wins after the first launch. |
-| `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu, or script it with `open 'warden://open?window=<title>'`. |
+| `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu, or script it with `open 'warden://open?window=<title>'` (add `&tab=<id or title>` to select a tab). |
 | `open_tabs_section` | inherited from global | Whether THIS window's sidebar pins the **Open** section. Set it per window to show the section in a busy window and not a quiet one. |
 | `background_tabs_section` | inherited from global | Whether THIS window's sidebar pins the **Background** section. |
 | `remember_tabs` | inherited from global | Whether THIS window restores its loaded tabs and selection. |

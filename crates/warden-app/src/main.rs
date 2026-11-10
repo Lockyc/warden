@@ -819,11 +819,68 @@ fn hide_alias_items() {
     }
 }
 
-/// Return the calling window's banner + tab descriptors, resolved by label.
+/// Return the calling window's banner + tab descriptors, resolved by label. A tab a
+/// `warden://` URL named before this call becomes the one the chrome opens on.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) -> Option<InitDto> {
-    state.lock().init_dto(window.label())
+    let mut m = state.lock();
+    let mut dto = m.init_dto(window.label())?;
+    if let Some(ws) = m.windows.get_mut(window.label()) {
+        ws.chrome_ready = true;
+        if let Some(id) = ws.pending_focus.take() {
+            dto.active = Some(id);
+        }
+    }
+    Some(dto)
+}
+
+/// `warden://open?window=<title>&tab=<id or title>`: open or focus the window, then select the
+/// tab. An unknown window or tab is named in an alert.
+#[cfg(target_os = "macos")]
+fn open_url(app: &tauri::AppHandle, req: shell_core::windows::OpenRequest) {
+    use tauri::Manager;
+    let Some(title) = req.window.as_deref() else {
+        return;
+    };
+    let Some(label) = app.state::<WindowSet>().label_for_title(title) else {
+        surface::link::notice(
+            "warden Can't Open That Window",
+            &format!("No window is titled \u{201c}{title}\u{201d}."),
+        );
+        return;
+    };
+    open_or_focus_window(app, &label);
+    let Some(name) = req.param("tab") else { return };
+    let ready = {
+        let st = app.state::<ManagerState>();
+        let mut m = st.lock();
+        let Some(ws) = m.windows.get_mut(&label) else {
+            return; // it failed to open, which reports itself
+        };
+        let tabs = ws.registry.tab_dtos();
+        let pairs: Vec<_> = tabs
+            .iter()
+            .map(|t| (t.id.as_str(), t.title.as_str()))
+            .collect();
+        let Some(id) = manager::tab_named(&pairs, name).map(str::to_string) else {
+            drop(m);
+            surface::link::notice(
+                "warden Can't Open That Tab",
+                &format!("\u{201c}{title}\u{201d} has no tab named \u{201c}{name}\u{201d}."),
+            );
+            return;
+        };
+        if ws.chrome_ready {
+            Some(id)
+        } else {
+            ws.pending_focus = Some(id);
+            None
+        }
+    };
+    if let Some(id) = ready {
+        notify::focus_tab(app, &label, &id, None);
+    }
 }
 
 /// Probe this window's tabs once, on demand. The chrome calls this right after its
@@ -3529,18 +3586,8 @@ fn main() {
             // delivers it here after `setup` has materialized the config's windows.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Opened { urls } => {
-                use tauri::Manager;
-                for title in urls
-                    .iter()
-                    .filter_map(|u| open_request(u, "warden")?.window)
-                {
-                    let label = app.state::<WindowSet>().label_for_title(&title);
-                    match label {
-                        Some(label) => open_or_focus_window(app, &label),
-                        None => {
-                            log::warn!("warden://open names no configured window {title:?}")
-                        }
-                    }
+                for req in urls.iter().filter_map(|u| open_request(u, "warden")) {
+                    open_url(app, req);
                 }
             }
             _ => {}

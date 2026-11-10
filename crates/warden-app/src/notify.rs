@@ -64,7 +64,13 @@ fn dbglog(msg: &str) {
 /// meant for another window — same guard as every other per-window event. A banner naming an agent
 /// tab (its `context`) selects it first, as the user's own pick, so the tab opens on it.
 fn focus_window_tab(app: &AppHandle, click: &Click) {
-    let (label, id) = (click.window.as_str(), click.tab.as_str());
+    focus_tab(app, &click.window, &click.tab, click.context.as_deref());
+}
+
+/// Raise window `label` on tab `id`, selecting agent tab `agent` first when given — the
+/// [`focus_window_tab`] path. Its chrome must already be listening: one that hasn't mounted
+/// takes the tab through `WindowState::pending_focus` instead.
+pub fn focus_tab(app: &AppHandle, label: &str, id: &str, agent: Option<&str>) {
     let popped = app
         .state::<ManagerState>()
         .lock()
@@ -74,7 +80,7 @@ fn focus_window_tab(app: &AppHandle, click: &Click) {
         return;
     }
     banner::raise(app, label);
-    if let Some(agent) = click.context.as_deref() {
+    if let Some(agent) = agent {
         if let Err(e) = crate::rex::lifecycle::select(app, label, id, agent) {
             log::error!("{label}: {id}: {e}");
         }

@@ -216,6 +216,21 @@ pub struct WindowState {
     /// The `SessionStore` key this window's remembered tabs live under: its launch label
     /// (`WindowSet::launch_label`), which a rename in place moves (`retitle`).
     pub session_key: String,
+    /// Whether this window's chrome has pulled its init snapshot (`init_tabs`), so an emitted
+    /// `warden:focus-tab` reaches a listener.
+    pub chrome_ready: bool,
+    /// The tab a `warden://open?…&tab=` named before the chrome mounted; `init_tabs` hands it
+    /// over as the tab to open on.
+    pub pending_focus: Option<String>,
+}
+
+/// The id of the tab `name` names among `tabs` (`(id, title)` pairs): an exact id, else the
+/// first tab titled `name`.
+pub fn tab_named<'a>(tabs: &[(&'a str, &'a str)], name: &str) -> Option<&'a str> {
+    tabs.iter()
+        .find(|(id, _)| *id == name)
+        .or_else(|| tabs.iter().find(|(_, title)| *title == name))
+        .map(|(id, _)| *id)
 }
 
 /// The chrome half of retiring a popped-out tab's second pane, run with the lock RELEASED after
@@ -615,6 +630,8 @@ impl WindowManager {
                 background_tabs_section: spec.background_tabs_section,
                 spawn_error,
                 session_key,
+                chrome_ready: false,
+                pending_focus: None,
             },
         );
         Ok(window)
@@ -1626,6 +1643,23 @@ mod tests {
     use super::*;
     use crate::surface::TabSpec;
     use std::sync::atomic::Ordering;
+
+    /// A `warden://` `tab` value matches an id before a title, and the first of repeated titles.
+    #[test]
+    fn tab_named_prefers_id_then_first_title() {
+        let tabs = [
+            ("/a/console", "console"),
+            ("console", "other"),
+            ("/b/console", "console"),
+        ];
+        assert_eq!(tab_named(&tabs, "console"), Some("console"));
+        assert_eq!(tab_named(&tabs[..1], "console"), Some("/a/console"));
+        assert_eq!(
+            tab_named(&[tabs[0], tabs[2]], "console"),
+            Some("/a/console")
+        );
+        assert_eq!(tab_named(&tabs, "missing"), None);
+    }
 
     fn config(src: &str) -> Config {
         warden_config::resolve::resolve(warden_config::raw::parse(src).unwrap())

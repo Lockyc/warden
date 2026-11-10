@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 pub mod ghostty;
 #[cfg(target_os = "macos")]
-mod link;
+pub mod link;
 
 /// The config's `trusted_link_schemes`: custom schemes a clicked terminal link opens without
 /// the confirmation. Set at launch and on every valid reload; read on each click.

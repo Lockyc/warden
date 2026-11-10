@@ -353,6 +353,18 @@ enum Pending {
         reason: DenialReason,
         display: String,
     },
+    Notice {
+        heading: String,
+        detail: String,
+    },
+}
+
+/// An OK-only alert, `heading` over `detail`, on the next main-queue turn.
+pub fn notice(heading: &str, detail: &str) {
+    defer(Pending::Notice {
+        heading: heading.to_owned(),
+        detail: detail.to_owned(),
+    });
 }
 
 fn defer(p: Pending) {
@@ -372,6 +384,14 @@ unsafe extern "C" fn present_trampoline(context: *mut c_void) {
     match pending {
         Pending::Confirm { url, display } => present_confirmation(mtm, url, &display),
         Pending::Block { reason, display } => present_block(mtm, reason, &display),
+        Pending::Notice { heading, detail } => {
+            let alert = NSAlert::new(mtm);
+            alert.setAlertStyle(NSAlertStyle::Warning);
+            alert.setMessageText(&NSString::from_str(&heading));
+            alert.setInformativeText(&NSString::from_str(&detail));
+            alert.addButtonWithTitle(&NSString::from_str("OK"));
+            present(mtm, &alert, |_| {});
+        }
     }
 }
 
