@@ -1900,6 +1900,7 @@ mod tests {
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            trusted_link_schemes: Vec::new(),
         };
         let eff = effective_config(&cfg, None);
         let keys: Vec<_> = eff.windows[0].tabs.iter().map(|t| t.key.as_str()).collect();

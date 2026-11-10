@@ -3327,6 +3327,9 @@ fn main() {
                         log_config_warnings(&loaded.warnings);
                         log::info!("config loaded: {} window(s)", loaded.config.windows.len());
                         notify_debug = loaded.config.notify_debug;
+                        surface::set_trusted_link_schemes(
+                            loaded.config.trusted_link_schemes.clone(),
+                        );
                         materialize(&handle, loaded.config);
                     }
                     Err(e) => {
@@ -3407,6 +3410,9 @@ fn main() {
                             match res {
                                 Ok(loaded) => {
                                     log_config_warnings(&loaded.warnings);
+                                    surface::set_trusted_link_schemes(
+                                        loaded.config.trusted_link_schemes.clone(),
+                                    );
                                     // Expand `[[window.root]]`s into the EFFECTIVE config
                                     // (recursive git-project scan) BEFORE taking the lock —
                                     // the walk is slow and must never run under the

@@ -60,8 +60,10 @@ Two link paths, both libghostty's: regex-matched URL text in the cells, and OSC 
 arbitrary label text. An `NSTrackingArea` forwards `mouseMoved`/`mouseExited` (link detection runs
 on motion), `MOUSE_SHAPE` drives the cursor via cursor rects, `OPEN_URL` goes through
 `surface/link.rs`, which screens terminal-output targets the way Ghostty.app does: a custom
-scheme asks first, and anything executable is refused with an alert. When a link misbehaves,
-check in this order:
+scheme asks first unless the config's `trusted_link_schemes` lists it, and anything executable
+is refused with an alert. Mouse events report ⌘ as ⌘⇧ (`surface/ghostty.rs::mouse_mods`), so
+⌘-hover and ⌘-click stay with libghostty even while the program inside tracks the mouse — where
+Ghostty.app needs ⇧⌘. When a link misbehaves, check in this order:
 
 1. **Under tmux, an OSC 8 link renders as inert styled text** — that is the tmux hop. tmux
    re-emits hyperlinks only when the client has the `hyperlinks` terminal feature, derived from
@@ -69,22 +71,19 @@ check in this order:
    `set -as terminal-features 'xterm*:hyperlinks'` (agentmux sets it on its sockets; plain tmux
    needs it in `~/.tmux.conf`). Features are computed at client attach, so it lands on the next
    reattach. Diagnostic: `#{client_termfeatures}`.
-2. **Under tmux `mouse on`, a link needs shift-⌘, to hover and to click.** Mouse reporting gates
-   link-state refresh unless shift is held (`Surface.zig::cursorPosCallback`, `mouse-shift-capture`
-   at its default `false`), and ⌘ is the link modifier. Plain ⌘ or plain shift does nothing. This
-   is libghostty by design (Ghostty.app and iTerm match), so a shift-⌘-click that still fails means
-   something upstream is broken — usually action-tag drift. Diagnostic: `tmux -L <socket> show -g mouse`.
-3. **A link that opens on ⌃-click but not ⌘-click is the program inside, not libghostty.** When it
-   tracks the mouse (Claude Code does), the click is reported to it, and a mouse report carries
-   ⇧/⌥/⌃ but never ⌘ — so ⌘-click arrives as a bare click and the program opens links on its own
-   terms (Claude Code: ⌃-click). ⇧⌘-click still reaches libghostty's handler, file paths included.
-   Diagnostic: `tmux -L <socket> list-panes -F '#{mouse_any_flag}'` reads `1`.
-4. **In a Rex tab, `label (url)` text where a link should be is the program's detection, not the
+2. **Under mouse reporting (tmux `mouse on`, Claude Code), libghostty sees a click only with ⇧
+   held** (`Surface.zig::cursorPosCallback`, `mouse-shift-capture` at its default `false`); a
+   mouse report can carry ⇧/⌥/⌃ but never ⌘, so an unshifted ⌘-click would reach the program as
+   a bare click. `mouse_mods` supplies the ⇧, so a ⌘-click that still fails there means something
+   upstream is broken — usually action-tag drift. ⌃-click is the program's own link handling
+   (Claude Code's). Diagnostics: `tmux -L <socket> show -g mouse`,
+   `tmux -L <socket> list-panes -F '#{mouse_any_flag}'` reads `1`.
+3. **In a Rex tab, `label (url)` text where a link should be is the program's detection, not the
    pane.** Rex sets `TERM_PROGRAM=rex`, which supports-hyperlinks-style checks (Claude Code
    among them) don't list, so the program never emits OSC 8. Rex and `warden-relay` carry OSC 8
    through intact, live and in the snapshot replay. Rex has no per-session env option, so the fix
    is `FORCE_HYPERLINK=1` in the shell Rex starts when `$TERM_PROGRAM` is `rex`. The same name
-   costs plain-click opening (item 3): Claude Code opens a link on a bare click only under
+   costs plain-click opening: Claude Code opens a link on a bare click only under
    `TERM_PROGRAM=ghostty`, so that shell also re-exports it as `ghostty`.
 
 ## Child exit

@@ -106,6 +106,9 @@ pub struct RawConfig {
     // Off by default; a debug aid for the macOS-26 banner-suppression issue (see
     // docs/notifications.md). Opaque to the crate — the app owns the behaviour.
     pub notify_debug: Option<bool>,
+    // URL schemes whose terminal links open on click without the "Open Link from Terminal
+    // Output?" confirmation (global only). Optional; unset -> none.
+    pub trusted_link_schemes: Option<Vec<String>>,
     #[serde(default, rename = "window")]
     pub windows: Vec<RawWindow>,
 }

@@ -266,6 +266,7 @@ mod tests {
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            trusted_link_schemes: Vec::new(),
         }
     }
 

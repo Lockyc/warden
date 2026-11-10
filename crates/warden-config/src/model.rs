@@ -57,6 +57,10 @@ pub struct Config {
     /// Diagnostic: when true, warden-app traces the notification path to a log
     /// file. Default false. Opaque to the crate — a debug aid the app interprets.
     pub notify_debug: bool,
+    /// Custom URL schemes (lowercase) whose terminal links open without the custom-scheme
+    /// confirmation. Never `http`/`https`/`mailto`/`file` — those have their own screening.
+    /// Default empty. Whole-app concern — no per-window cascade.
+    pub trusted_link_schemes: Vec<String>,
 }
 
 // `Density`, `TabDigitKeys`, and `Warning` are the leaf-free primitives shared with curator and

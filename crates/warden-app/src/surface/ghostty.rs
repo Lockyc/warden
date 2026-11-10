@@ -989,7 +989,7 @@ define_class!(
                 return;
             }
             // Negative coordinates = "outside the surface" (Ghostty.app clears hover the same way).
-            unsafe { ffi::ghostty_surface_mouse_pos(surface, -1.0, -1.0, mods_from_event(event)) };
+            unsafe { ffi::ghostty_surface_mouse_pos(surface, -1.0, -1.0, mouse_mods_from_event(event)) };
         }
 
         // AppKit calls this on every geometry change; the tracking area must be rebuilt each time
@@ -1409,6 +1409,23 @@ unsafe fn mods_from_event(event: &NSEvent) -> ffi::ghostty_input_mods_e {
     mods
 }
 
+/// The mods a mouse event reports: ⌘ also carries ⇧. Under mouse reporting (Claude Code, tmux
+/// `mouse on`) libghostty hands clicks to the program unless ⇧ is held, and a mouse report can't
+/// carry ⌘ — so a ⌘-click would reach the program as a bare click. Adding ⇧ keeps ⌘-hover and
+/// ⌘-click with libghostty, so ⌘-click opens a link everywhere. Mouse path only: key events keep
+/// their real mods.
+fn mouse_mods(mods: ffi::ghostty_input_mods_e) -> ffi::ghostty_input_mods_e {
+    if mods & ffi::GHOSTTY_MODS_SUPER != 0 {
+        mods | ffi::GHOSTTY_MODS_SHIFT
+    } else {
+        mods
+    }
+}
+
+unsafe fn mouse_mods_from_event(event: &NSEvent) -> ffi::ghostty_input_mods_e {
+    mouse_mods(mods_from_event(event))
+}
+
 /// Forward the cursor position to libghostty. AppKit gives window coordinates with a
 /// bottom-left origin; ghostty wants the surface's top-left origin, so convert into the
 /// view's space and flip Y. Called before every button/scroll so the surface has the cell.
@@ -1419,7 +1436,12 @@ unsafe fn forward_mouse_pos(view: &WardenHostView, event: &NSEvent) {
     }
     let local = view.convertPoint_fromView(event.locationInWindow(), None);
     let height = view.bounds().size.height;
-    ffi::ghostty_surface_mouse_pos(surface, local.x, height - local.y, mods_from_event(event));
+    ffi::ghostty_surface_mouse_pos(
+        surface,
+        local.x,
+        height - local.y,
+        mouse_mods_from_event(event),
+    );
 }
 
 /// Forward a mouse button press/release (position is updated first so the click lands on the
@@ -1435,7 +1457,7 @@ unsafe fn forward_mouse_button(
         return;
     }
     forward_mouse_pos(view, event);
-    ffi::ghostty_surface_mouse_button(surface, state, button, mods_from_event(event));
+    ffi::ghostty_surface_mouse_button(surface, state, button, mouse_mods_from_event(event));
 }
 
 /// Forward a scroll/trackpad event. The precision bit tells libghostty whether the deltas are
@@ -2111,11 +2133,32 @@ impl Drop for GhosttySurface {
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_press, end_press, is_close_chord, is_printable_text, key_down_forwards,
+        begin_press, end_press, is_close_chord, is_printable_text, key_down_forwards, mouse_mods,
         right_click_route, Button, Route, NS_FLAG_COMMAND, NS_FLAG_CONTROL, NS_FLAG_OPTION,
         NS_FLAG_SHIFT,
     };
+    use crate::ffi;
     use std::cell::Cell;
+
+    /// ⌘ on a mouse event also reports ⇧, so a ⌘-click stays with libghostty (link open) even
+    /// under mouse reporting; anything without ⌘ is passed through untouched.
+    #[test]
+    fn mouse_command_also_reports_shift() {
+        let cmd = ffi::GHOSTTY_MODS_SUPER;
+        assert_eq!(mouse_mods(cmd), cmd | ffi::GHOSTTY_MODS_SHIFT);
+        assert_eq!(
+            mouse_mods(cmd | ffi::GHOSTTY_MODS_ALT),
+            cmd | ffi::GHOSTTY_MODS_ALT | ffi::GHOSTTY_MODS_SHIFT
+        );
+        for m in [
+            ffi::GHOSTTY_MODS_NONE,
+            ffi::GHOSTTY_MODS_SHIFT,
+            ffi::GHOSTTY_MODS_CTRL,
+            ffi::GHOSTTY_MODS_ALT,
+        ] {
+            assert_eq!(mouse_mods(m), m);
+        }
+    }
 
     /// ⌘W in every form warden's menu owns (⌘W, ⌥⌘W, ⌘⇧W) never reaches libghostty, whose own
     /// `close_surface` would end the pane even while warden's item is disabled.

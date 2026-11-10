@@ -112,6 +112,7 @@ mod tests {
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            trusted_link_schemes: Vec::new(),
         };
         let eff = crate::manager::effective_config(&cfg, None);
         let tabs = &eff.windows[0].tabs;
@@ -183,6 +184,7 @@ mod tests {
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            trusted_link_schemes: Vec::new(),
         };
         let eff = crate::manager::effective_config(&cfg, None);
         let tabs = &eff.windows[0].tabs;

@@ -662,6 +662,7 @@ colour = "#0f8a8a"
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            trusted_link_schemes: Vec::new(),
         };
 
         let ops = tab_ops(&recon, &new_config, by_title);
@@ -721,6 +722,7 @@ colour = "#0f8a8a"
             sidebar_drag: true,
             auto_update: true,
             notify_debug: false,
+            trusted_link_schemes: Vec::new(),
         };
 
         // OLD: the project is only discovered by the root → a tree row under "Developer".

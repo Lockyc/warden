@@ -4,12 +4,31 @@
 //! so a future SwiftTerm / GTK impl can be slotted in without touching callers.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "macos")]
 pub mod ghostty;
 #[cfg(target_os = "macos")]
 mod link;
+
+/// The config's `trusted_link_schemes`: custom schemes a clicked terminal link opens without
+/// the confirmation. Set at launch and on every valid reload; read on each click.
+static TRUSTED_LINK_SCHEMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Replace the trusted-scheme list (lowercase scheme names, as `warden-config` resolves them).
+pub fn set_trusted_link_schemes(schemes: Vec<String>) {
+    *TRUSTED_LINK_SCHEMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = schemes;
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn trusted_link_schemes() -> Vec<String> {
+    TRUSTED_LINK_SCHEMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
 
 /// A signal a surface raised, in seam-neutral terms (no libghostty/Tauri types). The surface layer
 /// decodes the platform action into this; the app layer routes it to a tab.

@@ -109,7 +109,7 @@ fn unknown_target(raw: &str) -> String {
 }
 
 fn open_untrusted(raw: &str) {
-    match decide(raw) {
+    match decide(raw, &super::trusted_link_schemes()) {
         Decision::Allow(url) => {
             NSWorkspace::sharedWorkspace().openURL(&url);
         }
@@ -125,7 +125,9 @@ fn open_untrusted(raw: &str) {
 }
 
 /// Classify an untrusted target. Pure apart from the filesystem lookups a `file:` target needs.
-pub fn decide(s: &str) -> Decision {
+/// `trusted` is the config's `trusted_link_schemes` (lowercase): a custom scheme listed there
+/// opens without the confirmation; the safety checks above it still apply.
+pub fn decide(s: &str, trusted: &[String]) -> Decision {
     if s.is_empty() {
         return Decision::Deny(DenialReason::MalformedUrl);
     }
@@ -160,6 +162,7 @@ pub fn decide(s: &str) -> Decision {
             }
         }
         "file" => file_decision(&url),
+        other if trusted.iter().any(|t| t == other) => Decision::Allow(url),
         _ => Decision::Confirm(url),
     }
 }
@@ -469,31 +472,34 @@ mod tests {
     #[test]
     fn web_and_mail_targets_open() {
         assert_eq!(
-            allowed(&decide("https://example.com/x?a=1")).as_deref(),
+            allowed(&decide("https://example.com/x?a=1", &[])).as_deref(),
             Some("https://example.com/x?a=1")
         );
-        assert!(allowed(&decide("HTTP://example.com")).is_some());
-        assert!(allowed(&decide("mailto:someone@example.com")).is_some());
+        assert!(allowed(&decide("HTTP://example.com", &[])).is_some());
+        assert!(allowed(&decide("mailto:someone@example.com", &[])).is_some());
     }
 
     #[test]
     fn malformed_targets_are_refused() {
-        assert_eq!(denied(&decide("")), Some(DenialReason::MalformedUrl));
+        assert_eq!(denied(&decide("", &[])), Some(DenialReason::MalformedUrl));
         assert_eq!(
-            denied(&decide("src/main.rs")),
+            denied(&decide("src/main.rs", &[])),
             Some(DenialReason::MalformedUrl)
         );
         assert_eq!(
-            denied(&decide("https:relative")),
+            denied(&decide("https:relative", &[])),
             Some(DenialReason::InvalidWebUrl)
         );
-        assert_eq!(denied(&decide("mailto:")), Some(DenialReason::MalformedUrl));
         assert_eq!(
-            denied(&decide("file://evil.example/etc/hosts")),
+            denied(&decide("mailto:", &[])),
             Some(DenialReason::MalformedUrl)
         );
         assert_eq!(
-            denied(&decide("file:///etc/hosts#x")),
+            denied(&decide("file://evil.example/etc/hosts", &[])),
+            Some(DenialReason::MalformedUrl)
+        );
+        assert_eq!(
+            denied(&decide("file:///etc/hosts#x", &[])),
             Some(DenialReason::MalformedUrl)
         );
     }
@@ -507,7 +513,7 @@ mod tests {
             "https://example.com/\u{FEFF}",
         ] {
             assert_eq!(
-                denied(&decide(s)),
+                denied(&decide(s, &[])),
                 Some(DenialReason::UnsafeCharacters),
                 "{s:?}"
             );
@@ -515,13 +521,31 @@ mod tests {
     }
 
     #[test]
+    fn trusted_custom_schemes_open_directly() {
+        let trusted = vec!["x-warden-test".to_owned()];
+        assert_eq!(
+            allowed(&decide("X-Warden-Test://do?thing=1", &trusted)).as_deref(),
+            Some("X-Warden-Test://do?thing=1")
+        );
+        assert!(matches!(
+            decide("vscode://file/tmp/a", &trusted),
+            Decision::Confirm(_)
+        ));
+        // Trust never bypasses the character screening.
+        assert_eq!(
+            denied(&decide("x-warden-test://a\u{202E}b", &trusted)),
+            Some(DenialReason::UnsafeCharacters)
+        );
+    }
+
+    #[test]
     fn custom_schemes_ask_first() {
         assert!(matches!(
-            decide("x-warden-test://do?thing=1"),
+            decide("x-warden-test://do?thing=1", &[]),
             Decision::Confirm(_)
         ));
         assert!(matches!(
-            decide("vscode://file/tmp/a"),
+            decide("vscode://file/tmp/a", &[]),
             Decision::Confirm(_)
         ));
     }
@@ -530,7 +554,7 @@ mod tests {
     fn executable_local_targets_are_refused() {
         // An app bundle by extension, even though it is "just" a directory.
         assert_eq!(
-            denied(&decide("file:///System/Applications/Calculator.app")),
+            denied(&decide("file:///System/Applications/Calculator.app", &[])),
             Some(DenialReason::UnsafeFile)
         );
         let dir = tempfile::tempdir().unwrap();
@@ -551,7 +575,7 @@ mod tests {
         for p in [&cmd, &loc, &exe, &link] {
             let url = format!("file://{}", p.display());
             assert_eq!(
-                denied(&decide(&url)),
+                denied(&decide(&url, &[])),
                 Some(DenialReason::UnsafeFile),
                 "{url}"
             );
@@ -563,12 +587,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let txt = dir.path().join("notes.txt");
         std::fs::write(&txt, "plain\n").unwrap();
-        assert!(allowed(&decide(&format!("file://{}", txt.display()))).is_some());
-        assert!(allowed(&decide(&format!("file://{}/", dir.path().display()))).is_some());
-        assert!(allowed(&decide(&format!("file://localhost{}", txt.display()))).is_some());
+        assert!(allowed(&decide(&format!("file://{}", txt.display()), &[])).is_some());
+        assert!(allowed(&decide(&format!("file://{}/", dir.path().display()), &[])).is_some());
+        assert!(allowed(&decide(&format!("file://localhost{}", txt.display()), &[])).is_some());
         let missing = format!("file://{}/nope", dir.path().display());
         assert_eq!(
-            denied(&decide(&missing)),
+            denied(&decide(&missing, &[])),
             Some(DenialReason::InaccessibleFile)
         );
     }

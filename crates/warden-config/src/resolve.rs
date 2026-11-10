@@ -275,6 +275,10 @@ pub enum ResolveError {
     DuplicateSection { window: String, name: String },
     #[error("window {window:?} has a root with invalid depth {depth} (must be >= 1)")]
     InvalidRootDepth { window: String, depth: u32 },
+    #[error(
+        "invalid trusted_link_schemes entry {0:?} (expected a custom URL scheme such as \"vscode\"; http, https, mailto and file are screened, never trusted)"
+    )]
+    BadLinkScheme(String),
     #[error("invalid split side {0:?} (expected \"left\" or \"right\")")]
     BadSplitSide(String),
     #[error("invalid split size {0} (expected {min}..={max})", min = SPLIT_SIZE_MIN, max = SPLIT_SIZE_MAX)]
@@ -309,6 +313,31 @@ fn resolve_density(raw: Option<&str>) -> Result<Density, ResolveError> {
         Some("compact") => Ok(Density::Compact),
         Some(other) => Err(ResolveError::BadDensity(other.to_string())),
     }
+}
+
+/// Parse the global `trusted_link_schemes` list into lowercase scheme names. Each entry must be
+/// an RFC 3986 scheme (letter, then letters/digits/`+`/`-`/`.`, an optional trailing `:` allowed);
+/// `http`/`https`/`mailto`/`file` are refused — trusting `file` would bypass the executable-target
+/// screening, and the other three already open without asking.
+fn resolve_link_schemes(raw: Option<&[String]>) -> Result<Vec<String>, ResolveError> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in raw.unwrap_or_default() {
+        let scheme = entry.trim().trim_end_matches(':').to_ascii_lowercase();
+        let well_formed = scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+        if !well_formed || matches!(scheme.as_str(), "http" | "https" | "mailto" | "file") {
+            return Err(ResolveError::BadLinkScheme(entry.clone()));
+        }
+        if !out.contains(&scheme) {
+            out.push(scheme);
+        }
+    }
+    Ok(out)
 }
 
 /// Swap the program word of an agent's reported resume command for the configured `resume`
@@ -406,6 +435,7 @@ pub fn resolve_with(
     let mut windows = Vec::with_capacity(raw.windows.len());
     let tab_digit_keys = resolve_tab_digit_keys(raw.tab_digit_keys.as_deref())?;
     let density = resolve_density(raw.density.as_deref())?;
+    let trusted_link_schemes = resolve_link_schemes(raw.trusted_link_schemes.as_deref())?;
     // Titles and group names are deduped trimmed, so resolve_window stores them trimmed too.
     config_core::validate_windows(&raw.windows)?;
 
@@ -430,6 +460,7 @@ pub fn resolve_with(
             sidebar_drag: raw.sidebar_drag.unwrap_or(true),
             auto_update: raw.auto_update.unwrap_or(true),
             notify_debug: raw.notify_debug.unwrap_or(false),
+            trusted_link_schemes,
         },
         warnings,
     ))
@@ -1164,6 +1195,44 @@ colour = "#0f8a8a"
         )
         .unwrap_err();
         assert_eq!(err, ResolveError::BadDensity("roomy".to_string()));
+    }
+
+    #[test]
+    fn trusted_link_schemes_default_empty() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(cfg.trusted_link_schemes.is_empty());
+    }
+
+    #[test]
+    fn trusted_link_schemes_normalise_and_dedupe() {
+        let (cfg, _) = resolve_str(
+            r##"
+trusted_link_schemes = ["x-test", " X-Test: ", "vscode"]
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert_eq!(cfg.trusted_link_schemes, vec!["x-test", "vscode"]);
+    }
+
+    #[test]
+    fn trusted_link_schemes_refuse_screened_and_malformed() {
+        for bad in ["file", "HTTPS", "mailto:", "", "1x", "a b"] {
+            let err = resolve_str(&format!(
+                "trusted_link_schemes = [{bad:?}]\n[[window]]\ntitle = \"w\"\ncolour = \"#0f8a8a\"\n"
+            ))
+            .unwrap_err();
+            assert_eq!(err, ResolveError::BadLinkScheme(bad.to_string()), "{bad:?}");
+        }
     }
 
     #[test]
