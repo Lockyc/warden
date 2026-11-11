@@ -88,9 +88,10 @@ site omits it.
 - **Agent status comes from the hub, never a relay** (`program_status_changed`, `title_changed`;
   `rex/windows.rs`), so an agent tab that isn't on screen still raises its project row's badge and
   a banner, and ambers its group while folded (`rex/attention.rs` → `notify::raise`). The summary
-  block's rows ride the same path: *doing* is the root record's `msg`, and *asked* / *said* are
-  OSC 7501 child records the hook writes straight to Rex (`warden/asked`, `warden/answered`,
-  `warden/said`; which prompt is which: `scripts/agent-hooks/claude-hook.sh`), so they reach
+  block's rows ride the same path: *doing* is the root record's `msg`, and *asked* / *said* /
+  *topic* / *needs* are OSC 7501 child records the hook writes straight to Rex (`warden/asked`,
+  `warden/answered`, `warden/said`, `warden/topic`, `warden/needs`; which prompt is which and
+  the end-of-turn digest that rewrites them: `scripts/agent-hooks/claude-hook.sh`), so they reach
   warden for an agent no relay streams, and on a remote server. *title* is the row's name.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane's session windows are its
