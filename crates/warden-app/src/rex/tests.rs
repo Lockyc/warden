@@ -1259,15 +1259,13 @@ fn windows_view(session_id: &str, revision: u64, windows: &[(&str, &str, &str)])
     json!({"revision": revision, "session_id": session_id, "windows": windows})
 }
 
+/// [`windowed`]'s session: its revision and its windows as (window, label, block).
+type HeldWindows = std::sync::Mutex<(u64, Vec<(String, String, String)>)>;
+
 /// A fake whose `session:new` holds the windows in the returned list: `session.attach` and
 /// `session.view` read it, so a test changes the session by editing the list and pushing the
 /// events Rex would send.
-fn windowed(
-    windows: &[(&str, &str, &str)],
-) -> (
-    FakeServer,
-    std::sync::Arc<std::sync::Mutex<(u64, Vec<(String, String, String)>)>>,
-) {
+fn windowed(windows: &[(&str, &str, &str)]) -> (FakeServer, std::sync::Arc<HeldWindows>) {
     let fake = scripted(json!([]));
     let held = std::sync::Arc::new(std::sync::Mutex::new((
         1u64,
@@ -1276,7 +1274,7 @@ fn windowed(
             .map(|(w, l, b)| (w.to_string(), l.to_string(), b.to_string()))
             .collect::<Vec<_>>(),
     )));
-    let render = |h: &std::sync::Mutex<(u64, Vec<(String, String, String)>)>| {
+    let render = |h: &HeldWindows| {
         let h = h.lock().unwrap();
         let ws: Vec<(&str, &str, &str)> =
             h.1.iter()
