@@ -380,9 +380,17 @@
       .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-group .cc-attention { margin-left: auto; }
       .a-row.k { padding-left: 14px; }
-      /* A fork sits under the tab it came from, `--depth` (capped at 2) steps in. */
-      .a-row.nested { padding-left: calc(6px + var(--depth) * 12px); }
+      /* A fork sits under the tab it came from, `--depth` (capped at 2) steps in, with a guide in
+         the window's colour down each level it's nested through — level 1 under its source's
+         caret, level 2 its box-shadow 12px right — and the fork mark before its name. */
+      #agents { --fork: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 62); }
+      .a-row.nested { position: relative; padding-left: calc(6px + var(--depth) * 12px); }
       .a-row.k.nested { padding-left: calc(14px + var(--depth) * 12px); }
+      .a-row.nested::before { content: ""; position: absolute; top: 0; bottom: 0; left: 10px; width: 2px;
+        background: var(--fork); opacity: 0.75; }
+      .a-row.k.nested::before { left: 18px; }
+      .a-row.nested.d2::before { box-shadow: 12px 0 0 var(--fork); }
+      .a-fork-mark { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; color: var(--fork); }
       .a-fork-caret { flex: none; width: 10px; margin-right: -3px; color: #7d8590; text-align: center; }
       .a-fork-caret:hover { color: #c3ccd8; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
@@ -431,7 +439,8 @@
       #agents.narrow .a-text, #agents.narrow .a-more, #agents.narrow .a-actions,
       #agents.narrow .a-gname, #agents.narrow .a-group .a-caret, #agents.narrow .a-empty,
       #agents.narrow .a-newdrop, #agents.narrow .a-fork-caret, #agents.narrow .a-forks, #agents.narrow .a-bg { display: none; }
-      #agents.narrow .a-row.nested { box-shadow: inset 2px 0 0 #3d444d; }
+      #agents.narrow .a-row.nested { box-shadow: inset 2px 0 0 var(--fork); }
+      #agents.narrow .a-row.nested::before { display: none; }
       #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
         border-top: 1px solid #313640; margin: 4px 4px 0; }
       #agents.narrow .a-group .cc-attention { margin: 0; }
@@ -1684,6 +1693,15 @@
         });
         return b;
       }
+      // The fork mark before a fork's name: a drawn branch, since a font's ⑂ renders too small to read.
+      function agentForkMark() {
+        const t = document.createElement("template");
+        t.innerHTML = '<svg class="a-fork-mark" viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
+          'stroke-width="1.8" stroke-linecap="round"><circle cx="4" cy="3" r="1.7"/>' +
+          '<circle cx="12" cy="3" r="1.7"/><circle cx="8" cy="13" r="1.7"/>' +
+          '<path d="M4 4.7V6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V4.7M8 8v3.3"/></svg>';
+        return t.content.firstChild;
+      }
       // An input in the list takes typing only once this webview is the key view — a terminal
       // holds first responder (same reason as ⌘⇧F's `focus_sidebar`).
       function focusInput(input) {
@@ -1802,6 +1820,7 @@
         row.dataset.parent = r.parent ?? "";
         row.classList.toggle("nested", r.depth > 0);
         row.style.setProperty("--depth", Math.min(r.depth, 2));
+        row.classList.toggle("d2", r.depth >= 2);
         const name = r.name || "untitled";
         const ctx = r.context || (r.state === "asleep" ? "asleep" : "");
         row.title = [name, ctx, r.background && "still running: " + r.background].filter(Boolean).join("\n");
@@ -1821,7 +1840,9 @@
             if (v !== r.name) agentCall("agent_rename", { tabId: tab, recordId: r.id, name: v });
           }, stop));
         } else {
-          text.append(agentEl("span", r.name ? "a-name" : "a-name untitled", name));
+          const label = agentEl("span", r.name ? "a-name" : "a-name untitled", name);
+          if (r.depth > 0) label.prepend(agentForkMark());
+          text.append(label);
         }
         if (ctx) text.append(agentEl("span", "a-ctx", ctx));
         row.append(text);
