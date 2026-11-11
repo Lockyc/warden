@@ -166,6 +166,8 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 /// - Windows opened/closed, matched by `title`.
 /// - For a kept window (a `WindowUpdate`, emitted when any of these is non-empty):
 ///   - `colour`, `open_tabs_section` and `background_tabs_section` (chrome-only) changes.
+///   - The window's tree sections (`Window::tree_names`) changing — chrome-only, and an update
+///     even when the added or removed root discovers no tab; the consumer re-sends them.
 ///   - `add_tabs`/`remove_tabs`, matched by `Tab::key` — `id`-else-normalized-`dir` for a
 ///     curated tab, the absolute project path for a discovered one. A kept tab whose `dir`
 ///     changed with no explicit `id` changes key, so it is a remove + add.
@@ -305,6 +307,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                     }
                 }
                 if colour.is_some()
+                    || op.tree_names() != np.tree_names()
                     || open_tabs_section.is_some()
                     || background_tabs_section.is_some()
                     || !add_tabs.is_empty()
@@ -1107,6 +1110,23 @@ colour = "#0f8a8a"
         assert!(reconcile(&with_root("/tmp/a"), &with_root("/tmp/a"))
             .update
             .is_empty());
+    }
+
+    /// A root that discovers nothing changes no tab, but the sidebar still grows or drops its
+    /// (empty) tree section, so adding, renaming or removing one is an update.
+    #[test]
+    fn an_empty_root_added_renamed_or_removed_emits_an_update() {
+        let with_roots = |roots: &str| cfg(&format!("{BASE}{roots}"));
+        let none = with_roots("");
+        let one = with_roots("  [[window.root]]\n  name = \"empty\"\n  dir = \"/tmp/nothing\"\n");
+        let renamed =
+            with_roots("  [[window.root]]\n  name = \"other\"\n  dir = \"/tmp/nothing\"\n");
+        for (old, new) in [(&none, &one), (&one, &renamed), (&one, &none)] {
+            let r = reconcile(old, new);
+            assert_eq!(r.update.len(), 1);
+            assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+        }
+        assert!(reconcile(&one, &one).update.is_empty());
     }
 
     #[test]

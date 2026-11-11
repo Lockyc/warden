@@ -98,6 +98,13 @@ pub struct Window {
     pub roots: Vec<Root>,
 }
 
+impl Window {
+    /// The sidebar's tree sections: each root's `name`, in file order.
+    pub fn tree_names(&self) -> Vec<String> {
+        self.roots.iter().map(|r| r.name.clone()).collect()
+    }
+}
+
 /// A project-tree root (`[[window.root]]`): a directory scanned for git projects,
 /// each discovered project synthesized into a `Tab` by the app's scanner. A new
 /// cascade level (root→window→global) for its projects' resolved fields below —

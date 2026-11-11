@@ -735,7 +735,7 @@ impl WindowManager {
                     .windows
                     .iter()
                     .find(|w| w.title == ws.title)
-                    .map(|w| w.roots.iter().map(|r| r.name.clone()).collect())
+                    .map(warden_config::Window::tree_names)
                     .unwrap_or_default(),
                 active: ws.registry.active_tab().map(str::to_string),
                 tabs,
@@ -1377,6 +1377,20 @@ impl WindowManager {
         label_of: impl Fn(&str) -> Option<String>,
     ) {
         let ops = tab_ops(recon, &new_config, label_of);
+        // Windows whose tree sections changed: no tab op carries that, only the refresh's
+        // `InitDto.trees` does, so an empty root added or removed must still refresh.
+        let trees_changed: HashSet<String> = new_config
+            .windows
+            .iter()
+            .filter(|nw| {
+                self.last_good
+                    .windows
+                    .iter()
+                    .find(|ow| ow.title == nw.title)
+                    .is_some_and(|ow| ow.tree_names() != nw.tree_names())
+            })
+            .map(|nw| nw.title.clone())
+            .collect();
         self.last_good = new_config;
         let mut refreshed: Vec<String> = Vec::new();
         let mut exited: Vec<(String, String, Option<String>)> = Vec::new();
@@ -1405,7 +1419,8 @@ impl WindowManager {
                 // mistaken for a no-op.
                 let current_order: Vec<String> =
                     ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
-                if open_tabs_section.is_none()
+                if !trees_changed.contains(&ws.title)
+                    && open_tabs_section.is_none()
                     && background_tabs_section.is_none()
                     && add_tabs.is_empty()
                     && remove_tabs.is_empty()
