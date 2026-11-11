@@ -331,6 +331,27 @@ static FOCUSED_SURFACE: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 /// Monotonic counter for temp image-paste filenames (see `clipboard_image_to_temp_path`).
 static PASTE_IMAGE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// The last image spill: the pasteboard `changeCount` it was written for, and its path.
+static SPILLED_IMAGE: Mutex<Option<(isize, String)>> = Mutex::new(None);
+
+/// One temp file per clipboard image: reuse `cache`'s path while the pasteboard's `change_count`
+/// is the one it was spilled for and the file is still there, else `spill` and remember the result.
+/// A program looping clipboard reads therefore writes one file, not one per read.
+fn reuse_or_spill(
+    cache: &mut Option<(isize, String)>,
+    change_count: isize,
+    spill: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if let Some((count, path)) = cache.as_ref() {
+        if *count == change_count && std::path::Path::new(path).is_file() {
+            return Some(path.clone());
+        }
+    }
+    let path = spill()?;
+    *cache = Some((change_count, path.clone()));
+    Some(path)
+}
+
 /// A surface asks for clipboard data (⌘V, or a program's OSC 52 / Kitty read); read the macOS
 /// general pasteboard and hand it back to *that* surface via `complete_clipboard_request`,
 /// synchronously. `userdata` is the requesting surface's host view — a background tab's OSC 52
@@ -389,7 +410,12 @@ unsafe extern "C" fn read_clipboard_cb(
         .filter(|s| !s.is_empty());
     let payload = match text {
         Some(t) => Some(t),
-        None if wants_text => clipboard_image_to_temp_path(&pb),
+        None if wants_text => {
+            let mut cache = SPILLED_IMAGE.lock().unwrap_or_else(|e| e.into_inner());
+            reuse_or_spill(&mut cache, pb.changeCount(), || {
+                clipboard_image_to_temp_path(&pb)
+            })
+        }
         None => (pb.dataForType(NSPasteboardTypePNG).is_some()
             || pb.dataForType(NSPasteboardTypeTIFF).is_some())
         .then(String::new),
@@ -424,7 +450,8 @@ unsafe extern "C" fn read_clipboard_cb(
 /// If the general pasteboard carries raster image data (and no text), write it to a temp PNG and
 /// return that path; `None` when there's no image. PNG is emitted unconditionally — consumers match
 /// on image *extensions*, and macOS screenshots land on the clipboard as TIFF, so a TIFF-only
-/// clipboard is transcoded first. Files accrete in the temp dir for the session; the OS reaps them.
+/// clipboard is transcoded first. `reuse_or_spill` makes this one file per clipboard image; those
+/// accrete in the temp dir for the session, and the OS reaps them.
 unsafe fn clipboard_image_to_temp_path(pb: &NSPasteboard) -> Option<String> {
     let png: Retained<NSData> = match pb.dataForType(NSPasteboardTypePNG) {
         Some(d) => d,
@@ -2373,5 +2400,34 @@ mod tests {
         assert!(!is_printable_text("\u{F701}")); // ↓
         assert!(!is_printable_text("\u{F704}")); // F1
         assert!(!is_printable_text("\u{F8FF}")); // top of the range
+    }
+
+    #[test]
+    fn an_unchanged_clipboard_image_spills_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let spills = std::cell::Cell::new(0);
+        let spill = |name: &str| {
+            spills.set(spills.get() + 1);
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"png").unwrap();
+            Some(p.to_str().unwrap().to_owned())
+        };
+        let mut cache = None;
+        let first = super::reuse_or_spill(&mut cache, 7, || spill("a.png")).unwrap();
+        for _ in 0..5 {
+            assert_eq!(
+                super::reuse_or_spill(&mut cache, 7, || spill("b.png")).as_deref(),
+                Some(first.as_str())
+            );
+        }
+        assert_eq!(spills.get(), 1);
+        // A new clipboard (changeCount moved) spills afresh.
+        let second = super::reuse_or_spill(&mut cache, 8, || spill("c.png")).unwrap();
+        assert_ne!(second, first);
+        assert_eq!(spills.get(), 2);
+        // A reaped file is rewritten rather than pasted as a dangling path.
+        std::fs::remove_file(&second).unwrap();
+        super::reuse_or_spill(&mut cache, 8, || spill("d.png")).unwrap();
+        assert_eq!(spills.get(), 3);
     }
 }
