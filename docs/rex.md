@@ -63,7 +63,7 @@ pane surface ── warden-relay ── its own control connection ─┤  (loca
 The relay mints its own tickets, so the stream belongs to the relay's client and lives as long as
 the relay does. The one channel between warden-app and a relay is the report socket
 (`--report`, `rex/reports.rs`). An agent's hook (`scripts/agent-hooks/claude-hook.sh`,
-wired by `/warden:install`) writes `ESC _ warden1;resume=<base64> ESC \` to the agent's terminal;
+wired per the README's Install) writes `ESC _ warden1;resume=<base64> ESC \` to the agent's terminal;
 `StreamDemux` strips it from the output and the relay forwards it as a JSON line
 `{"session","block","resume"}`. Any program in the pane can write that sequence, and a woken agent's
 window types the stored command into a shell, so a report is untrusted: `AgentStore::report_resume`

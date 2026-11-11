@@ -32,8 +32,14 @@ re-run it to update:
 curl -fsSL https://raw.githubusercontent.com/lockyc/warden/main/install.sh | bash
 ```
 
-**Agent tabs' sleep, fork and summary** need that hook wired into Claude Code, which
-`/warden:install` does: run it in Claude Code from a clone of this repo. The hook needs `jq`.
+**Agent tabs' sleep, fork and summary** need that hook wired into Claude Code. Add it to
+`~/.claude/settings.json` (and any other Claude Code profile's) under `"hooks"`; it needs `jq`:
+
+```json
+"SessionStart":     [{ "hooks": [{ "type": "command", "command": "~/.local/share/warden/agent-hooks/claude-hook.sh" }] }],
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "~/.local/share/warden/agent-hooks/claude-hook.sh" }] }],
+"Stop":             [{ "hooks": [{ "type": "command", "command": "~/.local/share/warden/agent-hooks/claude-hook.sh" }] }]
+```
 
 warden updates itself: on launch, every 6 hours, and from **warden ▸ Check for Updates…**, an
 *Update available* bar offers **Update & Relaunch**. Nothing installs without your approval, and

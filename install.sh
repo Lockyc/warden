@@ -13,7 +13,6 @@
 #                   (clone if absent, git pull if present) and builds from it.
 #
 # Never relaunches the app (the caller decides) and never depends on `just`.
-# For guided setup with prerequisite installation, use /warden:install in Claude Code.
 set -euo pipefail
 
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -24,8 +23,7 @@ fi
 REPO_URL="https://github.com/lockyc/warden"
 INSTALL_DIR="$HOME/.warden"
 
-# 1. Hard prerequisites. /warden:install offers to install these; the bare
-#    script only refuses with a hint (except the Tauri CLI, which it backstops).
+# 1. Hard prerequisites — refused with a hint (except the Tauri CLI, which it backstops).
 missing=0
 for c in git cargo; do
   if ! command -v "$c" >/dev/null 2>&1; then
@@ -84,15 +82,15 @@ fi
 
 # 7. Install the agent hook that lets a Rex agent tab sleep and wake and fills its summary rows
 #    (always overwritten, so an update ships its fix). Wiring it into Claude Code's settings is
-#    /warden:install's step.
+#    the README's step.
 HOOK_DIR="$HOME/.local/share/warden/agent-hooks"
 mkdir -p "$HOOK_DIR"
 install -m 755 scripts/agent-hooks/claude-hook.sh "$HOOK_DIR/claude-hook.sh"
 rm -f "$HOOK_DIR/claude-session-start.sh"
 if grep -ls 'warden/agent-hooks/claude-session-start.sh' "$HOME"/.claude*/settings.json >/dev/null; then
-  echo "! a Claude Code settings.json still runs the old claude-session-start.sh — run /warden:install to rewire it"
+  echo "! a Claude Code settings.json still runs the old claude-session-start.sh — point it at $HOOK_DIR/claude-hook.sh (README ## Install)"
 fi
-echo "→ installed the Claude Code agent hook to $HOOK_DIR"
+echo "→ installed the Claude Code agent hook to $HOOK_DIR (wire it per README ## Install)"
 
 echo ""
 echo "✓ warden installed to /Applications/warden.app"
