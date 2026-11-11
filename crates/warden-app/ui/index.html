@@ -659,7 +659,8 @@
       // sb.checkForUpdateNow(). warden keeps its own updater *identity* — endpoint, pubkey, plugin
       // registration — in tauri.conf.json / Rust.
 
-      const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
+      // Before init_tabs answers, this window has no label to match, so nothing is for it.
+      const forMe = (e) => myLabel !== null && !(e.payload && e.payload.label && e.payload.label !== myLabel);
 
       // Whether the error bar holds a global (config) error, the one kind `warden:error-clear`
       // clears. Every per-window error goes through `setWindowError`, which replaces it.
