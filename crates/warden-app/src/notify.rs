@@ -135,11 +135,9 @@ pub fn init(app: AppHandle, debug: bool) {
     }
 }
 
-/// Runs on the main thread (the sink is invoked from `action_cb`, which only ever fires from a
-/// `ghostty_app_tick` that is *async-dispatched* onto the main queue — never synchronously from a
-/// surface method). So this never nests inside a command that already holds `ManagerState`: the
-/// command's main-queue task runs to completion (and drops its guard) before this tick task runs.
-/// Locking `ManagerState` and touching Tauri/AppKit here is therefore safe and deadlock-free.
+/// Runs on the main thread, in its own main-queue turn: `action_cb` hands bell, notification and
+/// child-exit to the sink through `defer_event`, never synchronously. So this never nests inside
+/// a command that already holds `ManagerState`. Locking `ManagerState` and touching Tauri/AppKit here is therefore safe and deadlock-free.
 /// Uses `ManagerState::lock` (not a bare `unwrap`) so a poisoned mutex recovers instead of
 /// crashing the notification path — matching every command handler.
 fn handle(app: &AppHandle, event: SurfaceEvent) {

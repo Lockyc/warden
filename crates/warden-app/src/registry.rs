@@ -4250,10 +4250,9 @@ mod tests {
     //
     // That cannot be exercised through `Registry::activate` itself in this file's unit
     // tests: every test here runs against `ns_window = null` so panes never leave `Cold`
-    // (see the detach/attach block earlier in this file), and `activate` on a COLD tab
-    // SIGSEGVs — `GhosttySurface::new`'s null-window path is not the "safely returns Err"
-    // case it looks like — so tests here call `activate` only on `Detached` tabs, which
-    // spawn nothing. So this test pins the one ingredient that *is* safely testable: that
+    // (see the detach/attach block earlier in this file): `GhosttySurface::new` refuses a null
+    // window, so `activate` on a cold tab spawns nothing and there is no surface to show or
+    // focus. So this test pins the one ingredient that *is* safely testable: that
     // `TabEntry::keyed()` pairs each pane with its own correct `PaneIdx`, primary first, blocks
     // in layout order — the same indexing `on_screen` gives the shown blocks. A wrong pairing
     // here (e.g. two blocks swapped) is exactly the kind of bug that would silently misroute

@@ -1990,7 +1990,7 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
     log::info!(
         "{detached_label:?} docked back into {origin_label:?}{}",
         if dropped.is_some() {
-            " (tab left the config while out; dropped)"
+            " (its terminal ended on arrival)"
         } else {
             ""
         }
