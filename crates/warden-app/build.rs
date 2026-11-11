@@ -55,7 +55,8 @@ fn main() {
     }
 }
 
-/// Enum members warden decodes, keyed by their `typedef enum { … } <name>;`. Names only — every
+/// Enum members warden decodes or answers with (action tags, open-url kinds, the clipboard
+/// callbacks' enums), keyed by their `typedef enum { … } <name>;`. Names only — every
 /// VALUE comes from the vendored header, so a revendor that reorders an enum can't leave a stale
 /// number behind. A name that no longer exists upstream fails the build here rather than silently
 /// decoding the wrong value.
@@ -77,6 +78,19 @@ const DECODED: &[(&str, &[&str])] = &[
             "GHOSTTY_ACTION_OPEN_URL_KIND_TEXT",
             "GHOSTTY_ACTION_OPEN_URL_KIND_HTML",
             "GHOSTTY_ACTION_OPEN_URL_KIND_OSC8",
+        ],
+    ),
+    ("ghostty_clipboard_e", &["GHOSTTY_CLIPBOARD_STANDARD"]),
+    (
+        "ghostty_clipboard_request_e",
+        &["GHOSTTY_CLIPBOARD_REQUEST_PASTE"],
+    ),
+    (
+        "ghostty_clipboard_read_result_e",
+        &[
+            "GHOSTTY_CLIPBOARD_READ_STARTED",
+            "GHOSTTY_CLIPBOARD_READ_UNAVAILABLE",
+            "GHOSTTY_CLIPBOARD_READ_UNSUPPORTED",
         ],
     ),
 ];

@@ -145,35 +145,14 @@ pub struct ghostty_input_key_s {
 }
 
 // --- Clipboard enums/structs (referenced by runtime callbacks) ---
-// typedef enum { GHOSTTY_CLIPBOARD_STANDARD, GHOSTTY_CLIPBOARD_SELECTION, GHOSTTY_CLIPBOARD_PRIMARY } ghostty_clipboard_e;
-#[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum ghostty_clipboard_e {
-    GHOSTTY_CLIPBOARD_STANDARD = 0,
-    GHOSTTY_CLIPBOARD_SELECTION = 1,
-    GHOSTTY_CLIPBOARD_PRIMARY = 2,
-}
-
-// typedef enum { PASTE, OSC_52_READ, OSC_52_WRITE, KITTY_READ, KITTY_WRITE, LIST } ghostty_clipboard_request_e;
-#[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum ghostty_clipboard_request_e {
-    GHOSTTY_CLIPBOARD_REQUEST_PASTE = 0,
-    GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ = 1,
-    GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE = 2,
-    GHOSTTY_CLIPBOARD_REQUEST_KITTY_READ = 3,
-    GHOSTTY_CLIPBOARD_REQUEST_KITTY_WRITE = 4,
-    GHOSTTY_CLIPBOARD_REQUEST_LIST = 5,
-}
-
-// typedef enum { STARTED, UNAVAILABLE, UNSUPPORTED } ghostty_clipboard_read_result_e;
-#[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum ghostty_clipboard_read_result_e {
-    GHOSTTY_CLIPBOARD_READ_STARTED = 0,
-    GHOSTTY_CLIPBOARD_READ_UNAVAILABLE = 1,
-    GHOSTTY_CLIPBOARD_READ_UNSUPPORTED = 2,
-}
+// `ghostty_clipboard_e`, `ghostty_clipboard_request_e` and `ghostty_clipboard_read_result_e` are
+// valueless C enums carried as plain `u32`s; the members warden compares against are GENERATED
+// (`action_tags.rs`, below), exactly like the action tags. A callback argument is never a Rust
+// enum: an out-of-range value would be UB, and a hand-copied discriminant that drifted on a
+// revendor could make `confirm_read_clipboard_cb` approve a program's clipboard READ as a paste.
+pub type ghostty_clipboard_e = u32;
+pub type ghostty_clipboard_request_e = u32;
+pub type ghostty_clipboard_read_result_e = u32;
 
 // typedef struct { const char* mime; const char* data; size_t len; } ghostty_clipboard_content_s;
 /// One representation of clipboard contents. `data` is `(ptr, len)`, **not** NUL-terminated.

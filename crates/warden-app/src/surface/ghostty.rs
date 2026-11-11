@@ -348,8 +348,11 @@ unsafe extern "C" fn read_clipboard_cb(
     mimes_len: usize,
     list: bool,
 ) -> ffi::ghostty_clipboard_read_result_e {
-    use ffi::ghostty_clipboard_read_result_e::*;
-    if loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD {
+    use ffi::{
+        GHOSTTY_CLIPBOARD_READ_STARTED, GHOSTTY_CLIPBOARD_READ_UNAVAILABLE,
+        GHOSTTY_CLIPBOARD_READ_UNSUPPORTED,
+    };
+    if loc != ffi::GHOSTTY_CLIPBOARD_STANDARD {
         return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED;
     }
     let surface = surface_of(userdata);
@@ -474,9 +477,9 @@ unsafe extern "C" fn confirm_read_clipboard_cb(
     if surface.is_null() {
         return;
     }
-    if request == ffi::ghostty_clipboard_request_e::GHOSTTY_CLIPBOARD_REQUEST_PASTE
-        && !confirm.is_null()
-    {
+    // Any request kind but a recognised paste — including a value this build doesn't know — is
+    // denied.
+    if request == ffi::GHOSTTY_CLIPBOARD_REQUEST_PASTE && !confirm.is_null() {
         let c = &*confirm;
         let complete = ffi::ghostty_clipboard_complete_s {
             contents: c.contents,
@@ -505,11 +508,7 @@ unsafe extern "C" fn write_clipboard_cb(
     len: usize,
     confirm: bool,
 ) {
-    if confirm
-        || loc != ffi::ghostty_clipboard_e::GHOSTTY_CLIPBOARD_STANDARD
-        || content.is_null()
-        || len == 0
-    {
+    if confirm || loc != ffi::GHOSTTY_CLIPBOARD_STANDARD || content.is_null() || len == 0 {
         return;
     }
     // Take the first entry that carries valid UTF-8 text (usually the text/plain mime). `data` is

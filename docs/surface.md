@@ -41,7 +41,8 @@ at libghostty-vt, which has no renderer. warden stays on `ghostty.h` because the
 renders. On a version jump:
 - **Struct layout** is guarded by the `const _` `size_of!` asserts in `ffi/mod.rs` — drift fails
   the build.
-- **Action-tag discriminants are generated, never hand-copied.** `ghostty_action_tag_e` is a
+- **Enum discriminants are generated, never hand-copied** — the action tags and the clipboard
+  callbacks' enums, all carried as `u32` and compared, never a Rust enum. `ghostty_action_tag_e` is a
   valueless C enum, so each tag is its position, and upstream inserts members mid-list. A drifted
   tag fails nothing: links go inert, `exit` waits for a keypress, a progress report unloads a live
   tab. `build.rs::generate_action_tags` derives every value from the header *inside* the
