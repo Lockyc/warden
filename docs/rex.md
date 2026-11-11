@@ -93,6 +93,9 @@ site omits it.
   `warden/answered`, `warden/said`, `warden/topic`, `warden/needs`; which prompt is which and
   the end-of-turn digest that rewrites them: `scripts/agent-hooks/claude-hook.sh`), so they reach
   warden for an agent no relay streams, and on a remote server. *title* is the topic, else the row's name.
+  The root record is Claude Code's own: it reads idle once the main turn ends, even while
+  background shells or agents still run (Claude Code's own title and header do the same, and its
+  tracker has declined to split the state: anthropics/claude-code#69306, #73557, #80246).
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane's session windows are its
   scratch tabs, each showing every block of its split tree (`docs/native-splits-direction.md`).
