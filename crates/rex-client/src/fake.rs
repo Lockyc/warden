@@ -151,6 +151,8 @@ enum DataOut {
     Bytes(Vec<u8>),
     Close(u16, String),
     Drop,
+    /// Stop reading and writing, leaving the socket open: a half-open peer.
+    Mute,
 }
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
@@ -461,6 +463,15 @@ impl FakeHandle {
             if let Some((_, tx)) = s.conn.take() {
                 let _ = tx.send(DataOut::Drop);
             }
+        }
+    }
+
+    /// Silences the latest stream's connection — no data, no pong, no close — as a half-open TCP
+    /// stream after a sleep is; the socket stays open.
+    pub fn mute_data(&self) {
+        let st = self.state();
+        if let Some((_, tx)) = st.streams.last().and_then(|s| s.conn.as_ref()) {
+            let _ = tx.send(DataOut::Mute);
         }
     }
 
@@ -885,7 +896,15 @@ fn welcome_bytes(token: [u8; 16], nonce: u64) -> Vec<u8> {
 /// Serves one data connection until it ends. True when the client ended the stream itself with a
 /// 1000 close — as the real server, the fake then holds no RESUME for it.
 fn data_loop(ws: &mut WebSocket<UnixStream>, h: &FakeHandle, rx: &Receiver<DataOut>) -> bool {
+    let mut muted = false;
     while !h.shared.shutdown.load(Ordering::SeqCst) {
+        if muted {
+            if let Ok(DataOut::Drop) = rx.try_recv() {
+                return false;
+            }
+            thread::sleep(POLL);
+            continue;
+        }
         match ws.read() {
             Ok(Message::Close(Some(f))) if u16::from(f.code) == 1000 => {
                 let _ = ws.flush();
@@ -900,6 +919,10 @@ fn data_loop(ws: &mut WebSocket<UnixStream>, h: &FakeHandle, rx: &Receiver<DataO
                 DataOut::Bytes(b) => ws.write(Message::binary(b)),
                 DataOut::Close(code, reason) => ws.close(Some(close_frame(code, reason))),
                 DataOut::Drop => return false,
+                DataOut::Mute => {
+                    muted = true;
+                    break;
+                }
             };
             if matches!(sent, Err(ref e) if !is_idle(e)) {
                 return false;

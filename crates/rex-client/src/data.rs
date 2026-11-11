@@ -14,12 +14,12 @@ const WELCOME_TIMEOUT: Duration = Duration::from_secs(10);
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Status for a connection that ended without a close frame.
 const ABNORMAL: u16 = 1006;
-/// The longest a read waits with nothing arriving. The server pings data connections every
-/// [`crate::SERVER_PING_INTERVAL`], so two missed pings plus a ping's grace means the connection
-/// is dead — a half-open TCP stream after a sleep never errors on its own.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(
-    2 * crate::SERVER_PING_INTERVAL.as_secs() + crate::SERVER_PING_WAIT.as_secs(),
-);
+/// Silence this long sends a ping. A data connection otherwise never writes, so a half-open TCP
+/// stream after a sleep would never error: the ping draws the peer's reset, or its pong.
+const PROBE_AFTER: Duration = Duration::from_secs(20);
+/// The longest a read waits with nothing arriving: a probe plus its answer's grace. Past it the
+/// connection is dead.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(PROBE_AFTER.as_secs() + 25);
 
 /// One terminal block's stream. Dropping it leaves the stream waiting on the server for a
 /// RESUME (within the welcome's resume window); the server ends it only on a 1000 close
@@ -31,6 +31,10 @@ pub struct DataStream {
     close_code: Option<u16>,
     /// When anything last arrived, pings included: silence past `idle` is a dead connection.
     heard: Instant,
+    /// Silence this long sends a ping, whose answer refreshes `heard`.
+    probe: Duration,
+    /// Whether a ping has gone out since `heard`.
+    pinged: bool,
     idle: Duration,
 }
 
@@ -81,6 +85,8 @@ impl DataStream {
             received,
             close_code: None,
             heard: Instant::now(),
+            probe: PROBE_AFTER,
+            pinged: false,
             idle: IDLE_TIMEOUT,
         })
     }
@@ -111,12 +117,33 @@ impl DataStream {
                 self.close_code = Some(ABNORMAL);
                 return Ok(Next::Closed);
             }
+            let to_probe = self.probe.saturating_sub(self.heard.elapsed());
+            if !self.pinged && to_probe.is_zero() {
+                self.pinged = true;
+                match self.ws.send(Message::Ping(Default::default())) {
+                    Ok(()) => {}
+                    // Queued; the next read's flush sends it.
+                    Err(tungstenite::Error::Io(e))
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => {
+                        self.close_code = Some(ABNORMAL);
+                        return Ok(Next::Closed);
+                    }
+                }
+            }
+            let mut t = wait.min(left);
+            if !self.pinged {
+                t = t.min(to_probe);
+            }
             // A zero timeout means none at all, so never pass one.
-            let t = wait.min(left).max(Duration::from_millis(1));
+            let t = t.max(Duration::from_millis(1));
             self.ws.set_read_timeout(Some(t)).map_err(io_err)?;
             match self.ws.read() {
                 Ok(Message::Binary(b)) => {
-                    self.heard = Instant::now();
+                    self.hear();
                     self.received += b.len() as u64;
                     return Ok(Next::Data(b.to_vec()));
                 }
@@ -125,14 +152,18 @@ impl DataStream {
                     let _ = self.ws.flush(); // send the close reply tungstenite queued
                     return Ok(Next::Closed);
                 }
-                Ok(_) => self.heard = Instant::now(),
+                // A ping, or the pong answering this side's probe.
+                Ok(_) => self.hear(),
                 Err(tungstenite::Error::Io(e))
                     if matches!(
                         e.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
-                    if self.heard.elapsed() < self.idle {
+                    // Waited out the caller's `wait`, not a probe deadline: hand back control.
+                    if self.heard.elapsed() < self.idle
+                        && (self.pinged || self.heard.elapsed() < self.probe)
+                    {
                         return Ok(Next::Quiet);
                     }
                 }
@@ -150,6 +181,11 @@ impl DataStream {
                 Err(e) => return Err(RexError::Protocol(e.to_string())),
             }
         }
+    }
+
+    fn hear(&mut self) {
+        self.heard = Instant::now();
+        self.pinged = false;
     }
 
     /// Ends the stream on the server (a 1000 close), so it isn't held for a RESUME that will
@@ -176,11 +212,11 @@ impl DataStream {
         }
     }
 
-    /// Shortens the idle timeout so a test needn't wait minutes for it.
+    /// Shortens the probe and idle timeouts so a test needn't wait for them.
     #[cfg(test)]
-    fn set_idle_timeout(&mut self, d: Duration) -> Result<(), RexError> {
-        self.idle = d;
-        Ok(())
+    fn set_timeouts(&mut self, probe: Duration, idle: Duration) {
+        self.probe = probe;
+        self.idle = idle;
     }
 
     /// The close status once [`DataStream::read`] has returned `None`.
@@ -360,13 +396,34 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_stream_drops_as_resumable() {
-        // A half-open TCP stream after a laptop sleep: nothing arrives, not even the server's
-        // pings. The read must end as a drop a RESUME continues, not block forever.
+    fn a_quiet_stream_that_answers_pings_stays_open() {
+        // An idle terminal: no output for longer than the idle timeout, but the server answers
+        // this side's pings, so the stream is alive.
         let fake = FakeServer::start();
         let mut s = DataStream::open(&fake.endpoint(), &fake.mint_ticket()).expect("open");
-        s.set_idle_timeout(Duration::from_millis(200))
-            .expect("knob");
+        s.set_timeouts(Duration::from_millis(50), Duration::from_millis(250));
+        let until = Instant::now() + Duration::from_millis(1000);
+        while Instant::now() < until {
+            assert_eq!(s.read_for(Duration::from_millis(30)), Ok(Next::Quiet));
+        }
+        fake.push_data(b"later");
+        let got = loop {
+            match s.read_for(Duration::from_millis(30)).expect("read") {
+                Next::Quiet => continue,
+                other => break other,
+            }
+        };
+        assert_eq!(got, Next::Data(b"later".to_vec()));
+    }
+
+    #[test]
+    fn a_silent_stream_drops_as_resumable() {
+        // A half-open TCP stream after a laptop sleep: nothing arrives, not even the answer to
+        // this side's ping. The read must end as a drop a RESUME continues, not block forever.
+        let fake = FakeServer::start();
+        let mut s = DataStream::open(&fake.endpoint(), &fake.mint_ticket()).expect("open");
+        fake.mute_data();
+        s.set_timeouts(Duration::from_millis(50), Duration::from_millis(200));
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let r = s.read();
@@ -403,8 +460,8 @@ mod tests {
     fn read_for_still_drops_a_silent_stream() {
         let fake = FakeServer::start();
         let mut s = DataStream::open(&fake.endpoint(), &fake.mint_ticket()).expect("open");
-        s.set_idle_timeout(Duration::from_millis(200))
-            .expect("knob");
+        fake.mute_data();
+        s.set_timeouts(Duration::from_millis(50), Duration::from_millis(200));
         let start = Instant::now();
         let got = loop {
             match s.read_for(Duration::from_millis(30)).expect("read") {
