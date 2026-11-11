@@ -1775,6 +1775,10 @@ impl GhosttySurface {
         rect: PixelRect,
         spec: &TabSpec,
     ) -> Result<Self, SurfaceError> {
+        // No window (headless tests pass null): nothing to host the view in.
+        if ns_window.is_null() {
+            return Err(SurfaceError::SurfaceCreateFailed);
+        }
         let app = shared_app();
         if app.is_null() {
             return Err(SurfaceError::AppCreateFailed);
@@ -1999,7 +2003,7 @@ impl GhosttySurface {
     ) -> Result<(), SurfaceError> {
         // A torn-down surface has a freed handle and its observers already removed; reparenting
         // it would message a dangling view / a freed surface. Refuse rather than corrupt state.
-        if self.closed {
+        if self.closed || new_ns_window.is_null() {
             return Err(SurfaceError::SurfaceCreateFailed);
         }
         let mtm = MainThreadMarker::new()
@@ -2388,6 +2392,37 @@ mod tests {
         assert!(!is_printable_text("\u{F701}")); // ↓
         assert!(!is_printable_text("\u{F704}")); // F1
         assert!(!is_printable_text("\u{F8FF}")); // top of the range
+    }
+
+    #[test]
+    fn a_null_window_is_an_error_not_a_crash() {
+        let spec = crate::surface::TabSpec {
+            colour: None,
+            id: "t".into(),
+            title: "t".into(),
+            dir: "/tmp".into(),
+            shell: "sh".into(),
+            startup: None,
+            group: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            tree: false,
+            tree_path: Vec::new(),
+            split: None,
+            server: None,
+            resume: None,
+        };
+        let rect = crate::surface::PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        assert!(matches!(
+            super::GhosttySurface::new(std::ptr::null_mut(), rect, &spec),
+            Err(crate::surface::SurfaceError::SurfaceCreateFailed)
+        ));
     }
 
     #[test]
