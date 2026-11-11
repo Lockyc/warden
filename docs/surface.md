@@ -105,8 +105,9 @@ via `dispatch_async_f`; any future surface-destroying or lock-taking action take
 
 ## Focus and keys
 
-- **Seed a spawned surface's focus from the window's real key state** (`surface/ghostty.rs::new`,
-  after `set_surface`). The key observers don't cover a never-key window — it emits neither.
+- **Seed a spawned or reparented surface's focus from the window's real key state**
+  (`surface/ghostty.rs::attach_to_window`). The key observers don't cover a never-key window — it
+  emits neither.
 - **`hide()` clears focus** — hiding a view doesn't stop its display link (`GhosttySurface::hide`).
 - **libghostty focus tracks AppKit's first responder**: `becomeFirstResponder`/`resignFirstResponder`
   overrides (which surface within the window) plus per-window `windowDidBecomeKey:`/`windowDidResignKey:`
@@ -150,7 +151,7 @@ via `dispatch_async_f`; any future surface-destroying or lock-taking action take
   `ghostty_surface_set_display_id` via the `windowDidChangeScreen:` observer.
 - **Corners: the layer rounds only the corners that are window corners**, concentric with the
   chrome's pane ring (`SURFACE_CORNER_RADIUS` + the continuous corner curve + `masksToBounds` +
-  `apply_corner_mask`, re-run in `new`/`set_frame`/`reparent` from the frame touching the content
+  `apply_corner_mask`, re-run in `new`/`set_frame` from the frame touching the content
   view's edges — never plumbed from the page). The ring is a `::before` clipped by
   `clip-path: shape()` to Apple's three-Bézier continuous corner (`--sq`), not a `border-radius`,
   which can only curve as a circle and lifts off the window edge. `--ring-w` is 1px by choice; its

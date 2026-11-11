@@ -1690,6 +1690,44 @@ unsafe fn window_display_id(window: &NSWindow) -> u32 {
     msg_send![value, unsignedIntValue]
 }
 
+/// Wire a host view, already a subview of `window`'s content view and hosting `surface`, to that
+/// window — the per-window half of `GhosttySurface::new`, re-run by `reparent` after
+/// `removeObserver` drops the old window's:
+///
+/// - **Observers** for the window's key changes (libghostty's cursor focus follows the key
+///   window even when no first-responder change fires) and screen changes (the render display
+///   link's vsync display). Scoped to `window`, so a view hears only its own; removed in `close()`.
+/// - **Display id**, seeded now so vsync matches the window's monitor from the first frame.
+/// - **Focus**, seeded from the REAL key state instead of libghostty's focused=1 default, which
+///   runs a 60fps render display link. The key observers keep it right afterwards, but a window
+///   that is never key (every background window at launch, a background pop-out) emits neither,
+///   and a surface left focused there catches the text cursor mid-redraw — the "cursor flashes
+///   around an unfocused window" bug. Ghostty.app derives focus as `NSApp.isActive &&
+///   window.isKeyWindow`; this mirrors it.
+///
+/// SAFETY: main thread; `surface` is live.
+unsafe fn attach_to_window(
+    view: &WardenHostView,
+    window: &NSWindow,
+    surface: ffi::ghostty_surface_t,
+    mtm: MainThreadMarker,
+) {
+    let center = NSNotificationCenter::defaultCenter();
+    for (selector, name) in [
+        (sel!(windowDidBecomeKey:), NSWindowDidBecomeKeyNotification),
+        (sel!(windowDidResignKey:), NSWindowDidResignKeyNotification),
+        (
+            sel!(windowDidChangeScreen:),
+            NSWindowDidChangeScreenNotification,
+        ),
+    ] {
+        center.addObserver_selector_name_object(view, selector, Some(name), Some(window));
+    }
+    ffi::ghostty_surface_set_display_id(surface, window_display_id(window));
+    let focused = NSApplication::sharedApplication(mtm).isActive() && window.isKeyWindow();
+    ffi::ghostty_surface_set_focus(surface, focused);
+}
+
 /// Push libghostty the surface's content scale (DPI) and backing pixel size *together*, both
 /// derived from the same `scale`. libghostty computes cell metrics from the content scale and
 /// sizes its framebuffer from the pixel size, so the two must never drift: a stale content scale
@@ -1831,33 +1869,6 @@ impl GhosttySurface {
             // Topmost subview => above the WKWebView (which is added by wry first).
             content_view.addSubview(&host_view);
 
-            // Track this window's key state so libghostty's cursor focus follows it (filled in the
-            // key window, hollow otherwise) even when no first-responder change fires — see the
-            // windowDidBecomeKey:/windowDidResignKey: handlers. Scoped to `window` so each surface
-            // only hears its own window; removed in close() (and on the surface-null Err below).
-            let center = NSNotificationCenter::defaultCenter();
-            center.addObserver_selector_name_object(
-                &host_view,
-                sel!(windowDidBecomeKey:),
-                Some(NSWindowDidBecomeKeyNotification),
-                Some(&window),
-            );
-            center.addObserver_selector_name_object(
-                &host_view,
-                sel!(windowDidResignKey:),
-                Some(NSWindowDidResignKeyNotification),
-                Some(&window),
-            );
-            // Track which display the window is on so libghostty's render display link vsyncs to
-            // the right monitor's refresh rate (see window_display_id). Scoped to `window` like the
-            // key observers; the initial ID is seeded right after the surface is created below.
-            center.addObserver_selector_name_object(
-                &host_view,
-                sel!(windowDidChangeScreen:),
-                Some(NSWindowDidChangeScreenNotification),
-                Some(&window),
-            );
-
             // Build the surface config from defaults, then override platform/dir/shell/startup.
             let mut cfg = ffi::ghostty_surface_config_new();
             // The host view is this surface's identity in the one runtime callback that carries
@@ -1880,10 +1891,7 @@ impl GhosttySurface {
 
             let surface = ffi::ghostty_surface_new(app, &cfg);
             if surface.is_null() {
-                // Unwind the AppKit wiring this fn added (mirroring close()) so a libghostty
-                // spawn failure degrades to a clean cold tab — no leaked subview, no live
-                // observer registration messaging a freed view.
-                center.removeObserver(&host_view);
+                // Unwind the subview so a libghostty spawn failure degrades to a clean cold tab.
                 host_view.removeFromSuperview();
                 return Err(SurfaceError::SurfaceCreateFailed);
             }
@@ -1895,27 +1903,7 @@ impl GhosttySurface {
             host_view.set_surface(surface);
             host_view.ivars().rex.set(spec.server.is_some());
             *host_view.ivars().link_base.borrow_mut() = spec.dir.clone();
-
-            // Seed the surface's focus from the REAL current state instead of libghostty's
-            // "assume focused" default. A surface is created focused=1, which starts its 60fps
-            // render display link; warden otherwise only clears focus on windowDidResignKey —
-            // which NEVER fires for a surface spawned in a window that was never key (every
-            // background window at launch). Left focused, that background surface keeps rendering
-            // at 60fps and, while a TUI redraws, catches the text cursor at every intermediate
-            // cell tmux relays between redraws → the "cursor flashes around an unfocused window"
-            // bug. (Ghostty.app doesn't exhibit it because it derives focus from
-            // NSApp.isActive && window.isKeyWindow — mirror that here.) An unfocused surface stops
-            // its display link and renders change-driven only, so it no longer samples the cursor
-            // mid-relay. windowDidBecomeKey:/windowDidResignKey: keep it correct after spawn; this
-            // only fixes the initial state, which those observers can't (a never-key window emits
-            // neither). SAFETY: main thread; isActive/isKeyWindow are plain AppKit reads.
-            let focused = NSApplication::sharedApplication(mtm).isActive() && window.isKeyWindow();
-            ffi::ghostty_surface_set_focus(surface, focused);
-
-            // Seed the render display link onto the display the window opens on, so vsync matches
-            // that monitor from the first frame (not just after a later windowDidChangeScreen).
-            // Matters when a window opens on a non-primary / different-refresh display.
-            ffi::ghostty_surface_set_display_id(surface, window_display_id(&window));
+            attach_to_window(&host_view, &window, surface, mtm);
 
             // Back the surface's render layer with an OPAQUE colour so its very first composited
             // frame — before libghostty's Metal renderer presents, and any un-painted region during
@@ -1979,12 +1967,10 @@ impl GhosttySurface {
     /// into its own window": a later task hands the owning tab slot to a new window's registry
     /// and calls this to carry the live view across.
     ///
-    /// It mirrors `new`'s per-window AppKit wiring exactly, unwired-then-rewired: drop the three
-    /// window-scoped notification observers from the old window, move the host view, re-register
-    /// the same three against the new window, then re-seed the two per-window render signals
-    /// (`display_id` for vsync, `focus` for the render display link). It calls NONE of
-    /// `teardown` / `ghostty_surface_free` / `close`: the surface handle and everything it owns
-    /// downstream (PTY, scrollback, child process) must survive untouched.
+    /// It drops the old window's observers, moves the host view, then runs `new`'s own
+    /// `attach_to_window` against the new window (observers, display id, focus seed). It calls
+    /// NONE of `teardown` / `ghostty_surface_free` / `close`: the surface handle and everything it
+    /// owns downstream (PTY, scrollback, child process) must survive untouched.
     ///
     /// The `SURFACE_VIEWS` map and `FOCUSED_SURFACE` atomic are deliberately left alone: the map
     /// keys `surface → host_view`, and neither pointer changes across a reparent (same surface,
@@ -2021,11 +2007,9 @@ impl GhosttySurface {
                 .window()
                 .ok_or(SurfaceError::SurfaceCreateFailed)?;
 
-            // Drop the three window-scoped observers from the OLD window. All three were
-            // registered with `host_view` as the observer (new() above), so a single
-            // removeObserver(&host_view) drops all three at once — the same call teardown uses.
-            let center = NSNotificationCenter::defaultCenter();
-            center.removeObserver(&self.host_view);
+            // Drop the OLD window's observers: `attach_to_window` registered them all with
+            // `host_view` as the observer, so one removeObserver drops them — as teardown does.
+            NSNotificationCenter::defaultCenter().removeObserver(&self.host_view);
 
             // Move the native view: out of the old content view, back in as the TOPMOST subview
             // of the new one (above its WKWebView — same as new()'s addSubview).
@@ -2040,56 +2024,12 @@ impl GhosttySurface {
             // terminal (the "unselected tab pops out to just a title bar" bug).
             self.host_view.setHidden(false);
 
-            // Re-register the same three observers, now scoped to the NEW window — identical to
-            // new()'s block, just against `new_window`.
-            center.addObserver_selector_name_object(
-                &self.host_view,
-                sel!(windowDidBecomeKey:),
-                Some(NSWindowDidBecomeKeyNotification),
-                Some(&new_window),
-            );
-            center.addObserver_selector_name_object(
-                &self.host_view,
-                sel!(windowDidResignKey:),
-                Some(NSWindowDidResignKeyNotification),
-                Some(&new_window),
-            );
-            center.addObserver_selector_name_object(
-                &self.host_view,
-                sel!(windowDidChangeScreen:),
-                Some(NSWindowDidChangeScreenNotification),
-                Some(&new_window),
-            );
-
-            // Adopt the new window as this surface's owner (replaces the old retain).
+            // Adopt the new window as this surface's owner (replaces the old retain), fit the view
+            // to its hole now — the new display's scale with it — so there is no blank first frame,
+            // and rewire the per-window state against it.
             self.window = new_window;
-
-            // Fit the view to the destination hole and push content-scale + backing size for the
-            // new window's display *together* (set_frame's discipline — a cross-monitor move can
-            // change the scale, and the two must never drift). Positioning the frame now avoids a
-            // blank first frame.
-            let frame = NSRect::new(
-                NSPoint::new(rect.x, rect.y),
-                NSSize::new(rect.width, rect.height),
-            );
-            self.host_view.setFrame(frame);
-            apply_corner_mask(&self.host_view);
-            let scale = self.window.backingScaleFactor();
-            apply_surface_geometry(self.surface, rect.width, rect.height, scale);
-
-            // Re-seed the render display link onto the new window's monitor so vsync tracks its
-            // refresh rate (same source as new() + the windowDidChangeScreen: observer).
-            ffi::ghostty_surface_set_display_id(self.surface, window_display_id(&self.window));
-
-            // Re-seed focus from the NEW window's REAL key state. LOAD-BEARING: without it a
-            // surface moved into a background (non-key) window keeps libghostty's focus=1, which
-            // keeps its 60fps render display link running forever (the "cursor flashes around an
-            // unfocused window" footgun). windowDidBecomeKey:/windowDidResignKey: keep it correct
-            // afterwards, but a window that is never key emits neither — so this initial seed is
-            // the only thing that gets a background detach right, exactly as new() reasons.
-            let focused =
-                NSApplication::sharedApplication(mtm).isActive() && self.window.isKeyWindow();
-            ffi::ghostty_surface_set_focus(self.surface, focused);
+            self.set_frame(rect);
+            attach_to_window(&self.host_view, &self.window, self.surface, mtm);
         }
 
         Ok(())
