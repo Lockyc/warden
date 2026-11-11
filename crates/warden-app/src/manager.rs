@@ -393,12 +393,18 @@ impl DetachedSurface {
     /// Give pane `which` keyboard focus; its `SurfaceSignal::Focused` then records it in
     /// `focused`. False when this pop-out has no such pane.
     pub fn focus_pane(&self, which: crate::registry::PaneIdx) -> bool {
-        let surface = match which {
+        self.pane(which).map(|s| s.focus()).is_some()
+    }
+
+    /// The travelling surface of pane `which`: the primary, or the one column block that went
+    /// out with the tab (`Block(0)`). `None` for any other block — a pop-out carries one — and
+    /// for a second pane no longer here.
+    pub fn pane(&self, which: crate::registry::PaneIdx) -> Option<&GhosttySurface> {
+        match which {
             crate::registry::PaneIdx::Primary => Some(&self.surface),
             crate::registry::PaneIdx::Block(0) => self.secondary.as_ref(),
             crate::registry::PaneIdx::Block(_) => None,
-        };
-        surface.map(|s| s.focus()).is_some()
+        }
     }
 
     /// The Rex key pane `which`'s travelling surface answers to: the agent's own for an agent,
@@ -1098,14 +1104,8 @@ impl WindowManager {
         tab: &str,
         pane: crate::registry::PaneIdx,
     ) -> Option<&GhosttySurface> {
-        use crate::registry::PaneIdx;
         if let Some(ds) = self.detached.get(label) {
-            return match pane {
-                _ if ds.tab_id != tab => None,
-                PaneIdx::Primary => Some(&ds.surface),
-                PaneIdx::Block(0) => ds.secondary.as_ref(),
-                PaneIdx::Block(_) => None,
-            };
+            return ds.pane(pane).filter(|_| ds.tab_id == tab);
         }
         self.windows.get(label)?.registry.shown_surface(tab, pane)
     }
@@ -1161,10 +1161,7 @@ impl WindowManager {
     ) -> Option<crate::rex::size::PaneSize> {
         let ds = self.detached.get(label)?;
         let which = crate::registry::PaneIdx::from_hole(hole, ds.mirrored());
-        let s = match which {
-            crate::registry::PaneIdx::Primary => &ds.surface,
-            crate::registry::PaneIdx::Block(_) => ds.secondary.as_ref()?,
-        };
+        let s = ds.pane(which)?;
         s.set_frame(rect);
         crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
     }
@@ -1181,11 +1178,7 @@ impl WindowManager {
         }
         let (label, which) = self.locate_detached_surface(surface_id)?;
         let ds = self.detached.get(&label)?;
-        let s = match which {
-            crate::registry::PaneIdx::Primary => &ds.surface,
-            crate::registry::PaneIdx::Block(_) => ds.secondary.as_ref()?,
-        };
-        crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
+        crate::rex::size::PaneSize::of(ds.rex_key(which)?, ds.pane(which)?)
     }
 
     /// The user turned to a Rex pane ([`SurfaceSignal::UserInput`]): claim its block for
