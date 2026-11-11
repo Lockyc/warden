@@ -377,7 +377,9 @@ impl RexHub {
     }
 
     /// Ask Rex to close `c`'s window, waiting for its program to exit, outside the pane's hold.
-    /// A refusal takes the hold again and puts the record back as it was, shown.
+    /// A refusal takes the hold again and puts the record back as it was, shown. A timeout is
+    /// no refusal: the close was sent, and Rex answers only once the program has exited, which a
+    /// slow one makes take longer than the call's wait.
     fn finish_close(
         &self,
         store: &Mutex<AgentStore>,
@@ -386,8 +388,9 @@ impl RexHub {
         shown: &mut dyn FnMut(AgentsOpened),
     ) -> Result<(), Failed> {
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
-        let Err(e) = self.close_window(server, &c.sid, &c.window) else {
-            return Ok(());
+        let e = match self.close_window(server, &c.sid, &c.window) {
+            Ok(()) | Err(RexError::Timeout) => return Ok(()),
+            Err(e) => e,
         };
         let _held = self
             .inner
@@ -2225,6 +2228,43 @@ mod tests {
         assert_eq!(a.state, RecordState::Live);
         assert_eq!(a.window_id.as_deref(), Some("window:1"));
         assert!(a.selected && !state_of(&s, "b").unwrap().selected);
+    }
+
+    /// A close Rex is slow to answer (its program slow to exit) was sent: the tab stays closed,
+    /// with no error.
+    #[test]
+    fn timed_out_close_stays_closed() {
+        let f = fake(
+            Some("session:old"),
+            vec![("window:1", "block:1", "a"), ("window:2", "block:2", "b")],
+        );
+        f.on("session.close_window", |_, _| {
+            Reply::ok(json!({})).after(Duration::from_secs(12))
+        });
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let mut a = record(
+            "a",
+            RecordState::Live,
+            Some("window:1"),
+            Some("claude --resume aaa"),
+        );
+        a.selected = true;
+        let s = store(vec![
+            a,
+            record("b", RecordState::Live, Some("window:2"), None),
+        ]);
+        let close = AgentOp::Close {
+            id: "a".into(),
+            confirmed: false,
+        };
+
+        let mut shows = Vec::new();
+        let got = hub.agent_op_shown(&s, &open(None), &close, 7, |o| shows.push(o));
+        assert_eq!(got, Ok(()));
+        assert_eq!(shows.len(), 1, "only the close shown");
+        assert_eq!(state_of(&s, "a").unwrap().state, RecordState::Closed);
     }
 
     #[test]
