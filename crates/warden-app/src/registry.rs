@@ -404,7 +404,7 @@ impl Pane {
     /// waiting on a row's click. Never while popped out: the column's surfaces would be born in
     /// a window the tab isn't showing in.
     fn holds_column(&self) -> bool {
-        self.live() || (self.rex == RexState::Asleep && !matches!(self.slot, TabSlot::Detached))
+        !matches!(self.slot, TabSlot::Detached) && (self.live() || self.rex == RexState::Asleep)
     }
 
     /// Close every live surface of this pane, leaving `Detached` placeholders in place. Returns
@@ -3281,8 +3281,9 @@ impl Registry {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         let pane = &mut self.tabs[idx].primary;
         let at = pane.agents.iter().position(|a| a.record_id == record_id)?;
-        // Every agent but this one that can be shown, in list order: live, or still running in
-        // Rex with its terminal in hand (only the selected agent ever has a surface).
+        // Every agent but this one that can be shown, in list order: live here or out in a
+        // pop-out, or still running in Rex with its terminal in hand (only the selected agent ever
+        // has a surface).
         let showable: Vec<bool> = pane
             .agents
             .iter()
@@ -3291,7 +3292,9 @@ impl Registry {
                 i != at
                     && matches!(
                         (&a.slot, &a.rex),
-                        (TabSlot::Spawned(_), _) | (TabSlot::Cold, RexState::Ready(_))
+                        (TabSlot::Spawned(_), _)
+                            | (TabSlot::Detached, _)
+                            | (TabSlot::Cold, RexState::Ready(_))
                     )
             })
             .collect();
@@ -3315,7 +3318,9 @@ impl Registry {
                     log::error!("couldn't open agent {next:?} of tab {id:?}: {e}");
                 }
             }
-            if !self.tabs[idx].primary.live() && !column_live {
+            let primary = &self.tabs[idx].primary;
+            let out = matches!(primary.slot, TabSlot::Detached);
+            if !primary.live() && !out && !column_live {
                 // Its surface is already closed, so `unload` finds nothing to close and leaves
                 // the sidebar where it is; lean from here, as it would have.
                 let next = self.unload(id);
@@ -5590,6 +5595,23 @@ mod tests {
         assert_eq!(r.close_agent("t", "r1"), Some(AgentClosed::PaneCold(None)));
         assert!(r.agent_keys("t").is_empty());
         assert_eq!(r.close_agent("t", "gone"), None);
+    }
+
+    #[test]
+    fn a_hidden_agent_exiting_while_a_sibling_is_popped_out_keeps_the_tab() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_agents("t", &["a", "b"], Some("a"));
+        r.force_detached_agent("t", "a");
+        assert_eq!(r.close_agent("t", "b"), Some(AgentClosed::PaneLive));
+        assert!(r.is_detached("t"), "the pop-out still holds the tab");
+        assert_eq!(r.agent_keys("t"), ["t::agent:a"]);
+        // Likewise while the origin still has the popped-out tab selected.
+        r.force_agents("t", &["a", "b"], Some("a"));
+        r.force_detached_agent("t", "a");
+        r.active = Some("t".into());
+        assert_eq!(r.close_agent("t", "b"), Some(AgentClosed::PaneLive));
+        assert!(r.is_detached("t"));
     }
 
     #[test]
