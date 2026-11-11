@@ -2236,18 +2236,21 @@
         sb.toggleSidebar();
       });
 
-      // A background tab raised a bell / OSC 9/777 while hidden — badge it (unless it's visible).
+      // A tab raised a bell / OSC 9/777 while not visible — badge it. Visibility (focused window +
+      // active tab) is `notify::raise`'s to decide: the active tab of an unfocused window badges,
+      // and the window's focus clears it (`warden:tab-seen`).
       listen("warden:notify", (e) => {
         if (!forMe(e) || !sb) return;
         const id = e.payload && e.payload.id;
-        if (id && id !== activeId) {
+        if (id) {
           const mark = e.payload.lock ? "lock" : true;
           badges.set(id, mark);
           sb.setAttention(id, mark);
         }
       });
-      // A popped-out tab's terminal took focus in its own window — the user is looking at it, so its
-      // row here drops the badge (selecting a popped-out row only raises that window, never clears).
+      // The user is now looking at a tab — its popped-out window, or this window regaining focus
+      // on it — so its row drops the badge (selecting a popped-out row only raises that window,
+      // never clears).
       listen("warden:tab-seen", (e) => {
         if (!forMe(e) || !sb) return;
         const id = e.payload && e.payload.id;

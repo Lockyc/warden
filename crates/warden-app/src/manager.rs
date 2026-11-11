@@ -614,13 +614,29 @@ impl WindowManager {
         };
 
         // Focus → fast-burst this window's session dots so a just-focused window is current
-        // within a burst pass (covers `probe_interval = 0`, which never steady-polls). Its close
-        // is the `WindowSet`'s, which calls `WardenHost::closed`.
+        // within a burst pass (covers `probe_interval = 0`, which never steady-polls), and clear
+        // the badge its active docked tab took while the window was unfocused (`notify::raise`).
+        // Its close is the `WindowSet`'s, which calls `WardenHost::closed`.
         let app_for_event = app.clone();
         let label_for_event = spec.label.clone();
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::Focused(true) = event {
                 crate::probe::bump(&label_for_event);
+                let seen = app_for_event
+                    .try_state::<crate::ManagerState>()
+                    .and_then(|st| {
+                        let m = st.lock();
+                        let reg = &m.windows.get(&label_for_event)?.registry;
+                        let tab = reg.active_tab()?;
+                        (!reg.is_detached(tab)).then(|| tab.to_owned())
+                    });
+                if let Some(tab) = seen {
+                    let _ = app_for_event.emit_to(
+                        label_for_event.as_str(),
+                        "warden:tab-seen",
+                        serde_json::json!({ "label": label_for_event, "id": tab }),
+                    );
+                }
                 crate::sync_agent_menu(&app_for_event);
             }
         });
