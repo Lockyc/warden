@@ -2011,28 +2011,34 @@
         if (row) {
           const dto = agentLists.get(drag.tab);
           const parentOf = (id) => dto.rows.find((x) => x.id === id)?.parent ?? null;
-          const rootOf = (id) => { while (parentOf(id)) id = parentOf(id); return id; };
-          const under = (id, of) => { for (let p = parentOf(id); p; p = parentOf(p)) if (p === of) return true; return false; };
-          if (row.dataset.id === drag.id || under(row.dataset.id, drag.id)) return null;
-          const rows = [...document.querySelectorAll("#agents-list .a-row")];
+          // `id`'s parents, nearest first; bounded, as a tampered lineage can loop.
+          const ancestors = (id) => {
+            const up = [];
+            for (let p = parentOf(id); p && up.length < dto.rows.length; p = parentOf(p)) up.push(p);
+            return up;
+          };
+          const rootOf = (id) => ancestors(id).pop() ?? id;
+          if (row.dataset.id === drag.id || ancestors(row.dataset.id).includes(drag.id)) return null;
+          const rows = [...document.querySelectorAll("#agents-list .a-row")].filter((x) => x.dataset.id !== drag.id);
+          // A drop after a row lands after its forks too, so the mark goes under the last of them.
+          const lastOf = (el) => rows.filter((x) => x === el || ancestors(x.dataset.id).includes(el.dataset.id)).pop();
           const r = row.getBoundingClientRect();
           const after = y > r.top + r.height / 2;
-          const mark = { el: row, cls: after ? "drop-after" : "drop-before" };
+          const mark = (el) => (after ? { el: lastOf(el), cls: "drop-after" } : { el, cls: "drop-before" });
           // Among its own source's other forks: a reorder in the family.
           const parent = parentOf(drag.id);
           if (parent && row.dataset.parent === parent) {
-            const peers = rows.filter((x) => x.dataset.id !== drag.id && x.dataset.parent === parent);
-            return { reorder: true, index: peers.indexOf(row) + (after ? 1 : 0), ...mark };
+            const peers = rows.filter((x) => x.dataset.parent === parent);
+            return { reorder: true, index: peers.indexOf(row) + (after ? 1 : 0), ...mark(row) };
           }
           // Anywhere else it lands as a top-level tab, before or after a whole family: on a fork,
           // after that fork's family.
           const root = rows.find((x) => x.dataset.id === rootOf(row.dataset.id));
+          if (!root) return null; // the list changed under the drag
           const group = row.dataset.group || null;
-          const peers = rows.filter((x) => x.dataset.id !== drag.id && !x.dataset.parent &&
-            (x.dataset.group || null) === group);
-          if (row === root) return { group, index: peers.indexOf(row) + (after ? 1 : 0), ...mark };
-          const family = rows.filter((x) => rootOf(x.dataset.id) === root.dataset.id && x.dataset.id !== drag.id);
-          return { group, index: peers.indexOf(root) + 1, el: family[family.length - 1], cls: "drop-after" };
+          const peers = rows.filter((x) => !x.dataset.parent && (x.dataset.group || null) === group);
+          if (row === root) return { group, index: peers.indexOf(row) + (after ? 1 : 0), ...mark(row) };
+          return { group, index: peers.indexOf(root) + 1, el: lastOf(root), cls: "drop-after" };
         }
         const h = hit.closest(".a-group");
         if (!h) return null;
