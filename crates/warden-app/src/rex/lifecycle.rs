@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::agents::{self, AgentRecord, AgentStore, RecordState};
 use super::attention::Attention;
 use super::spawn::unix_now;
-use super::windows::{AgentState, BlockStatus};
+use super::windows::{AgentState, BlockStatus, BlockedKind};
 use super::{budget_error, lock, HubEvent, RexHub, OPEN_BUDGET};
 use crate::registry::{AgentsOpened, PaneIdx, RexOpen};
 use crate::ManagerState;
@@ -819,6 +819,8 @@ pub struct AgentRowDto {
     pub group: Option<String>,
     /// `working`, `blocked`, `done`, `error`, `idle` or `asleep`.
     pub state: &'static str,
+    /// What a `blocked` row waits on: `permission`, `question` or `auth`.
+    pub blocked_kind: Option<&'static str>,
     /// The program's status message, else its terminal title.
     pub context: Option<String>,
     /// The summary block's rows for a live tab: the user's latest prompt and any short reply
@@ -943,6 +945,7 @@ pub fn agent_list(
         let fork_reason = refusal(&AgentOp::Fork(r.id.clone()), std::slice::from_ref(r));
         let st = st.unwrap_or(BlockStatus {
             state: AgentState::Idle,
+            kind: None,
             msg: None,
             title: None,
             asked: None,
@@ -956,6 +959,11 @@ pub fn agent_list(
             name: r.name.clone(),
             group: r.group.clone(),
             state,
+            blocked_kind: st.kind.filter(|_| state == "blocked").map(|k| match k {
+                BlockedKind::Permission => "permission",
+                BlockedKind::Question => "question",
+                BlockedKind::Auth => "auth",
+            }),
             context: st.msg.clone().or(st.title),
             asked: st.asked,
             answered: st.answered,
@@ -1650,6 +1658,9 @@ fn attend(app: &AppHandle, block_id: &str) {
                 AgentState::Error => "error",
                 _ => "done",
             };
+            let lock = status
+                .as_ref()
+                .is_some_and(|s| s.kind == Some(BlockedKind::Permission));
             let body = status.and_then(|s| s.msg).unwrap_or_else(|| why.to_owned());
             crate::notify::raise(
                 app,
@@ -1658,6 +1669,7 @@ fn attend(app: &AppHandle, block_id: &str) {
                 false,
                 Some((format!("{title} · {}", record.name), body)),
                 Some(&record.id),
+                lock,
             );
         }
     }
@@ -2533,6 +2545,7 @@ mod tests {
         let status = |block: &str| match block {
             "block:1" => Some(BlockStatus {
                 state: AgentState::Blocked,
+                kind: None,
                 msg: Some("needs you".into()),
                 title: Some("t1".into()),
                 asked: Some("fix it".into()),
@@ -2543,6 +2556,7 @@ mod tests {
             }),
             "block:2" => Some(BlockStatus {
                 state: AgentState::Done,
+                kind: None,
                 msg: None,
                 title: Some("finished".into()),
                 asked: None,
@@ -2643,6 +2657,7 @@ mod tests {
             let status = |_: &str| {
                 Some(BlockStatus {
                     state,
+                    kind: None,
                     msg: None,
                     title: None,
                     asked: None,
@@ -2662,6 +2677,32 @@ mod tests {
     }
 
     #[test]
+    fn blocked_row_names_what_it_waits_on() {
+        use crate::rex::windows::{AgentState, BlockStatus, BlockedKind};
+        let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
+        let row = |kind: Option<BlockedKind>| {
+            let status = |_: &str| {
+                Some(BlockStatus {
+                    state: AgentState::Blocked,
+                    kind,
+                    msg: None,
+                    title: None,
+                    asked: None,
+                    answered: None,
+                    said: None,
+                    topic: None,
+                    needs: None,
+                })
+            };
+            agent_list("t", &s.lock().unwrap(), &Attention::default(), status).rows[0].blocked_kind
+        };
+        assert_eq!(row(Some(BlockedKind::Permission)), Some("permission"));
+        assert_eq!(row(Some(BlockedKind::Question)), Some("question"));
+        assert_eq!(row(Some(BlockedKind::Auth)), Some("auth"));
+        assert_eq!(row(None), None);
+    }
+
+    #[test]
     fn done_unseen_marks_group_amber() {
         use crate::rex::windows::{AgentState, BlockStatus};
         let mut a = record("a", RecordState::Live, Some("window:1"), None);
@@ -2675,6 +2716,7 @@ mod tests {
         let status = |block: &str| {
             (block != "block:1").then(|| BlockStatus {
                 state: state.get(),
+                kind: None,
                 msg: None,
                 title: None,
                 asked: None,
@@ -2722,6 +2764,7 @@ mod tests {
         let status = |_: &str| {
             Some(BlockStatus {
                 state: state.get(),
+                kind: None,
                 msg: None,
                 title: None,
                 asked: None,
@@ -3397,6 +3440,7 @@ mod tests {
                     name: (*id).into(),
                     group: g.map(Into::into),
                     state: "idle",
+                    blocked_kind: None,
                     context: None,
                     asked: None,
                     doing: None,

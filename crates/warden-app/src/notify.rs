@@ -175,13 +175,14 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         SurfaceSignal::Notification { title, body } => Some((title, body)),
         _ => None,
     };
-    raise(app, &label, &tab, visible, banner, None);
+    raise(app, &label, &tab, visible, banner, None, false);
 }
 
-/// Raise attention on tab `tab` of window `label` unless it's `visible`: badge its sidebar row
-/// and, with a `banner` (title, body), post one. A banner for an `agent` tab stamps it, so a
-/// click selects that agent tab too. Main thread only. Both a surface's signals ([`handle`]) and
-/// a hidden agent tab needing you (`rex::lifecycle::attend`) land here.
+/// Raise attention on tab `tab` of window `label` unless it's `visible`: badge its sidebar row —
+/// a padlock rather than the dot when `lock` (an agent waiting on a permission) — and, with a
+/// `banner` (title, body), post one. A banner for an `agent` tab stamps it, so a click selects
+/// that agent tab too. Main thread only. Both a surface's signals ([`handle`]) and a hidden agent
+/// tab needing you (`rex::lifecycle::attend`) land here.
 pub fn raise(
     app: &AppHandle,
     label: &str,
@@ -189,6 +190,7 @@ pub fn raise(
     visible: bool,
     banner: Option<(String, String)>,
     agent: Option<&str>,
+    lock: bool,
 ) {
     if visible {
         dbglog(&format!(
@@ -204,7 +206,7 @@ pub fn raise(
     let _ = app.emit_to(
         label,
         "warden:notify",
-        serde_json::json!({ "label": label, "id": tab }),
+        serde_json::json!({ "label": label, "id": tab, "lock": lock }),
     );
 
     if let Some((title, body)) = banner {

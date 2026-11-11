@@ -1462,6 +1462,7 @@ fn status_from_program_status_changed() {
         hub.block_status("block:new"),
         Some(BlockStatus {
             state: AgentState::Blocked,
+            kind: Some(crate::rex::windows::BlockedKind::Permission),
             msg: Some("Allow edit?".into()),
             title: None,
             asked: None,
@@ -1488,6 +1489,31 @@ fn status_from_program_status_changed() {
         );
         eventually(state, || {
             hub.block_status("block:new").map(|s| (s.state, s.msg)) == Some((want, None))
+        });
+    }
+
+    // `kind` means something only with `blocked`, and an unknown one is none.
+    for (state, kind, want) in [
+        ("working", "permission", (AgentState::Working, None)),
+        (
+            "blocked",
+            "question",
+            (
+                AgentState::Blocked,
+                Some(crate::rex::windows::BlockedKind::Question),
+            ),
+        ),
+        ("blocked", "mystery", (AgentState::Blocked, None)),
+    ] {
+        fake.push_block_event(
+            "session:new",
+            "block:new",
+            "program_status_changed",
+            json!({"id": "", "record": {"state": state, "kind": kind,
+                   "updated_at": "2026-10-28T00:00:02Z"}, "reason": "report"}),
+        );
+        eventually(kind, || {
+            hub.block_status("block:new").map(|s| (s.state, s.kind)) == Some(want)
         });
     }
 
@@ -1552,6 +1578,7 @@ fn status_pulled_on_attach() {
         hub.block_status("block:new")
             == Some(BlockStatus {
                 state: AgentState::Done,
+                kind: None,
                 msg: Some("Tests pass".into()),
                 title: Some("fix the parser".into()),
                 asked: None,
@@ -1688,6 +1715,7 @@ fn summary_pulled_on_attach() {
         hub.block_status("block:new")
             == Some(BlockStatus {
                 state: AgentState::Working,
+                kind: None,
                 msg: Some("Reading src/lib.rs".into()),
                 title: None,
                 asked: Some("fix the parser".into()),
@@ -1721,6 +1749,7 @@ fn title_change_updates_status_title() {
         hub.block_status("block:new"),
         Some(BlockStatus {
             state: AgentState::Idle,
+            kind: None,
             msg: None,
             title: Some("refactor auth".into()),
             asked: None,
@@ -1740,6 +1769,7 @@ fn title_change_updates_status_title() {
         hub.block_status("block:new")
             == Some(BlockStatus {
                 state: AgentState::Working,
+                kind: None,
                 msg: None,
                 title: Some("refactor auth".into()),
                 asked: None,

@@ -58,6 +58,26 @@ pub enum AgentState {
     Idle,
 }
 
+/// What a `blocked` record waits on (OSC 7501 `kind`): approval to do something, a typed answer,
+/// or a login. A value Rex doesn't define reads as none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockedKind {
+    Permission,
+    Question,
+    Auth,
+}
+
+impl BlockedKind {
+    fn parse(s: &str) -> Option<BlockedKind> {
+        match s {
+            "permission" => Some(BlockedKind::Permission),
+            "question" => Some(BlockedKind::Question),
+            "auth" => Some(BlockedKind::Auth),
+            _ => None,
+        }
+    }
+}
+
 impl AgentState {
     fn parse(s: &str) -> AgentState {
         match s {
@@ -84,6 +104,8 @@ const TEXTS: [&str; 5] = [ASKED, ANSWERED, SAID, TOPIC, NEEDS];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockStatus {
     pub state: AgentState,
+    /// What a `Blocked` state waits on; `None` in any other state.
+    pub kind: Option<BlockedKind>,
     pub msg: Option<String>,
     pub title: Option<String>,
     /// The [`ASKED`] record's text.
@@ -143,11 +165,12 @@ impl<T> Fact<T> {
     }
 }
 
-/// A block's root OSC 7501 record: its `state`, `msg`, and the `app` and process (`pid`) that
-/// reported it.
+/// A block's root OSC 7501 record: its `state`, `kind`, `msg`, and the `app` and process (`pid`)
+/// that reported it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Record {
     state: AgentState,
+    kind: Option<BlockedKind>,
     msg: Option<String>,
     app: Option<String>,
     pid: Option<u64>,
@@ -182,13 +205,18 @@ impl Tracked {
             &self.topic,
             &self.needs,
         ];
-        let (state, msg) = match &self.record.value {
-            Some(r) => (r.state, r.msg.clone()),
+        let (state, kind, msg) = match &self.record.value {
+            Some(r) => (
+                r.state,
+                r.kind.filter(|_| r.state == AgentState::Blocked),
+                r.msg.clone(),
+            ),
             None if title.is_none() && texts.iter().all(|t| t.value.is_none()) => return None,
-            None => (AgentState::Idle, None),
+            None => (AgentState::Idle, None, None),
         };
         Some(BlockStatus {
             state,
+            kind,
             msg,
             title,
             asked: self.asked.value.clone(),
@@ -919,6 +947,7 @@ fn parse_record(record: &Value) -> Record {
     Record {
         state: AgentState::parse(record["state"].as_str().unwrap_or_default()),
         msg: non_empty(&record["msg"]),
+        kind: BlockedKind::parse(record["kind"].as_str().unwrap_or_default()),
         app: non_empty(&record["app"]),
         pid: record["owner"]["pid"].as_u64(),
     }
