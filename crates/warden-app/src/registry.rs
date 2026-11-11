@@ -1772,9 +1772,14 @@ impl Registry {
                 Some(i) => {
                     let mut a = old.remove(i);
                     if a.rex != ready {
-                        // A surface on another terminal (the agent was woken again) is stale.
-                        if let TabSlot::Spawned(s) = std::mem::replace(&mut a.slot, TabSlot::Cold) {
-                            s.close();
+                        // A surface here on another terminal (the agent was woken again) is
+                        // stale; one out in a pop-out stays, as it does below.
+                        if matches!(a.slot, TabSlot::Spawned(_)) {
+                            if let TabSlot::Spawned(s) =
+                                std::mem::replace(&mut a.slot, TabSlot::Cold)
+                            {
+                                s.close();
+                            }
                         }
                         a.rex = ready;
                     }
@@ -5667,6 +5672,26 @@ mod tests {
         r.sync_agents("t", found).unwrap();
         assert_eq!(r.agent_keys("t"), ["t::agent:r2", "t::agent:r3"]);
         assert_eq!(r.selected_agent("t"), Some("r3"));
+    }
+
+    #[test]
+    fn sync_keeps_a_popped_out_agents_slot_out() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_agents("t", &["a", "b"], Some("a"));
+        r.force_detached_agent("t", "a");
+        // `a` answers on a terminal it wasn't known on: its surface is out, not stale here.
+        let found = AgentsOpened {
+            agents: vec![("a".into(), target("block:a"))],
+            selected: Some("a".into()),
+        };
+        r.sync_agents("t", found).unwrap();
+        let a = r.tabs[0].primary.agent("a").unwrap();
+        assert!(
+            matches!(a.slot, TabSlot::Detached),
+            "the pop-out still holds it"
+        );
+        assert_eq!(a.rex, RexState::Ready(target("block:a")));
     }
 
     #[test]

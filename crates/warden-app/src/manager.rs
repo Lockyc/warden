@@ -316,9 +316,10 @@ pub(crate) fn close_both(primary: GhosttySurface, secondary: Option<GhosttySurfa
 /// What `WindowManager::redock` hands its caller to announce with the lock released.
 pub struct Redocked {
     pub origin_label: String,
-    /// `(tab_id, new_active)` when the returning tab left the config while it was out and was
-    /// dropped on arrival: the chrome gets the same `warden:tab-exited` an unload sends, so its
-    /// selection follows the neighbour the registry leaned to.
+    /// `(tab_id, new_active)` when the returning tab's terminal ended on arrival — it left the
+    /// config while it was out, or had no slot to land in: the chrome gets the same
+    /// `warden:tab-exited` an unload sends, so its selection follows the neighbour the registry
+    /// leaned to.
     pub dropped: Option<(String, Option<String>)>,
 }
 
@@ -1307,11 +1308,30 @@ impl WindowManager {
                             .unwrap_or_else(|| tab_id.clone());
                         let _ = ws.registry.activate(&show);
                     }
-                    // No slot to land in: the tab left the config while out and the origin
-                    // was rebuilt without it (a live slot is unreachable — the placeholder holds
-                    // none). The tab ends with it. `attach` is all-or-nothing, so this is both
-                    // surfaces or neither, never a half-restored tab.
-                    Err((p, s)) => close_both(p, s),
+                    // No slot to land in: the tab left the config while out and the origin was
+                    // rebuilt without it, or a slot it would land in is live. The surfaces end
+                    // (`attach` is all-or-nothing, so both or neither); a tab still here retires
+                    // its placeholders as `end_detached` does, so its row goes cold rather than
+                    // reading as popped out forever.
+                    Err((p, s)) => {
+                        close_both(p, s);
+                        if ws.registry.spec_of(&tab_id).is_some() {
+                            match ws.registry.clear_detached(&tab_id) {
+                                crate::registry::DetachedEnded::Cold(next) => {
+                                    dropped = Some((tab_id.clone(), next));
+                                }
+                                crate::registry::DetachedEnded::SiblingShown => {
+                                    if ws.registry.active_tab() == Some(tab_id.as_str()) {
+                                        if let Err(e) = ws.registry.activate(&tab_id) {
+                                            log::error!(
+                                                "couldn't show an agent of tab {tab_id:?}: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
