@@ -172,7 +172,7 @@ cmd    = "claude"            # the agent each tab starts (+ New tab starts anoth
 | `dir` | *required* | Dir to scan (`~` expanded; a relative path is relative to the config file). The walk stops at each `.git` (never descends into a repo) and skips hidden dirs and symlinks. |
 | `name` | basename of `dir` | Section header for the discovered tree. |
 | `depth` | `6` | How deep to scan; must be ≥ 1. |
-| `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Overrides applied to every project discovered under this root. |
+| `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `server` / `split` | inherited from the window | Overrides applied to every project discovered under this root. `server` must resolve to `"local"` (or unset): a root on a remote server is skipped with a warning. |
 | `[[window.root.tab]]` | none | Overrides for one discovered project, matched by `dir` (`~` expanded; a relative path is relative to the config file). The project stays in the root's tree and inherits the root's values; a `dir` that doesn't exist warns. |
 | `[[window.root.tab]]` `dir` | *required* | The project's dir. |
 | `[[window.root.tab]]` `shell` / `cmd` / `probe` / `kill` / `suspend` / `resume` / `split` | inherited from the root | Per-project overrides; `split` inherits per key. |

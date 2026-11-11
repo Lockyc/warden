@@ -135,8 +135,10 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
 ## Traps
 
 - **Pop-out backend invariants** (`main.rs::pop_out_tab`, `manager.rs::redock`,
-  `registry.rs::detach`/`attach`): extract the surfaces under the `ManagerState` lock → build the
-  window + `reparent` with the lock **released** → re-lock to store and wire the return. The
+  `registry.rs::detach`/`attach`): `pop_out_tab` extracts the surfaces under the `ManagerState`
+  lock → builds the window + `reparent`s with the lock **released** → re-locks to store and wire
+  the return. `redock` builds no window and reparents under the lock — safe because
+  `becomeFirstResponder` defers its Focused event. The
   `Detached` placeholder — `detach`'s, or `mark_detached`'s in an origin rebuilt while the tab is
   out — keeps `reconcile` from touching the tab; `redock` reconciles it against the config once home
   (`reconcile_returned_tab`); `detached` is counted into the `WindowSet` (`sync_detached`); `is_quitting` stops `redock`

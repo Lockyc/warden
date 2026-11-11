@@ -254,7 +254,7 @@ pub struct ghostty_action_s {
 // numbers; the header is the one source of truth, and build.rs re-derives them on every revendor.
 include!(concat!(env!("OUT_DIR"), "/action_tags.rs"));
 
-/// `ghostty_action_desktop_notification_s` (ghostty.h:650-653): the union variant for
+/// `ghostty_action_desktop_notification_s`: the union variant for
 /// `DESKTOP_NOTIFICATION`. Two borrowed C strings, valid only for the duration of the action_cb
 /// call (libghostty owns them) — copy out before returning.
 #[repr(C)]
@@ -264,7 +264,7 @@ pub struct ghostty_action_desktop_notification_s {
     pub body: *const c_char,
 }
 
-/// `ghostty_action_open_url_s` (ghostty.h:818-822): the union variant for `OPEN_URL` — libghostty
+/// `ghostty_action_open_url_s`: the union variant for `OPEN_URL` — libghostty
 /// asking the host to open a link the user clicked. `url` is **not NUL-terminated**: it is a
 /// borrowed `(ptr, len)` slice owned by libghostty and valid only for this call, so copy it out.
 /// `kind` is `ghostty_action_open_url_kind_e` (unknown/text/html/osc8); `surface::link` screens by it.
@@ -276,7 +276,7 @@ pub struct ghostty_action_open_url_s {
     pub len: usize,
 }
 
-/// `ghostty_surface_message_childexited_s` (ghostty.h:832-835): the union variant for
+/// `ghostty_surface_message_childexited_s`: the union variant for
 /// `SHOW_CHILD_EXITED` — the surface's child process is gone, so the terminal is dead.
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -351,7 +351,7 @@ impl ghostty_action_s {
     }
 }
 
-// Target tag: `GHOSTTY_TARGET_APP = 0`, `GHOSTTY_TARGET_SURFACE = 1` (ghostty.h:545-546).
+// Target tag: `GHOSTTY_TARGET_APP = 0`, `GHOSTTY_TARGET_SURFACE = 1`.
 pub const GHOSTTY_TARGET_SURFACE: u32 = 1;
 
 impl ghostty_target_s {
@@ -366,7 +366,7 @@ impl ghostty_target_s {
     }
 }
 
-// --- Runtime callback function-pointer types (vendored header lines 988-1005) ---
+// --- Runtime callback function-pointer types ---
 // typedef void (*ghostty_runtime_wakeup_cb)(void*);
 pub type ghostty_runtime_wakeup_cb = Option<unsafe extern "C" fn(*mut c_void)>;
 // typedef bool (*ghostty_runtime_action_cb)(ghostty_app_t, ghostty_target_s, ghostty_action_s);
@@ -405,7 +405,7 @@ pub type ghostty_runtime_write_clipboard_cb = Option<
 // typedef void (*ghostty_runtime_close_surface_cb)(void*, bool);
 pub type ghostty_runtime_close_surface_cb = Option<unsafe extern "C" fn(*mut c_void, bool)>;
 
-// --- ghostty_runtime_config_s (vendored header lines 1007-1016; 64 bytes, verified via clang) ---
+// --- ghostty_runtime_config_s (64 bytes, verified via clang) ---
 #[repr(C)]
 pub struct ghostty_runtime_config_s {
     pub userdata: *mut c_void,

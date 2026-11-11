@@ -179,7 +179,7 @@ fn landed(app: &AppHandle, label: &str, req: &RexOpen, result: Result<RexAnswer,
 }
 
 /// Repaint the presence dot of every Rex tab on `server` (every server when `None`) from the
-/// hub's live session lists: its main pane's session alive is `Present`; else agents to wake
+/// hub's live session lists: either pane's session alive (`RexHub::tab_alive`) is `Present`; else agents to wake
 /// (`AgentStore::has_wakeable`) is `Recoverable`, the ghost; anything else `Absent`.
 /// Locks only; safe from any thread.
 pub fn refresh_presence(app: &AppHandle, server: Option<&str>) {

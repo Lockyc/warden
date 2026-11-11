@@ -183,8 +183,7 @@ paint a wrong dot. A single `bump_tab_await` covers a slow start; don't add dela
 arms it only for a **fresh cold-spawn of a probe-enabled tab** (`Registry::activate` reports the
 fresh spawn; `tab_has_probe` gates it) so a warm switch or a dotless tab stays a plain `bump_tab`.
 
-`run_scheduler` must be spawned **exactly once** per process (`main.rs` setup does this,
-right after `ManagerState` is managed). Spawning a second one won't crash, but it's far
+`run_scheduler` must be spawned **exactly once** per process (once, in `main.rs` setup). Spawning a second one won't crash, but it's far
 worse than a harmless duplicate: each `run_scheduler` makes its own `mpsc` channel and moves
 the sender into `install_bump_tx`, whose `OnceLock` keeps only the **first** — the second
 call's sender is dropped on the spot, leaving that thread's receiver **disconnected**. A

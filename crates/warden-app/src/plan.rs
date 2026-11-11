@@ -173,8 +173,8 @@ pub struct TabOp {
     pub add_tabs: Vec<TabPlan>,
     pub remove_tabs: Vec<String>, // tab ids (= Tab::key)
     pub order: Vec<String>,       // full new tab id order
-    // In-place metadata for kept tabs whose group/probe/kill changed —
-    // applied live (sidebar re-section + new probe/kill) without respawning.
+    // In-place metadata (`warden_config::TabMeta`) for kept tabs whose metadata changed —
+    // applied live without respawning.
     pub set_meta: Vec<MetaPlan>,
     // Kept tabs whose terminal spec changed — respawn in place (remove+add by id).
     pub respawn_tabs: Vec<TabPlan>,
@@ -187,7 +187,7 @@ pub struct TabOp {
 }
 
 /// A kept tab's in-place metadata for a hot-reload, ready to apply to a live tab. Wraps
-/// the crate's `TabMeta` (title/group/probe/kill) and adds the app-side `tree`/`tree_path`
+/// the crate's `TabMeta` and adds the app-side `tree`/`tree_path`
 /// **recomputed from the new config's roots**. This recompute is load-bearing: a kept tab
 /// (same `Tab::key`) can flip between a project-tree (root) section and a plain group when a
 /// curated tab shadows — or stops shadowing — a same-dir discovered project (its normalized

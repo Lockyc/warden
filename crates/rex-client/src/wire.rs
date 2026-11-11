@@ -233,11 +233,6 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
     h.windows(n.len()).position(|w| w == n)
 }
 
-/// Removes sequences a terminal generates on its own rather than the user typing them: focus
-/// in/out (CSI I/O), cursor position reports (CSI r;c R), device attributes (CSI ? … c,
-/// CSI > … c), mode reports (CSI … $ y), kitty keyboard flag reports (CSI ? … u — key reports
-/// carry no `?`), window reports (CSI … t), and OSC/DCS/APC strings. The Rex server answers
-/// queries itself, so forwarding these would type garbage into the program.
 /// Whether CSI `params` R is a modified F3 key (`1;<mods>`, mods 2–16) rather than a cursor
 /// position report: the legacy encoding makes the two byte-identical, so a report with the cursor
 /// at row 1, column 2–16 passes as an F3 — rare, since it needs a query while the cursor is there.
@@ -249,6 +244,11 @@ fn modified_f3(params: &[u8]) -> bool {
         .is_some_and(|m| (2..=16).contains(&m))
 }
 
+/// Removes sequences a terminal generates on its own rather than the user typing them: focus
+/// in/out (CSI I/O), cursor position reports (CSI r;c R), device attributes (CSI ? … c,
+/// CSI > … c), mode reports (CSI … $ y), kitty keyboard flag reports (CSI ? … u — key reports
+/// carry no `?`), window reports (CSI … t), and OSC/DCS/APC strings. The Rex server answers
+/// queries itself, so forwarding these would type garbage into the program.
 pub fn strip_terminal_replies(b: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

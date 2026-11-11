@@ -238,7 +238,7 @@ pub fn tab_named<'a>(tabs: &[(&'a str, &'a str)], name: &str) -> Option<&'a str>
 /// surface is already gone, so its immediate re-report for pane 0 lands on the primary, and a
 /// stale pane-1 rect is dropped by `set_detached_frame`), and the origin's chrome, when
 /// `origin_label` names it, gets the same `warden:pane-closed` a docked exit sends, so its
-/// persisted ratio goes too.
+/// dragged ratio (`ratioOverride`) goes too.
 pub fn announce_detached_secondary_closed(
     app: &AppHandle,
     dlabel: &str,
@@ -784,7 +784,7 @@ impl WindowManager {
     /// up in `detached` — the same two outcomes, reached from the detached window: a secondary
     /// exit closes that surface and asks the shared detach page to relayout to one hole
     /// (`shell_core::detach::set_panes`), telling the origin's chrome the same `warden:pane-closed`
-    /// the docked path would (so its persisted ratio goes too) — for a Rex block only once its
+    /// the docked path would (so its dragged ratio, `ratioOverride`, goes too) — for a Rex block only once its
     /// session ends, as docked; a primary exit ends the tab — both
     /// surfaces closed, the origin's `Detached` placeholders retired to `Cold`
     /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told

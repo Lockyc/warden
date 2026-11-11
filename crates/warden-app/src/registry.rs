@@ -332,8 +332,8 @@ struct AgentSlot {
 /// A Rex tab's main pane ([`hosts_agents`]) shows its session's windows as agent tabs: `rex` is
 /// the open of the whole pane, `agents` holds one slot per live agent the open found, and only
 /// the `selected` one is ever on screen. Its own `slot` stays `Cold` — `Detached` while popped
-/// out, and `Spawned` only for a surface that returned from a pop-out with no agent slot left to
-/// land in.
+/// out, and `Spawned` only for a surface that returned from a pop-out after the pane stopped
+/// hosting agents (`attach` with no agent to land in).
 struct Pane {
     spec: TabSpec,
     slot: TabSlot,
