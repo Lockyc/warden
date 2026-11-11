@@ -230,12 +230,19 @@ impl AgentStore {
                     .map(str::trim)
                     .filter(|g| !g.is_empty())
                     .map(Into::into);
-                // It leaves its family; its own forks' chains now end at it, and share its group.
-                list[at].lineage.clear();
+                // A fork leaves its family: its own forks' chains now end at it. One already shown
+                // top-level (its sources closed) and kept in its group keeps its chain, to nest
+                // back if a source reopens. Its forks share its group either way.
+                let stays = parent_of(&list, &list[at]).is_none() && list[at].group == group;
+                if !stays {
+                    list[at].lineage.clear();
+                }
                 list[at].group = group.clone();
                 for r in &mut list {
                     if let Some(k) = r.lineage.iter().position(|x| x == id) {
-                        r.lineage.truncate(k + 1);
+                        if !stays {
+                            r.lineage.truncate(k + 1);
+                        }
                         r.group = group.clone();
                     }
                 }
@@ -982,6 +989,19 @@ mod tests {
         s.upsert(a1);
         let recs = s.records("p");
         assert_eq!(parent_of(&recs, &by(&s, "a1x")), None);
+    }
+
+    #[test]
+    fn moving_a_promoted_fork_among_top_level_tabs_keeps_its_lineage() {
+        let mut s = family();
+        let mut a = by(&s, "a");
+        a.state = RecordState::Closed;
+        s.upsert(a.clone());
+        // a1 and a2 now show top-level; a2 moves above b, in the same (ungrouped) section.
+        assert!(put(&mut s, "a2", None, Some(0)));
+        assert_eq!(by(&s, "a2").lineage, ["a"], "reopening a re-nests it");
+        assert!(put(&mut s, "a2", Some("g"), None));
+        assert!(by(&s, "a2").lineage.is_empty(), "another group: it leaves");
     }
 
     #[test]

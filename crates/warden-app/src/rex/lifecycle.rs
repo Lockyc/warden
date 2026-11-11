@@ -315,7 +315,8 @@ impl RexHub {
             }
             AgentOp::Fork(id) => {
                 // Refused once reconcile closed it too: its window went in Rex meanwhile.
-                let src = records[at(&records, id)?].clone();
+                let si = at(&records, id)?;
+                let src = records[si].clone();
                 if src.state == RecordState::Closed {
                     return Err(Failed::Refused(NO_AGENT));
                 }
@@ -352,6 +353,8 @@ impl RexHub {
                         .collect(),
                     folded: false,
                 });
+                // A fork is selected, so its source unfolds to show it.
+                records[si].folded = false;
                 want = Some(records.len() - 1);
             }
             AgentOp::Rename(id, name) => {
@@ -2477,6 +2480,23 @@ mod tests {
             "the source is untouched"
         );
         assert!(!a.selected);
+    }
+
+    #[test]
+    fn forking_a_folded_tab_unfolds_it_so_the_fork_shows() {
+        let (f, dir, s) = forkable();
+        let mut a = state_of(&s, "a").unwrap();
+        a.folded = true;
+        s.lock().unwrap().upsert(a);
+        let (hub, _) = hub(f.endpoint(), &dir);
+        hub.agent_op(&s, &open(None), &AgentOp::Fork("a".into()), 7)
+            .expect("fork");
+        assert!(!state_of(&s, "a").unwrap().folded);
+        let list = agent_list("t", &s.lock().unwrap(), &Attention::default(), |_| None);
+        assert!(
+            list.rows.iter().all(|r| !r.hidden),
+            "the new fork is on screen"
+        );
     }
 
     #[test]
