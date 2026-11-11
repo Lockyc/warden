@@ -697,19 +697,25 @@ impl Inner {
                 _ => return true,
             }
         };
-        self.holds_other_block(&rec, &[&block])
+        self.holds_other_block(&rec, &[&block], None)
     }
 
     /// Whether `rec`'s session holds a block besides `ours` — placed or detached, made by anyone
-    /// — per `session.list_blocks`. True when it can't be told, so an uncertain answer never
-    /// destroys another client's work; false once the session is gone.
-    fn holds_other_block(self: &Arc<Self>, rec: &PaneRecord, ours: &[&str]) -> bool {
+    /// — per `session.list_blocks`, waiting until `deadline` when one is set. True when it can't
+    /// be told (a timeout included), so an uncertain answer never destroys another client's
+    /// work; false once the session is gone.
+    fn holds_other_block(
+        self: &Arc<Self>,
+        rec: &PaneRecord,
+        ours: &[&str],
+        deadline: Option<Instant>,
+    ) -> bool {
         let Ok((client, _)) = self.conn(&rec.server) else {
             return true;
         };
         let args = json!({ "session_id": rec.session_id });
-        match client.call("session.list_blocks", args) {
-            Ok(v) => v["blocks"].as_array().is_none_or(|blocks| {
+        match call_seq(&client, "session.list_blocks", args, deadline) {
+            Ok((_, v)) => v["blocks"].as_array().is_none_or(|blocks| {
                 blocks
                     .iter()
                     .any(|b| b["block_id"].as_str().is_none_or(|id| !ours.contains(&id)))

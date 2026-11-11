@@ -2633,6 +2633,25 @@ fn column_fill_leaves_a_session_holding_a_block() {
 }
 
 #[test]
+fn column_fill_answers_within_the_open_budget() {
+    // A Rex slow to list the session's blocks: the fill can't tell, so it leaves the column
+    // alone, inside the open budget rather than the 10 s call default.
+    let (fake, hub, _, _dir) = opened_column();
+    fake.on("session.list_blocks", |_, _| {
+        Reply::ok(blocks(&[])).after(Duration::from_secs(10))
+    });
+    let started = Instant::now();
+    let made = hub.column_fill("t::2", Path::new("/work/t"));
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!(!matches!(made, Ok(Some(_))), "made a tab: {made:?}");
+    assert!(fake.requests_for("session.new_window").is_empty());
+}
+
+#[test]
 fn column_fill_of_an_ended_column_does_nothing() {
     let (fake, hub, _, _dir) = opened_column();
     fake.reply("session.destroy", json!({}));

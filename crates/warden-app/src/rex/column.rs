@@ -302,7 +302,7 @@ impl RexHub {
         dir: &Path,
         deadline: Instant,
     ) -> Result<Option<String>, RexError> {
-        if self.inner.holds_other_block(rec, &[]) {
+        if self.inner.holds_other_block(rec, &[], Some(deadline)) {
             return Ok(None);
         }
         let made =
