@@ -822,12 +822,15 @@ pub struct AgentRowDto {
     /// The program's status message, else its terminal title.
     pub context: Option<String>,
     /// The summary block's rows for a live tab: the user's latest prompt and any short reply
-    /// typed since it, the program's status message (its current step), and the agent's latest
-    /// reply.
+    /// typed since it, the program's status message (its current step), the agent's latest
+    /// reply, the conversation's topic, and what the agent waits on the user for — only while
+    /// it isn't working, so a turn under way never shows the last turn's question.
     pub asked: Option<String>,
     pub answered: Option<String>,
     pub doing: Option<String>,
     pub said: Option<String>,
+    pub topic: Option<String>,
+    pub needs: Option<String>,
     pub selected: bool,
     pub can_sleep: bool,
     /// Why a live tab can't sleep.
@@ -945,6 +948,8 @@ pub fn agent_list(
             asked: None,
             answered: None,
             said: None,
+            topic: None,
+            needs: None,
         });
         rows.push(AgentRowDto {
             id: r.id.clone(),
@@ -956,6 +961,8 @@ pub fn agent_list(
             answered: st.answered,
             doing: st.msg,
             said: st.said,
+            topic: st.topic,
+            needs: st.needs.filter(|_| state != "working"),
             selected: r.selected,
             can_sleep: live && r.resume.is_some(),
             sleep_reason: (live && r.resume.is_none()).then(|| NO_RESUME.to_owned()),
@@ -2531,6 +2538,8 @@ mod tests {
                 asked: Some("fix it".into()),
                 answered: Some("b".into()),
                 said: Some("Fixed.".into()),
+                topic: Some("Parser quoting".into()),
+                needs: Some("Pick a or b".into()),
             }),
             "block:2" => Some(BlockStatus {
                 state: AgentState::Done,
@@ -2539,6 +2548,8 @@ mod tests {
                 asked: None,
                 answered: None,
                 said: None,
+                topic: None,
+                needs: None,
             }),
             _ => None,
         };
@@ -2559,7 +2570,7 @@ mod tests {
             ],
             "ungrouped above the groups"
         );
-        let summary: Vec<[Option<&str>; 4]> = list
+        let summary: Vec<[Option<&str>; 6]> = list
             .rows
             .iter()
             .map(|r| {
@@ -2568,16 +2579,25 @@ mod tests {
                     r.answered.as_deref(),
                     r.doing.as_deref(),
                     r.said.as_deref(),
+                    r.topic.as_deref(),
+                    r.needs.as_deref(),
                 ]
             })
             .collect();
         assert_eq!(
             summary,
             [
-                [Some("fix it"), Some("b"), Some("needs you"), Some("Fixed.")],
-                [None; 4],
-                [None; 4],
-                [None; 4],
+                [
+                    Some("fix it"),
+                    Some("b"),
+                    Some("needs you"),
+                    Some("Fixed."),
+                    Some("Parser quoting"),
+                    Some("Pick a or b"),
+                ],
+                [None; 6],
+                [None; 6],
+                [None; 6],
             ],
             "a live row's own words; an asleep one has none"
         );
@@ -2616,6 +2636,32 @@ mod tests {
     }
 
     #[test]
+    fn needs_hidden_while_working() {
+        use crate::rex::windows::{AgentState, BlockStatus};
+        let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
+        let needs = |state: AgentState| {
+            let status = |_: &str| {
+                Some(BlockStatus {
+                    state,
+                    msg: None,
+                    title: None,
+                    asked: None,
+                    answered: None,
+                    said: None,
+                    topic: None,
+                    needs: Some("Pick a or b".into()),
+                })
+            };
+            agent_list("t", &s.lock().unwrap(), &Attention::default(), status).rows[0]
+                .needs
+                .clone()
+        };
+        assert_eq!(needs(AgentState::Done).as_deref(), Some("Pick a or b"));
+        assert_eq!(needs(AgentState::Idle).as_deref(), Some("Pick a or b"));
+        assert_eq!(needs(AgentState::Working), None, "the last turn's question");
+    }
+
+    #[test]
     fn done_unseen_marks_group_amber() {
         use crate::rex::windows::{AgentState, BlockStatus};
         let mut a = record("a", RecordState::Live, Some("window:1"), None);
@@ -2634,6 +2680,8 @@ mod tests {
                 asked: None,
                 answered: None,
                 said: None,
+                topic: None,
+                needs: None,
             })
         };
         let mut att = Attention::default();
@@ -2679,6 +2727,8 @@ mod tests {
                 asked: None,
                 answered: None,
                 said: None,
+                topic: None,
+                needs: None,
             })
         };
         let mut att = Attention::default();
@@ -3352,6 +3402,8 @@ mod tests {
                     doing: None,
                     answered: None,
                     said: None,
+                    topic: None,
+                    needs: None,
                     selected: *id == selected,
                     can_sleep: true,
                     sleep_reason: None,

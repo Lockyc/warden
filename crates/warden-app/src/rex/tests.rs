@@ -1467,6 +1467,8 @@ fn status_from_program_status_changed() {
             asked: None,
             answered: None,
             said: None,
+            topic: None,
+            needs: None,
         })
     );
 
@@ -1555,6 +1557,8 @@ fn status_pulled_on_attach() {
                 asked: None,
                 answered: None,
                 said: None,
+                topic: None,
+                needs: None,
             })
     });
     assert_eq!(
@@ -1670,6 +1674,10 @@ fn summary_pulled_on_attach() {
              "updated_at": "2026-11-07T00:00:00Z"},
             {"id": "warden/said", "state": "idle", "msg": "Looking now.",
              "updated_at": "2026-11-07T00:00:00Z"},
+            {"id": "warden/topic", "state": "idle", "msg": "Parser quoting",
+             "updated_at": "2026-11-07T00:00:00Z"},
+            {"id": "warden/needs", "state": "idle", "msg": "Pick a or b",
+             "updated_at": "2026-11-07T00:00:00Z"},
         ]}))
     });
     let dir = tempfile::tempdir().unwrap();
@@ -1685,6 +1693,8 @@ fn summary_pulled_on_attach() {
                 asked: Some("fix the parser".into()),
                 answered: Some("b".into()),
                 said: Some("Looking now.".into()),
+                topic: Some("Parser quoting".into()),
+                needs: Some("Pick a or b".into()),
             })
     });
 }
@@ -1716,6 +1726,8 @@ fn title_change_updates_status_title() {
             asked: None,
             answered: None,
             said: None,
+            topic: None,
+            needs: None,
         })
     );
     fake.push_block_event(
@@ -1733,6 +1745,8 @@ fn title_change_updates_status_title() {
                 asked: None,
                 answered: None,
                 said: None,
+                topic: None,
+                needs: None,
             })
     });
 }

@@ -310,7 +310,7 @@
         white-space: nowrap; overflow: hidden; }
       #summary .s-k { flex: none; width: 3.6em; opacity: 0.6; }
       #summary .s-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-      #summary [data-key="title"] .s-v { font-weight: 600; }
+      #summary [data-key="title"] .s-v, #summary .needs .s-v { font-weight: 600; }
       /* A short reply after the ask: never cut, so the ask's ellipsis gives way to it. */
       #summary .s-then { flex: none; white-space: pre; opacity: 0.6; }
       /* The identity tile: the agent list's foot, beside the summary block at its height, solid
@@ -506,8 +506,8 @@
           </div>
         </div>
         <!-- The summary block (a Rex tab's main pane only, with the agent list): the selected
-             agent's title (unlabelled, from the labels' edge) / asked / doing / said. Filled
-             by `summarySync`. -->
+             agent's topic (unlabelled, from the labels' edge) / asked / doing, or what it needs
+             from you / said. Filled by `summarySync`. -->
         <div id="summary">
           <div class="s-row" data-key="title"><span class="s-v"></span></div>
           <div class="s-row" data-key="asked"><span class="s-k">asked</span><span class="s-v"></span><span class="s-then"></span></div>
@@ -1480,9 +1480,13 @@
       // The identity tile's session word, by Rex presence (`rex/spawn.rs`: a live session, only
       // sleeping agents, nothing).
       const TILE_STATE = { on: "live", ghost: "asleep", off: "no session" };
+      // The doing row's words for a row with no status message of its own (`AgentRowDto.state`).
+      const DOING_STATE = { working: "working", blocked: "waiting on you", done: "done",
+        error: "stopped on an error", asleep: "asleep" };
       // Paint the summary block and identity tile for the agents tab: its selected agent's
-      // name and asked (with any short reply after it) / doing / said (`AgentRowDto`), and the
-      // tab's title, server and session, in `TabDto.colour`.
+      // topic, else name, and asked (with any short reply after it) / doing, or "needs" and what
+      // it waits on you for / said (`AgentRowDto`), and the tab's title, server and session, in
+      // `TabDto.colour`.
       // Shown by the same `.agents` class as the column; runs on every column sync, list render,
       // `warden:agents`, `warden:session-state` and snapshot.
       function summarySync() {
@@ -1502,9 +1506,20 @@
         const el = document.getElementById("summary");
         const dto = agentLists.get(tab);
         const sel = dto && dto.rows.find((r) => r.selected);
+        const words = {
+          title: sel && (sel.topic || sel.name),
+          asked: sel && sel.asked,
+          doing: sel && (sel.needs || sel.doing || DOING_STATE[sel.state]),
+          said: sel && sel.said,
+        };
+        const needs = !!(sel && sel.needs);
         el.querySelectorAll(".s-row").forEach((row) => {
           const key = row.dataset.key;
-          const text = (sel && sel[key === "title" ? "name" : key]) || "";
+          const text = words[key] || "";
+          if (key === "doing") {
+            row.classList.toggle("needs", needs);
+            row.querySelector(".s-k").textContent = needs ? "needs" : "doing";
+          }
           const then = key === "asked" && sel && sel.answered ? ` → ${sel.answered}` : "";
           row.querySelector(".s-v").textContent = text;
           const tail = row.querySelector(".s-then");

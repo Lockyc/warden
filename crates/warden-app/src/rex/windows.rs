@@ -71,12 +71,14 @@ impl AgentState {
 }
 
 /// The child records an agent's hook (`scripts/agent-hooks/claude-hook.sh`) keeps on its block,
-/// one line each: the user's latest prompt, a short reply typed since it, and the agent's
-/// latest reply.
+/// one line each: the user's latest prompt, a short reply typed since it, the agent's latest
+/// reply, the conversation's topic, and what the agent is waiting on the user for.
 const ASKED: &str = "warden/asked";
 const ANSWERED: &str = "warden/answered";
 const SAID: &str = "warden/said";
-const TEXTS: [&str; 3] = [ASKED, ANSWERED, SAID];
+const TOPIC: &str = "warden/topic";
+const NEEDS: &str = "warden/needs";
+const TEXTS: [&str; 5] = [ASKED, ANSWERED, SAID, TOPIC, NEEDS];
 
 /// What a block's program last reported. A block with no root status record is `Idle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +92,10 @@ pub struct BlockStatus {
     pub answered: Option<String>,
     /// The [`SAID`] record's text.
     pub said: Option<String>,
+    /// The [`TOPIC`] record's text.
+    pub topic: Option<String>,
+    /// The [`NEEDS`] record's text.
+    pub needs: Option<String>,
 }
 
 /// One attached session's windows.
@@ -162,28 +168,34 @@ pub(super) struct Tracked {
     asked: Fact<Option<String>>,
     answered: Fact<Option<String>>,
     said: Fact<Option<String>>,
+    topic: Fact<Option<String>>,
+    needs: Fact<Option<String>>,
 }
 
 impl Tracked {
     fn status(&self) -> Option<BlockStatus> {
         let title = self.title.value.as_ref().map(|t| t.text.clone());
-        let asked = self.asked.value.clone();
-        let answered = self.answered.value.clone();
-        let said = self.said.value.clone();
+        let texts = [
+            &self.asked,
+            &self.answered,
+            &self.said,
+            &self.topic,
+            &self.needs,
+        ];
         let (state, msg) = match &self.record.value {
             Some(r) => (r.state, r.msg.clone()),
-            None if title.is_none() && asked.is_none() && answered.is_none() && said.is_none() => {
-                return None
-            }
+            None if title.is_none() && texts.iter().all(|t| t.value.is_none()) => return None,
             None => (AgentState::Idle, None),
         };
         Some(BlockStatus {
             state,
             msg,
             title,
-            asked,
-            answered,
-            said,
+            asked: self.asked.value.clone(),
+            answered: self.answered.value.clone(),
+            said: self.said.value.clone(),
+            topic: self.topic.value.clone(),
+            needs: self.needs.value.clone(),
         })
     }
 
@@ -193,6 +205,8 @@ impl Tracked {
             ASKED => Some(&mut self.asked),
             ANSWERED => Some(&mut self.answered),
             SAID => Some(&mut self.said),
+            TOPIC => Some(&mut self.topic),
+            NEEDS => Some(&mut self.needs),
             _ => None,
         }
     }
