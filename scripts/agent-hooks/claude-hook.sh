@@ -14,7 +14,8 @@
 #   is Claude Code's own (a background task's `<task-notification>`, a command's output) and
 #   writes nothing. Either clears `warden/needs`. The reply's first line is `warden/said`, until
 #   the turn's digest (`digest`, also run on a resume) rewrites it with `warden/topic`,
-#   `warden/asked` and `warden/needs`. These need `jq`; without it they do nothing.
+#   `warden/asked` and `warden/needs`. Stop also writes `warden/background`, what is still
+#   running as the turn ends. These need `jq`; without it they do nothing.
 #
 # Prints nothing to stdout (Claude Code adds SessionStart's and UserPromptSubmit's stdout to the
 # agent's context) and always exits 0, silently, so a hook failure never blocks the agent.
@@ -141,6 +142,17 @@ digest() {
 	) </dev/null >/dev/null 2>&1 &
 }
 
+# Record `warden/background`: the hook input's `background_tasks` (what is still running as the
+# turn ends) counted by kind, "2 shells · 1 agent"; none clears it.
+background() {
+	command -v jq >/dev/null 2>&1 || return 0
+	printf '%s' "$input" | jq -r '[.background_tasks[]? | .type
+		| {shell: "shell", subagent: "agent", monitor: "monitor", workflow: "workflow",
+			teammate: "teammate"}[.] // "task"]
+		| group_by(.) | map("\(length) \(.[0])\(if length > 1 then "s" else "" end)")
+		| join(" · ")' 2>/dev/null | put warden/background
+}
+
 # What a prompt is: `skip` (Claude Code's own, or blank), `answer` (short) or `ask`.
 KIND='def kind: (gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ")) as $p
 	| if $p == "" or ($p | startswith("<")) then "skip"
@@ -206,6 +218,7 @@ SessionStart)
 UserPromptSubmit) prompt ;;
 Stop)
 	record warden/said last_assistant_message
+	background
 	digest
 	;;
 esac

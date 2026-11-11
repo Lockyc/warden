@@ -856,6 +856,9 @@ pub struct AgentRowDto {
     pub said: Option<String>,
     pub topic: Option<String>,
     pub needs: Option<String>,
+    /// The background work still running as the agent's last turn ended ("2 shells · 1
+    /// agent"), while it isn't working.
+    pub background: Option<String>,
     pub selected: bool,
     pub can_sleep: bool,
     /// Why a live tab can't sleep.
@@ -984,6 +987,7 @@ pub fn agent_list(
             said: None,
             topic: None,
             needs: None,
+            background: None,
         });
         rows.push(AgentRowDto {
             id: r.id.clone(),
@@ -1008,6 +1012,7 @@ pub fn agent_list(
             said: st.said,
             topic: st.topic,
             needs: st.needs.filter(|_| state != "working"),
+            background: st.background.filter(|_| state != "working"),
             selected: r.selected,
             can_sleep: live && r.resume.is_some(),
             sleep_reason: (live && r.resume.is_none()).then(|| NO_RESUME.to_owned()),
@@ -2661,6 +2666,7 @@ mod tests {
                 said: Some("Fixed.".into()),
                 topic: Some("Parser quoting".into()),
                 needs: Some("Pick a or b".into()),
+                background: None,
             }),
             "block:2" => Some(BlockStatus {
                 state: AgentState::Done,
@@ -2672,6 +2678,7 @@ mod tests {
                 said: None,
                 topic: None,
                 needs: None,
+                background: None,
             }),
             _ => None,
         };
@@ -2758,7 +2765,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_hidden_while_working() {
+    fn needs_and_background_hidden_while_working() {
         use crate::rex::windows::{AgentState, BlockStatus};
         let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
         let needs = |state: AgentState| {
@@ -2773,15 +2780,21 @@ mod tests {
                     said: None,
                     topic: None,
                     needs: Some("Pick a or b".into()),
+                    background: Some("2 shells".into()),
                 })
             };
-            agent_list("t", &s.lock().unwrap(), &Attention::default(), status).rows[0]
-                .needs
-                .clone()
+            let row =
+                agent_list("t", &s.lock().unwrap(), &Attention::default(), status).rows[0].clone();
+            (row.needs, row.background)
         };
-        assert_eq!(needs(AgentState::Done).as_deref(), Some("Pick a or b"));
-        assert_eq!(needs(AgentState::Idle).as_deref(), Some("Pick a or b"));
-        assert_eq!(needs(AgentState::Working), None, "the last turn's question");
+        let shown = (Some("Pick a or b".into()), Some("2 shells".into()));
+        assert_eq!(needs(AgentState::Done), shown);
+        assert_eq!(needs(AgentState::Idle), shown);
+        assert_eq!(
+            needs(AgentState::Working),
+            (None, None),
+            "the last turn's question and background"
+        );
     }
 
     #[test]
@@ -2800,6 +2813,7 @@ mod tests {
                     said: None,
                     topic: None,
                     needs: None,
+                    background: None,
                 })
             };
             agent_list("t", &s.lock().unwrap(), &Attention::default(), status).rows[0].blocked_kind
@@ -2832,6 +2846,7 @@ mod tests {
                 said: None,
                 topic: None,
                 needs: None,
+                background: None,
             })
         };
         let mut att = Attention::default();
@@ -2880,6 +2895,7 @@ mod tests {
                 said: None,
                 topic: None,
                 needs: None,
+                background: None,
             })
         };
         let mut att = Attention::default();
@@ -3562,6 +3578,7 @@ mod tests {
                     said: None,
                     topic: None,
                     needs: None,
+                    background: None,
                     selected: *id == selected,
                     can_sleep: true,
                     sleep_reason: None,
@@ -3704,6 +3721,7 @@ mod tests {
                 said: None,
                 topic: None,
                 needs: None,
+                background: None,
             })
         };
         let l = agent_list("t", &s.lock().unwrap(), &Attention::default(), status);

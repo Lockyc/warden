@@ -98,7 +98,9 @@ const ANSWERED: &str = "warden/answered";
 const SAID: &str = "warden/said";
 const TOPIC: &str = "warden/topic";
 const NEEDS: &str = "warden/needs";
-const TEXTS: [&str; 5] = [ASKED, ANSWERED, SAID, TOPIC, NEEDS];
+/// The agent's background work still running as its last turn ended ("2 shells · 1 agent").
+const BACKGROUND: &str = "warden/background";
+const TEXTS: [&str; 6] = [ASKED, ANSWERED, SAID, TOPIC, NEEDS, BACKGROUND];
 
 /// What a block's program last reported. A block with no root status record is `Idle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +120,8 @@ pub struct BlockStatus {
     pub topic: Option<String>,
     /// The [`NEEDS`] record's text.
     pub needs: Option<String>,
+    /// The [`BACKGROUND`] record's text.
+    pub background: Option<String>,
 }
 
 /// One attached session's windows.
@@ -193,6 +197,7 @@ pub(super) struct Tracked {
     said: Fact<Option<String>>,
     topic: Fact<Option<String>>,
     needs: Fact<Option<String>>,
+    background: Fact<Option<String>>,
 }
 
 impl Tracked {
@@ -204,6 +209,7 @@ impl Tracked {
             &self.said,
             &self.topic,
             &self.needs,
+            &self.background,
         ];
         let (state, kind, msg) = match &self.record.value {
             Some(r) => (
@@ -224,6 +230,7 @@ impl Tracked {
             said: self.said.value.clone(),
             topic: self.topic.value.clone(),
             needs: self.needs.value.clone(),
+            background: self.background.value.clone(),
         })
     }
 
@@ -235,6 +242,7 @@ impl Tracked {
             SAID => Some(&mut self.said),
             TOPIC => Some(&mut self.topic),
             NEEDS => Some(&mut self.needs),
+            BACKGROUND => Some(&mut self.background),
             _ => None,
         }
     }

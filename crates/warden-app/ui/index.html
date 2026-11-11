@@ -386,6 +386,8 @@
       .a-fork-caret { flex: none; width: 10px; margin-right: -3px; color: #7d8590; text-align: center; }
       .a-fork-caret:hover { color: #c3ccd8; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
+      /* Background work still running past the turn's end ("2 shells · 1 agent"). */
+      .a-bg { flex: none; color: #7d8590; font-size: 0.85em; padding: 0 5px; border: 1px solid #30363d; border-radius: 8px; }
       .a-empty { color: #6b7280; padding: 6px; font-size: 0.9em; }
       .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
         color: #7d8590; font-size: 0.9em; }
@@ -428,7 +430,7 @@
       #agents.narrow .a-row { justify-content: center; padding: 6px 0; }
       #agents.narrow .a-text, #agents.narrow .a-more, #agents.narrow .a-actions,
       #agents.narrow .a-gname, #agents.narrow .a-group .a-caret, #agents.narrow .a-empty,
-      #agents.narrow .a-newdrop, #agents.narrow .a-fork-caret, #agents.narrow .a-forks { display: none; }
+      #agents.narrow .a-newdrop, #agents.narrow .a-fork-caret, #agents.narrow .a-forks, #agents.narrow .a-bg { display: none; }
       #agents.narrow .a-row.nested { box-shadow: inset 2px 0 0 #3d444d; }
       #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
         border-top: 1px solid #313640; margin: 4px 4px 0; }
@@ -1802,7 +1804,7 @@
         row.style.setProperty("--depth", Math.min(r.depth, 2));
         const name = r.name || "untitled";
         const ctx = r.context || (r.state === "asleep" ? "asleep" : "");
-        row.title = ctx ? name + "\n" + ctx : name;
+        row.title = [name, ctx, r.background && "still running: " + r.background].filter(Boolean).join("\n");
         // While any row has forks, every row keeps the caret's slot, so names line up by depth.
         if (r.forks) {
           const n = r.forks === 1 ? "1 fork" : `${r.forks} forks`;
@@ -1824,6 +1826,7 @@
         if (ctx) text.append(agentEl("span", "a-ctx", ctx));
         row.append(text);
         if (r.folded) row.append(agentEl("span", "a-forks", "+" + r.forks));
+        if (r.background) row.append(agentEl("span", "a-bg", r.background));
         const rec = agentControlRecord(r);
         if (rec.attention || r.amber) row.append(agentControls.attention(true));
         row.append(agentControls.presence(rec, r.state !== "asleep"));
