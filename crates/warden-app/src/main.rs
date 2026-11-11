@@ -3210,8 +3210,33 @@ fn main() {
                 return;
             };
             let label = win.label().to_string();
-            // Sleep Server ▸ <server>: the focused window confirms any loss.
+            let origin_of = |l: &str| {
+                let st = app.state::<ManagerState>();
+                let m = st.lock();
+                m.detached.get(l).map(|ds| ds.origin_label.clone())
+            };
+            // Sleep Server ▸ <server>: the focused window confirms any loss — a pop-out's origin,
+            // raised, since a pop-out has no chrome to ask in.
             if let Some(server) = id.strip_prefix(MENU_SLEEP_SERVER) {
+                let label = if shell_core::detach::is_detached_label(&label) {
+                    let Some(origin) = origin_of(&label) else {
+                        return;
+                    };
+                    match app.get_webview_window(&origin) {
+                        Some(w) => {
+                            let _ = w.set_focus();
+                        }
+                        // The origin was closed: bring it back. Its chrome mounts fresh, with
+                        // nothing listening yet for the confirm, so the command ends there.
+                        None => {
+                            open_or_focus_window(app, &origin);
+                            return;
+                        }
+                    }
+                    origin
+                } else {
+                    label
+                };
                 if let Err(message) = rex::lifecycle::sleep_server(app, &label, server, &[]) {
                     let _ = app.emit_to(
                         label.as_str(),
@@ -3237,11 +3262,6 @@ fn main() {
                 let _ = app.emit_to(label.as_str(), id, serde_json::json!({ "label": label }));
                 return;
             }
-            let origin_of = |l: &str| {
-                let st = app.state::<ManagerState>();
-                let m = st.lock();
-                m.detached.get(l).map(|ds| ds.origin_label.clone())
-            };
             if let Some(routed) = shell_core::menu::route(id, &label, origin_of) {
                 on_spine_action(app, routed);
             }
