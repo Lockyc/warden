@@ -212,9 +212,14 @@ pub(crate) fn sync_server_menu(app: &tauri::AppHandle) {
     ) else {
         return;
     };
+    // The home surface has no chrome to confirm a loss in or show an error.
+    let homeless = focused_label(app).as_deref() == Some(shell_core::home::HOME_LABEL);
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     for (server, item) in items {
-        let why = hub.stoppable(&server).err();
+        let why = match homeless {
+            true => Some("open a window first"),
+            false => hub.stoppable(&server).err(),
+        };
         let _ = item.set_enabled(why.is_none());
         let _ = item.set_text(match why {
             None => server.clone(),
@@ -3047,6 +3052,10 @@ fn main() {
         // open quits — "closing the last surface == ⌘Q", whichever state it shows.
         .on_window_event(|window, event| {
             use tauri::Manager;
+            // Sleep Server's items follow whether the focused window can ask (`sync_server_menu`).
+            if matches!(event, tauri::WindowEvent::Focused(true)) {
+                sync_server_menu(window.app_handle());
+            }
             if window.label() == shell_core::home::HOME_LABEL
                 && matches!(event, tauri::WindowEvent::Destroyed)
             {
