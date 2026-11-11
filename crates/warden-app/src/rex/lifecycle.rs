@@ -825,8 +825,18 @@ pub struct AgentRowDto {
     pub id: String,
     pub name: String,
     pub group: Option<String>,
+    /// The tab it was forked from, as the list nests it ([`agents::parent_of`]).
+    pub parent: Option<String>,
     /// How many parents up it sits from a top-level tab ([`agents::depth_of`]).
     pub depth: u32,
+    /// How many rows nest under it.
+    pub forks: u32,
+    /// Its forks are folded away.
+    pub folded: bool,
+    /// Under a folded tab.
+    pub hidden: bool,
+    /// Folded, with a row under it needing you.
+    pub amber: bool,
     /// `working`, `blocked`, `done`, `error`, `idle` or `asleep`.
     pub state: &'static str,
     /// What a `blocked` row waits on: `permission`, `question` or `auth`.
@@ -877,13 +887,16 @@ pub enum Step {
     Next,
 }
 
-/// The rows `list` shows: every row but those inside a folded group.
+/// The rows `list` shows: every row but those inside a folded group or under a folded tab.
 fn visible_rows(list: &AgentListDto) -> Vec<&AgentRowDto> {
     let folded = |g: &Option<String>| {
         g.as_ref()
             .is_some_and(|g| list.groups.iter().any(|x| x.name == *g && x.folded))
     };
-    list.rows.iter().filter(|r| !folded(&r.group)).collect()
+    list.rows
+        .iter()
+        .filter(|r| !r.hidden && !folded(&r.group))
+        .collect()
 }
 
 /// The record id of the shown row before or after the selected one, wrapping at the ends, as
@@ -901,18 +914,23 @@ pub fn agent_step(list: &AgentListDto, step: Step) -> Option<String> {
     Some(rows[to].id.clone())
 }
 
-/// The selected row moved one place within its group, as `AgentStore::set_group` takes it:
-/// `(record id, its group, index among the group's other rows)`. `None` at the group's edge
-/// (crossing groups is a drag onto one), or with nothing selected.
-pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, Option<String>, usize)> {
+/// The selected row moved one place among its siblings, with its forks, as
+/// [`agents::Place::Sibling`] takes it: `(record id, index among its other siblings)`. Its
+/// siblings are its source's other forks, or for a top-level tab its group's other top-level
+/// tabs. `None` at their edge (leaving them is a drag), or with nothing selected.
+pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, usize)> {
     let sel = list.rows.iter().find(|r| r.selected)?;
-    let members: Vec<&AgentRowDto> = list.rows.iter().filter(|r| r.group == sel.group).collect();
+    let members: Vec<&AgentRowDto> = list
+        .rows
+        .iter()
+        .filter(|r| r.parent == sel.parent && (sel.parent.is_some() || r.group == sel.group))
+        .collect();
     let at = members.iter().position(|r| r.id == sel.id)?;
     let to = match step {
         Step::Prev => at.checked_sub(1)?,
         Step::Next => Some(at + 1).filter(|&i| i < members.len())?,
     };
-    Some((sel.id.clone(), sel.group.clone(), to))
+    Some((sel.id.clone(), to))
 }
 
 /// Project `tab_id`'s list from `store`, a live row's state and context from `status` (the hub's
@@ -968,7 +986,12 @@ pub fn agent_list(
             id: r.id.clone(),
             name: r.name.clone(),
             group: r.group.clone(),
+            parent: agents::parent_of(&records, r),
             depth: agents::depth_of(&records, r),
+            forks: 0,
+            folded: r.folded,
+            hidden: false,
+            amber: needs_you,
             state,
             blocked_kind: st.kind.filter(|_| state == "blocked").map(|k| match k {
                 BlockedKind::Permission => "permission",
@@ -989,6 +1012,21 @@ pub fn agent_list(
             fork_reason: fork_reason.map(str::to_owned),
             unread: needs_you && matches!(state, "done" | "error"),
         });
+    }
+    // Rows are depth first, so a row's forks are the rows after it deeper than it. `amber` held
+    // each row's own need until here.
+    let needs: Vec<bool> = rows.iter().map(|r| r.amber).collect();
+    for i in 0..rows.len() {
+        let end = (i + 1..rows.len())
+            .find(|&j| rows[j].depth <= rows[i].depth)
+            .unwrap_or(rows.len());
+        let r = &mut rows[i];
+        r.forks = (end - i - 1) as u32;
+        r.folded &= r.forks > 0;
+        r.amber = r.folded && needs[i + 1..end].contains(&true);
+        if r.folded {
+            rows[i + 1..end].iter_mut().for_each(|k| k.hidden = true);
+        }
     }
     let mut closed: Vec<&AgentRecord> = records
         .iter()
@@ -3489,7 +3527,12 @@ mod tests {
                     id: (*id).into(),
                     name: (*id).into(),
                     group: g.map(Into::into),
+                    parent: None,
                     depth: 0,
+                    forks: 0,
+                    folded: false,
+                    hidden: false,
+                    amber: false,
                     state: "idle",
                     blocked_kind: None,
                     context: None,
@@ -3571,13 +3614,102 @@ mod tests {
     fn move_stays_in_group() {
         use super::{agent_move, Step};
         let at = |sel, step| agent_move(&list(ROWS, sel, &[]), step);
-        assert_eq!(at("b", Step::Prev), Some(("b".into(), None, 0)));
-        assert_eq!(at("b", Step::Next), Some(("b".into(), None, 2)));
+        assert_eq!(at("b", Step::Prev), Some(("b".into(), 0)));
+        assert_eq!(at("b", Step::Next), Some(("b".into(), 2)));
         assert_eq!(at("a", Step::Prev), None, "top of its group");
         assert_eq!(at("c", Step::Next), None, "bottom of its group");
         assert_eq!(at("d", Step::Prev), None);
-        assert_eq!(at("d", Step::Next), Some(("d".into(), Some("g".into()), 1)));
+        assert_eq!(at("d", Step::Next), Some(("d".into(), 1)));
         assert_eq!(at("e", Step::Next), None);
+    }
+
+    /// `list` with `forks` as `(id, its parent)`, hiding those under a folded `folded_family`.
+    fn family_list(selected: &str, forks: &[(&str, &str)], hidden: &[&str]) -> super::AgentListDto {
+        let rows = &[("a", None), ("a1", None), ("a2", None), ("b", None)];
+        let mut l = list(rows, selected, &[]);
+        for r in &mut l.rows {
+            r.parent = forks
+                .iter()
+                .find(|(id, _)| *id == r.id)
+                .map(|(_, p)| (*p).into());
+            r.hidden = hidden.contains(&r.id.as_str());
+        }
+        l
+    }
+
+    #[test]
+    fn agent_move_steps_among_siblings_only() {
+        use super::{agent_move, Step};
+        let forks = &[("a1", "a"), ("a2", "a")];
+        let at = |sel, step| agent_move(&family_list(sel, forks, &[]), step);
+        assert_eq!(at("a1", Step::Prev), None, "first of a's forks");
+        assert_eq!(at("a1", Step::Next), Some(("a1".into(), 1)));
+        assert_eq!(at("a2", Step::Next), None, "last of a's forks");
+        assert_eq!(
+            at("a", Step::Next),
+            Some(("a".into(), 1)),
+            "past b, with its forks"
+        );
+    }
+
+    #[test]
+    fn agent_step_skips_rows_in_a_folded_family() {
+        use super::{agent_step, Step};
+        let l = family_list("a", &[("a1", "a"), ("a2", "a")], &["a1", "a2"]);
+        assert_eq!(agent_step(&l, Step::Next).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn agent_list_carries_parent_depth_and_fold() {
+        use crate::rex::windows::{AgentState, BlockStatus};
+        let mut a = record("a", RecordState::Live, Some("window:1"), None);
+        a.folded = true;
+        let mut a1 = record("a1", RecordState::Live, Some("window:2"), None);
+        a1.lineage = vec!["a".into()];
+        let mut a1x = record("a1x", RecordState::Live, Some("window:3"), None);
+        a1x.lineage = vec!["a1".into(), "a".into()];
+        let s = store(vec![a, a1, a1x]);
+        let status = |block: &str| {
+            Some(BlockStatus {
+                state: if block == "block:2" {
+                    AgentState::Blocked
+                } else {
+                    AgentState::Idle
+                },
+                kind: None,
+                msg: None,
+                title: None,
+                asked: None,
+                answered: None,
+                said: None,
+                topic: None,
+                needs: None,
+            })
+        };
+        let l = agent_list("t", &s.lock().unwrap(), &Attention::default(), status);
+        let got: Vec<_> = l
+            .rows
+            .iter()
+            .map(|r| {
+                (
+                    r.id.as_str(),
+                    r.parent.as_deref(),
+                    r.depth,
+                    r.forks,
+                    r.folded,
+                    r.hidden,
+                    r.amber,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a", None, 0, 2, true, false, true),
+                ("a1", Some("a"), 1, 1, false, true, false),
+                ("a1x", Some("a1"), 2, 0, false, true, false),
+            ]
+        );
     }
 
     #[test]

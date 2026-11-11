@@ -542,15 +542,8 @@ fn agent_key(app: &tauri::AppHandle, id: &str) {
         }
         MENU_AGENT_MOVE_UP | MENU_AGENT_MOVE_DOWN => {
             match agent_move(&list, step(id == MENU_AGENT_MOVE_UP)) {
-                Some((record, group, index)) => rex::lifecycle::edit(app, &tab, |s| {
-                    s.place(
-                        &tab,
-                        &record,
-                        rex::agents::Place::Root {
-                            group,
-                            index: Some(index),
-                        },
-                    )
+                Some((record, index)) => rex::lifecycle::edit(app, &tab, |s| {
+                    s.place(&tab, &record, rex::agents::Place::Sibling(index))
                 }),
                 None => Ok(()),
             }
