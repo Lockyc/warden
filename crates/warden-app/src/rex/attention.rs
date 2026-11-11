@@ -7,14 +7,17 @@
 //! title, a new message) raise nothing, and neither does a block's first report, so launch counts
 //! as everything seen. Held in memory only.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::windows::AgentState;
 
 /// What each block's program last reported, and whether a `done` it reached is still unseen.
+/// A `dismissed` block's agent tab is closing or going to sleep: its program ending as its window
+/// closes reports `done` or `error` while the record still names the block, so it never needs you.
 #[derive(Debug, Default)]
 pub struct Attention {
     blocks: HashMap<String, Mark>,
+    dismissed: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -55,7 +58,7 @@ impl Attention {
         };
         let changed = need(mark.state) != need(state);
         mark.state = state;
-        if visible || need(state) == Need::Nothing {
+        if visible || need(state) == Need::Nothing || self.dismissed.contains(block) {
             mark.unseen = false;
             return false;
         }
@@ -74,6 +77,9 @@ impl Attention {
 
     /// Whether `block`, now in `state`, needs you: blocked, or done and not yet seen.
     pub fn needs_you(&self, block: &str, state: AgentState) -> bool {
+        if self.dismissed.contains(block) {
+            return false;
+        }
         match need(state) {
             Need::Blocked => true,
             Need::Done => self.blocks.get(block).is_some_and(|m| m.unseen),
@@ -81,9 +87,23 @@ impl Attention {
         }
     }
 
+    /// `block`'s agent tab is closing or going to sleep: it raises nothing from here on.
+    pub fn dismiss(&mut self, block: &str) {
+        self.dismissed.insert(block.to_owned());
+        if let Some(m) = self.blocks.get_mut(block) {
+            m.unseen = false;
+        }
+    }
+
+    /// The close or sleep that dismissed `block` failed, so its agent tab stays live.
+    pub fn restore(&mut self, block: &str) {
+        self.dismissed.remove(block);
+    }
+
     /// Stop tracking `block` (it belongs to no agent tab any more).
     pub fn forget(&mut self, block: &str) {
         self.blocks.remove(block);
+        self.dismissed.remove(block);
     }
 }
 
@@ -158,6 +178,30 @@ mod tests {
         assert!(!a.needs_you("b", Done));
         assert!(!a.needs_you("b", Idle));
         assert!(!a.needs_you("other", Done), "an unknown block is seen");
+    }
+
+    #[test]
+    fn a_dismissed_block_never_raises() {
+        let mut a = tracking("b", Working);
+        assert!(a.observe("b", Done, false));
+        a.dismiss("b");
+        assert!(!a.needs_you("b", Done), "dismissing clears what was unseen");
+        assert!(!a.observe("b", Working, false));
+        assert!(
+            !a.observe("b", Error, false),
+            "its program ending as the window closes: none"
+        );
+        assert!(!a.needs_you("b", Blocked));
+
+        a.restore("b");
+        assert!(a.observe("b", Blocked, false), "restored: it raises again");
+        a.dismiss("b");
+        a.forget("b");
+        assert!(
+            !a.observe("b", Working, false),
+            "forgotten: a baseline again"
+        );
+        assert!(a.observe("b", Blocked, false), "and no longer dismissed");
     }
 
     #[test]

@@ -1431,6 +1431,18 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
         }
         req
     };
+    // The agent tab going away ends its program, and that report must not read as it finishing.
+    let dismissed = match &op {
+        AgentOp::Sleep(id) | AgentOp::Close { id, .. } => lock(&store)
+            .records(tab_id)
+            .into_iter()
+            .find(|r| r.id == *id)
+            .and_then(|r| r.block_id),
+        _ => None,
+    };
+    if let (Some(block), Some(attention)) = (&dismissed, app.try_state::<Mutex<Attention>>()) {
+        lock(&attention).dismiss(block);
+    }
     let (app, label) = (app.clone(), label.to_owned());
     let focus_main = matches!(op, AgentOp::New);
     std::thread::Builder::new()
@@ -1452,6 +1464,11 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
                 _ => Err(format!("Rex server {}: no connection to Rex", req.server)),
             };
             if let Err(message) = done {
+                if let (Some(block), Some(attention)) =
+                    (&dismissed, app.try_state::<Mutex<Attention>>())
+                {
+                    lock(&attention).restore(block);
+                }
                 land_on_main(Err(message));
                 // The surface went before the worker started; a refresh re-spawns the agent the
                 // failed sleep or close left selected.
