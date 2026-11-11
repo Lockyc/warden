@@ -294,7 +294,8 @@ impl RexHub {
             .unwrap_or_default()
     }
 
-    /// Leave `window_id` out of [`RexHub::windows`] until its close answers.
+    /// Leave `window_id` out of [`RexHub::windows`] until its close answers — or, for a close
+    /// that timed out, until a view no longer lists it.
     pub(super) fn mark_closing(&self, server: &str, window_id: &str) {
         self.inner
             .lock()
@@ -394,10 +395,14 @@ impl RexHub {
                 list.len() != before
             });
         }
-        self.inner
-            .lock()
-            .closing
-            .remove(&(server.to_owned(), window_id.to_owned()));
+        // A timed-out close was still sent: Rex answers only once the program exits, so the
+        // window stays left out until a view no longer lists it (`on_view`).
+        if !matches!(closed, Err(RexError::Timeout)) {
+            self.inner
+                .lock()
+                .closing
+                .remove(&(server.to_owned(), window_id.to_owned()));
+        }
         closed
     }
 
@@ -622,6 +627,16 @@ impl Inner {
                 };
                 entry.gen = gen;
                 entry.seq = seq;
+                // A window that left this session is closed: drop its closing mark, which a
+                // timed-out close (`close_window_by`) leaves standing until now.
+                for gone in entry
+                    .list
+                    .iter()
+                    .filter(|w| !list.iter().any(|n| n.window_id == w.window_id))
+                {
+                    st.closing
+                        .remove(&(server.to_owned(), gone.window_id.clone()));
+                }
                 entry.list = list;
                 entry.active = active;
                 changed
