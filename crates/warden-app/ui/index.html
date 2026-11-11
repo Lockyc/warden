@@ -380,6 +380,12 @@
       .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-group .cc-attention { margin-left: auto; }
       .a-row.k { padding-left: 14px; }
+      /* A fork sits under the tab it came from, `--depth` (capped at 2) steps in. */
+      .a-row.nested { padding-left: calc(6px + var(--depth) * 12px); }
+      .a-row.k.nested { padding-left: calc(14px + var(--depth) * 12px); }
+      .a-fork-caret { flex: none; width: 10px; margin-right: -3px; color: #7d8590; text-align: center; }
+      .a-fork-caret:hover { color: #c3ccd8; }
+      .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
       .a-empty { color: #6b7280; padding: 6px; font-size: 0.9em; }
       .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
         color: #7d8590; font-size: 0.9em; }
@@ -422,7 +428,8 @@
       #agents.narrow .a-row { justify-content: center; padding: 6px 0; }
       #agents.narrow .a-text, #agents.narrow .a-more, #agents.narrow .a-actions,
       #agents.narrow .a-gname, #agents.narrow .a-group .a-caret, #agents.narrow .a-empty,
-      #agents.narrow .a-newdrop { display: none; }
+      #agents.narrow .a-newdrop, #agents.narrow .a-fork-caret, #agents.narrow .a-forks { display: none; }
+      #agents.narrow .a-row.nested { box-shadow: inset 2px 0 0 #3d444d; }
       #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
         border-top: 1px solid #313640; margin: 4px 4px 0; }
       #agents.narrow .a-group .cc-attention { margin: 0; }
@@ -1737,9 +1744,9 @@
         }
         // The armed agent went (closed elsewhere, or by its own exit): nothing left to confirm.
         if (agentControls.armed !== null && !ids.has(agentControls.armed)) agentControls.disarm();
-        dto.rows.filter((r) => !r.group).forEach((r) => list.append(...agentRow(tab, dto, r, false)));
+        dto.rows.filter((r) => !r.group && !r.hidden).forEach((r) => list.append(...agentRow(tab, dto, r, false)));
         dto.groups.forEach((g) => {
-          const members = dto.rows.filter((r) => r.group === g.name);
+          const members = dto.rows.filter((r) => r.group === g.name && !r.hidden);
           list.append(groupHeader(tab, g));
           if (!g.folded) members.forEach((r) => list.append(...agentRow(tab, dto, r, true)));
         });
@@ -1790,9 +1797,20 @@
         row.classList.toggle("open", agentUi.open === r.id);
         row.dataset.id = r.id;
         row.dataset.group = r.group ?? "";
+        row.dataset.parent = r.parent ?? "";
+        row.classList.toggle("nested", r.depth > 0);
+        row.style.setProperty("--depth", Math.min(r.depth, 2));
         const name = r.name || "untitled";
         const ctx = r.context || (r.state === "asleep" ? "asleep" : "");
         row.title = ctx ? name + "\n" + ctx : name;
+        // While any row has forks, every row keeps the caret's slot, so names line up by depth.
+        if (r.forks) {
+          const n = r.forks === 1 ? "1 fork" : `${r.forks} forks`;
+          const caret = agentButton(r.folded ? "▸" : "▾", () =>
+            agentCall("agent_fold_family", { tabId: tab, recordId: r.id, folded: !r.folded }), "a-fork-caret");
+          caret.title = (r.folded ? "Show " : "Fold ") + n;
+          row.append(caret);
+        } else if (dto.rows.some((x) => x.forks)) row.append(agentEl("span", "a-fork-caret"));
         const text = agentEl("span", "a-text");
         if (agentUi.renaming === r.id) {
           const stop = () => { agentUi.renaming = null; renderAgents(); };
@@ -1805,8 +1823,9 @@
         }
         if (ctx) text.append(agentEl("span", "a-ctx", ctx));
         row.append(text);
+        if (r.folded) row.append(agentEl("span", "a-forks", "+" + r.forks));
         const rec = agentControlRecord(r);
-        if (rec.attention) row.append(agentControls.attention(true));
+        if (rec.attention || r.amber) row.append(agentControls.attention(true));
         row.append(agentControls.presence(rec, r.state !== "asleep"));
         const more = agentButton("⋯", () => toggleActions(r.id), "a-more");
         more.title = "Fork, close, rename, group";
@@ -1977,7 +1996,8 @@
         const t = d.drop;
         if (t && t.newGroup) Object.assign(agentUi, { open: d.id, newGroupFor: d.id });
         renderAgents(); // drops the drag marks and the New group target
-        if (t && !t.newGroup) agentGroup(d.tab, d.id, t.group, t.index);
+        if (t && t.reorder) agentCall("agent_reorder", { tabId: d.tab, recordId: d.id, index: t.index });
+        else if (t && !t.newGroup) agentGroup(d.tab, d.id, t.group, t.index);
       }
       // Where a drop at (x, y) lands: a row's upper/lower half → before/after it in its group; a
       // group header's lower half → that group's top (its end when folded), its upper half → the
@@ -1989,13 +2009,30 @@
         if (nd) return { newGroup: true, el: nd, cls: "over" };
         const row = hit.closest(".a-row");
         if (row) {
-          if (row.dataset.id === drag.id) return null;
-          const group = row.dataset.group || null;
-          const peers = [...document.querySelectorAll("#agents-list .a-row")].filter(
-            (x) => x.dataset.id !== drag.id && (x.dataset.group || null) === group);
+          const dto = agentLists.get(drag.tab);
+          const parentOf = (id) => dto.rows.find((x) => x.id === id)?.parent ?? null;
+          const rootOf = (id) => { while (parentOf(id)) id = parentOf(id); return id; };
+          const under = (id, of) => { for (let p = parentOf(id); p; p = parentOf(p)) if (p === of) return true; return false; };
+          if (row.dataset.id === drag.id || under(row.dataset.id, drag.id)) return null;
+          const rows = [...document.querySelectorAll("#agents-list .a-row")];
           const r = row.getBoundingClientRect();
           const after = y > r.top + r.height / 2;
-          return { group, index: peers.indexOf(row) + (after ? 1 : 0), el: row, cls: after ? "drop-after" : "drop-before" };
+          const mark = { el: row, cls: after ? "drop-after" : "drop-before" };
+          // Among its own source's other forks: a reorder in the family.
+          const parent = parentOf(drag.id);
+          if (parent && row.dataset.parent === parent) {
+            const peers = rows.filter((x) => x.dataset.id !== drag.id && x.dataset.parent === parent);
+            return { reorder: true, index: peers.indexOf(row) + (after ? 1 : 0), ...mark };
+          }
+          // Anywhere else it lands as a top-level tab, before or after a whole family: on a fork,
+          // after that fork's family.
+          const root = rows.find((x) => x.dataset.id === rootOf(row.dataset.id));
+          const group = row.dataset.group || null;
+          const peers = rows.filter((x) => x.dataset.id !== drag.id && !x.dataset.parent &&
+            (x.dataset.group || null) === group);
+          if (row === root) return { group, index: peers.indexOf(row) + (after ? 1 : 0), ...mark };
+          const family = rows.filter((x) => rootOf(x.dataset.id) === root.dataset.id && x.dataset.id !== drag.id);
+          return { group, index: peers.indexOf(root) + 1, el: family[family.length - 1], cls: "drop-after" };
         }
         const h = hit.closest(".a-group");
         if (!h) return null;
