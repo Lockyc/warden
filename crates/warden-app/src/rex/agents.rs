@@ -115,6 +115,21 @@ pub fn fork_command(resume: &str) -> Result<String, &'static str> {
         .join(" "))
 }
 
+/// Where [`AgentStore::place`] moves a record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Place {
+    /// At this index among its other siblings not closed, as the list shows them: its source's
+    /// other forks, or for a top-level tab its group's other top-level tabs.
+    Sibling(usize),
+    /// A top-level tab of `group` (trimmed; blank or `None` is ungrouped) at `index` among that
+    /// group's other top-level tabs not closed, or after them; a group no row holds yet goes
+    /// after the others. A fork placed here leaves its family.
+    Root {
+        group: Option<String>,
+        index: Option<usize>,
+    },
+}
+
 /// A folded group of a project's list.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Fold {
@@ -180,41 +195,98 @@ impl AgentStore {
         ok
     }
 
-    /// Move `project`'s record `id` into `group` (trimmed; blank or `None` is ungrouped) at
-    /// `index` among that group's other rows (its records not closed, as the list shows them), or
-    /// last; a group no row holds yet goes after the others. Closed records keep their place.
+    /// Move `project`'s record `id`, with its forks, to `to`. Closed records keep their place.
     /// Positions are renumbered in list order ([`in_list_order`]). False for an unknown record.
-    pub fn set_group(
-        &mut self,
-        project: &str,
-        id: &str,
-        group: Option<&str>,
-        index: Option<usize>,
-    ) -> bool {
+    pub fn place(&mut self, project: &str, id: &str, to: Place) -> bool {
         let mut list = in_list_order(&self.records(project));
         let Some(at) = list.iter().position(|r| r.id == id) else {
             return false;
         };
-        let mut moved = list.remove(at);
-        moved.group = group
-            .map(str::trim)
-            .filter(|g| !g.is_empty())
-            .map(Into::into);
-        let members: Vec<usize> = (0..list.len())
-            .filter(|&i| list[i].group == moved.group && list[i].state != RecordState::Closed)
-            .collect();
-        let to = match (members.get(index.unwrap_or(usize::MAX)), members.last()) {
-            (Some(&i), _) => i,
-            (None, Some(&last)) => last + 1,
-            // The first ungrouped record tops the list; a new group follows every other.
-            (None, None) if moved.group.is_none() => 0,
-            (None, None) => list.len(),
-        };
-        list.insert(to, moved);
+        let open = |r: &AgentRecord| r.state != RecordState::Closed;
+        match to {
+            Place::Sibling(index) => {
+                let parent = parent_of(&list, &list[at]);
+                let group = list[at].group.clone();
+                let mut order: Vec<usize> = (0..list.len())
+                    .filter(|&i| {
+                        i != at
+                            && open(&list[i])
+                            && parent_of(&list, &list[i]) == parent
+                            && (parent.is_some() || list[i].group == group)
+                    })
+                    .collect();
+                order.insert(index.min(order.len()), at);
+                // The siblings trade their slots; each one's forks follow it.
+                let mut slots: Vec<u32> = order.iter().map(|&i| list[i].position).collect();
+                slots.sort_unstable();
+                for (&i, p) in order.iter().zip(slots) {
+                    list[i].position = p;
+                }
+                list = in_list_order(&list);
+            }
+            Place::Root { group, index } => {
+                let group: Option<String> = group
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|g| !g.is_empty())
+                    .map(Into::into);
+                // It leaves its family; its own forks' chains now end at it, and share its group.
+                list[at].lineage.clear();
+                list[at].group = group.clone();
+                for r in &mut list {
+                    if let Some(k) = r.lineage.iter().position(|x| x == id) {
+                        r.lineage.truncate(k + 1);
+                        r.group = group.clone();
+                    }
+                }
+                let (family, mut rest): (Vec<AgentRecord>, Vec<AgentRecord>) = list
+                    .into_iter()
+                    .partition(|r| r.id == id || r.lineage.iter().any(|x| x == id));
+                let members: Vec<usize> = (0..rest.len())
+                    .filter(|&i| {
+                        rest[i].group == group
+                            && open(&rest[i])
+                            && parent_of(&rest, &rest[i]).is_none()
+                    })
+                    .collect();
+                // Just past member `i`'s family.
+                let end = |i: usize| {
+                    let root = &rest[i].id;
+                    (i + 1..rest.len())
+                        .find(|&j| !rest[j].lineage.contains(root))
+                        .unwrap_or(rest.len())
+                };
+                let to = match (members.get(index.unwrap_or(usize::MAX)), members.last()) {
+                    (Some(&i), _) => i,
+                    (None, Some(&last)) => end(last),
+                    // The first ungrouped record tops the list; a new group follows every other.
+                    (None, None) if group.is_none() => 0,
+                    (None, None) => rest.len(),
+                };
+                rest.splice(to..to, family);
+                list = rest;
+            }
+        }
         for (i, r) in list.iter_mut().enumerate() {
             r.position = i as u32;
         }
         self.set_project(project, list);
+        true
+    }
+
+    /// Fold or unfold the forks under `project`'s record `id`. False for an unknown record.
+    pub fn set_family_folded(&mut self, project: &str, id: &str, folded: bool) -> bool {
+        let Some(r) = self
+            .records
+            .iter_mut()
+            .find(|r| r.id == id && r.project == project)
+        else {
+            return false;
+        };
+        if r.folded != folded {
+            r.folded = folded;
+            self.save();
+        }
         true
     }
 
@@ -847,21 +919,113 @@ mod tests {
         s
     }
 
+    /// Place `id` as a top-level tab of `group` at `index`.
+    fn put(s: &mut AgentStore, id: &str, group: Option<&str>, index: Option<usize>) -> bool {
+        s.place(
+            "p",
+            id,
+            Place::Root {
+                group: group.map(Into::into),
+                index,
+            },
+        )
+    }
+
+    fn family() -> AgentStore {
+        let mut s = AgentStore::default();
+        for r in [
+            fam("a", 0, &[]),
+            fam("a1", 1, &["a"]),
+            fam("a1x", 2, &["a1", "a"]),
+            fam("a2", 3, &["a"]),
+            fam("b", 4, &[]),
+        ] {
+            s.upsert(r);
+        }
+        s
+    }
+
+    fn by(s: &AgentStore, id: &str) -> AgentRecord {
+        s.records("p").into_iter().find(|r| r.id == id).unwrap()
+    }
+
+    #[test]
+    fn moving_a_root_carries_its_family() {
+        let mut s = family();
+        assert!(put(&mut s, "a", None, None));
+        assert_eq!(ids(&s), ["b", "a", "a1", "a1x", "a2"]);
+        let positions: Vec<u32> = s.records("p").iter().map(|r| r.position).collect();
+        assert_eq!(positions, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn sibling_reorder_stays_in_family() {
+        let mut s = family();
+        assert!(s.place("p", "a2", Place::Sibling(0)));
+        assert_eq!(ids(&s), ["a", "a2", "a1", "a1x", "b"]);
+        assert_eq!(by(&s, "a2").lineage, ["a"]);
+        assert!(s.place("p", "b", Place::Sibling(0)), "roots reorder too");
+        assert_eq!(ids(&s), ["b", "a", "a2", "a1", "a1x"]);
+    }
+
+    #[test]
+    fn rooting_a_fork_detaches_it_with_its_forks() {
+        let mut s = family();
+        assert!(put(&mut s, "a1", Some("g"), None));
+        assert_eq!(ids(&s), ["a", "a2", "b", "a1", "a1x"]);
+        assert!(by(&s, "a1").lineage.is_empty());
+        assert_eq!(by(&s, "a1x").lineage, ["a1"]);
+        assert_eq!(by(&s, "a1x").group.as_deref(), Some("g"));
+        // Its own source closing no longer reaches back to a.
+        let mut a1 = by(&s, "a1");
+        a1.state = RecordState::Closed;
+        s.upsert(a1);
+        let recs = s.records("p");
+        assert_eq!(parent_of(&recs, &by(&s, "a1x")), None);
+    }
+
+    #[test]
+    fn regrouping_a_root_writes_through_to_its_forks() {
+        let mut s = family();
+        assert!(put(&mut s, "a", Some("g"), None));
+        for id in ["a", "a1", "a1x", "a2"] {
+            assert_eq!(by(&s, id).group.as_deref(), Some("g"), "{id}");
+        }
+        assert_eq!(ids(&s), ["b", "a", "a1", "a1x", "a2"]);
+    }
+
+    #[test]
+    fn rooting_lands_before_or_after_whole_families() {
+        let mut s = family();
+        assert!(put(&mut s, "b", None, Some(0)));
+        assert_eq!(ids(&s), ["b", "a", "a1", "a1x", "a2"], "before a's family");
+        assert!(put(&mut s, "b", None, None));
+        assert_eq!(ids(&s), ["a", "a1", "a1x", "a2", "b"], "after it");
+    }
+
+    #[test]
+    fn a_family_folds() {
+        let mut s = family();
+        assert!(s.set_family_folded("p", "a", true));
+        assert!(by(&s, "a").folded);
+        assert!(!s.set_family_folded("p", "nope", true));
+    }
+
     #[test]
     fn grouping_keeps_ungrouped_above_groups_and_renumbers() {
         let mut s = three();
-        assert!(s.set_group("p", "a", Some("work"), None));
+        assert!(put(&mut s, "a", Some("work"), None));
         assert_eq!(ids(&s), ["b", "c", "a"], "a new group goes last");
-        assert!(s.set_group("p", "c", Some(" work "), Some(0)));
+        assert!(put(&mut s, "c", Some(" work "), Some(0)));
         assert_eq!(ids(&s), ["b", "c", "a"], "first in its group");
         assert_eq!(s.records("p")[1].group.as_deref(), Some("work"));
-        assert!(s.set_group("p", "a", None, Some(0)));
+        assert!(put(&mut s, "a", None, Some(0)));
         assert_eq!(ids(&s), ["a", "b", "c"], "ungrouped, at the top");
-        assert!(s.set_group("p", "b", Some(""), None), "blank clears");
+        assert!(put(&mut s, "b", Some(""), None), "blank clears");
         assert_eq!(ids(&s), ["a", "b", "c"]);
         let positions: Vec<u32> = s.records("p").iter().map(|r| r.position).collect();
         assert_eq!(positions, [0, 1, 2]);
-        assert!(!s.set_group("p", "nope", None, None));
+        assert!(!put(&mut s, "nope", None, None));
     }
 
     #[test]
@@ -882,7 +1046,7 @@ mod tests {
             s.upsert(r);
         }
         // The list shows g as [y, z]; dropping m at 1 puts it between them.
-        assert!(s.set_group("p", "m", Some("g"), Some(1)));
+        assert!(put(&mut s, "m", Some("g"), Some(1)));
         let rows: Vec<String> = s
             .records("p")
             .into_iter()

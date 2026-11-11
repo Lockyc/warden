@@ -543,7 +543,14 @@ fn agent_key(app: &tauri::AppHandle, id: &str) {
         MENU_AGENT_MOVE_UP | MENU_AGENT_MOVE_DOWN => {
             match agent_move(&list, step(id == MENU_AGENT_MOVE_UP)) {
                 Some((record, group, index)) => rex::lifecycle::edit(app, &tab, |s| {
-                    s.set_group(&tab, &record, group.as_deref(), Some(index))
+                    s.place(
+                        &tab,
+                        &record,
+                        rex::agents::Place::Root {
+                            group,
+                            index: Some(index),
+                        },
+                    )
                 }),
                 None => Ok(()),
             }
@@ -2243,8 +2250,9 @@ fn agent_rename(
     rex::lifecycle::run(window.app_handle(), window.label(), &tab_id, op)
 }
 
-/// Move agent tab `record_id` into `group` (absent or blank: ungrouped; a new name makes the
-/// group) at `index` among that group's tabs, last when absent.
+/// Move agent tab `record_id`, with its forks, into `group` (absent or blank: ungrouped; a new
+/// name makes the group) at `index` among that group's top-level tabs, last when absent. A fork
+/// moved here leaves its family.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn agent_group(
@@ -2256,7 +2264,41 @@ fn agent_group(
 ) -> Result<(), String> {
     use tauri::Manager;
     rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
-        s.set_group(&tab_id, &record_id, group.as_deref(), index)
+        s.place(
+            &tab_id,
+            &record_id,
+            rex::agents::Place::Root { group, index },
+        )
+    })
+}
+
+/// Move agent tab `record_id`, with its forks, to `index` among its siblings.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_reorder(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    index: usize,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.place(&tab_id, &record_id, rex::agents::Place::Sibling(index))
+    })
+}
+
+/// Fold or unfold the forks under agent tab `record_id`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_fold_family(
+    window: tauri::WebviewWindow,
+    tab_id: String,
+    record_id: String,
+    folded: bool,
+) -> Result<(), String> {
+    use tauri::Manager;
+    rex::lifecycle::edit(window.app_handle(), &tab_id, |s| {
+        s.set_family_folded(&tab_id, &record_id, folded)
     })
 }
 
@@ -3311,7 +3353,9 @@ fn main() {
             agent_reopen,
             agent_rename,
             agent_group,
+            agent_reorder,
             agent_fold,
+            agent_fold_family,
             agent_clear_closed,
             server_sleep,
             project_sleep
