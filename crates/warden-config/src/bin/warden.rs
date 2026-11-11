@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use warden_config::{config_path, fmt_cli, load_with, login_shell, Split, SplitSide};
+use warden_config::{config_path, fmt_cli, load_with, login_shell, Root, Split, SplitSide, Tab};
 
 /// A compact `split=…` rendering for `validate`'s tree, in place of raw `{:?}` Debug
 /// (`Some(Split { side: Left, size: 0.3, panes: [..] })`): `split=none` when unset, else
@@ -31,6 +31,71 @@ fn fmt_split(split: &Option<Split>) -> String {
     }
 }
 
+/// `validate`'s line for one tab; `id=` and `colour=` appear only when the config sets them.
+fn tab_line(t: &Tab) -> String {
+    let id =
+        t.id.as_deref()
+            .map(|id| format!(" id={id:?}"))
+            .unwrap_or_default();
+    let colour = t
+        .colour
+        .map(|c| format!(" colour={}", c.hex()))
+        .unwrap_or_default();
+    let group = t
+        .group
+        .as_deref()
+        .map(|g| format!(" group={g:?}"))
+        .unwrap_or_default();
+    format!(
+        "    tab {:?}{id} dir={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} resume={:?} server={:?} load_on_open={} {}{group}{colour}",
+        t.title,
+        t.dir.display(),
+        t.shell,
+        t.startup,
+        t.probe,
+        t.kill,
+        t.suspend,
+        t.resume,
+        t.server,
+        t.load_on_open,
+        fmt_split(&t.split),
+    )
+}
+
+/// `validate`'s lines for one root: the root and its resolved cascade, then one line per
+/// `[[window.root.tab]]` override. The CLI does no scanning, so this stands in for the projects
+/// the app discovers — without it a roots-only window looks empty.
+fn root_lines(r: &Root) -> Vec<String> {
+    let mut lines = vec![format!(
+        "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} resume={:?} server={:?} {}",
+        r.name,
+        r.dir.display(),
+        r.depth,
+        r.shell,
+        r.startup,
+        r.probe,
+        r.kill,
+        r.suspend,
+        r.resume,
+        r.server,
+        fmt_split(&r.split)
+    )];
+    lines.extend(r.overrides.iter().map(|o| {
+        format!(
+            "      override dir={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} resume={:?} {}",
+            o.dir.display(),
+            o.shell,
+            o.startup,
+            o.probe,
+            o.kill,
+            o.suspend,
+            o.resume,
+            fmt_split(&o.split)
+        )
+    }));
+    lines
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -46,46 +111,12 @@ fn main() {
                     for p in &loaded.config.windows {
                         println!("  window {:?} {}", p.title, p.colour.hex());
                         for t in &p.tabs {
-                            let group = t
-                                .group
-                                .as_deref()
-                                .map(|g| format!(" group={g:?}"))
-                                .unwrap_or_default();
-                            println!(
-                                "    tab {:?} dir={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} resume={:?} server={:?} load_on_open={} {}{}",
-                                t.title,
-                                t.dir.display(),
-                                t.shell,
-                                t.startup,
-                                t.probe,
-                                t.kill,
-                                t.suspend,
-                                t.resume,
-                                t.server,
-                                t.load_on_open,
-                                fmt_split(&t.split),
-                                group
-                            );
+                            println!("{}", tab_line(t));
                         }
-                        // Roots are declarations the app expands at runtime (the CLI does
-                        // no scanning), so print the root + its resolved cascade rather
-                        // than discovered projects — otherwise a roots-only window looks
-                        // deceptively empty.
                         for r in &p.roots {
-                            println!(
-                                "    root {:?} dir={} depth={} shell={:?} startup={:?} probe={:?} kill={:?} suspend={:?} resume={:?} server={:?} {}",
-                                r.name,
-                                r.dir.display(),
-                                r.depth,
-                                r.shell,
-                                r.startup,
-                                r.probe,
-                                r.kill,
-                                r.suspend,
-                                r.resume,
-                                r.server,
-                                fmt_split(&r.split)
-                            );
+                            for line in root_lines(r) {
+                                println!("{line}");
+                            }
                         }
                     }
                     for w in &loaded.warnings {
@@ -116,5 +147,63 @@ fn main() {
             eprintln!("usage: warden <validate|fmt> [--check] [path]");
             std::process::exit(2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use warden_config::{raw::parse, resolve::resolve};
+
+    const CFG: &str = r##"
+[[window]]
+title = "w"
+  [[window.tab]]
+  id = "core"
+  dir = "/tmp/alpha"
+  colour = "#112233"
+  [[window.tab]]
+  dir = "/tmp/beta"
+  [[window.root]]
+  name = "projects"
+  dir = "/tmp/projects"
+    [[window.root.tab]]
+    dir = "/tmp/projects/one"
+    cmd = "go"
+"##;
+
+    fn window() -> warden_config::Window {
+        resolve(parse(CFG).unwrap()).unwrap().0.windows.remove(0)
+    }
+
+    #[test]
+    fn a_tab_line_carries_its_id_and_colour_only_when_set() {
+        let w = window();
+        let set = tab_line(&w.tabs[0]);
+        assert!(set.contains(" id=\"core\""), "{set}");
+        assert!(set.contains(" colour=#112233"), "{set}");
+        let unset = tab_line(&w.tabs[1]);
+        assert!(
+            !unset.contains(" id=") && !unset.contains(" colour="),
+            "{unset}"
+        );
+    }
+
+    #[test]
+    fn a_root_prints_each_override_under_it() {
+        let w = window();
+        let lines = root_lines(&w.roots[0]);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with("    root \"projects\""),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[1].starts_with("      override dir=/tmp/projects/one")
+                && lines[1].contains("startup=Some(\"go\")"),
+            "{}",
+            lines[1]
+        );
     }
 }
