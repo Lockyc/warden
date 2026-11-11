@@ -264,34 +264,19 @@ unsafe extern "C" fn action_cb(
         return true;
     }
 
-    // A dead child tears the tab down, which FREES this very surface — and libghostty is still
-    // using it. `Surface.childExited` calls us mid-function and, once we answer `true`, goes on to
-    // read `self.config` and call `self.close()` (Surface.zig). Freeing inside this callback is
-    // therefore a use-after-free — a silent one, which is exactly why it survived a live test. So
-    // hand the event to the *next* main-queue turn: libghostty's stack unwinds first, then warden
-    // unloads the tab. (This also keeps `ManagerState` off the lock path of any action libghostty
-    // might raise synchronously from a warden call.) Bell/notification stay direct — they free
-    // nothing.
-    if let Some(exit_code) = action.child_exited() {
-        let view = SURFACE_VIEWS
-            .lock()
-            .ok()
-            .and_then(|m| m.get(&(surface as usize)).copied())
-            .unwrap_or(0);
-        defer_event(
-            view as *const WardenHostView,
-            SurfaceEvent {
-                surface_id: surface as usize,
-                signal: SurfaceSignal::ChildExited {
-                    exit_code: Some(exit_code),
-                },
-            },
-        );
-        return true;
-    }
-
-    let signal = if action.is_ring_bell() {
-        Some(SurfaceSignal::Bell)
+    // The app-layer signals all reach warden on the *next* main-queue turn, never inside this
+    // callback. A dead child tears the tab down, which FREES this very surface — and libghostty is
+    // still using it: `Surface.childExited` calls us mid-function and, once we answer `true`, goes
+    // on to read `self.config` and call `self.close()` (Surface.zig), so freeing here is a silent
+    // use-after-free. Bell and notification free nothing but lock `ManagerState` (`notify.rs`),
+    // which must stay off the lock path of any action libghostty might raise synchronously from a
+    // warden call that already holds it.
+    let signal = if let Some(exit_code) = action.child_exited() {
+        SurfaceSignal::ChildExited {
+            exit_code: Some(exit_code),
+        }
+    } else if action.is_ring_bell() {
+        SurfaceSignal::Bell
     } else if let Some(dn) = action.desktop_notification() {
         // Copy the borrowed C strings out now — libghostty frees them when this call returns.
         let read = |p: *const c_char| {
@@ -301,23 +286,26 @@ unsafe extern "C" fn action_cb(
                 CStr::from_ptr(p).to_string_lossy().into_owned()
             }
         };
-        Some(SurfaceSignal::Notification {
+        SurfaceSignal::Notification {
             title: read(dn.title),
             body: read(dn.body),
-        })
-    } else {
-        None
-    };
-    match signal {
-        Some(signal) => {
-            super::emit_surface_event(SurfaceEvent {
-                surface_id: surface as usize,
-                signal,
-            });
-            true
         }
-        None => false,
-    }
+    } else {
+        return false;
+    };
+    let view = SURFACE_VIEWS
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&(surface as usize)).copied())
+        .unwrap_or(0);
+    defer_event(
+        view as *const WardenHostView,
+        SurfaceEvent {
+            surface_id: surface as usize,
+            signal,
+        },
+    );
+    true
 }
 
 /// The surface libghostty currently believes focused, so a focus change can clear the previous

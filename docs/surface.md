@@ -100,8 +100,8 @@ must wait.** Both paths reach `manager.rs::handle_child_exited`, which picks the
 (`unload`, `close_block`, `release_block`, `close_agent`).
 
 **Never free a surface from inside `action_cb`** — libghostty is still standing on it, a silent
-use-after-free that tests fine. `SHOW_CHILD_EXITED` defers via `dispatch_async_f`; any future
-surface-destroying or lock-taking action takes the same path.
+use-after-free that tests fine. `SHOW_CHILD_EXITED`, `RING_BELL` and `DESKTOP_NOTIFICATION` defer
+via `dispatch_async_f`; any future surface-destroying or lock-taking action takes the same path.
 
 ## Focus and keys
 
