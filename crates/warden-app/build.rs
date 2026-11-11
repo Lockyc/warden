@@ -66,6 +66,7 @@ const DECODED: &[(&str, &[&str])] = &[
         &[
             "GHOSTTY_ACTION_DESKTOP_NOTIFICATION",
             "GHOSTTY_ACTION_MOUSE_SHAPE",
+            "GHOSTTY_ACTION_PWD",
             "GHOSTTY_ACTION_RING_BELL",
             "GHOSTTY_ACTION_OPEN_URL",
             "GHOSTTY_ACTION_SHOW_CHILD_EXITED",

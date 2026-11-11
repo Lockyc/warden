@@ -16,6 +16,7 @@
 //! mutex held, and a modal run loop must not re-enter a render callback before it is released.
 
 use std::os::raw::c_void;
+use std::path::Path;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -70,13 +71,14 @@ pub enum Decision {
     Deny(DenialReason),
 }
 
-/// Open the link libghostty raised for a click. Main thread (called from `action_cb`).
-pub fn open(kind: u32, raw: &str) {
+/// Open the link libghostty raised for a click. `base` is the clicked pane's working directory, the
+/// one a relative path in its output is relative to. Main thread (called from `action_cb`).
+pub fn open(kind: u32, raw: &str, base: &Path) {
     match kind {
         ffi::GHOSTTY_ACTION_OPEN_URL_KIND_TEXT | ffi::GHOSTTY_ACTION_OPEN_URL_KIND_HTML => {
             open_trusted(raw)
         }
-        ffi::GHOSTTY_ACTION_OPEN_URL_KIND_UNKNOWN => open_untrusted(&unknown_target(raw)),
+        ffi::GHOSTTY_ACTION_OPEN_URL_KIND_UNKNOWN => open_untrusted(&unknown_target(raw, base)),
         _ => open_untrusted(raw),
     }
 }
@@ -92,15 +94,23 @@ fn open_trusted(raw: &str) {
     NSWorkspace::sharedWorkspace().openURL(&url);
 }
 
-/// An `unknown`-kind target may be a plain path (`~/notes.txt`, `src/main.rs`), which [`decide`]
-/// rejects as scheme-less, so a path becomes the file URL it names first. A value with unsafe
-/// characters passes through unchanged so `decide` rejects it before percent-encoding hides them.
-fn unknown_target(raw: &str) -> String {
+/// An `unknown`-kind target may be a plain path (`~/notes.txt`, `src/main.rs`, `../x`), which
+/// [`decide`] rejects as scheme-less, so a path becomes the file URL it names first — a relative one
+/// joined onto `base`. A value with unsafe characters passes through unchanged so `decide` rejects
+/// it before percent-encoding hides them.
+fn unknown_target(raw: &str, base: &Path) -> String {
     let has_scheme =
         NSURL::URLWithString(&NSString::from_str(raw)).is_some_and(|u| u.scheme().is_some());
     if has_scheme || contains_unsafe_characters(raw) {
         return raw.to_owned();
     }
+    let joined;
+    let raw = if raw.starts_with('/') || raw.starts_with('~') {
+        raw
+    } else {
+        joined = base.join(raw);
+        joined.to_str().unwrap_or(raw)
+    };
     let path = NSString::from_str(raw).stringByStandardizingPath();
     NSURL::fileURLWithPath(&path)
         .absoluteString()
@@ -660,13 +670,28 @@ mod tests {
     #[test]
     fn unknown_kind_paths_become_file_urls() {
         let home = std::env::var("HOME").unwrap();
+        let base = Path::new("/work/proj/sub");
         assert_eq!(
-            unknown_target("~/notes.txt"),
+            unknown_target("~/notes.txt", base),
             format!("file://{home}/notes.txt")
         );
-        assert_eq!(unknown_target("https://example.com"), "https://example.com");
+        assert_eq!(unknown_target("/etc/hosts", base), "file:///etc/hosts");
+        // A relative path names a file under the pane's directory, never warden's own cwd.
+        assert_eq!(
+            unknown_target("src/main.rs", base),
+            "file:///work/proj/sub/src/main.rs"
+        );
+        assert_eq!(
+            unknown_target("./a.txt", base),
+            "file:///work/proj/sub/a.txt"
+        );
+        assert_eq!(unknown_target("../b.txt", base), "file:///work/proj/b.txt");
+        assert_eq!(
+            unknown_target("https://example.com", base),
+            "https://example.com"
+        );
         // Left raw so `decide` still sees the character.
-        assert_eq!(unknown_target("a\u{202E}b"), "a\u{202E}b");
+        assert_eq!(unknown_target("a\u{202E}b", base), "a\u{202E}b");
     }
 
     #[test]

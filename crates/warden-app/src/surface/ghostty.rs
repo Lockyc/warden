@@ -32,6 +32,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -228,9 +229,9 @@ unsafe extern "C" fn wakeup_cb(_userdata: *mut c_void) {
 
 /// App/surface actions (set-title, new-window, ring-bell, desktop-notification, ...). warden acts
 /// on the attention signals (`RING_BELL`, `DESKTOP_NOTIFICATION`), the dead-child signal
-/// (`SHOW_CHILD_EXITED`), and the link affordances (`OPEN_URL`, `MOUSE_SHAPE`), decoding each into
-/// a seam-neutral `SurfaceEvent` or an AppKit call. All other actions are unhandled; returning
-/// false = "not handled", which the reference (`Ghostty.App.swift`) also does for every
+/// (`SHOW_CHILD_EXITED`), and the link affordances (`OPEN_URL`, `MOUSE_SHAPE`, `PWD`), decoding
+/// each into a seam-neutral `SurfaceEvent` or an AppKit call. All other actions are unhandled;
+/// returning false = "not handled", which the reference (`Ghostty.App.swift`) also does for every
 /// unimplemented action. Runs on the main thread (called from a `ghostty_app_tick`).
 unsafe extern "C" fn action_cb(
     _app: ffi::ghostty_app_t,
@@ -241,12 +242,20 @@ unsafe extern "C" fn action_cb(
     let Some(surface) = target.surface() else {
         return false;
     };
-    // Two actions are handled entirely inside the seam — they act on AppKit, not on a tab, so
+    // The link actions are handled entirely inside the seam — they act on AppKit, not on a tab, so
     // there is nothing for the app layer to route. A link click always answers `true`, even for a
     // URL that can't be decoded: `false` makes libghostty retry with its own unscreened opener.
     if action.is_open_url() {
-        if let Some((kind, url)) = action.open_url() {
-            super::link::open(kind, &url);
+        if let (Some((kind, url)), Some(view)) = (action.open_url(), view_for(surface)) {
+            let base = view.ivars().link_base.borrow().clone();
+            super::link::open(kind, &url, &base);
+        }
+        return true;
+    }
+    // The shell's OSC 7 working directory: what a relative path a link names is relative to.
+    if let Some(pwd) = action.pwd() {
+        if let Some(view) = view_for(surface) {
+            *view.ivars().link_base.borrow_mut() = PathBuf::from(pwd);
         }
         return true;
     }
@@ -648,14 +657,24 @@ static SURFACE_VIEWS: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new()
 /// Apply libghostty's requested cursor shape to the view hosting `surface`. Stores it on the view
 /// and invalidates its cursor rects — AppKit re-asks via `resetCursorRects`, which is what makes the
 /// shape *stick* as the mouse moves (a bare `NSCursor::set()` is undone by the next mouse-move).
-fn set_mouse_shape(surface: ffi::ghostty_surface_t, shape: u32) {
-    let view_ptr = SURFACE_VIEWS
+/// The host view `surface` renders into, from `SURFACE_VIEWS`.
+///
+/// # Safety
+/// Main thread only, and the reference must not outlive the current callback: the entry is removed
+/// in `close()` before the view dies.
+unsafe fn view_for<'a>(surface: ffi::ghostty_surface_t) -> Option<&'a WardenHostView> {
+    let ptr = SURFACE_VIEWS
         .lock()
         .ok()
-        .and_then(|m| m.get(&(surface as usize)).copied());
-    let Some(ptr) = view_ptr else { return };
-    // SAFETY: main thread (action_cb), and the entry is removed in close() before the view dies.
-    let view: &WardenHostView = unsafe { &*(ptr as *const WardenHostView) };
+        .and_then(|m| m.get(&(surface as usize)).copied())?;
+    Some(&*(ptr as *const WardenHostView))
+}
+
+fn set_mouse_shape(surface: ffi::ghostty_surface_t, shape: u32) {
+    // SAFETY: main thread (action_cb), used only within this call.
+    let Some(view) = (unsafe { view_for(surface) }) else {
+        return;
+    };
     if view.ivars().mouse_shape.get() == shape {
         return;
     }
@@ -717,6 +736,7 @@ define_class!(
                 tracking_area: RefCell::new(None),
                 rex: Cell::new(false),
                 menu_press: Cell::new(0),
+                link_base: RefCell::new(PathBuf::new()),
             });
             unsafe { msg_send![super(this), initWithFrame: frame] }
         }
@@ -1155,6 +1175,9 @@ struct HostIvars {
     /// One bit per [`Button`] whose current press opened warden's menu, so that button's release
     /// is swallowed too (`begin_press` / `end_press`).
     menu_press: Cell<u8>,
+    /// The directory a relative link target resolves against: the tab's `dir`, then each OSC 7
+    /// working directory the shell reports (`action_cb`).
+    link_base: RefCell<PathBuf>,
 }
 
 /// A mouse button the menu routing tracks; its discriminant is its bit in `menu_press`.
@@ -1852,6 +1875,7 @@ impl GhosttySurface {
             // windows by construction, no shared global to disambiguate.
             host_view.set_surface(surface);
             host_view.ivars().rex.set(spec.server.is_some());
+            *host_view.ivars().link_base.borrow_mut() = spec.dir.clone();
 
             // Seed the surface's focus from the REAL current state instead of libghostty's
             // "assume focused" default. A surface is created focused=1, which starts its 60fps

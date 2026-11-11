@@ -62,7 +62,8 @@ arbitrary label text. An `NSTrackingArea` forwards `mouseMoved`/`mouseExited` (l
 on motion), `MOUSE_SHAPE` drives the cursor via cursor rects, `OPEN_URL` goes through
 `surface/link.rs`, which screens terminal-output targets the way Ghostty.app does: a custom
 scheme asks first unless the config's `trusted_link_schemes` lists it, and anything executable
-is refused with an alert. Mouse events report ⌘ as ⌘⇧ (`surface/ghostty.rs::mouse_mods`), so
+is refused with an alert; a relative path resolves against the pane's last OSC 7 directory, else
+its tab's `dir`. Mouse events report ⌘ as ⌘⇧ (`surface/ghostty.rs::mouse_mods`), so
 ⌘-hover and ⌘-click stay with libghostty even while the program inside tracks the mouse — where
 Ghostty.app needs ⇧⌘. When a link misbehaves, check in this order:
 

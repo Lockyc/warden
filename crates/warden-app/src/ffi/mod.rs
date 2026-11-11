@@ -255,6 +255,14 @@ pub struct ghostty_action_open_url_s {
     pub len: usize,
 }
 
+/// `ghostty_action_pwd_s`: the union variant for `PWD` — the shell's working directory as its
+/// OSC 7 reported it, a borrowed NUL-terminated path valid only for this call.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_pwd_s {
+    pub pwd: *const c_char,
+}
+
 /// `ghostty_surface_message_childexited_s`: the union variant for
 /// `SHOW_CHILD_EXITED` — the surface's child process is gone, so the terminal is dead.
 #[repr(C)]
@@ -305,6 +313,21 @@ impl ghostty_action_s {
         String::from_utf8(bytes.to_vec())
             .ok()
             .map(|url| (u.kind, url))
+    }
+
+    /// The working directory a `PWD` action reports, copied out; `None` for any other tag, or a
+    /// null, empty or non-UTF-8 path.
+    pub fn pwd(&self) -> Option<String> {
+        if self.tag != GHOSTTY_ACTION_PWD {
+            return None;
+        }
+        let p =
+            unsafe { &*(&self.action as *const ghostty_action_u as *const ghostty_action_pwd_s) };
+        if p.pwd.is_null() {
+            return None;
+        }
+        let s = unsafe { std::ffi::CStr::from_ptr(p.pwd) }.to_str().ok()?;
+        (!s.is_empty()).then(|| s.to_owned())
     }
 
     /// The child's exit code when the surface's process has died, else `None`.
@@ -679,6 +702,31 @@ mod tests {
             },
         );
         assert!(empty.open_url().is_none());
+    }
+
+    #[test]
+    fn decodes_pwd() {
+        let a = action_with(
+            GHOSTTY_ACTION_PWD,
+            ghostty_action_pwd_s {
+                pwd: c"/tmp/work".as_ptr(),
+            },
+        );
+        assert_eq!(a.pwd().as_deref(), Some("/tmp/work"));
+        let null = action_with(
+            GHOSTTY_ACTION_PWD,
+            ghostty_action_pwd_s {
+                pwd: std::ptr::null(),
+            },
+        );
+        assert!(null.pwd().is_none());
+        let other = action_with(
+            GHOSTTY_ACTION_RING_BELL,
+            ghostty_action_pwd_s {
+                pwd: c"/tmp/work".as_ptr(),
+            },
+        );
+        assert!(other.pwd().is_none());
     }
 
     #[test]
