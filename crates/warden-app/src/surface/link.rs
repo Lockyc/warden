@@ -174,10 +174,9 @@ fn file_decision(url: &NSURL) -> Decision {
         if !url.isFileURL() || url.query().is_some() || url.fragment().is_some() {
             return Decision::Deny(DenialReason::MalformedUrl);
         }
-        // An empty host and `localhost` are this machine; any other host could reach the network.
+        // Only this machine's own files; any other host could reach the network.
         if let Some(host) = url.host() {
-            let host = host.to_string();
-            if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+            if !is_this_machine(&host.to_string()) {
                 return Decision::Deny(DenialReason::MalformedUrl);
             }
         }
@@ -220,6 +219,35 @@ fn file_decision(url: &NSURL) -> Decision {
         }
         Decision::Allow(canonical)
     }
+}
+
+/// A `file:` URL host naming this machine: empty, `localhost`, or its own hostname (what
+/// `ls --hyperlink` and `eza --hyperlink` emit) — case-insensitive, `.local` optional on either side.
+fn is_this_machine(host: &str) -> bool {
+    if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let bare = |h: &str| {
+        let h = h.to_ascii_lowercase();
+        h.strip_suffix(".local").map(str::to_owned).unwrap_or(h)
+    };
+    own_hostname().is_some_and(|own| bare(&own) == bare(host))
+}
+
+/// `gethostname(3)`; `None` if it fails or isn't UTF-8.
+fn own_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer and its length match; gethostname NUL-terminates within it on success
+    // (the last byte stays 0 regardless, so the CStr scan is bounded).
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) };
+    if rc != 0 {
+        return None;
+    }
+    let s = std::ffi::CStr::from_bytes_until_nul(&buf)
+        .ok()?
+        .to_str()
+        .ok()?;
+    (!s.is_empty()).then(|| s.to_owned())
 }
 
 /// Launch Services picks a handler by extension, so known executable containers are refused even
@@ -610,6 +638,18 @@ mod tests {
         assert!(allowed(&decide(&format!("file://{}", txt.display()), &[])).is_some());
         assert!(allowed(&decide(&format!("file://{}/", dir.path().display()), &[])).is_some());
         assert!(allowed(&decide(&format!("file://localhost{}", txt.display()), &[])).is_some());
+        // `ls --hyperlink` / `eza --hyperlink` name this machine by its hostname, in any case and
+        // with or without `.local`.
+        let host = own_hostname().unwrap();
+        let bare = host.strip_suffix(".local").unwrap_or(&host).to_owned();
+        for h in [
+            host.clone(),
+            bare.to_ascii_uppercase(),
+            format!("{bare}.local"),
+        ] {
+            let url = format!("file://{h}{}", txt.display());
+            assert!(allowed(&decide(&url, &[])).is_some(), "{url}");
+        }
         let missing = format!("file://{}/nope", dir.path().display());
         assert_eq!(
             denied(&decide(&missing, &[])),
