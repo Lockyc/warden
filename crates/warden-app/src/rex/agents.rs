@@ -42,6 +42,14 @@ pub struct AgentRecord {
     /// Unix seconds, stamped by the caller of `reconcile`.
     pub closed_at: Option<u64>,
     pub selected: bool,
+    /// The records this one was forked from, nearest first; empty for a tab not forked (or
+    /// dragged out of its family). The whole chain, so a fork whose source closes or is
+    /// forgotten nests under the next one up ([`parent_of`]).
+    #[serde(default)]
+    pub lineage: Vec<String>,
+    /// Its forks are folded away under it.
+    #[serde(default)]
+    pub folded: bool,
 }
 
 /// A fresh record id: wall-clock nanoseconds plus a process-wide counter, in hex. Unique within
@@ -414,13 +422,44 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
         )*};
     }
     changed!(
-        project, name, group, position, resume, state, window_id, block_id, closed_at, selected
+        project, name, group, position, resume, state, window_id, block_id, closed_at, selected,
+        lineage, folded
     );
 }
 
-/// `records` (one project's) in list order: ungrouped above the groups, groups ordered by their
-/// first record's position, each by position.
+/// The id of `r`'s parent among `records` (one project's): the nearest of its lineage still
+/// listed and not closed. `None` for a top-level tab.
+pub fn parent_of(records: &[AgentRecord], r: &AgentRecord) -> Option<String> {
+    r.lineage
+        .iter()
+        .find(|id| {
+            records
+                .iter()
+                .any(|o| o.id == **id && o.state != RecordState::Closed)
+        })
+        .cloned()
+}
+
+/// How many parents up `r` sits from a top-level tab.
+pub fn depth_of(records: &[AgentRecord], r: &AgentRecord) -> u32 {
+    let mut depth = 0;
+    let mut at = parent_of(records, r);
+    // Bounded: only a tampered file could make a cycle.
+    while let Some(id) = at.filter(|_| (depth as usize) < records.len()) {
+        depth += 1;
+        at = records
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|p| parent_of(records, p));
+    }
+    depth
+}
+
+/// `records` (one project's) in list order: top-level tabs ungrouped above the groups, groups
+/// ordered by their first record's position, each by position; every tab's forks directly
+/// under it ([`parent_of`]), depth first, each family by position.
 pub fn in_list_order(records: &[AgentRecord]) -> Vec<AgentRecord> {
+    let parents: Vec<Option<String>> = records.iter().map(|r| parent_of(records, r)).collect();
     let first = |g: &str| {
         records
             .iter()
@@ -428,13 +467,34 @@ pub fn in_list_order(records: &[AgentRecord]) -> Vec<AgentRecord> {
             .map(|r| r.position)
             .min()
     };
-    let key = |r: &AgentRecord| {
+    let key = |&i: &usize| {
+        let r = &records[i];
         let group = r.group.clone().map(|g| (first(&g), g));
         (group, r.position)
     };
-    let mut v = records.to_vec();
-    v.sort_by_cached_key(key);
-    v
+    let mut roots: Vec<usize> = (0..records.len())
+        .filter(|&i| parents[i].is_none())
+        .collect();
+    roots.sort_by_cached_key(key);
+    let mut out = Vec::with_capacity(records.len());
+    let mut seen = vec![false; records.len()];
+    // Records a tampered lineage cycle leaves unreachable follow the rest, still listed.
+    let starts: Vec<usize> = roots.into_iter().chain(0..records.len()).collect();
+    for start in starts {
+        let mut stack = vec![start];
+        while let Some(i) = stack.pop() {
+            if std::mem::replace(&mut seen[i], true) {
+                continue;
+            }
+            out.push(records[i].clone());
+            let mut kids: Vec<usize> = (0..records.len())
+                .filter(|&j| parents[j].as_deref() == Some(records[i].id.as_str()))
+                .collect();
+            kids.sort_by_key(|&j| std::cmp::Reverse(records[j].position));
+            stack.extend(kids);
+        }
+    }
+    out
 }
 
 /// Merge `project`'s `records` with its session's current `windows`. Live records follow their
@@ -508,6 +568,8 @@ pub fn reconcile(
                 block_id: w.block_id.clone(),
                 closed_at: None,
                 selected: false,
+                lineage: Vec::new(),
+                folded: false,
             });
             next += 1;
         }
@@ -537,6 +599,8 @@ mod tests {
             block_id: window.map(|w| format!("b-{w}")),
             closed_at: None,
             selected: false,
+            lineage: Vec::new(),
+            folded: false,
         }
     }
 
@@ -932,6 +996,98 @@ mod tests {
         let mut s = AgentStore::load(path.clone());
         s.set_folded("p", "g", true);
         assert_eq!(AgentStore::load(path).folded("p"), ["g"]);
+    }
+
+    /// A live, resumable record at `position`, forked down `lineage` (nearest first).
+    fn fam(id: &str, position: u32, lineage: &[&str]) -> AgentRecord {
+        let mut r = rec(id, RecordState::Live, Some(id), Some("claude --resume x"));
+        r.position = position;
+        r.lineage = lineage.iter().map(ToString::to_string).collect();
+        r
+    }
+
+    fn order(records: &[AgentRecord]) -> Vec<(String, u32)> {
+        in_list_order(records)
+            .iter()
+            .map(|r| (r.id.clone(), depth_of(records, r)))
+            .collect()
+    }
+
+    fn named(v: &[(&str, u32)]) -> Vec<(String, u32)> {
+        v.iter().map(|(id, d)| (id.to_string(), *d)).collect()
+    }
+
+    #[test]
+    fn forks_list_depth_first_under_their_source() {
+        let recs = [
+            fam("a", 0, &[]),
+            fam("b", 1, &[]),
+            fam("a1x", 6, &["a1", "a"]),
+            fam("a1", 5, &["a"]),
+        ];
+        assert_eq!(
+            order(&recs),
+            named(&[("a", 0), ("a1", 1), ("a1x", 2), ("b", 0)])
+        );
+    }
+
+    #[test]
+    fn closed_source_promotes_its_forks_and_reopening_renests() {
+        let mut recs = [
+            fam("a", 0, &[]),
+            fam("a1", 1, &[]),
+            fam("a1x", 2, &["a1", "a"]),
+        ];
+        recs[1].lineage = vec!["a".into()];
+        recs[1].state = RecordState::Closed;
+        assert_eq!(parent_of(&recs, &recs[2]).as_deref(), Some("a"));
+        recs[1].state = RecordState::Live;
+        assert_eq!(parent_of(&recs, &recs[2]).as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn cleared_source_promotes_to_next_ancestor() {
+        let recs = [fam("a", 0, &[]), fam("a1x", 2, &["a1", "a"])];
+        assert_eq!(parent_of(&recs, &recs[1]).as_deref(), Some("a"));
+        assert_eq!(order(&recs), named(&[("a", 0), ("a1x", 1)]));
+    }
+
+    #[test]
+    fn old_file_without_lineage_loads_top_level() {
+        let json = r#"{"id":"a","project":"p","name":"a","group":null,"position":0,
+            "resume":null,"state":"Live","window_id":null,"block_id":null,
+            "closed_at":null,"selected":false}"#;
+        let r: AgentRecord = serde_json::from_str(json).unwrap();
+        assert!(r.lineage.is_empty());
+        assert!(!r.folded);
+    }
+
+    #[test]
+    fn reconcile_dropping_a_mid_family_record_keeps_order_contiguous() {
+        let mut a1 = fam("a1", 1, &["a"]);
+        a1.resume = None;
+        let recs = [
+            fam("a", 0, &[]),
+            a1,
+            fam("a1x", 2, &["a1", "a"]),
+            fam("b", 3, &[]),
+        ];
+        let out = reconcile(
+            "p",
+            &recs,
+            &[win("a", "a"), win("a1x", "a1x"), win("b", "b")],
+            true,
+            1,
+        );
+        assert_eq!(order(&out), named(&[("a", 0), ("a1x", 1), ("b", 0)]));
+    }
+
+    #[test]
+    fn a_tampered_lineage_cycle_still_lists_every_record() {
+        let recs = [fam("a", 0, &["b"]), fam("b", 1, &["a"]), fam("c", 2, &[])];
+        let mut ids: Vec<String> = in_list_order(&recs).into_iter().map(|r| r.id).collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
     }
 
     #[test]

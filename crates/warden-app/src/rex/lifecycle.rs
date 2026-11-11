@@ -346,6 +346,11 @@ impl RexHub {
                     block_id: w.block_id,
                     closed_at: None,
                     selected: false,
+                    // Its source's first fork, directly below it.
+                    lineage: std::iter::once(src.id.clone())
+                        .chain(src.lineage.iter().cloned())
+                        .collect(),
+                    folded: false,
                 });
                 want = Some(records.len() - 1);
             }
@@ -820,6 +825,8 @@ pub struct AgentRowDto {
     pub id: String,
     pub name: String,
     pub group: Option<String>,
+    /// How many parents up it sits from a top-level tab ([`agents::depth_of`]).
+    pub depth: u32,
     /// `working`, `blocked`, `done`, `error`, `idle` or `asleep`.
     pub state: &'static str,
     /// What a `blocked` row waits on: `permission`, `question` or `auth`.
@@ -961,6 +968,7 @@ pub fn agent_list(
             id: r.id.clone(),
             name: r.name.clone(),
             group: r.group.clone(),
+            depth: agents::depth_of(&records, r),
             state,
             blocked_kind: st.kind.filter(|_| state == "blocked").map(|k| match k {
                 BlockedKind::Permission => "permission",
@@ -2415,6 +2423,7 @@ mod tests {
             "below its source, in its group"
         );
         let fork = &list.rows[2];
+        assert_eq!((list.rows[1].depth, fork.depth), (0, 1), "nested under a");
         assert_eq!(fork.group.as_deref(), Some("g"));
         assert!(fork.selected);
         assert_eq!(got.selected.as_deref(), Some(fork.id.as_str()));
@@ -2422,6 +2431,7 @@ mod tests {
         assert_eq!(rec.state, RecordState::Live);
         assert_eq!(rec.resume, None, "it reports its own session");
         assert_eq!(rec.window_id.as_deref(), Some("window:woke"));
+        assert_eq!(rec.lineage, ["a"], "forked from a");
         let a = state_of(&s, "a").unwrap();
         assert_eq!(
             (a.state, a.window_id, a.resume),
@@ -3479,6 +3489,7 @@ mod tests {
                     id: (*id).into(),
                     name: (*id).into(),
                     group: g.map(Into::into),
+                    depth: 0,
                     state: "idle",
                     blocked_kind: None,
                     context: None,
