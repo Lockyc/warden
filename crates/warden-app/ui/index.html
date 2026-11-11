@@ -650,7 +650,7 @@
 
       // ⤢ and ⌘⇧O both land here. A refusal (a stacked scratch column) shows its reason.
       function popOut(id) {
-        invoke("pop_out_tab", { id, ratio: popOutRatio(id) }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
+        invoke("pop_out_tab", { id, ratio: popOutRatio(id) }).catch((err) => { if (sb) setWindowError("⚠ " + err); });
       }
 
       // In-app updates are a chrome-core capability (check / install / relaunch + the 6h re-check
@@ -660,6 +660,14 @@
       // registration — in tauri.conf.json / Rust.
 
       const forMe = (e) => !(e.payload && e.payload.label && myLabel && e.payload.label !== myLabel);
+
+      // Whether the error bar holds a global (config) error, the one kind `warden:error-clear`
+      // clears. Every per-window error goes through `setWindowError`, which replaces it.
+      let globalErrorShown = false;
+      function setWindowError(msg) {
+        globalErrorShown = false;
+        sb.setError(msg);
+      }
 
       // The rect handed to `set_hole_rect` must be the pane's CONTENT box, not its border box.
       // `getBoundingClientRect()` returns the border box, and the native surface is sized to
@@ -805,12 +813,12 @@
       }
       function scratchNew() {
         if (!activeId) return;
-        invoke("scratch_new", { id: activeId }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
+        invoke("scratch_new", { id: activeId }).catch((err) => { if (sb) setWindowError("⚠ " + err); });
       }
       // Close scratch tab `index` of the active tab's column; Rex's next view re-renders it.
       function scratchCloseTab(index) {
         if (!activeId) return;
-        invoke("scratch_close_tab", { id: activeId, index }).catch((err) => { if (sb) sb.setError("⚠ " + err); });
+        invoke("scratch_close_tab", { id: activeId, index }).catch((err) => { if (sb) setWindowError("⚠ " + err); });
       }
       // The split ratio for divider `d` dragged to `pointer` (a column fraction along its axis):
       // relative to the split's own rect, kept to `scratchBand`.
@@ -930,7 +938,7 @@
         };
         setTimeout(release, SCRATCH_HOLD_MS);
         invoke("scratch_resize", { id: tabId, splitId, ratio }).catch((err) => {
-          if (sb) sb.setError("⚠ " + err);
+          if (sb) setWindowError("⚠ " + err);
           release();
         });
       }
@@ -941,7 +949,7 @@
         e.preventDefault();
         if (!activeId) return;
         invoke("divider_menu", { id: activeId, splitId, size, x: e.clientX, y: e.clientY })
-          .catch((err) => { if (sb) sb.setError("⚠ " + err); });
+          .catch((err) => { if (sb) setWindowError("⚠ " + err); });
       }
       // A size chosen for a scratch column divider: the column moves to it as a drag's release does.
       listen("warden:scratch-size", (e) => {
@@ -1374,7 +1382,7 @@
           await invoke("split_pane", { id: activeId });
         } catch (err) {
           console.error("warden: IPC split_pane failed", err);
-          if (sb) sb.setError("⚠ " + err);
+          if (sb) setWindowError("⚠ " + err);
         }
       }
 
@@ -1603,7 +1611,7 @@
       function agentCall(cmd, args) {
         return invoke(cmd, args).catch((err) => {
           console.error("warden: IPC " + cmd + " failed", err);
-          if (sb) sb.setError("⚠ " + err);
+          if (sb) setWindowError("⚠ " + err);
         });
       }
       function agentSelect(tab, id) {
@@ -2011,7 +2019,7 @@
           dto = await invoke("init_tabs");
         } catch (err) {
           console.error("warden: init_tabs failed", err);
-          if (sb) sb.setError("⚠ failed to load window: " + err);
+          if (sb) setWindowError("⚠ failed to load window: " + err);
           return;
         }
         if (!dto) return; // no managed window for this label yet (race: init_tabs ran before this window's WindowState was inserted)
@@ -2102,7 +2110,7 @@
             },
             onBannerMenu({ x, y }) {
               // Right-click on the banner: Edit Window… / Delete Window… (shell-core's form flow).
-              invoke("window_menu", { x, y }).catch((e) => sb.setError("⚠ " + e));
+              invoke("window_menu", { x, y }).catch((e) => setWindowError("⚠ " + e));
             },
             onSearchExit() {
               // Esc in the sidebar search: typing goes back to the terminal it came from.
@@ -2130,7 +2138,7 @@
         if (dto.active) sb.setActive(dto.active);
         applyDto(dto);
         if (dto.active) wardenSelect(() => sb.select(dto.active));
-        if (dto.error) sb.setError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
+        if (dto.error) setWindowError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
 
         // (The launch + 6h update checks are armed by chrome-core from the `autoUpdate` mount config.)
 
@@ -2171,13 +2179,24 @@
       // Config error banner (parse error / no-window) — now sidebar-scoped via the component. A
       // per-tab spawn error is {label,message} (own window only); a global config error is a bare
       // string shown everywhere.
+      // `warden:error-clear` (a good config save) clears only a global error: a per-window one
+      // stays until dismissed or replaced.
       listen("warden:error", (e) => {
         const p = e.payload;
         if (p && typeof p === "object" && p.label && myLabel && p.label !== myLabel) return;
-        const msg = p && typeof p === "object" ? p.message : p;
-        if (sb) sb.setError("⚠ " + msg);
+        if (!sb) return;
+        if (p && typeof p === "object" && p.label) {
+          setWindowError("⚠ " + p.message);
+        } else {
+          sb.setError("⚠ " + (p && typeof p === "object" ? p.message : p));
+          globalErrorShown = true;
+        }
       });
-      listen("warden:error-clear", () => { if (sb) sb.clearError(); });
+      listen("warden:error-clear", () => {
+        if (!sb || !globalErrorShown) return;
+        sb.clearError();
+        globalErrorShown = false;
+      });
       // Menu "Check for Updates…" → chrome-core checks now + announces (up-to-date / error / banner).
       // emit_to leaks → forMe filter, else one menu click checks in every open window.
       listen("warden:check-update", (e) => {
