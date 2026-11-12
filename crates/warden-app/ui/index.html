@@ -765,7 +765,7 @@
       // its snapshot's — or, before a column exists or a Rex column's session lands, one block
       // filling it. Tile and divider rects are fractions of the column (Rex's window).
       const SCRATCH_FULL = [{ block_id: "", rect: { x: 0, y: 0, w: 1, h: 1 } }];
-      let scratchHeld = null; // { tabId, view, splitId?, ratio? } — a dragged layout (`scratchDragEnd`)
+      let scratchHeld = null; // { tabId, view, splits? } — a dragged layout (`scratchSetRatios`)
       function scratchView(id) {
         if (scratchHeld && scratchHeld.tabId === id) return scratchHeld.view;
         const c = id !== null ? columnById.get(id) : null;
@@ -895,42 +895,70 @@
         const [lo, hi] = scratchBand;
         return extent > 0 ? Math.min(hi, Math.max(lo, (pointer - origin) / extent)) : 0.5;
       }
-      // `view` with divider `di` at `ratio`: everything inside its split before the boundary
-      // scales into the new before side, everything after into the new after side; the rest
-      // (outside the split, or spanning it — the split itself and its ancestors) is untouched.
+      // One axis of rect `r`, and of divider `x`'s boundary along it.
+      const scratchAxis = (r, vert) => (vert ? [r.y, r.y + r.h] : [r.x, r.x + r.w]);
+      const scratchBoundary = (x) => {
+        const [s, e] = scratchAxis(x.rect, x.dir === "vertical");
+        return s + x.ratio * (e - s);
+      };
+      // `view` with divider `di` moved to `ratio` of its split, the rest of its run held. The run
+      // is every divider along the same line (its direction, its cross-axis span) — a stack's
+      // nested splits. Only the two items beside the boundary resize: whatever lies between the
+      // run's neighbouring boundaries scales into its new side, everything else stays where it
+      // is, and every divider's ratio is re-derived over its new rect. Each moved item keeps at
+      // least `scratchBand[0]` of the run.
       function scratchResized(view, di, ratio) {
         const d = view.dividers[di];
         const vert = d.dir === "vertical";
-        const R = d.rect;
-        const o = vert ? R.y : R.x;
-        const end = o + (vert ? R.h : R.w);
-        const b0 = o + d.ratio * (end - o);
-        const b1 = o + ratio * (end - o);
-        const inside = (r) =>
-          r.x >= R.x - SCRATCH_EPS && r.x + r.w <= R.x + R.w + SCRATCH_EPS &&
-          r.y >= R.y - SCRATCH_EPS && r.y + r.h <= R.y + R.h + SCRATCH_EPS;
+        const near = (a, b) => Math.abs(a - b) <= SCRATCH_EPS;
+        const [c0, c1] = scratchAxis(d.rect, !vert);
+        const run = view.dividers.filter((x) => x.dir === d.dir &&
+          near(scratchAxis(x.rect, !vert)[0], c0) && near(scratchAxis(x.rect, !vert)[1], c1));
+        const runStart = Math.min(...run.map((x) => scratchAxis(x.rect, vert)[0]));
+        const runEnd = Math.max(...run.map((x) => scratchAxis(x.rect, vert)[1]));
+        const b0 = scratchBoundary(d);
+        const bounds = run.map(scratchBoundary);
+        const prev = Math.max(runStart, ...bounds.filter((b) => b < b0 - SCRATCH_EPS));
+        const next = Math.min(runEnd, ...bounds.filter((b) => b > b0 + SCRATCH_EPS));
+        const [ds, de] = scratchAxis(d.rect, vert);
+        const keep = scratchBand[0] * (runEnd - runStart);
+        let b1 = ds + ratio * (de - ds);
+        b1 = prev + keep <= next - keep ? Math.min(next - keep, Math.max(prev + keep, b1)) : b0;
+        // A position along the axis, moved: [prev, b0] onto [prev, b1], [b0, next] onto [b1, next].
+        const f = (p) => {
+          if (p <= prev || p >= next) return p;
+          return p <= b0 ? prev + (p - prev) * (b1 - prev) / (b0 - prev)
+                         : b1 + (p - b0) * (next - b1) / (next - b0);
+        };
+        // Only rects within the run's cross-axis span move — a column beside it doesn't.
         const map = (r) => {
-          if (!inside(r)) return r;
-          const s = vert ? r.y : r.x;
-          const e = s + (vert ? r.h : r.w);
-          let ns, ne;
-          if (e <= b0 + SCRATCH_EPS && b0 > o) {
-            const k = (b1 - o) / (b0 - o);
-            [ns, ne] = [o + (s - o) * k, o + (e - o) * k];
-          } else if (s >= b0 - SCRATCH_EPS && end > b0) {
-            const k = (end - b1) / (end - b0);
-            [ns, ne] = [b1 + (s - b0) * k, b1 + (e - b0) * k];
-          } else {
-            return r;
-          }
-          return vert ? { ...r, y: ns, h: ne - ns } : { ...r, x: ns, w: ne - ns };
+          const [x0, x1] = scratchAxis(r, !vert);
+          if (x0 < c0 - SCRATCH_EPS || x1 > c1 + SCRATCH_EPS) return r;
+          const [s, e] = scratchAxis(r, vert).map(f);
+          return vert ? { ...r, y: s, h: e - s } : { ...r, x: s, w: e - s };
         };
         return {
           ...view,
           tiles: view.tiles.map((t) => ({ ...t, rect: map(t.rect) })),
-          dividers: view.dividers.map((x, i) =>
-            i === di ? { ...x, ratio } : { ...x, rect: map(x.rect) }),
+          dividers: view.dividers.map((x) => {
+            const rect = map(x.rect);
+            const xv = x.dir === "vertical";
+            const at = xv === vert && rect !== x.rect ? f(scratchBoundary(x)) : scratchBoundary(x);
+            const [s, e] = scratchAxis(rect, xv);
+            return { ...x, rect, ratio: e > s ? (at - s) / (e - s) : x.ratio };
+          }),
         };
+      }
+      // Every divider of `view` whose ratio moved from `base`'s, as `scratch_resize` takes them.
+      function scratchChanged(base, view) {
+        return view.dividers
+          .filter((x, i) => Math.abs(x.ratio - base.dividers[i].ratio) > SCRATCH_EPS)
+          .map((x) => ({ splitId: x.split_id, ratio: x.ratio }));
+      }
+      // The column's pane shares top to bottom — a plain stack only, every tile full width.
+      function scratchColumnSizes(view) {
+        if (!view.tiles.every((t) => t.rect.x <= SCRATCH_EPS && t.rect.w >= 1 - SCRATCH_EPS)) return null;
+        return [...view.tiles].sort((a, b) => a.rect.y - b.rect.y).map((t) => t.rect.h);
       }
       // An inner divider drag: the two sides follow the pointer live, reported as they go; the
       // release asks Rex to resize, and Rex's view arrives back as `warden:refresh`. The same
@@ -984,15 +1012,17 @@
         window.removeEventListener("mousemove", scratchDragMove);
         window.removeEventListener("mouseup", scratchDragEnd);
         window.removeEventListener("blur", scratchDragEnd);
-        const d = g.base.dividers[g.di];
-        if (Math.abs(g.ratio - d.ratio) < SCRATCH_EPS) return; // a click, not a drag
-        scratchSetRatio(g.tabId, scratchHeld.view, d.split_id, g.ratio);
+        const view = scratchResized(g.base, g.di, g.ratio);
+        const splits = scratchChanged(g.base, view);
+        if (!splits.length) return; // a click, not a drag
+        scratchSetRatios(g.tabId, view, splits);
       }
-      // Ask Rex to move divider `splitId` of `tabId`'s column to `ratio`, `view` (the column laid
-      // out at it) shown meanwhile. Held until a snapshot shows Rex at this ratio — an unrelated
-      // refresh before then would snap the divider back — or the resize fails, or Rex never says so.
-      function scratchSetRatio(tabId, view, splitId, ratio) {
-        const hold = { tabId, view, splitId, ratio };
+      // Ask Rex to move `splits` of `tabId`'s column, `view` (the column laid out at them) shown
+      // meanwhile, and save its pane shares. Held until a snapshot shows Rex at every one — an
+      // unrelated refresh before then would snap the dividers back — or the resize fails, or Rex
+      // never says so.
+      function scratchSetRatios(tabId, view, splits) {
+        const hold = { tabId, view, splits };
         scratchHeld = hold;
         const release = () => {
           if (scratchHeld !== hold) return;
@@ -1003,7 +1033,7 @@
           }
         };
         setTimeout(release, SCRATCH_HOLD_MS);
-        invoke("scratch_resize", { id: tabId, splitId, ratio }).catch((err) => {
+        invoke("scratch_resize", { id: tabId, splits, sizes: scratchColumnSizes(view) }).catch((err) => {
           if (sb) setWindowError("⚠ " + err);
           release();
         });
@@ -1025,17 +1055,21 @@
         const view = scratchView(activeId);
         const di = view.dividers.findIndex((d) => d.split_id === p.splitId);
         if (di < 0) return;
-        const ratio = Math.min(scratchBand[1], Math.max(scratchBand[0], p.ratio));
-        scratchSetRatio(activeId, scratchResized(view, di, ratio), p.splitId, ratio);
-        scratchRender(scratchHeld.view);
+        const moved = scratchResized(view, di, p.ratio);
+        const splits = scratchChanged(view, moved);
+        if (!splits.length) return;
+        scratchSetRatios(activeId, moved, splits);
+        scratchRender(moved);
         reportRect();
       });
       const SCRATCH_HOLD_MS = 2000;
       const SCRATCH_HOLD_MATCH = 0.005;
-      // Whether snapshot column `c` shows Rex at hold `h`'s released ratio.
+      // Whether snapshot column `c` shows Rex at every ratio hold `h` released.
       function scratchHoldMet(h, c) {
-        const d = c && c.dividers.find((x) => x.split_id === h.splitId);
-        return !!d && Math.abs(d.ratio - h.ratio) <= SCRATCH_HOLD_MATCH;
+        return h.splits.every((s) => {
+          const d = c && c.dividers.find((x) => x.split_id === s.splitId);
+          return !!d && Math.abs(d.ratio - s.ratio) <= SCRATCH_HOLD_MATCH;
+        });
       }
 
       // Report each VISIBLE pane's CONTENT rect to the native layer so its libghostty surface
@@ -1270,9 +1304,9 @@
         columnById.clear();
         dto.tabs.forEach((t) => { if (t.column) columnById.set(t.id, t.column); });
         // A drag in progress goes on showing its own layout; a released one until the snapshot
-        // shows Rex at its ratio (`scratchDragEnd`); anything else is the snapshot's.
+        // shows Rex at its ratios (`scratchSetRatios`); anything else is the snapshot's.
         if (!scratchDrag && scratchHeld &&
-            (!scratchHeld.splitId || scratchHoldMet(scratchHeld, columnById.get(scratchHeld.tabId)))) {
+            (!scratchHeld.splits || scratchHoldMet(scratchHeld, columnById.get(scratchHeld.tabId)))) {
           scratchHeld = null;
         }
         summaryById.clear();
