@@ -97,8 +97,8 @@ site omits it.
   background shells or agents still run (Claude Code's own title and header do the same, and its
   tracker has declined to split the state: anthropics/claude-code#69306, #73557, #80246). So the
   hook writes `warden/background` at Stop from the payload's `background_tasks`, and an idle row
-  shows it on its second line. Beside it sits `warden/cache`, the epoch second the prompt cache
-  goes cold (the hook's `cache`), as a countdown chip there and on the summary's title row.
+  shows it after its name. Beside it sits `warden/cache`, the epoch second the prompt cache
+  goes cold (the hook's `cache`), as a countdown there and on the summary's title row.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane's session windows are its
   scratch tabs, each showing every block of its split tree (`docs/native-splits-direction.md`).

@@ -343,8 +343,8 @@
       .a-row.dragging { opacity: 0.35; }
       .a-row.drop-before { box-shadow: inset 0 2px 0 #56b4e9; }
       .a-row.drop-after { box-shadow: inset 0 -2px 0 #56b4e9; }
-      .a-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-      .a-name, .a-ctx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .a-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+      .a-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-name.untitled { color: #6b7280; font-style: italic; }
       .a-more { flex: none; width: 18px; height: 18px; border-radius: 4px; color: #7d8590;
         line-height: 18px; text-align: center; }
@@ -393,14 +393,10 @@
       .a-fork-caret { flex: none; width: 10px; margin-right: -3px; color: #7d8590; text-align: center; }
       .a-fork-caret:hover { color: #c3ccd8; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
-      /* The row's second line, on every row so they stand one height: its context where it says
-         more than the name, then background work still running past the turn's end ("2 shells")
-         and the prompt cache (`paintCache`), right-aligned. */
-      .a-sub { display: flex; gap: 6px; height: 1.4em; align-items: baseline; color: #9aa4b2;
-        font-size: 0.9em; }
-      .a-sub .a-ctx { flex: 1; min-width: 0; }
-      .a-row.sel .a-sub { color: #c3ccd8; }
-      .a-bg, .a-cache { flex: none; white-space: nowrap; }
+      /* After the name, right-aligned: background work still running past the turn's end
+         ("2 shells") and the prompt cache (`paintCache`). */
+      .a-bg, .a-cache { flex: none; white-space: nowrap; color: #9aa4b2; font-size: 0.9em; }
+      .a-row.sel :is(.a-bg, .a-cache:not(.warn)) { color: #c3ccd8; }
       .a-bg + .a-cache::before { content: "·"; margin-right: 6px; color: #6b7280; }
       .a-cache.warn, #summary .s-cache.warn { color: #f0883e; }
       .a-cache.cold { color: #6b7280; }
@@ -1870,8 +1866,8 @@
         row.style.setProperty("--depth", Math.min(r.depth, 2));
         row.classList.toggle("d2", r.depth >= 2);
         const name = r.name || "untitled";
-        // The context, unless it only repeats the name (a terminal title the window took its name
-        // from, whole or cut short).
+        // The context, in the tooltip only, unless it just repeats the name (a terminal title the
+        // window took its name from, whole or cut short).
         const said = (r.context || "").trim();
         const repeats = said && r.name && (r.name.startsWith(said) || said.startsWith(r.name.trim()));
         const ctx = (!repeats && said) || (r.state === "asleep" ? "asleep" : "");
@@ -1896,11 +1892,8 @@
           if (r.depth > 0) label.prepend(agentForkMark());
           text.append(label);
         }
-        const sub = agentEl("span", "a-sub");
-        sub.append(agentEl("span", "a-ctx", ctx));
-        if (r.background) sub.append(agentEl("span", "a-bg", r.background));
-        if (r.cache) sub.append(agentCache("a-cache", r.cache));
-        text.append(sub);
+        if (r.background) text.append(agentEl("span", "a-bg", r.background));
+        if (r.cache) text.append(agentCache("a-cache", r.cache));
         row.append(text);
         if (r.folded) row.append(agentEl("span", "a-forks", "+" + r.forks));
         const rec = agentControlRecord(r);
