@@ -490,6 +490,65 @@ struct Column {
     pending_focus: Option<String>,
     /// A new scratch tab, split or tab close sent to Rex and not yet answered.
     changing: bool,
+    /// The column's divider resizes, which run ungated: the latest one queued wins.
+    resizes: ResizeQueue,
+}
+
+/// A column's resizes in the order they were queued ([`ResizeQueue::next`]). Each resize runs on
+/// its own worker; two quick releases would otherwise interleave their `resize_pane` calls and
+/// race their config writes, so a worker acts only while its turn is the latest, and one at a
+/// time ([`ResizeTurn::hold`]).
+#[derive(Clone, Default)]
+pub struct ResizeQueue(std::sync::Arc<ResizeQueueInner>);
+
+#[derive(Default)]
+struct ResizeQueueInner {
+    latest: std::sync::atomic::AtomicU64,
+    running: std::sync::Mutex<()>,
+}
+
+impl ResizeQueue {
+    /// Queue a resize: its turn, superseded by every turn queued after it.
+    pub fn next(&self) -> ResizeTurn {
+        use std::sync::atomic::Ordering;
+        let seq = self.0.latest.fetch_add(1, Ordering::SeqCst) + 1;
+        ResizeTurn {
+            queue: self.clone(),
+            seq,
+        }
+    }
+}
+
+/// One queued resize's place in its column's [`ResizeQueue`].
+pub struct ResizeTurn {
+    queue: ResizeQueue,
+    seq: u64,
+}
+
+impl ResizeTurn {
+    /// No resize was queued after this one.
+    pub fn is_latest(&self) -> bool {
+        self.queue
+            .0
+            .latest
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == self.seq
+    }
+
+    /// Run alone among the column's resizes until the guard drops.
+    pub fn hold(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.queue
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl std::fmt::Debug for ResizeTurn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ResizeTurn({})", self.seq)
+    }
 }
 
 impl Column {
@@ -515,6 +574,7 @@ impl Column {
             selected: 0,
             pending_focus: None,
             changing: false,
+            resizes: ResizeQueue::default(),
         }
     }
 
@@ -2657,6 +2717,14 @@ impl Registry {
             .ok_or("this tab has no Rex scratch column")?;
         column.changing = true;
         Ok(())
+    }
+
+    /// Queue a divider resize of tab `id`'s Rex column: its turn, which any resize queued after
+    /// it supersedes. `None` without a Rex column.
+    pub fn queue_column_resize(&self, id: &str) -> Option<ResizeTurn> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let column = t.column.as_ref().filter(|c| c.is_rex())?;
+        Some(column.resizes.next())
     }
 
     /// Rex answered tab `id`'s column change, or it failed: the column takes the next one.

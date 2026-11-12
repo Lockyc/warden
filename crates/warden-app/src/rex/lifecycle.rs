@@ -866,8 +866,7 @@ pub struct AgentRowDto {
     pub topic: Option<String>,
     pub needs: Option<String>,
     /// The background work still running as the agent's last turn ended ("2 shells · 1
-    /// agent"), until the user's next prompt. Shown while working too: Claude Code reports
-    /// working for as long as background work runs.
+    /// agent"), while it isn't working.
     pub background: Option<String>,
     /// When the conversation's prompt cache goes cold, in epoch seconds, while it isn't
     /// working.
@@ -1036,7 +1035,7 @@ pub fn agent_list(
             said: st.said,
             topic: st.topic,
             needs: st.needs.filter(|_| state != "working"),
-            background: st.background,
+            background: st.background.filter(|_| state != "working"),
             cache: st
                 .cache
                 .and_then(|c| c.trim().parse().ok())
@@ -2839,7 +2838,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_and_cache_hidden_while_working_background_shown() {
+    fn needs_background_and_cache_hidden_while_working() {
         use crate::rex::windows::{AgentState, BlockStatus};
         let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
         let needs = |state: AgentState| {
@@ -2872,8 +2871,8 @@ mod tests {
         assert_eq!(needs(AgentState::Idle), shown);
         assert_eq!(
             needs(AgentState::Working),
-            (None, Some("2 shells".into()), None),
-            "the last turn's question and cache"
+            (None, None, None),
+            "the last turn's question, background and cache"
         );
     }
 

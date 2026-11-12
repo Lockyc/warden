@@ -2486,12 +2486,13 @@ enum ScratchOp {
 /// Run `op` on tab `id`'s Rex scratch column in window `label` (main thread). A refusal answers at
 /// once; the Rex work runs on a worker and lands through [`scratch_landed`]. Every op but a resize
 /// holds the column's change ([`registry::Registry::begin_column_change`]) until it lands, which
-/// disables Split and New Scratch Tab with the reason meanwhile.
+/// disables Split and New Scratch Tab with the reason meanwhile; resizes run ungated instead, the
+/// latest queued winning ([`registry::ResizeQueue`]).
 #[cfg(target_os = "macos")]
 fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let gated = !matches!(op, ScratchOp::Resize { .. });
-    let (key, dir, server, dividers, save, dto) = {
+    let (key, dir, server, dividers, turn, save, dto) = {
         let st = app.state::<ManagerState>();
         let mut m = st.lock();
         let reg = &mut m.windows.get_mut(label).ok_or("window not found")?.registry;
@@ -2513,6 +2514,7 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
             _ => Vec::new(),
         };
         let first_window = reg.column_shows_first_window(id);
+        let turn = (!gated).then(|| reg.queue_column_resize(id)).flatten();
         if gated {
             reg.begin_column_change(id)?;
         }
@@ -2525,7 +2527,7 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
             _ => None,
         };
         let dto = gated.then(|| m.init_dto(label)).flatten();
-        (key, dir, server, dividers, save, dto)
+        (key, dir, server, dividers, turn, save, dto)
     };
     if let Some(dto) = dto {
         let _ = app.emit_to(label, "warden:refresh", dto);
@@ -2545,11 +2547,21 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                 });
                 return;
             };
-            let done = scratch_work(&hub, &key, &dir, &op, &dividers)
+            // One resize of the column at a time, and only the latest queued acts.
+            let _alone = turn.as_ref().map(registry::ResizeTurn::hold);
+            let done = scratch_work(&hub, &key, &dir, &op, &dividers, turn.as_ref())
                 .map_err(|e| rex::spawn::open_error(&server, &e));
+            let superseded = turn.as_ref().is_some_and(|t| !t.is_latest());
             // A resize that took has nothing to land: the page already shows the dragged layout,
             // and the hub's view may not have it yet — landing that would jump the divider back
-            // until Rex's view follows (`lifecycle::follow_column`).
+            // until Rex's view follows (`lifecycle::follow_column`). A superseded one leaves the
+            // column and the config to the resize queued after it.
+            if superseded {
+                if let Err(e) = &done {
+                    log::warn!("tab {id:?}: superseded scratch resize failed: {e}");
+                }
+                return;
+            }
             if done.is_ok() && matches!(op, ScratchOp::Resize { .. }) {
                 if let Some(save) = save {
                     save_column_sizes(&app, &label, &id, save);
@@ -2578,13 +2590,15 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
 }
 
 /// Do `op` to `key`'s column session in Rex (a worker thread). A resize moves each of `dividers` —
-/// `op`'s splits, looked up — in order, stopping at the first refusal.
+/// `op`'s splits, looked up — in order, stopping at the first refusal, and sends nothing more once
+/// a resize queued after its `turn` supersedes it.
 fn scratch_work(
     hub: &rex::RexHub,
     key: &str,
     dir: &std::path::Path,
     op: &ScratchOp,
     dividers: &[rex::layout::Divider],
+    turn: Option<&registry::ResizeTurn>,
 ) -> Result<Option<ScratchMade>, rex_client::RexError> {
     match op {
         ScratchOp::NewTab => hub
@@ -2595,6 +2609,9 @@ fn scratch_work(
             .map(|b| Some(ScratchMade::Block(b))),
         ScratchOp::Resize { splits, .. } => {
             for ((_, ratio), d) in splits.iter().zip(dividers) {
+                if turn.is_some_and(|t| !t.is_latest()) {
+                    break;
+                }
                 hub.column_resize(key, d, *ratio)?;
             }
             Ok(None)

@@ -1722,7 +1722,8 @@ fn summary_pulled_on_attach() {
     eventually("the pulled rows", || {
         hub.block_status("block:new")
             == Some(BlockStatus {
-                state: AgentState::Working,
+                // Working with a background count: the turn ended with work still running.
+                state: AgentState::Done,
                 kind: None,
                 msg: Some("Reading src/lib.rs".into()),
                 title: None,
@@ -2552,7 +2553,16 @@ fn resize_sends_every_split_in_order() {
     };
     let picked = vec![dividers[1].clone(), dividers[0].clone()];
 
-    crate::scratch_work(&hub, "t::2", Path::new("/work/t"), &op, &picked).expect("resize");
+    let turn = crate::registry::ResizeQueue::default().next();
+    crate::scratch_work(
+        &hub,
+        "t::2",
+        Path::new("/work/t"),
+        &op,
+        &picked,
+        Some(&turn),
+    )
+    .expect("resize");
     let sent: Vec<Value> = fake
         .requests_for("session.resize_pane")
         .into_iter()
@@ -2567,6 +2577,48 @@ fn resize_sends_every_split_in_order() {
                    "before_block_id": "b1", "after_block_id": "b2", "ratio": 0.3}),
         ]
     );
+}
+
+#[test]
+fn superseded_resize_sends_nothing() {
+    let (fake, _inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
+    fake.reply("session.resize_pane", json!({"revision": 2}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let opened = hub
+        .open_column(&column_req(abc_stack()))
+        .expect("open_column");
+    let dividers = opened.windows[0].layout.dividers();
+    let op = crate::ScratchOp::Resize {
+        splits: vec![("s1".into(), 0.3)],
+        sizes: None,
+    };
+    let queue = crate::registry::ResizeQueue::default();
+    let first = queue.next();
+    let latest = queue.next();
+
+    crate::scratch_work(
+        &hub,
+        "t::2",
+        Path::new("/work/t"),
+        &op,
+        &dividers[..1],
+        Some(&first),
+    )
+    .expect("a superseded resize is no error");
+    assert!(fake.requests_for("session.resize_pane").is_empty());
+    assert!(!first.is_latest() && latest.is_latest());
+
+    crate::scratch_work(
+        &hub,
+        "t::2",
+        Path::new("/work/t"),
+        &op,
+        &dividers[..1],
+        Some(&latest),
+    )
+    .expect("resize");
+    assert_eq!(fake.requests_for("session.resize_pane").len(), 1);
 }
 
 #[test]
