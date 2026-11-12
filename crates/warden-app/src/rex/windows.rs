@@ -98,7 +98,8 @@ const ANSWERED: &str = "warden/answered";
 const SAID: &str = "warden/said";
 const TOPIC: &str = "warden/topic";
 const NEEDS: &str = "warden/needs";
-/// The agent's background work still running as its last turn ended ("2 shells · 1 agent").
+/// The agent's background work still running as its last turn ended ("2 shells · 1 agent"),
+/// until the next prompt; while it stands, the turn has ended.
 const BACKGROUND: &str = "warden/background";
 /// When the conversation's prompt cache goes cold, in epoch seconds.
 const CACHE: &str = "warden/cache";
@@ -222,6 +223,11 @@ impl Tracked {
             &self.cache,
         ];
         let (state, kind, msg, at) = match &self.record.value {
+            // A turn that ended with background work still running: Claude Code reads working
+            // until that work ends, and [`BACKGROUND`] lives from Stop to the next prompt.
+            Some(r) if r.state == AgentState::Working && self.background.value.is_some() => {
+                (AgentState::Done, None, r.msg.clone(), r.at.clone())
+            }
             Some(r) => (
                 r.state,
                 r.kind.filter(|_| r.state == AgentState::Blocked),

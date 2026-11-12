@@ -98,8 +98,9 @@ site omits it.
   The root record is Claude Code's own: it reads working for as long as background shells or
   agents run, after the main turn ends as well, so it can't tell an agent still answering from
   one waiting on you with work in the background. So the hook writes `warden/background` at Stop
-  from the payload's `background_tasks` and clears it on the next prompt, and the row shows it on
-  its second line whatever its state. Beside it sits `warden/cache`, the epoch second the prompt cache
+  from the payload's `background_tasks` and clears it on any prompt, and while it stands the
+  block reads done (`windows.rs::Tracked::status`): the row, its needs, the tally and attention
+  all follow. The row shows the count on its second line. Beside it sits `warden/cache`, the epoch second the prompt cache
   goes cold (the hook's `cache`), as a countdown chip there and on the summary's title row.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane's session windows are its
