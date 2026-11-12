@@ -1668,20 +1668,26 @@ fn follow_column(
     if any {
         crate::sync_agent_menu(app);
     }
-    if let Some((key, dir)) = empty {
-        fill_column(app, key, dir);
+    if let Some((key, dir, stack)) = empty {
+        fill_column(app, key, dir, stack);
     }
 }
 
-/// Column `key`'s session lost its last scratch tab: give it a fresh one in `dir` on a worker
-/// ([`RexHub::column_fill`]); the session's next view brings it in.
-fn fill_column(app: &AppHandle, key: String, dir: std::path::PathBuf) {
+/// Column `key`'s session lost its last scratch tab: give it a fresh one in `dir`, laid out as
+/// the tab's configured `stack`, on a worker ([`RexHub::column_fill`]); the session's next view
+/// brings it in.
+fn fill_column(
+    app: &AppHandle,
+    key: String,
+    dir: std::path::PathBuf,
+    stack: Vec<warden_config::StackPane>,
+) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("warden-rex-fill".into())
         .spawn(move || {
             if let Some(hub) = app.try_state::<RexHub>() {
-                if let Err(e) = hub.column_fill(&key, &dir) {
+                if let Err(e) = hub.column_fill(&key, &dir, &stack) {
                     log::error!("couldn't open a fresh scratch tab in {key:?}: {e}");
                 }
             }

@@ -86,7 +86,8 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
 - **Config declares the first scratch tab's blocks** as a vertical stack (`[[…split.pane]]`,
   schema in `docs/config.md`); warden creates the session in that layout
   (`layout::stack_layout`), and after that Rex holds it, so a stack edit reaches only sessions
-  created afterwards. No stack (`split = true`, what ⌘D saves) is one bare shell.
+  created afterwards and columns refilled after emptying (`RexHub::column_fill`). No stack
+  (`split = true`, what ⌘D saves) is one bare shell.
 - **`+`** or Tab ▸ New Scratch Tab (⌃⌘T, from either pane) opens a new Rex window with a bare shell; clicking a
   number shows that scratch tab and leaves the main pane alone; the shown one's **×** closes it
   and its blocks (`session.close_window`).
@@ -229,7 +230,7 @@ only by eye. Each step below is written to actually fail if the feature regresse
   rest; `exit` in tab 2's only block returns to tab 1, and Close Pane and the shown tab's × do
   the same as `exit`, for a block and a whole tab; ⌘T and ⌘W with focus in a block act on the
   agent list, not the column; closing the last scratch tab leaves a fresh one
-  with a bare shell in its place; a split made in Rex.app on the same
+  in the configured stack's shape in its place; a split made in Rex.app on the same
   session appears in warden; Tab ▸ Pop Out Tab on the stacked tab is disabled with its reason.
 
 Expect no look change to a live terminal: each surface's own render layer is already opaque

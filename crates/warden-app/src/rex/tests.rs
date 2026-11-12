@@ -2355,10 +2355,16 @@ fn column_reattaching_an_empty_session_fills_it() {
     seed(&path, "t::2", "local", "session:new");
     let (hub, _) = hub_on(fake.endpoint(), &dir);
 
-    hub.open_column(&column_req(Vec::new()))
+    hub.open_column(&column_req(abc_stack()))
         .expect("open_column");
     assert!(fake.requests_for("session.create").is_empty());
-    assert_eq!(fake.requests_for("session.new_window").len(), 1);
+    let made = fake.requests_for("session.new_window");
+    assert_eq!(made.len(), 1);
+    assert_eq!(
+        made[0].payload["layout"],
+        super::layout::stack_layout(&abc_stack(), Path::new("/work/t")),
+        "an empty column is refilled in its stack's shape"
+    );
     assert!(block_bound(&hub, "b9"));
 }
 
@@ -2624,7 +2630,9 @@ fn column_fill_opens_a_shell_in_an_empty_session() {
         "session.new_window",
         json!({"window_id": "window:9", "block_ids": ["b9"], "revision": 2}),
     );
-    let made = hub.column_fill("t::2", Path::new("/work/t")).expect("fill");
+    let made = hub
+        .column_fill("t::2", Path::new("/work/t"), &[])
+        .expect("fill");
     assert_eq!(made.as_deref(), Some("window:9"));
     let calls = fake.requests_for("session.new_window");
     assert_eq!(calls.len(), 1);
@@ -2636,10 +2644,35 @@ fn column_fill_opens_a_shell_in_an_empty_session() {
 }
 
 #[test]
+fn column_fill_rebuilds_the_configured_stack() {
+    // A column Rex lost (a restart that didn't keep its blocks) comes back in its config shape,
+    // each pane's `cmd` typed in, not as one bare shell.
+    let (fake, hub, _, _dir) = opened_column();
+    fake.reply("session.list_blocks", blocks(&[]));
+    fake.reply(
+        "session.new_window",
+        json!({"window_id": "window:9", "block_ids": ["b9", "b10"], "revision": 2}),
+    );
+    let stack = [stack_pane(0.4, Some("make watch")), stack_pane(0.6, None)];
+    let made = hub
+        .column_fill("t::2", Path::new("/work/t"), &stack)
+        .expect("fill");
+    assert_eq!(made.as_deref(), Some("window:9"));
+    let calls = fake.requests_for("session.new_window");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].payload["layout"],
+        super::layout::stack_layout(&stack, Path::new("/work/t"))
+    );
+}
+
+#[test]
 fn column_fill_leaves_a_session_holding_a_block() {
     let (fake, hub, _, _dir) = opened_column();
     fake.reply("session.list_blocks", blocks(&["b1"]));
-    let made = hub.column_fill("t::2", Path::new("/work/t")).expect("fill");
+    let made = hub
+        .column_fill("t::2", Path::new("/work/t"), &[])
+        .expect("fill");
     assert_eq!(made, None);
     assert!(fake.requests_for("session.new_window").is_empty());
 }
@@ -2653,7 +2686,7 @@ fn column_fill_answers_within_the_open_budget() {
         Reply::ok(blocks(&[])).after(Duration::from_secs(10))
     });
     let started = Instant::now();
-    let made = hub.column_fill("t::2", Path::new("/work/t"));
+    let made = hub.column_fill("t::2", Path::new("/work/t"), &[]);
     assert!(
         started.elapsed() < Duration::from_secs(4),
         "took {:?}",
@@ -2669,7 +2702,7 @@ fn column_fill_of_an_ended_column_does_nothing() {
     fake.reply("session.destroy", json!({}));
     hub.destroy("t::2").expect("☠ ends it");
     assert_eq!(
-        hub.column_fill("t::2", Path::new("/w")).expect("fill"),
+        hub.column_fill("t::2", Path::new("/w"), &[]).expect("fill"),
         None
     );
     assert!(fake.requests_for("session.new_window").is_empty());

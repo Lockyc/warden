@@ -4,9 +4,10 @@
 //! The column keeps the split pane's key (`registry::secondary_id`), so its store record and the
 //! Sleep and ☠ paths are a split pane's. Each block of each window is bound under [`block_key`] —
 //! the key its size claims name — and rebound whenever the session's windows are relearned
-//! ([`State::bind_columns`]). The config stack shapes the session only when warden creates it;
-//! after that Rex holds the layout. A session Rex restored after a restart has each stack pane's
-//! `cmd` retyped only while its first window still has the stack's shape.
+//! ([`State::bind_columns`]). The config stack shapes the session when warden creates it and
+//! whenever the session is found holding no block ([`RexHub::column_fill`]); in between Rex holds
+//! the layout. A session Rex restored after a restart has each stack pane's `cmd` retyped only
+//! while its first window still has the stack's shape.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -278,18 +279,24 @@ impl RexHub {
         Ok(())
     }
 
-    /// Give `column_key`'s session a fresh scratch tab — one bare shell in `dir` — when it holds
-    /// no block, as a scratch terminal respawns in place of its last shell: the column never
-    /// sits empty, however its last tab went (×, ⌘W, its program exiting, or another client).
-    /// Returns the new window's id; `None` when the session still holds a block, or has no
-    /// mapping (☠ ended it).
-    pub fn column_fill(&self, column_key: &str, dir: &Path) -> Result<Option<String>, RexError> {
+    /// Give `column_key`'s session a fresh scratch tab laid out as the tab's configured `stack`
+    /// ([`stack_layout`]; an empty stack is one bare shell) when it holds no block: the column
+    /// never sits empty, however its last tab went (×, ⌘W, its program exiting, another client,
+    /// or a Rex restart that didn't keep its blocks), and an emptied column comes back in the
+    /// shape the config gives it. Returns the new window's id; `None` when the session still
+    /// holds a block, or has no mapping (☠ ended it).
+    pub fn column_fill(
+        &self,
+        column_key: &str,
+        dir: &Path,
+        stack: &[warden_config::StackPane],
+    ) -> Result<Option<String>, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let _held = self.inner.hold_pane(column_key, Some(deadline))?;
         let Ok(rec) = self.column_record(column_key) else {
             return Ok(None);
         };
-        let filled = self.fill_until(column_key, &rec, dir, deadline);
+        let filled = self.fill_until(column_key, &rec, dir, stack, deadline);
         budgeted(deadline, filled)
     }
 
@@ -300,14 +307,19 @@ impl RexHub {
         column_key: &str,
         rec: &PaneRecord,
         dir: &Path,
+        stack: &[warden_config::StackPane],
         deadline: Instant,
     ) -> Result<Option<String>, RexError> {
         if self.inner.holds_other_block(rec, &[], Some(deadline)) {
             return Ok(None);
         }
-        let made =
-            self.inner
-                .new_window_until(&rec.server, &rec.session_id, dir, None, None, deadline)?;
+        let made = self.inner.new_window_laid_out_until(
+            &rec.server,
+            &rec.session_id,
+            stack_layout(stack, dir),
+            None,
+            deadline,
+        )?;
         log::info!(
             "Rex {}: {column_key:?}'s column was empty; opened scratch tab {}",
             rec.server,
@@ -345,7 +357,7 @@ impl RexHub {
                     }
                 }
                 if let Ok(rec) = self.column_record(key) {
-                    self.fill_until(key, &rec, &req.dir, deadline)?;
+                    self.fill_until(key, &rec, &req.dir, &req.stack, deadline)?;
                 }
                 sid
             }

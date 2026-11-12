@@ -522,11 +522,22 @@ impl Inner {
         label: Option<&str>,
         deadline: Instant,
     ) -> Result<AgentWindow, RexError> {
+        let layout = json!({"block": {"flavor": TERMINAL_FLAVOR, "options": terminal_options(dir, startup)}});
+        self.new_window_laid_out_until(server, session_id, layout, label, deadline)
+    }
+
+    /// [`Self::new_window_until`] with the new window's whole create `layout` (a split tree, as
+    /// [`super::layout::stack_layout`] builds); the window's first block is the tree's first.
+    pub(super) fn new_window_laid_out_until(
+        self: &Arc<Self>,
+        server: &str,
+        session_id: &str,
+        layout: serde_json::Value,
+        label: Option<&str>,
+        deadline: Instant,
+    ) -> Result<AgentWindow, RexError> {
         let (client, _) = self.conn_until(server, deadline)?;
-        let mut args = json!({
-            "session_id": session_id,
-            "layout": {"block": {"flavor": TERMINAL_FLAVOR, "options": terminal_options(dir, startup)}},
-        });
+        let mut args = json!({ "session_id": session_id, "layout": layout });
         if let Some(label) = label {
             args["window_label"] = json!(label);
         }

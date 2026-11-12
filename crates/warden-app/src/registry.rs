@@ -2671,12 +2671,13 @@ impl Registry {
         }
     }
 
-    /// [`rex_column`](Self::rex_column) for a column holding no scratch tab: what
-    /// `RexHub::column_fill` refills.
-    pub fn empty_rex_column(&self, id: &str) -> Option<(String, PathBuf)> {
+    /// [`rex_column`](Self::rex_column) for a column holding no scratch tab, with the tab's
+    /// configured stack: what `RexHub::column_fill` refills it as.
+    pub fn empty_rex_column(&self, id: &str) -> Option<(String, PathBuf, Vec<StackPane>)> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         t.column.as_ref().filter(|c| c.tabs.is_empty())?;
-        self.rex_column(id)
+        let (key, dir) = self.rex_column(id)?;
+        Some((key, dir, stack_of(&t.primary.spec)))
     }
 
     /// The Rex block tab `id`'s focused pane shows, when that is a block of a Rex column.
