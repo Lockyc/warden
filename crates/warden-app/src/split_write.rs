@@ -157,7 +157,7 @@ pub fn write_split(
         }
         SplitEdit::ResetSize => remove_size(&cascade, own),
     };
-    apply(config, window, &origin, keys, new)
+    apply(config, window, &origin, &[(keys, new)])
 }
 
 /// Save the panes' shares of the column, top to bottom, onto `tab`'s config entry in window
@@ -188,17 +188,14 @@ pub fn write_pane_sizes(
         _ => false,
     };
     if own_panes {
-        for (i, s) in sizes.iter().enumerate() {
-            let idx = i.to_string();
-            apply(
-                config,
-                window,
-                &origin,
-                &["split", "pane", &idx, "size"],
-                Some(Value::from(stored_size(*s))),
-            )?;
-        }
-        return Ok(());
+        let idx: Vec<String> = (0..sizes.len()).map(|i| i.to_string()).collect();
+        let keys: Vec<[&str; 4]> = idx.iter().map(|i| ["split", "pane", i, "size"]).collect();
+        let edits: Vec<(&[&str], Option<Value>)> = keys
+            .iter()
+            .zip(sizes)
+            .map(|(k, s)| (&k[..], Some(Value::from(stored_size(*s)))))
+            .collect();
+        return apply(config, window, &origin, &edits);
     }
     let mut arr = Array::new();
     for (p, s) in split.panes.iter().zip(sizes) {
@@ -213,8 +210,7 @@ pub fn write_pane_sizes(
         config,
         window,
         &origin,
-        &["split", "pane"],
-        Some(Value::Array(arr)),
+        &[(&["split", "pane"], Some(Value::Array(arr)))],
     )
 }
 
@@ -318,33 +314,32 @@ fn remove_size<'k>(cascade: CascadeFn, own: Option<&RawSplit>) -> (&'k [&'k str]
     }
 }
 
+/// Write `edits` (each a key path and its new value, `None` removing it) onto the entry `origin`
+/// names, in order, as one file save.
 fn apply(
     config: &Path,
     window: &str,
     origin: &Origin,
-    keys: &[&str],
-    new: Option<Value>,
+    edits: &[(&[&str], Option<Value>)],
 ) -> Result<(), String> {
     match origin {
-        Origin::Curated { group, by, .. } => edit::set_path(
+        Origin::Curated { group, by, .. } => edit::set_paths(
             config,
             At {
                 window,
                 group: *group,
                 tab: Some((by.0, by.1.as_str())),
             },
-            keys,
-            new,
+            edits,
         ),
-        Origin::Discovered { root, dir, .. } => edit::set_root_tab_path(
+        Origin::Discovered { root, dir, .. } => edit::set_root_tab_paths(
             config,
             RootAt {
                 window,
                 root_dir: root.dir.trim(),
                 dir,
             },
-            keys,
-            new,
+            edits,
         ),
     }
     .map_err(|e| e.to_string())
@@ -622,6 +617,37 @@ size = 0.25
                 (0.2, Some("one".into())),
                 (0.3, Some("two".into())),
                 (0.5, Some("three".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn pane_sizes_on_a_mixed_stack_land_in_one_save() {
+        // The last pane sized, the first two not: the first pane's new size written on its own
+        // would overflow (0.85 + 0.8), so the sizes must reach the file together.
+        let toml = STACK3
+            .replace("cmd = \"one\"\nsize = 0.5\n", "cmd = \"one\"\n")
+            .replace("cmd = \"two\"\nsize = 0.25\n", "cmd = \"two\"\n")
+            .replace("cmd = \"three\"\nsize = 0.25\n", "cmd = \"three\"\nsize = 0.8\n");
+        let (_d, p) = setup(&toml);
+        let alone = p.with_file_name("alone.toml");
+        std::fs::write(&alone, &toml).unwrap();
+        let at = At {
+            window: "W",
+            group: None,
+            tab: Some(("dir", "/tmp/a")),
+        };
+        edit::set_path(&alone, at, &["split", "pane", "0", "size"], Some(0.85.into())).unwrap();
+        assert!(warden_config::load(&alone).is_err(), "one size alone overflows");
+
+        run_sizes(&p, "A", &[0.85, 0.1, 0.05]).unwrap();
+        let c = warden_config::load(&p).expect("the saved stack resolves").config;
+        assert_eq!(
+            panes(&c, "A"),
+            vec![
+                (0.85, Some("one".into())),
+                (0.1, Some("two".into())),
+                (0.05, Some("three".into()))
             ]
         );
     }
