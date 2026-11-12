@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use warden_config::edit::{self, At, RootAt};
 use warden_config::raw::{RawConfig, RawRoot, RawSplit, RawTab, RawWindow};
-use warden_config::resolve::cascade_split_over;
+use warden_config::resolve::{cascade_split_over, PANE_SIZE_MAX, PANE_SIZE_MIN};
 use warden_config::toml_edit::{Array, InlineTable, Value};
 use warden_config::{normalize_dir_key, Tab};
 
@@ -187,13 +187,14 @@ pub fn write_pane_sizes(
         Some(RawSplit::On(t)) => t.panes.as_ref().is_some_and(|p| p.len() == sizes.len()),
         _ => false,
     };
+    let sizes = pane_sizes(sizes);
     if own_panes {
         let idx: Vec<String> = (0..sizes.len()).map(|i| i.to_string()).collect();
         let keys: Vec<[&str; 4]> = idx.iter().map(|i| ["split", "pane", i, "size"]).collect();
         let edits: Vec<(&[&str], Option<Value>)> = keys
             .iter()
-            .zip(sizes)
-            .map(|(k, s)| (&k[..], Some(Value::from(stored_size(*s)))))
+            .zip(&sizes)
+            .map(|(k, s)| (&k[..], Some(Value::from(*s))))
             .collect();
         return apply(config, window, &origin, &edits);
     }
@@ -203,7 +204,7 @@ pub fn write_pane_sizes(
         if let Some(c) = p.startup.as_deref().filter(|c| !c.is_empty()) {
             t.insert("cmd", Value::from(c));
         }
-        t.insert("size", Value::from(stored_size(*s)));
+        t.insert("size", Value::from(s));
         arr.push(Value::InlineTable(t));
     }
     apply(
@@ -223,6 +224,23 @@ pub fn save_pane_sizes(window: &str, tab: &Tab, sizes: &[f64]) -> Result<(), Str
 /// A size as the file keeps it: two decimals.
 pub fn stored_size(s: f64) -> f64 {
     (s * 100.0).round() / 100.0
+}
+
+/// The column's shares as the file keeps them, each within the band a pane `size` validates to
+/// — Rex lets a pane sit narrower (or wider) than a config pane may — with what that adds taken
+/// from the largest, so the shares still sum to 1 and none normalises below `PANE_SIZE_MIN`.
+fn pane_sizes(sizes: &[f64]) -> Vec<f64> {
+    let mut v: Vec<f64> = sizes
+        .iter()
+        .map(|s| stored_size(*s).clamp(PANE_SIZE_MIN, PANE_SIZE_MAX))
+        .collect();
+    let excess = stored_size(v.iter().sum::<f64>() - 1.0);
+    if excess > 0.0 {
+        if let Some(big) = v.iter_mut().max_by(|a, b| a.total_cmp(b)) {
+            *big = stored_size((*big - excess).max(PANE_SIZE_MIN));
+        }
+    }
+    v
 }
 
 fn raw_window<'a>(raw: &'a RawConfig, window: &str) -> Result<&'a RawWindow, String> {
@@ -664,6 +682,15 @@ size = 0.25
                 (0.05, Some("three".into()))
             ]
         );
+    }
+
+    #[test]
+    fn pane_sizes_keep_to_the_pane_band() {
+        let (_d, p) = setup(STACK3);
+        run_sizes(&p, "A", &[0.8, 0.175, 0.025]).unwrap();
+        let c = warden_config::load(&p).expect("a pane under PANE_SIZE_MIN saves at it");
+        let sizes: Vec<f64> = panes(&c.config, "A").into_iter().map(|p| p.0).collect();
+        assert_eq!(sizes, vec![0.77, 0.18, 0.05]);
     }
 
     #[test]
