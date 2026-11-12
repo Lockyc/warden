@@ -346,7 +346,6 @@
       .a-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
       .a-name, .a-ctx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-name.untitled { color: #6b7280; font-style: italic; }
-      .a-ctx { color: #7d8590; font-size: 0.9em; }
       .a-more { flex: none; width: 18px; height: 18px; border-radius: 4px; color: #7d8590;
         line-height: 18px; text-align: center; }
       .a-more:hover, .a-row.open .a-more { background: #313640; color: #c3ccd8; }
@@ -394,21 +393,27 @@
       .a-fork-caret { flex: none; width: 10px; margin-right: -3px; color: #7d8590; text-align: center; }
       .a-fork-caret:hover { color: #c3ccd8; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
-      /* The row's last line, on every row so they stand the same height: background work still
-         running past the turn's end ("2 shells · 1 agent") and the prompt cache (`paintCache`). */
-      .a-meta { display: flex; gap: 5px; height: 1.45em; align-items: center; overflow: hidden; }
-      .a-bg, .a-cache { flex: none; color: #7d8590; font-size: 0.8em; line-height: 1.35;
-        padding: 0 5px; border: 1px solid #30363d; border-radius: 8px; white-space: nowrap; }
-      .a-cache.warn, #summary .s-cache.warn { color: #f0883e; border-color: #6b4423; }
-      .a-cache.cold { color: #545d68; border-style: dashed; }
+      /* The row's second line, on every row so they stand one height: its context where it says
+         more than the name, then background work still running past the turn's end ("2 shells")
+         and the prompt cache (`paintCache`), right-aligned. */
+      .a-sub { display: flex; gap: 6px; height: 1.4em; align-items: baseline; color: #9aa4b2;
+        font-size: 0.9em; }
+      .a-sub .a-ctx { flex: 1; min-width: 0; }
+      .a-row.sel .a-sub { color: #c3ccd8; }
+      .a-bg, .a-cache { flex: none; white-space: nowrap; }
+      .a-bg + .a-cache::before { content: "·"; margin-right: 6px; color: #6b7280; }
+      .a-cache.warn, #summary .s-cache.warn { color: #f0883e; }
+      .a-cache.cold { color: #6b7280; }
       #summary .s-cache { flex: none; margin-left: auto; padding-left: 1em; opacity: 0.75; }
       #summary .s-cache.warn { opacity: 1; }
       #summary .s-cache.cold { opacity: 0.45; }
-      /* The column's width grip, along its right edge; the width is `--agents-w` (`agentsWidth`). */
+      /* The column's width grip, along its right edge; the width is `--agents-w` (`agentsWidth`).
+         Its hover is chrome-core's `#cc-resize`'s, as is the split divider's. */
       #agents { position: relative; }
       #agents-grip { position: absolute; top: 0; bottom: 0; right: -1px; width: 5px; z-index: 5;
         cursor: col-resize; }
-      #agents-grip:hover, #agents-grip.dragging { background: #56b4e9; opacity: 0.6; }
+      #agents-grip:hover, #agents-grip.dragging, #pane-divider:hover {
+        background: rgba(255, 255, 255, 0.14); }
       #agents.narrow #agents-grip { display: none; }
       .a-empty { color: #6b7280; padding: 6px; font-size: 0.9em; }
       .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
@@ -1865,7 +1870,11 @@
         row.style.setProperty("--depth", Math.min(r.depth, 2));
         row.classList.toggle("d2", r.depth >= 2);
         const name = r.name || "untitled";
-        const ctx = r.context || (r.state === "asleep" ? "asleep" : "");
+        // The context, unless it only repeats the name (a terminal title the window took its name
+        // from, whole or cut short).
+        const said = (r.context || "").trim();
+        const repeats = said && r.name && (r.name.startsWith(said) || said.startsWith(r.name.trim()));
+        const ctx = (!repeats && said) || (r.state === "asleep" ? "asleep" : "");
         row.title = [name, ctx, r.background && "still running: " + r.background].filter(Boolean).join("\n");
         // While any row has forks, every row keeps the caret's slot, so names line up by depth.
         if (r.forks) {
@@ -1887,11 +1896,11 @@
           if (r.depth > 0) label.prepend(agentForkMark());
           text.append(label);
         }
-        if (ctx) text.append(agentEl("span", "a-ctx", ctx));
-        const meta = agentEl("span", "a-meta");
-        if (r.background) meta.append(agentEl("span", "a-bg", r.background));
-        if (r.cache) meta.append(agentCache("a-cache", r.cache));
-        text.append(meta);
+        const sub = agentEl("span", "a-sub");
+        sub.append(agentEl("span", "a-ctx", ctx));
+        if (r.background) sub.append(agentEl("span", "a-bg", r.background));
+        if (r.cache) sub.append(agentCache("a-cache", r.cache));
+        text.append(sub);
         row.append(text);
         if (r.folded) row.append(agentEl("span", "a-forks", "+" + r.forks));
         const rec = agentControlRecord(r);
