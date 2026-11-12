@@ -100,7 +100,9 @@ const TOPIC: &str = "warden/topic";
 const NEEDS: &str = "warden/needs";
 /// The agent's background work still running as its last turn ended ("2 shells · 1 agent").
 const BACKGROUND: &str = "warden/background";
-const TEXTS: [&str; 6] = [ASKED, ANSWERED, SAID, TOPIC, NEEDS, BACKGROUND];
+/// When the conversation's prompt cache goes cold, in epoch seconds.
+const CACHE: &str = "warden/cache";
+const TEXTS: [&str; 7] = [ASKED, ANSWERED, SAID, TOPIC, NEEDS, BACKGROUND, CACHE];
 
 /// What a block's program last reported. A block with no root status record is `Idle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +124,8 @@ pub struct BlockStatus {
     pub needs: Option<String>,
     /// The [`BACKGROUND`] record's text.
     pub background: Option<String>,
+    /// The [`CACHE`] record's text.
+    pub cache: Option<String>,
 }
 
 /// One attached session's windows.
@@ -198,6 +202,7 @@ pub(super) struct Tracked {
     topic: Fact<Option<String>>,
     needs: Fact<Option<String>>,
     background: Fact<Option<String>>,
+    cache: Fact<Option<String>>,
 }
 
 impl Tracked {
@@ -210,6 +215,7 @@ impl Tracked {
             &self.topic,
             &self.needs,
             &self.background,
+            &self.cache,
         ];
         let (state, kind, msg) = match &self.record.value {
             Some(r) => (
@@ -231,6 +237,7 @@ impl Tracked {
             topic: self.topic.value.clone(),
             needs: self.needs.value.clone(),
             background: self.background.value.clone(),
+            cache: self.cache.value.clone(),
         })
     }
 
@@ -243,6 +250,7 @@ impl Tracked {
             TOPIC => Some(&mut self.topic),
             NEEDS => Some(&mut self.needs),
             BACKGROUND => Some(&mut self.background),
+            CACHE => Some(&mut self.cache),
             _ => None,
         }
     }

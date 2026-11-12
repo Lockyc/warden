@@ -1469,6 +1469,7 @@ fn status_from_program_status_changed() {
             topic: None,
             needs: None,
             background: None,
+            cache: None,
         })
     );
 
@@ -1586,6 +1587,7 @@ fn status_pulled_on_attach() {
                 topic: None,
                 needs: None,
                 background: None,
+                cache: None,
             })
     });
     assert_eq!(
@@ -1707,6 +1709,8 @@ fn summary_pulled_on_attach() {
              "updated_at": "2026-11-07T00:00:00Z"},
             {"id": "warden/background", "state": "idle", "msg": "2 shells",
              "updated_at": "2026-11-07T00:00:00Z"},
+            {"id": "warden/cache", "state": "idle", "msg": "1794445729",
+             "updated_at": "2026-11-07T00:00:00Z"},
         ]}))
     });
     let dir = tempfile::tempdir().unwrap();
@@ -1726,6 +1730,7 @@ fn summary_pulled_on_attach() {
                 topic: Some("Parser quoting".into()),
                 needs: Some("Pick a or b".into()),
                 background: Some("2 shells".into()),
+                cache: Some("1794445729".into()),
             })
     });
 }
@@ -1761,6 +1766,7 @@ fn title_change_updates_status_title() {
             topic: None,
             needs: None,
             background: None,
+            cache: None,
         })
     );
     fake.push_block_event(
@@ -1782,6 +1788,7 @@ fn title_change_updates_status_title() {
                 topic: None,
                 needs: None,
                 background: None,
+                cache: None,
             })
     });
 }

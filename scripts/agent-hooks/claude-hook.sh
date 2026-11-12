@@ -15,7 +15,8 @@
 #   writes nothing. Either clears `warden/needs`. The reply's first line is `warden/said`, until
 #   the turn's digest (`digest`, also run on a resume) rewrites it with `warden/topic`,
 #   `warden/asked` and `warden/needs`. Stop also writes `warden/background`, what is still
-#   running as the turn ends. These need `jq`; without it they do nothing.
+#   running as the turn ends, and Stop and a resume `warden/cache`, when the prompt cache goes
+#   cold. These need `jq`; without it they do nothing.
 #
 # Prints nothing to stdout (Claude Code adds SessionStart's and UserPromptSubmit's stdout to the
 # agent's context) and always exits 0, silently, so a hook failure never blocks the agent.
@@ -153,6 +154,25 @@ background() {
 		| join(" · ")' 2>/dev/null | put warden/background
 }
 
+# Record `warden/cache`: when the conversation's prompt cache goes cold, in epoch seconds — the
+# last main-thread request (the transcript's last user line, which sent it) plus the TTL its
+# calls write (`usage.cache_creation`'s 1h or 5m bucket). Neither found clears it.
+cache() {
+	command -v jq >/dev/null 2>&1 || return 0
+	path=$(field transcript_path)
+	[ -r "$path" ] || return 0
+	tail -n 500 "$path" | jq -rn 'reduce (inputs | select(.isSidechain != true)) as $l ({};
+		if $l.type == "user" then .at = $l.timestamp
+		elif $l.type == "assistant" then
+			($l.message.usage.cache_creation // {}) as $c
+			| if ($c.ephemeral_1h_input_tokens // 0) > 0 then .ttl = 3600
+			elif ($c.ephemeral_5m_input_tokens // 0) > 0 then .ttl = 300
+			else . end
+		else . end)
+		| if .at and .ttl then (.at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) + .ttl | tostring
+		else "" end' 2>/dev/null | put warden/cache
+}
+
 # What a prompt is: `skip` (Claude Code's own, or blank), `answer` (short) or `ask`.
 KIND='def kind: (gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ")) as $p
 	| if $p == "" or ($p | startswith("<")) then "skip"
@@ -212,6 +232,7 @@ SessionStart)
 		record warden/answered answer
 		record warden/said last_assistant_message
 		input=$hook_input
+		cache
 		digest
 	fi
 	;;
@@ -219,6 +240,7 @@ UserPromptSubmit) prompt ;;
 Stop)
 	record warden/said last_assistant_message
 	background
+	cache
 	digest
 	;;
 esac
