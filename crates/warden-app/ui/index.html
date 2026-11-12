@@ -618,16 +618,22 @@
       let activeId = null; // controller mirror of the active tab, for the empty-state placeholder
       let activeLive = false; // …and whether a live surface actually covers the PRIMARY hole for it
       let secondaryLive = false; // …and the SECONDARY hole, when the active tab is split
-      // tab id → its unread notification/bell badge: `true` (the dot), or `"lock"` (an agent
-      // waiting on a permission) — chrome-core's attention values.
-      const badges = new Map();
-      // Tab ids whose badge an agent tab raised: it lasts only while that tab's agent list still
-      // has an agent needing you (`warden:agents`), since an agent can stop needing you unseen —
-      // a turn ends, then a background task resumes it. A bell's badge has no such end.
-      const agentBadged = new Set();
+      // tab id → its unread bell / desktop-notification badge (`warden:notify`), cleared once the
+      // tab is seen.
+      const badges = new Set();
+      // A tab row's attention, as chrome-core takes it: a padlock while an agent there waits on a
+      // permission, else the dot while one needs you (its agent list's `agentNeedsYou`) or a bell
+      // is unread.
+      function tabAttention(id) {
+        const needy = (agentLists.get(id)?.rows ?? []).filter(agentNeedsYou);
+        if (needy.some((r) => r.state === "blocked" && r.blockedKind === "permission")) return "lock";
+        return needy.length || badges.has(id) ? true : null;
+      }
+      function paintAttention(id) {
+        if (sb) sb.setAttention(id, tabAttention(id));
+      }
       function clearBadge(id) {
-        agentBadged.delete(id);
-        if (badges.delete(id)) sb.setAttention(id, null);
+        if (badges.delete(id)) paintAttention(id);
       }
       // [min, max] share either pane of a split may take — the backend's `InitDto.split_band`,
       // set from every snapshot before anything can lay a split out.
@@ -1253,8 +1259,7 @@
         const ids = new Set(dto.tabs.map((t) => t.id));
         tabIds = [...ids];
         scheduleMeasure(); // a tab's shape rides the snapshot (agents, split, detached)
-        badges.forEach((_, id) => { if (!ids.has(id)) badges.delete(id); });
-        agentBadged.forEach((id) => { if (!ids.has(id)) agentBadged.delete(id); });
+        badges.forEach((id) => { if (!ids.has(id)) badges.delete(id); });
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
         secondarySpawnedById.forEach((_, id) => { if (!ids.has(id)) secondarySpawnedById.delete(id); });
         splitById.forEach((_, id) => { if (!ids.has(id)) splitById.delete(id); });
@@ -1274,6 +1279,7 @@
         dto.tabs.forEach((t) =>
           summaryById.set(t.id, { title: t.title, colour: t.colour, server: t.server, presence: t.presence }));
         agentLists.forEach((_, id) => { if (!agentsById.has(id)) agentLists.delete(id); });
+        agentsById.forEach((_, id) => pullAgents(id)); // every row's badge reads its list
         // Rebuild the detached-id set from the snapshot (authoritative), so onSelect can route a
         // click on a popped-out row to raise-its-window rather than activate a nonexistent surface.
         detached.clear();
@@ -1330,7 +1336,7 @@
             // The tab is open while any of its terminals runs: a Rex tab's main pane holds none
             // once its last agent tab closes, while its scratch column runs on.
             live: t.spawned || !!t.secondary_spawned,
-            attention: badges.get(t.id) ?? null,
+            attention: tabAttention(t.id),
             // `t.presence` is already 'on'/'ghost'/'off' (or null = never probed) from the
             // backend PresenceCache; a live `session` entry from a probe emit wins over it.
             presence: t.has_probe ? (session.get(t.id) ?? t.presence ?? "off") : null,
@@ -1507,7 +1513,7 @@
       // and not yet seen) — a padlock while it waits on a permission — cyan for its session — pulsing while it works, the ghost while asleep.
       // An asleep row is a project row's cold ghost: selecting the row wakes it, and its dot arms
       // the confirm, so the dot means the same in both lists.
-      const agentNeedsYou = (r) => r.state === "blocked" || !!r.unread;
+      const agentNeedsYou = (r) => r.state === "blocked" || !!r.unseen;
       function agentControlRecord(r) {
         const reason = r.canSleep ? null : r.sleepReason;
         const asleep = r.state === "asleep";
@@ -1624,15 +1630,40 @@
         syncAgentsHead();
         syncRail();
         refreshAgents();
-        if (!agentLists.has(tab)) {
-          invoke("agents_init", { tabId: tab })
-            .then((dto) => {
-              if (!dto || agentLists.has(tab)) return; // a `warden:agents` landed first — it's newer
-              agentLists.set(tab, dto);
-              if (agentsTab() === tab) refreshAgents();
-            })
-            .catch((err) => console.error("warden: IPC agents_init failed", err));
-        }
+        pullAgents(tab);
+        agentAck();
+      }
+
+      // Tab ids whose `agents_init` is in flight.
+      const agentPulls = new Set();
+      // Pull tab `tab`'s agent list once, for a tab that has none yet.
+      function pullAgents(tab) {
+        if (agentLists.has(tab) || agentPulls.has(tab)) return;
+        agentPulls.add(tab);
+        invoke("agents_init", { tabId: tab })
+          .then((dto) => {
+            if (!dto || agentLists.has(tab)) return; // a `warden:agents` landed first — it's newer
+            agentLists.set(tab, dto);
+            agentsLanded(tab);
+          })
+          .catch((err) => console.error("warden: IPC agents_init failed", err))
+          .finally(() => agentPulls.delete(tab));
+      }
+      // Tab `tab`'s list changed: its row's badge, and the list and summary when it's shown.
+      function agentsLanded(tab) {
+        paintAttention(tab);
+        if (agentsTab() !== tab) return;
+        summarySync(); // even while a drag or rename holds the list still
+        refreshAgents();
+        agentAck();
+      }
+      // The shown list's selected agent finished unseen and is on screen: report it seen
+      // (`agent_seen`, carrying the finish's stamp). The backend takes it only while this window is
+      // focused, so the window regaining focus (`warden:tab-seen`) asks again.
+      function agentAck() {
+        const tab = agentsTab();
+        const r = tab !== null && agentLists.get(tab)?.rows.find((x) => x.selected);
+        if (r && r.unseen) invokeSafe("agent_seen", { tabId: tab, recordId: r.id, at: r.unseen });
       }
 
       // The head band ends where the sidebar's Search box does (0 with the sidebar collapsed: its
@@ -2434,21 +2465,18 @@
         if (!forMe(e) || !sb) return;
         const id = e.payload && e.payload.id;
         if (id) {
-          const mark = e.payload.lock ? "lock" : true;
-          // An agent's raise over a bell's badge leaves the bell's, so the list can't clear it.
-          if (!e.payload.agent) agentBadged.delete(id);
-          else if (!badges.has(id)) agentBadged.add(id);
-          badges.set(id, mark);
-          sb.setAttention(id, mark);
+          badges.add(id);
+          paintAttention(id);
         }
       });
       // The user is now looking at a tab — its popped-out window, or this window regaining focus
-      // on it — so its row drops the badge (selecting a popped-out row only raises that window,
-      // never clears).
+      // on it — so its row drops the bell badge (selecting a popped-out row only raises that
+      // window, never clears), and the agent it shows is seen.
       listen("warden:tab-seen", (e) => {
         if (!forMe(e) || !sb) return;
         const id = e.payload && e.payload.id;
         if (id) clearBadge(id);
+        agentAck();
       });
       // A desktop-notification banner was clicked — the native layer raised this window; select the
       // tab that fired it (which activates it + clears its badge via onSelect).
@@ -2693,10 +2721,7 @@
         const p = e.payload;
         if (!p || !p.tabId || !agentsById.has(p.tabId)) return;
         agentLists.set(p.tabId, p);
-        if (agentBadged.has(p.tabId) && !p.rows.some(agentNeedsYou)) clearBadge(p.tabId);
-        if (agentsTab() !== p.tabId) return;
-        summarySync(); // even while a drag or rename holds the list still
-        refreshAgents();
+        agentsLanded(p.tabId);
       });
       // Tab ▸ Sleep Server, or ⏻ on a Rex tab, with something it can't bring back
       // (`warden:sleep-confirm`): confirm, listing every loss by name. Confirming sends those names
