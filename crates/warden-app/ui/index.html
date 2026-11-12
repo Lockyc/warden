@@ -906,8 +906,23 @@
       // nested splits. Only the two items beside the boundary resize: whatever lies between the
       // run's neighbouring boundaries scales into its new side, everything else stays where it
       // is, and every divider's ratio is re-derived over its new rect. Each moved item keeps at
-      // least `scratchBand[0]` of the run.
+      // least `scratchBand[0]` of the run. A re-derived ratio outside `scratchBand` — a pane
+      // already under it, its split's rect grown — is moved to the band's edge the same way, as
+      // the backend clamps it, so the view shows what Rex will.
       function scratchResized(view, di, ratio) {
+        const [lo, hi] = scratchBand;
+        const out = (x, i) => Math.abs(x.ratio - view.dividers[i].ratio) > SCRATCH_EPS &&
+          (x.ratio < lo - SCRATCH_EPS || x.ratio > hi + SCRATCH_EPS);
+        let v = scratchMoved(view, di, ratio);
+        for (let n = 0; n < view.dividers.length; n++) {
+          const i = v.dividers.findIndex(out);
+          if (i < 0) break;
+          v = scratchMoved(v, i, Math.min(hi, Math.max(lo, v.dividers[i].ratio)));
+        }
+        return v;
+      }
+      // `scratchResized`'s one move, its re-derived ratios as they fall.
+      function scratchMoved(view, di, ratio) {
         const d = view.dividers[di];
         const vert = d.dir === "vertical";
         const near = (a, b) => Math.abs(a - b) <= SCRATCH_EPS;
