@@ -843,6 +843,7 @@
           const el = document.createElement("div");
           el.className = "scratch-div";
           el.addEventListener("mousedown", (e) => scratchDragStart(e, Number(el.dataset.i)));
+          el.addEventListener("contextmenu", (e) => e.preventDefault()); // no WebKit menu
           body.append(el);
           divs.push(el);
         }
@@ -939,19 +940,44 @@
       }
       // `view` with tile `ti`'s item taking `share` of its innermost run: its trailing boundary
       // moves to `itemStart + share·run`, or for the run's last item its leading one to
-      // `end − share·run`, through `scratchResized`. Null for a lone tile.
+      // `end − share·run`, through `scratchResized`. When the neighbour can't give that much
+      // above `scratchBand[0]` of the run, the boundaries beyond it move out first, farthest
+      // first, each leaving its pane the band minimum — the next pane along gives the rest, then
+      // the one after; only a run that can't cover it all clamps. Null for a lone tile.
       function scratchPaneResized(view, ti, share) {
         const r = scratchPaneRun(view, ti);
         if (!r) return null;
         const extent = r.end - r.start;
+        const keep = scratchBand[0] * extent;
         const last = r.itemEnd >= r.end - SCRATCH_EPS;
         const at = last ? r.itemStart : r.itemEnd;
         const target = last ? r.end - share * extent : r.itemStart + share * extent;
-        const k = r.bounds.findIndex((b) => Math.abs(b - at) <= SCRATCH_EPS);
+        const order = r.idx.map((i, n) => ({ id: view.dividers[i].split_id, b: r.bounds[n] }))
+          .sort((a, b) => a.b - b.b);
+        const k = order.findIndex((o) => Math.abs(o.b - at) <= SCRATCH_EPS);
         if (k < 0) return null;
-        const di = r.idx[k];
-        const [ds, de] = scratchAxis(view.dividers[di].rect, r.vert);
-        return de > ds ? scratchResized(view, di, (target - ds) / (de - ds)) : null;
+        // Growing moves the boundary away from the item, toward `step`'s side.
+        const step = last ? -1 : 1;
+        const grows = step * (target - at) > SCRATCH_EPS;
+        const edge = (j) => (j < 0 ? r.start : j >= order.length ? r.end : order[j].b);
+        let v = view;
+        if (grows && step * (edge(k + step) - step * keep - target) < -SCRATCH_EPS) {
+          const far = step > 0 ? order.length - 1 : 0;
+          for (let j = far; j !== k; j -= step) {
+            const need = target + step * Math.abs(j - k) * keep;
+            if (step * (order[j].b - need) < -SCRATCH_EPS) v = scratchBoundaryTo(v, order[j].id, need);
+          }
+        }
+        return scratchBoundaryTo(v, order[k].id, target);
+      }
+      // `view` with split `splitId`'s boundary moved to `at` (a column fraction), through
+      // `scratchResized`.
+      function scratchBoundaryTo(view, splitId, at) {
+        const di = view.dividers.findIndex((x) => x.split_id === splitId);
+        if (di < 0) return view;
+        const d = view.dividers[di];
+        const [ds, de] = scratchAxis(d.rect, d.dir === "vertical");
+        return de > ds ? scratchResized(view, di, (at - ds) / (de - ds)) : view;
       }
       // `view` with divider `di` moved to `ratio` of its split, the rest of its run (`scratchRun`)
       // held. Only the two items beside the boundary resize: whatever lies between the
@@ -2686,6 +2712,7 @@
           window.addEventListener("mouseup", end);
           window.addEventListener("blur", end);
         });
+        divider.addEventListener("contextmenu", (e) => e.preventDefault()); // no WebKit menu
       })();
 
       // The agent column's width: `--agents-w`, dragged from `#agents-grip` (delta-based and

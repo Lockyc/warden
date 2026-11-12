@@ -1252,12 +1252,20 @@ fn pane_menu(
         registry::PaneIdx::Block(_) if only_pane == Some(true) => {
             Some(Err(pane_menu::ONLY_PANE.to_owned()))
         }
-        registry::PaneIdx::Block(_) => pane_share.filter(|s| s.share.is_finite()).map(|s| {
-            Ok(pane_menu::PaneSizeState {
-                axis: s.axis,
-                current: s.share,
+        registry::PaneIdx::Block(_) => pane_share
+            .filter(|s| {
+                let ok = s.share.is_finite();
+                if !ok {
+                    log::warn!("pane menu of tab {id:?}: pane share {} dropped", s.share);
+                }
+                ok
             })
-        }),
+            .map(|s| {
+                Ok(pane_menu::PaneSizeState {
+                    axis: s.axis,
+                    current: s.share,
+                })
+            }),
     };
     let label = window.label().to_owned();
     let (has_selection, can_split, close_pane, tab) = {
