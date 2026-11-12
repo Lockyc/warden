@@ -628,7 +628,10 @@ size = 0.25
         let toml = STACK3
             .replace("cmd = \"one\"\nsize = 0.5\n", "cmd = \"one\"\n")
             .replace("cmd = \"two\"\nsize = 0.25\n", "cmd = \"two\"\n")
-            .replace("cmd = \"three\"\nsize = 0.25\n", "cmd = \"three\"\nsize = 0.8\n");
+            .replace(
+                "cmd = \"three\"\nsize = 0.25\n",
+                "cmd = \"three\"\nsize = 0.8\n",
+            );
         let (_d, p) = setup(&toml);
         let alone = p.with_file_name("alone.toml");
         std::fs::write(&alone, &toml).unwrap();
@@ -637,11 +640,22 @@ size = 0.25
             group: None,
             tab: Some(("dir", "/tmp/a")),
         };
-        edit::set_path(&alone, at, &["split", "pane", "0", "size"], Some(0.85.into())).unwrap();
-        assert!(warden_config::load(&alone).is_err(), "one size alone overflows");
+        edit::set_path(
+            &alone,
+            at,
+            &["split", "pane", "0", "size"],
+            Some(0.85.into()),
+        )
+        .unwrap();
+        assert!(
+            warden_config::load(&alone).is_err(),
+            "one size alone overflows"
+        );
 
         run_sizes(&p, "A", &[0.85, 0.1, 0.05]).unwrap();
-        let c = warden_config::load(&p).expect("the saved stack resolves").config;
+        let c = warden_config::load(&p)
+            .expect("the saved stack resolves")
+            .config;
         assert_eq!(
             panes(&c, "A"),
             vec![
