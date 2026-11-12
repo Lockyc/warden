@@ -1399,11 +1399,7 @@ fn save_tab_split(app: &tauri::AppHandle, label: &str, tab: &str, edit: split_wr
         }
         Err(e) => {
             log::error!("split size of tab {tab:?} not saved: {e}");
-            let _ = app.emit_to(
-                label,
-                "warden:error",
-                serde_json::json!({ "label": label, "message": e }),
-            );
+            rex::lifecycle::banner(app, label, &e);
         }
     }
 }
