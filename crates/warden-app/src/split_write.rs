@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use warden_config::edit::{self, At, RootAt};
 use warden_config::raw::{RawConfig, RawRoot, RawSplit, RawTab, RawWindow};
 use warden_config::resolve::cascade_split_over;
-use warden_config::toml_edit::Value;
+use warden_config::toml_edit::{Array, InlineTable, Value};
 use warden_config::{normalize_dir_key, Tab};
 
 /// What to change about a tab's saved split.
@@ -158,6 +158,71 @@ pub fn write_split(
         SplitEdit::ResetSize => remove_size(&cascade, own),
     };
     apply(config, window, &origin, keys, new)
+}
+
+/// Save the panes' shares of the column, top to bottom, onto `tab`'s config entry in window
+/// `window`: each declared `pane` gains its `size`, or an inherited stack is copied onto the tab's
+/// own entry with the new sizes. Refuses (leaving the file untouched) while the file fails to
+/// load, when the tab has no split, or when `sizes` doesn't match the panes it declares.
+pub fn write_pane_sizes(
+    config: &Path,
+    raw: &RawConfig,
+    window: &str,
+    tab: &Tab,
+    sizes: &[f64],
+) -> Result<(), String> {
+    warden_config::load(config).map_err(|e| format!("config not saved: {e}"))?;
+    let split = tab.split.as_ref().ok_or("the tab has no split")?;
+    if split.panes.len() != sizes.len() {
+        return Err(format!(
+            "the column has {} panes; the config declares {}",
+            sizes.len(),
+            split.panes.len()
+        ));
+    }
+    let w = raw_window(raw, window)?;
+    let origin = locate(w, tab, config.parent().unwrap_or(Path::new("")))?;
+    let (own, _) = levels(&origin);
+    let own_panes = match own {
+        Some(RawSplit::On(t)) => t.panes.as_ref().is_some_and(|p| p.len() == sizes.len()),
+        _ => false,
+    };
+    if own_panes {
+        for (i, s) in sizes.iter().enumerate() {
+            let idx = i.to_string();
+            apply(
+                config,
+                window,
+                &origin,
+                &["split", "pane", &idx, "size"],
+                Some(Value::from(stored_size(*s))),
+            )?;
+        }
+        return Ok(());
+    }
+    let mut arr = Array::new();
+    for (p, s) in split.panes.iter().zip(sizes) {
+        let mut t = InlineTable::new();
+        if let Some(c) = p.startup.as_deref().filter(|c| !c.is_empty()) {
+            t.insert("cmd", Value::from(c));
+        }
+        t.insert("size", Value::from(stored_size(*s)));
+        arr.push(Value::InlineTable(t));
+    }
+    apply(
+        config,
+        window,
+        &origin,
+        &["split", "pane"],
+        Some(Value::Array(arr)),
+    )
+}
+
+/// [`write_pane_sizes`] onto the config warden runs from.
+#[expect(dead_code, reason = "called once the divider drag saves")]
+pub fn save_pane_sizes(window: &str, tab: &Tab, sizes: &[f64]) -> Result<(), String> {
+    let (config, raw) = current()?;
+    write_pane_sizes(&config, &raw, window, tab, sizes)
 }
 
 /// A size as the file keeps it: two decimals.
@@ -505,6 +570,144 @@ split = { size = 0.4, side = "left" }
         assert!(out.contains("split = true"), "{out}");
         let c = warden_config::load(&p).unwrap().config;
         assert_eq!(tab_titled(&c, "A").split.unwrap().size, 0.5);
+    }
+
+    const STACK3: &str = r##"
+[[window]]
+title = "W"
+
+[[window.tab]]
+dir = "/tmp/a"
+title = "A"
+server = "s"
+
+[[window.tab.split.pane]]
+cmd = "one"
+size = 0.5
+
+[[window.tab.split.pane]]
+cmd = "two"
+size = 0.25
+
+[[window.tab.split.pane]]
+cmd = "three"
+size = 0.25
+"##;
+
+    fn panes(c: &warden_config::Config, t: &str) -> Vec<(f64, Option<String>)> {
+        tab_titled(c, t)
+            .split
+            .unwrap()
+            .panes
+            .iter()
+            .map(|p| (p.size, p.startup.clone()))
+            .collect()
+    }
+
+    fn run_sizes(p: &Path, t: &str, sizes: &[f64]) -> Result<String, String> {
+        let raw = warden_config::raw::parse(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let tab = tab_titled(&warden_config::load(p).unwrap().config, t);
+        write_pane_sizes(p, &raw, "W", &tab, sizes)?;
+        Ok(std::fs::read_to_string(p).unwrap())
+    }
+
+    #[test]
+    fn pane_sizes_written_into_the_tabs_own_stack() {
+        let (_d, p) = setup(STACK3);
+        let out = run_sizes(&p, "A", &[0.2, 0.3, 0.5]).unwrap();
+        assert!(out.contains("cmd = \"two\""), "{out}");
+        let c = warden_config::load(&p).unwrap().config;
+        assert_eq!(
+            panes(&c, "A"),
+            vec![
+                (0.2, Some("one".into())),
+                (0.3, Some("two".into())),
+                (0.5, Some("three".into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn pane_sizes_copy_an_inherited_stack_onto_the_tab() {
+        let toml = r##"
+[[window]]
+title = "W"
+
+[[window.split.pane]]
+cmd = "top"
+size = 0.5
+
+[[window.split.pane]]
+size = 0.5
+
+[[window.tab]]
+dir = "/tmp/a"
+title = "A"
+server = "s"
+
+[[window.tab]]
+dir = "/tmp/b"
+title = "B"
+server = "s"
+"##;
+        let (_d, p) = setup(toml);
+        run_sizes(&p, "A", &[0.7, 0.3]).unwrap();
+        let c = warden_config::load(&p).unwrap().config;
+        assert_eq!(panes(&c, "A"), vec![(0.7, Some("top".into())), (0.3, None)]);
+        assert_eq!(panes(&c, "B"), vec![(0.5, Some("top".into())), (0.5, None)]);
+    }
+
+    #[test]
+    fn pane_sizes_refused_on_a_count_mismatch() {
+        let (_d, p) = setup(STACK3);
+        let err = run_sizes(&p, "A", &[0.5, 0.5]).unwrap_err();
+        assert_eq!(err, "the column has 2 panes; the config declares 3");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), STACK3);
+    }
+
+    #[test]
+    fn pane_sizes_on_a_discovered_project() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("proj");
+        std::fs::create_dir_all(root.join("p1")).unwrap();
+        let toml = format!(
+            "[[window]]\ntitle = \"W\"\n\n[[window.root]]\nname = \"R\"\ndir = \"{}\"\nserver = \"s\"\n\n[[window.root.split.pane]]\ncmd = \"x\"\nsize = 0.5\n\n[[window.root.split.pane]]\nsize = 0.5\n",
+            root.display()
+        );
+        let p = d.path().join("config.toml");
+        std::fs::write(&p, toml).unwrap();
+        let raw = warden_config::raw::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let split = warden_config::resolve::cascade_split_over(
+            &raw,
+            &raw.windows[0],
+            &[raw.windows[0].extra.roots[0].split.as_ref()],
+        )
+        .unwrap()
+        .unwrap();
+        let tab = Tab {
+            dir: root.join("p1"),
+            key: normalize_dir_key(&root.join("p1")),
+            group: Some("R".into()),
+            split: Some(split),
+            ..bare_tab()
+        };
+        write_pane_sizes(&p, &raw, "W", &tab, &[0.6, 0.4]).unwrap();
+        let out = std::fs::read_to_string(&p).unwrap();
+        assert!(out.contains("[[window.root.tab]]"), "{out}");
+        let raw = warden_config::raw::parse(&out).unwrap();
+        let o = raw.windows[0].extra.roots[0].tabs[0]
+            .split
+            .as_ref()
+            .unwrap();
+        let RawSplit::On(t) = o else { panic!("{out}") };
+        let got: Vec<f64> = t
+            .panes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|p| p.size.unwrap())
+            .collect();
+        assert_eq!(got, vec![0.6, 0.4]);
     }
 
     fn bare_tab() -> Tab {
