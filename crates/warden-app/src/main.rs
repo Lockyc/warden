@@ -1252,20 +1252,12 @@ fn pane_menu(
         registry::PaneIdx::Block(_) if only_pane == Some(true) => {
             Some(Err(pane_menu::ONLY_PANE.to_owned()))
         }
-        registry::PaneIdx::Block(_) => pane_share
-            .filter(|s| {
-                let ok = s.share.is_finite();
-                if !ok {
-                    log::warn!("pane menu of tab {id:?}: pane share {} dropped", s.share);
-                }
-                ok
+        registry::PaneIdx::Block(_) => pane_share.map(|s| {
+            Ok(pane_menu::PaneSizeState {
+                axis: s.axis,
+                current: s.share,
             })
-            .map(|s| {
-                Ok(pane_menu::PaneSizeState {
-                    axis: s.axis,
-                    current: s.share,
-                })
-            }),
+        }),
     };
     let label = window.label().to_owned();
     let (has_selection, can_split, close_pane, tab) = {
@@ -1409,9 +1401,6 @@ fn save_tab_split(app: &tauri::AppHandle, label: &str, tab: &str, edit: split_wr
 #[tauri::command]
 fn save_split_size(window: tauri::WebviewWindow, id: String, size: f64) -> Result<(), String> {
     use warden_config::resolve::{SPLIT_SIZE_MAX, SPLIT_SIZE_MIN};
-    if !size.is_finite() {
-        return Err("a split size must be a number".into());
-    }
     let app = tauri::Manager::app_handle(&window);
     save_tab_split(
         app,
@@ -2446,12 +2435,6 @@ fn scratch_resize(
     splits: Vec<SplitRatio>,
     sizes: Option<Vec<f64>>,
 ) -> Result<(), String> {
-    if splits.iter().any(|s| !s.ratio.is_finite()) {
-        return Err("a divider ratio must be a number".into());
-    }
-    if sizes.iter().flatten().any(|s| !s.is_finite()) {
-        return Err("a pane size must be a number".into());
-    }
     let app = tauri::Manager::app_handle(&window);
     let op = ScratchOp::Resize {
         splits: splits

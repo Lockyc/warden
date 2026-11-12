@@ -1107,10 +1107,16 @@
       // unrelated refresh before then would snap the dividers back — or the resize fails, or Rex
       // never says so.
       function scratchSetRatios(tabId, view, splits) {
+        const sizes = scratchColumnSizes(view);
+        if (!splits.every((s) => Number.isFinite(s.ratio)) || !(sizes || []).every(Number.isFinite)) {
+          console.warn("warden: scratch resize of tab", tabId, "drops non-finite ratios", splits, sizes);
+          scratchRelease(scratchHeld);
+          return;
+        }
         const hold = { tabId, view, splits };
         scratchHeld = hold;
         setTimeout(() => scratchRelease(hold), SCRATCH_HOLD_MS);
-        invoke("scratch_resize", { id: tabId, splits, sizes: scratchColumnSizes(view) }).catch((err) => {
+        invoke("scratch_resize", { id: tabId, splits, sizes }).catch((err) => {
           if (sb) setWindowError("⚠ " + err);
           scratchRelease(hold);
         });
@@ -2690,7 +2696,9 @@
           if (dragTabId !== null) {
             ratioOverride.set(dragTabId, currentFrac);
             // A moved divider is saved; the second pane's share is what the config stores.
-            if (Math.abs(currentFrac - startFrac) > SCRATCH_EPS) {
+            if (!Number.isFinite(currentFrac)) {
+              console.warn("warden: split drag of tab", dragTabId, "drops ratio", currentFrac);
+            } else if (Math.abs(currentFrac - startFrac) > SCRATCH_EPS) {
               invoke("save_split_size", { id: dragTabId, size: 1 - currentFrac })
                 .catch((err) => setWindowError("⚠ " + err));
             }
@@ -2818,7 +2826,11 @@
         const s = splitOf(p.id) ? loadSplit(p.id) : null;
         const view = s && p.pane > 0 ? scratchView(p.id) : null;
         const onlyPane = !!view && view.tiles.length === 1;
-        const paneShare = view && !onlyPane ? scratchPaneShare(view, p.pane - 1) : null;
+        let paneShare = view && !onlyPane ? scratchPaneShare(view, p.pane - 1) : null;
+        if (paneShare && !Number.isFinite(paneShare.share)) {
+          console.warn("warden: pane menu of tab", p.id, "drops pane share", paneShare.share);
+          paneShare = null;
+        }
         invoke("pane_menu", {
           id: p.id, pane: p.pane, x: p.x, y: p.y, size: s ? 1 - s.ratio : null, paneShare, onlyPane,
         }).catch((err) => console.error("warden: IPC pane_menu failed", err));
