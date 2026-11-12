@@ -1559,6 +1559,11 @@
       // `TabDto.colour`.
       // Shown by the same `.agents` class as the column; runs on every column sync, list render,
       // `warden:agents`, `warden:session-state` and snapshot.
+      // An agent's title, in its row and the summary alike: the conversation's topic, else its
+      // window's name (the terminal title the program set, or a rename).
+      function agentTitle(r) {
+        return r.topic || r.name;
+      }
       function summarySync() {
         const tab = agentsTab();
         const s = summaryById.get(tab);
@@ -1577,7 +1582,7 @@
         const dto = agentLists.get(tab);
         const sel = dto && dto.rows.find((r) => r.selected);
         const words = {
-          title: sel && (sel.topic || sel.name),
+          title: sel && agentTitle(sel),
           asked: sel && sel.asked,
           doing: sel && (sel.needs || sel.doing || DOING_STATE[sel.state]),
           said: sel && sel.said,
@@ -1913,12 +1918,13 @@
         row.classList.toggle("nested", r.depth > 0);
         row.classList.toggle("forked", !!r.forks);
         row.style.setProperty("--depth", Math.min(r.depth, 2));
-        const name = r.name || "untitled";
+        const title = agentTitle(r);
+        const name = title || "untitled";
         // The second line: the current step while working, what it waits on you for, else what its
-        // last reply did — falling back to the context unless that only repeats the name (a
+        // last reply did — falling back to the context unless that only repeats the title (a
         // terminal title the window took its name from, whole or cut short).
         const shown = (r.context || "").trim();
-        const repeats = shown && r.name && (r.name.startsWith(shown) || shown.startsWith(r.name.trim()));
+        const repeats = shown && title && (title.startsWith(shown) || shown.startsWith(title.trim()));
         const context = !repeats && shown;
         const ctx = r.state === "asleep" ? "asleep"
           : r.state === "working" ? r.doing || context || ""
@@ -1944,7 +1950,7 @@
             if (v !== r.name) agentCall("agent_rename", { tabId: tab, recordId: r.id, name: v });
           }, stop));
         } else {
-          const label = agentEl("span", r.name ? "a-name" : "a-name untitled", name);
+          const label = agentEl("span", title ? "a-name" : "a-name untitled", name);
           if (r.depth > 0) label.prepend(agentForkMark());
           text.append(label);
         }
