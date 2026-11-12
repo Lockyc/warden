@@ -394,8 +394,22 @@
       .a-fork-caret { flex: none; width: 10px; margin-right: -3px; color: #7d8590; text-align: center; }
       .a-fork-caret:hover { color: #c3ccd8; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
-      /* Background work still running past the turn's end ("2 shells · 1 agent"). */
-      .a-bg { flex: none; color: #7d8590; font-size: 0.85em; padding: 0 5px; border: 1px solid #30363d; border-radius: 8px; }
+      /* The row's last line, on every row so they stand the same height: background work still
+         running past the turn's end ("2 shells · 1 agent") and the prompt cache (`paintCache`). */
+      .a-meta { display: flex; gap: 5px; height: 1.45em; align-items: center; overflow: hidden; }
+      .a-bg, .a-cache { flex: none; color: #7d8590; font-size: 0.8em; line-height: 1.35;
+        padding: 0 5px; border: 1px solid #30363d; border-radius: 8px; white-space: nowrap; }
+      .a-cache.warn, #summary .s-cache.warn { color: #f0883e; border-color: #6b4423; }
+      .a-cache.cold { color: #545d68; border-style: dashed; }
+      #summary .s-cache { flex: none; margin-left: auto; padding-left: 1em; opacity: 0.75; }
+      #summary .s-cache.warn { opacity: 1; }
+      #summary .s-cache.cold { opacity: 0.45; }
+      /* The column's width grip, along its right edge; the width is `--agents-w` (`agentsWidth`). */
+      #agents { position: relative; }
+      #agents-grip { position: absolute; top: 0; bottom: 0; right: -1px; width: 5px; z-index: 5;
+        cursor: col-resize; }
+      #agents-grip:hover, #agents-grip.dragging { background: #56b4e9; opacity: 0.6; }
+      #agents.narrow #agents-grip { display: none; }
       .a-empty { color: #6b7280; padding: 6px; font-size: 0.9em; }
       .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
         color: #7d8590; font-size: 0.9em; }
@@ -438,7 +452,7 @@
       #agents.narrow .a-row { justify-content: center; padding: 6px 0; }
       #agents.narrow .a-text, #agents.narrow .a-more, #agents.narrow .a-actions,
       #agents.narrow .a-gname, #agents.narrow .a-group .a-caret, #agents.narrow .a-empty,
-      #agents.narrow .a-newdrop, #agents.narrow .a-fork-caret, #agents.narrow .a-forks, #agents.narrow .a-bg { display: none; }
+      #agents.narrow .a-newdrop, #agents.narrow .a-fork-caret, #agents.narrow .a-forks { display: none; }
       #agents.narrow .a-row.nested { box-shadow: inset 2px 0 0 var(--fork); }
       #agents.narrow .a-row.nested::before { display: none; }
       #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
@@ -507,6 +521,7 @@
             <div id="agents-closed"></div>
           </div>
           <div id="agents-tile"><div class="t-name"></div><div class="t-where"></div></div>
+          <div id="agents-grip" title="Drag to resize · double-click for the default width"></div>
         </aside>
         <div id="primary-col">
         <div id="pane-primary" class="pane">
@@ -527,7 +542,7 @@
              agent's topic (unlabelled, from the labels' edge) / asked / doing, or what it needs
              from you / said. Filled by `summarySync`. -->
         <div id="summary">
-          <div class="s-row" data-key="title"><span class="s-v"></span></div>
+          <div class="s-row" data-key="title"><span class="s-v"></span><span class="s-cache"></span></div>
           <div class="s-row" data-key="asked"><span class="s-k">asked</span><span class="s-v"></span><span class="s-then"></span></div>
           <div class="s-row" data-key="doing"><span class="s-k">doing</span><span class="s-v"></span></div>
           <div class="s-row" data-key="said"><span class="s-k">said</span><span class="s-v"></span></div>
@@ -1555,6 +1570,15 @@
           if (tail) tail.textContent = then;
           row.title = text + then; // the whole line, past the ellipsis
         });
+        const cache = el.querySelector(".s-cache");
+        if (sel && sel.cache) {
+          cache.dataset.expires = sel.cache;
+          paintCache(cache);
+        } else {
+          delete cache.dataset.expires;
+          cache.textContent = "";
+          cache.title = "";
+        }
       }
 
       // The one toggle for the column (`#terminal-hole.agents`). Runs inside every `setActiveId`,
@@ -1685,6 +1709,25 @@
         if (text !== undefined) e.textContent = text;
         return e;
       }
+      // A prompt cache's chip from its expiry (`AgentRowDto.cache`, epoch seconds): minutes left,
+      // `warn` in the last five, `cold` once gone. `[data-expires]` repaints every 15s.
+      const CACHE_WARN_S = 5 * 60;
+      function paintCache(el) {
+        const at = Number(el.dataset.expires);
+        const left = at - Date.now() / 1000;
+        el.textContent = left <= 0 ? "cache cold" : `cache ${left < 60 ? "<1" : Math.floor(left / 60)}m`;
+        el.classList.toggle("warn", left > 0 && left <= CACHE_WARN_S);
+        el.classList.toggle("cold", left <= 0);
+        const time = new Date(at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        el.title = (left <= 0 ? "Prompt cache went cold at " : "Prompt cache goes cold at ") + time;
+      }
+      function agentCache(cls, expires) {
+        const el = agentEl("span", cls);
+        el.dataset.expires = expires;
+        paintCache(el);
+        return el;
+      }
+      setInterval(() => document.querySelectorAll("[data-expires]").forEach(paintCache), 15000);
       function agentButton(text, onClick, cls) {
         const b = agentEl("button", cls, text);
         b.addEventListener("click", (e) => {
@@ -1845,9 +1888,12 @@
           text.append(label);
         }
         if (ctx) text.append(agentEl("span", "a-ctx", ctx));
+        const meta = agentEl("span", "a-meta");
+        if (r.background) meta.append(agentEl("span", "a-bg", r.background));
+        if (r.cache) meta.append(agentCache("a-cache", r.cache));
+        text.append(meta);
         row.append(text);
         if (r.folded) row.append(agentEl("span", "a-forks", "+" + r.forks));
-        if (r.background) row.append(agentEl("span", "a-bg", r.background));
         const rec = agentControlRecord(r);
         if (rec.attention || r.amber) row.append(agentControls.attention(true));
         row.append(agentControls.presence(rec, r.state !== "asleep"));
@@ -2435,6 +2481,61 @@
         divider.addEventListener("contextmenu", (e) => {
           const s = activeId !== null && splitOf(activeId) ? loadSplit(activeId) : null;
           if (s) dividerMenu(e, null, 1 - s.ratio);
+        });
+      })();
+
+      // The agent column's width: `--agents-w`, dragged from `#agents-grip` (delta-based and
+      // self-unsticking on `e.buttons`, as the divider above), kept in `localStorage` for every
+      // window; a double-click returns it to the stylesheet's default. The primary's
+      // ResizeObserver re-reports its rect; the hidden tabs' holes follow via `scheduleMeasure`.
+      (function agentsWidth() {
+        const KEY = "agents-w";
+        const root = document.documentElement;
+        const grip = document.getElementById("agents-grip");
+        const agents = document.getElementById("agents");
+        const termFont = () => parseFloat(getComputedStyle(root).getPropertyValue("--term-font")) || 13;
+        const clamp = (w) => {
+          const hole = document.getElementById("terminal-hole").getBoundingClientRect().width;
+          return Math.round(Math.max(termFont() * 12, Math.min(w, hole * 0.6)));
+        };
+        try {
+          const saved = Number(localStorage.getItem(KEY));
+          if (saved > 0) root.style.setProperty("--agents-w", saved + "px");
+        } catch (e) {}
+        let startX = 0;
+        let startW = 0;
+        let width = 0;
+        function onMove(e) {
+          if (e.buttons === 0) { end(); return; }
+          width = clamp(startW + (e.clientX - startX));
+          root.style.setProperty("--agents-w", width + "px");
+          syncAgentsHead();
+        }
+        function end() {
+          grip.classList.remove("dragging");
+          document.body.style.cursor = "";
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", end);
+          window.removeEventListener("blur", end);
+          try { localStorage.setItem(KEY, String(width)); } catch (e) {}
+          scheduleMeasure();
+        }
+        grip.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          startX = e.clientX;
+          startW = width = agents.getBoundingClientRect().width;
+          grip.classList.add("dragging");
+          document.body.style.cursor = "col-resize";
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", end);
+          window.addEventListener("blur", end);
+        });
+        grip.addEventListener("dblclick", () => {
+          root.style.removeProperty("--agents-w");
+          try { localStorage.removeItem(KEY); } catch (e) {}
+          syncAgentsHead();
+          scheduleMeasure();
         });
       })();
 
