@@ -2569,7 +2569,14 @@
           // Hold whatever ratio the drag settled on. A click-without-move holds the split's
           // actual (unchanged) ratio, since currentFrac was seeded from startFrac. Held under
           // `dragTabId` (captured at mousedown), not the live `activeId` — see that declaration.
-          if (dragTabId !== null) ratioOverride.set(dragTabId, currentFrac);
+          if (dragTabId !== null) {
+            ratioOverride.set(dragTabId, currentFrac);
+            // A moved divider is saved; the second pane's share is what the config stores.
+            if (Math.abs(currentFrac - startFrac) > SCRATCH_EPS) {
+              invoke("save_split_size", { id: dragTabId, size: 1 - currentFrac })
+                .catch((err) => setWindowError("⚠ " + err));
+            }
+          }
           dragTabId = null;
         }
         divider.addEventListener("mousedown", (e) => {

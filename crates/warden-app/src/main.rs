@@ -1360,38 +1360,60 @@ fn on_pane_menu(app: &tauri::AppHandle, target: pane_menu::Target) {
             }
         }
         Op::SizeUnavailable => {}
-        Op::Size(_) | Op::SizeDefault => {
-            let found = config_tab(&state.lock(), label, tab);
-            let saved = found.and_then(|(title, t)| {
-                let (edit, size) = match op {
-                    Op::Size(i) => (
-                        split_write::SplitEdit::Size(PRESETS[i]),
-                        split_write::stored_size(PRESETS[i]),
-                    ),
-                    _ => (
-                        split_write::SplitEdit::ResetSize,
-                        split_write::current_inherited_size(&title, &t)?,
-                    ),
-                };
-                split_write::save_split(&title, &t, edit).map(|()| size)
-            });
-            match saved {
-                // The page drops a dragged ratio for the chosen size; the reload carries it to
-                // the file's `size` too, which a size equal to the old one never changes.
-                Ok(size) => {
-                    let _ = app.emit_to(
-                        label,
-                        "warden:split-size",
-                        serde_json::json!({ "label": label, "id": tab, "size": size }),
-                    );
-                }
-                Err(e) => {
-                    log::error!("split size of tab {tab:?} not saved: {e}");
-                    banner(e);
-                }
-            }
+        Op::Size(i) => save_tab_split(app, label, tab, split_write::SplitEdit::Size(PRESETS[i])),
+        Op::SizeDefault => save_tab_split(app, label, tab, split_write::SplitEdit::ResetSize),
+    }
+}
+
+/// Write a size edit to tab `tab`'s config entry, tell the page the stored size, and banner a
+/// failure. The page drops a dragged ratio for the stored size; the reload carries it to the
+/// file's `size` too, which a size equal to the old one never changes.
+#[cfg(target_os = "macos")]
+fn save_tab_split(app: &tauri::AppHandle, label: &str, tab: &str, edit: split_write::SplitEdit) {
+    use tauri::{Emitter, Manager};
+    let state = app.state::<ManagerState>();
+    let saved = config_tab(&state.lock(), label, tab).and_then(|(title, t)| {
+        let size = match edit {
+            split_write::SplitEdit::Size(s) => split_write::stored_size(s),
+            _ => split_write::current_inherited_size(&title, &t)?,
+        };
+        split_write::save_split(&title, &t, edit).map(|()| size)
+    });
+    match saved {
+        Ok(size) => {
+            let _ = app.emit_to(
+                label,
+                "warden:split-size",
+                serde_json::json!({ "label": label, "id": tab, "size": size }),
+            );
+        }
+        Err(e) => {
+            log::error!("split size of tab {tab:?} not saved: {e}");
+            let _ = app.emit_to(
+                label,
+                "warden:error",
+                serde_json::json!({ "label": label, "message": e }),
+            );
         }
     }
+}
+
+/// Save the second pane's share of tab `id`'s split (a divider drag's release) to the config.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn save_split_size(window: tauri::WebviewWindow, id: String, size: f64) -> Result<(), String> {
+    use warden_config::resolve::{SPLIT_SIZE_MAX, SPLIT_SIZE_MIN};
+    if !size.is_finite() {
+        return Err("a split size must be a number".into());
+    }
+    let app = tauri::Manager::app_handle(&window);
+    save_tab_split(
+        app,
+        window.label(),
+        &id,
+        split_write::SplitEdit::Size(size.clamp(SPLIT_SIZE_MIN, SPLIT_SIZE_MAX)),
+    );
+    Ok(())
 }
 
 /// Make this window's webview the key view, taking first responder from its terminal so the
@@ -3329,6 +3351,7 @@ fn main() {
             scratch_new,
             scratch_close_tab,
             scratch_resize,
+            save_split_size,
             init_tabs,
             activate_tab,
             unload_tab,

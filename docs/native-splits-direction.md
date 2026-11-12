@@ -48,11 +48,9 @@ panes (below). The config is the one source of a tab's split:
   global for discovered projects; schema in `docs/config.md`). The tab is created with its
   second pane already declared, both spawn together (also under `load_on_open`), the
   second pane runs `split.cmd` (bare shell when absent) in the tab's own shell and dir, and
-  `split.size`/`split.side` seed the divider. A drag overrides the ratio **in memory only**,
-  for as long as the tab's terminals are live: unload, a child exit, a hot-reload respawn,
-  a new `size` in the config and an app restart all bring the config ratio back; the
-  Size ▸ in a terminal's right-click menu, or right-clicking the divider, saves a size,
-  replacing the drag. `exit` in
+  `split.size`/`split.side` seed the divider. A divider drag saves its size to the config (as does Size ▸ in a
+  terminal's right-click menu, or right-clicking the divider); the page holds the dragged
+  ratio in `ratioOverride` until the reload lands. `exit` in
   the second shell closes the pane for the same lifetime — `Registry::unload` re-declares it,
   so it is back on the next spawn — and ⌘D recreates it from config. This is the frame-less
   shape of an `amux --frame` tab: the scratch shell beside the agent, with warden owning the
@@ -162,8 +160,8 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
   rule is scoped to `#terminal-hole.split`. **`applySplitShape` is the only writer** of `.split`
   and `hidden` — `setSplitVisible` for the active tab; `measureTabs` borrows it per hidden tab and
   restores the saved state in the same task (keep that restore synchronous).
-- **A split's ratio never reaches `localStorage`** — a drag lands in the in-memory
-  `ratioOverride`, cleared wherever the tab goes cold or its declared `size` changes.
+- **A split's ratio never reaches `localStorage`** — a drag is held in
+  `ratioOverride` (and saved to the config), cleared wherever the tab goes cold or its declared `size` changes.
 - **Report the pane's content box, and paint the border box's own background** — both, together:
   the border box lets the surface occlude the focus border; the content box without an opaque
   outer ground leaks wallpaper round every pane. `ui/index.html` (`contentRect` + the `.pane` CSS).
