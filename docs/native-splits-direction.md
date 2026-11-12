@@ -93,7 +93,9 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
   the same below it (`rex::column::StackSide`); focus moves to the new block when Rex's next view
   brings it (`Registry::focus_block`). Dragging an inner divider moves only the two panes beside
   it, each changed split a `session.resize_pane` on release, as is a block's Pane Height ▸
-  (`scratchSetRatios`); the first scratch tab's sizes save to a config stack of as many panes.
+  (`scratchSetRatios`); the first scratch tab's sizes save to a config stack of as many panes. A stack the tab
+  inherits (`[split]`, `[window.split]`, `[window.root.split]`) is copied onto its own entry (a `[[window.root.tab]]`
+  for a discovered project), so the tab stops following later edits to the inherited stack.
 - **`exit` in a block**, or Close Pane on it (`block.close`), closes it: its scratch tab
   reflows, or goes with its last block and the selection leans to a neighbour; the session's
   last block gives way to a fresh scratch tab, so the split stays (`docs/rex.md`, *Lifecycle*). While the
@@ -209,8 +211,9 @@ only by eye. Each step below is written to actually fail if the feature regresse
   pane on the LEFT at 30% of the hole, the primary on the right running the tab's `cmd`,
   with focus (the accent ring) on the primary.
 - Resizing the window keeps the 30/70 proportion.
-- Dragging the divider changes it; ⌘W then re-clicking the tab brings back 30/70. So does
-  `exit` in the primary, and an app restart.
+- Dragging the divider changes it and writes the new `size` onto the tab's `split` in the
+  config; ⌘W then re-clicking the tab, `exit` in the primary, and an app restart all bring
+  back the dragged ratio.
 - `exit` in a config split's second pane closes it; ⌘W then re-clicking the tab brings it
   back; ⌘D on the closed split brings it back immediately, still on the left at 30%.
 - Editing `size` in the config re-lays out the live split on save without respawning either

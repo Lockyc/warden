@@ -678,7 +678,7 @@
       const splitById = new Map();
       // tab id → { side, size } from `TabDto.split_layout`, rebuilt on every snapshot: the split
       // the tab's config declares. A closed pane holds only until relaunch, and a drag is
-      // remembered in `ratioOverride` below rather than persisted.
+      // held in `ratioOverride` below until the reload lands.
       const splitLayoutById = new Map();
       // tab id → the PRIMARY's dragged fraction for a config-split tab, held only while the
       // tab's terminals are live — cleared when it goes cold (applyUnloaded, a snapshot with no
