@@ -95,11 +95,11 @@ site omits it.
   `warden/answered`, `warden/said`, `warden/topic`, `warden/needs`; which prompt is which and
   the end-of-turn digest that rewrites them: `scripts/agent-hooks/claude-hook.sh`), so they reach
   warden for an agent no relay streams, and on a remote server. *title*, in the row and the summary alike, is a name the user gave the tab (until Reset Name), else the topic, else the window's name.
-  The root record is Claude Code's own: it reads idle once the main turn ends, even while
-  background shells or agents still run (Claude Code's own title and header do the same, and its
-  tracker has declined to split the state: anthropics/claude-code#69306, #73557, #80246). So the
-  hook writes `warden/background` at Stop from the payload's `background_tasks`, and an idle row
-  shows it on its second line. Beside it sits `warden/cache`, the epoch second the prompt cache
+  The root record is Claude Code's own: it reads working for as long as background shells or
+  agents run, after the main turn ends as well, so it can't tell an agent still answering from
+  one waiting on you with work in the background. So the hook writes `warden/background` at Stop
+  from the payload's `background_tasks` and clears it on the next prompt, and the row shows it on
+  its second line whatever its state. Beside it sits `warden/cache`, the epoch second the prompt cache
   goes cold (the hook's `cache`), as a countdown chip there and on the summary's title row.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane's session windows are its

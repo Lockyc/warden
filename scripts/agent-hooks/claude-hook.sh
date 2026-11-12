@@ -15,7 +15,7 @@
 #   writes nothing. Either clears `warden/needs`. The reply's first line is `warden/said`, until
 #   the turn's digest (`digest`, also run on a resume) rewrites it with `warden/topic`,
 #   `warden/asked` and `warden/needs`. Stop also writes `warden/background`, what is still
-#   running as the turn ends, and Stop and a resume `warden/cache`, when the prompt cache goes
+#   running as the turn ends, which a prompt clears, and Stop and a resume `warden/cache`, when the prompt cache goes
 #   cold. These need `jq`; without it they do nothing.
 #
 # Prints nothing to stdout (Claude Code adds SessionStart's and UserPromptSubmit's stdout to the
@@ -184,9 +184,11 @@ prompt() {
 	command -v jq >/dev/null 2>&1 || return 0
 	kind=$(printf '%s' "$input" | jq -r "$KIND"' .prompt // "" | kind' 2>/dev/null)
 	[ "$kind" = skip ] && return 0
-	# Whatever the agent waited on is answered, and a digest still running is stale.
+	# Whatever the agent waited on is answered, a digest still running is stale, and the last
+	# turn's background count waits for this turn's Stop.
 	rm -f "$digest_dir/$(field session_id)" 2>/dev/null
 	emit "${esc}]7501;id=warden/needs:state=clear${esc}\\"
+	emit "${esc}]7501;id=warden/background:state=clear${esc}\\"
 	case $kind in
 	ask)
 		record warden/asked prompt all
