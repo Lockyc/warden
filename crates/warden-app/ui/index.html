@@ -1930,7 +1930,8 @@
           : r.state === "working" ? r.doing || context || ""
           : r.needs || r.said || context || "";
         row.title = [name, ctx, r.background && "still running: " + r.background].filter(Boolean).join("\n");
-        // While any row has forks, every row keeps the caret's slot, so names line up by depth.
+        // Every row keeps the caret's slot, so names line up by depth and stay put as forks come
+        // and go.
         if (r.forks) {
           const n = r.forks === 1 ? "1 fork" : `${r.forks} forks`;
           const caret = agentButton("", () =>
@@ -1940,7 +1941,7 @@
             'stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 1 5.5 4 2.5 7"/></svg>';
           caret.title = (r.folded ? "Show " : "Fold ") + n;
           row.append(caret);
-        } else if (dto.rows.some((x) => x.forks)) row.append(agentEl("span", "a-fork-caret"));
+        } else row.append(agentEl("span", "a-fork-caret"));
         row.append(...agentGuides(dto, r));
         const text = agentEl("span", "a-text");
         if (agentUi.renaming === r.id) {
