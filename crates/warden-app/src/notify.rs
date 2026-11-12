@@ -204,7 +204,7 @@ pub fn raise(
     let _ = app.emit_to(
         label,
         "warden:notify",
-        serde_json::json!({ "label": label, "id": tab, "lock": lock }),
+        serde_json::json!({ "label": label, "id": tab, "lock": lock, "agent": agent.is_some() }),
     );
 
     if let Some((title, body)) = banner {

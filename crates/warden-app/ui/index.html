@@ -608,6 +608,14 @@
       // tab id → its unread notification/bell badge: `true` (the dot), or `"lock"` (an agent
       // waiting on a permission) — chrome-core's attention values.
       const badges = new Map();
+      // Tab ids whose badge an agent tab raised: it lasts only while that tab's agent list still
+      // has an agent needing you (`warden:agents`), since an agent can stop needing you unseen —
+      // a turn ends, then a background task resumes it. A bell's badge has no such end.
+      const agentBadged = new Set();
+      function clearBadge(id) {
+        agentBadged.delete(id);
+        if (badges.delete(id)) sb.setAttention(id, null);
+      }
       // [min, max] share either pane of a split may take — the backend's `InitDto.split_band`,
       // set from every snapshot before anything can lay a split out.
       let splitBand;
@@ -1233,6 +1241,7 @@
         tabIds = [...ids];
         scheduleMeasure(); // a tab's shape rides the snapshot (agents, split, detached)
         badges.forEach((_, id) => { if (!ids.has(id)) badges.delete(id); });
+        agentBadged.forEach((id) => { if (!ids.has(id)) agentBadged.delete(id); });
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
         secondarySpawnedById.forEach((_, id) => { if (!ids.has(id)) secondarySpawnedById.delete(id); });
         splitById.forEach((_, id) => { if (!ids.has(id)) splitById.delete(id); });
@@ -1370,8 +1379,7 @@
         sb.setLive(id, false);
         if (newActive) {
           sb.setActive(newActive);
-          badges.delete(newActive);
-          sb.setAttention(newActive, null); // now visible → clear its badge
+          clearBadge(newActive); // now visible
           setActiveId(newActive, true); // pick_live_neighbour only returns already-spawned tabs
         } else if (id === activeId) {
           // The tab we were looking at went cold and nothing live remains → blank hole.
@@ -2168,8 +2176,7 @@
                 return;
               }
               // Focusing a tab clears its unread badge (it's now visible).
-              badges.delete(id);
-              sb.setAttention(id, null);
+              clearBadge(id);
               setActiveId(id, false); // not known live until the spawn returns; already reports
                                        // both holes via setSplitVisible
               // activate_tab reports whether a surface now covers the hole, PLUS this
@@ -2370,6 +2377,9 @@
         const id = e.payload && e.payload.id;
         if (id) {
           const mark = e.payload.lock ? "lock" : true;
+          // An agent's raise over a bell's badge leaves the bell's, so the list can't clear it.
+          if (!e.payload.agent) agentBadged.delete(id);
+          else if (!badges.has(id)) agentBadged.add(id);
           badges.set(id, mark);
           sb.setAttention(id, mark);
         }
@@ -2380,7 +2390,7 @@
       listen("warden:tab-seen", (e) => {
         if (!forMe(e) || !sb) return;
         const id = e.payload && e.payload.id;
-        if (id && badges.delete(id)) sb.setAttention(id, null);
+        if (id) clearBadge(id);
       });
       // A desktop-notification banner was clicked — the native layer raised this window; select the
       // tab that fired it (which activates it + clears its badge via onSelect).
@@ -2625,6 +2635,7 @@
         const p = e.payload;
         if (!p || !p.tabId || !agentsById.has(p.tabId)) return;
         agentLists.set(p.tabId, p);
+        if (agentBadged.has(p.tabId) && !p.rows.some(agentNeedsYou)) clearBadge(p.tabId);
         if (agentsTab() !== p.tabId) return;
         summarySync(); // even while a drag or rename holds the list still
         refreshAgents();
