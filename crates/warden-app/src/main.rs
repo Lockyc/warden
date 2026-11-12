@@ -2421,22 +2421,38 @@ fn scratch_close_tab(
     scratch_run(app, window.label(), &id, ScratchOp::CloseTab(window_id))
 }
 
-/// Move divider `split_id` of the scratch tab tab `id`'s column shows to `ratio` of its split.
+/// One divider of a scratch column and the ratio of its split it moves to.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SplitRatio {
+    split_id: String,
+    ratio: f64,
+}
+
+/// Move dividers `splits` of the scratch tab tab `id`'s column shows, in order. `sizes`: the
+/// column's pane shares top to bottom, saved to the tab's config entry when the shown scratch tab
+/// is the one its stack opened as.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn scratch_resize(
     window: tauri::WebviewWindow,
     id: String,
-    split_id: String,
-    ratio: f64,
+    splits: Vec<SplitRatio>,
+    sizes: Option<Vec<f64>>,
 ) -> Result<(), String> {
-    if !ratio.is_finite() {
+    if splits.iter().any(|s| !s.ratio.is_finite()) {
         return Err("a divider ratio must be a number".into());
+    }
+    if sizes.iter().flatten().any(|s| !s.is_finite()) {
+        return Err("a pane size must be a number".into());
     }
     let app = tauri::Manager::app_handle(&window);
     let op = ScratchOp::Resize {
-        split_id,
-        ratio: rex::layout::clamp_ratio(ratio),
+        splits: splits
+            .into_iter()
+            .map(|s| (s.split_id, rex::layout::clamp_ratio(s.ratio)))
+            .collect(),
+        sizes,
     };
     scratch_run(app, window.label(), &id, op)
 }
@@ -2451,8 +2467,12 @@ enum ScratchOp {
         block: String,
         side: rex::column::StackSide,
     },
-    /// A divider of the shown scratch tab, moved.
-    Resize { split_id: String, ratio: f64 },
+    /// Dividers of the shown scratch tab, each moved to its ratio, in order; `sizes` the column's
+    /// pane shares to save.
+    Resize {
+        splits: Vec<(String, f64)>,
+        sizes: Option<Vec<f64>>,
+    },
     /// Rex window `0` — a scratch tab — closed, with its blocks.
     CloseTab(String),
 }
@@ -2465,7 +2485,7 @@ enum ScratchOp {
 fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let gated = !matches!(op, ScratchOp::Resize { .. });
-    let (key, dir, server, divider, dto) = {
+    let (key, dir, server, dividers, save, dto) = {
         let st = app.state::<ManagerState>();
         let mut m = st.lock();
         let reg = &mut m.windows.get_mut(label).ok_or("window not found")?.registry;
@@ -2476,18 +2496,30 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
             .spec_of(id)
             .and_then(|s| s.server.clone())
             .unwrap_or_default();
-        let divider = match &op {
-            ScratchOp::Resize { split_id, .. } => Some(
-                reg.column_divider(id, split_id)
-                    .ok_or("that divider is no longer on screen")?,
-            ),
-            _ => None,
+        let dividers = match &op {
+            ScratchOp::Resize { splits, .. } => splits
+                .iter()
+                .map(|(split_id, _)| {
+                    reg.column_divider(id, split_id)
+                        .ok_or("that divider is no longer on screen")
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => Vec::new(),
         };
+        let first_window = reg.column_shows_first_window(id);
         if gated {
             reg.begin_column_change(id)?;
         }
+        // The sizes, and the config entry they save to — only the first scratch tab is the
+        // configured stack.
+        let save = match &op {
+            ScratchOp::Resize {
+                sizes: Some(sizes), ..
+            } if first_window => Some(config_tab(&m, label, id).map(|t| (t, sizes.clone()))),
+            _ => None,
+        };
         let dto = gated.then(|| m.init_dto(label)).flatten();
-        (key, dir, server, divider, dto)
+        (key, dir, server, dividers, save, dto)
     };
     if let Some(dto) = dto {
         let _ = app.emit_to(label, "warden:refresh", dto);
@@ -2507,24 +2539,15 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
                 });
                 return;
             };
-            let done = match (&op, &divider) {
-                (ScratchOp::NewTab, _) => hub
-                    .column_new_tab(&key, &dir)
-                    .map(|w| Some(ScratchMade::Tab(w))),
-                (ScratchOp::Split { block, side }, _) => hub
-                    .column_split(&key, block, *side, &dir)
-                    .map(|b| Some(ScratchMade::Block(b))),
-                (ScratchOp::Resize { ratio, .. }, Some(d)) => {
-                    hub.column_resize(&key, d, *ratio).map(|_| None)
-                }
-                (ScratchOp::Resize { .. }, None) => Ok(None),
-                (ScratchOp::CloseTab(w), _) => hub.column_close_tab(&key, w).map(|()| None),
-            };
-            let done = done.map_err(|e| rex::spawn::open_error(&server, &e));
+            let done = scratch_work(&hub, &key, &dir, &op, &dividers)
+                .map_err(|e| rex::spawn::open_error(&server, &e));
             // A resize that took has nothing to land: the page already shows the dragged layout,
             // and the hub's view may not have it yet — landing that would jump the divider back
             // until Rex's view follows (`lifecycle::follow_column`).
             if done.is_ok() && matches!(op, ScratchOp::Resize { .. }) {
+                if let Some(save) = save {
+                    save_column_sizes(&app, &label, &id, save);
+                }
                 return;
             }
             let opened = hub
@@ -2546,6 +2569,59 @@ fn scratch_run(app: &tauri::AppHandle, label: &str, id: &str, op: ScratchOp) -> 
             }
             format!("couldn't start the scratch column change: {e}")
         })
+}
+
+/// Do `op` to `key`'s column session in Rex (a worker thread). A resize moves each of `dividers` —
+/// `op`'s splits, looked up — in order, stopping at the first refusal.
+fn scratch_work(
+    hub: &rex::RexHub,
+    key: &str,
+    dir: &std::path::Path,
+    op: &ScratchOp,
+    dividers: &[rex::layout::Divider],
+) -> Result<Option<ScratchMade>, rex_client::RexError> {
+    match op {
+        ScratchOp::NewTab => hub
+            .column_new_tab(key, dir)
+            .map(|w| Some(ScratchMade::Tab(w))),
+        ScratchOp::Split { block, side } => hub
+            .column_split(key, block, *side, dir)
+            .map(|b| Some(ScratchMade::Block(b))),
+        ScratchOp::Resize { splits, .. } => {
+            for ((_, ratio), d) in splits.iter().zip(dividers) {
+                hub.column_resize(key, d, *ratio)?;
+            }
+            Ok(None)
+        }
+        ScratchOp::CloseTab(w) => hub.column_close_tab(key, w).map(|()| None),
+    }
+}
+
+/// Save a resized column's pane shares to its tab's config entry — `save` is that entry (or why
+/// there is none) and the shares. A column whose pane count differs from the config's stack has
+/// nothing to save; any other failure shows in the window's error banner.
+#[cfg(target_os = "macos")]
+fn save_column_sizes(
+    app: &tauri::AppHandle,
+    label: &str,
+    id: &str,
+    save: Result<((String, warden_config::Tab), Vec<f64>), String>,
+) {
+    let saved = save.and_then(|((title, tab), sizes)| {
+        let declared = tab.split.as_ref().map_or(0, |s| s.panes.len());
+        if declared != sizes.len() {
+            log::debug!(
+                "tab {id:?}: column of {} panes not saved: the config declares {declared}",
+                sizes.len()
+            );
+            return Ok(());
+        }
+        split_write::save_pane_sizes(&title, &tab, &sizes)
+    });
+    if let Err(e) = saved {
+        log::error!("pane sizes of tab {id:?} not saved: {e}");
+        rex::lifecycle::banner(app, label, &e);
+    }
 }
 
 /// What a scratch column change made in Rex: a window (scratch tab), or a block.

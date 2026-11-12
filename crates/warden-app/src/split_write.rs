@@ -219,7 +219,6 @@ pub fn write_pane_sizes(
 }
 
 /// [`write_pane_sizes`] onto the config warden runs from.
-#[expect(dead_code, reason = "called once the divider drag saves")]
 pub fn save_pane_sizes(window: &str, tab: &Tab, sizes: &[f64]) -> Result<(), String> {
     let (config, raw) = current()?;
     write_pane_sizes(&config, &raw, window, tab, sizes)

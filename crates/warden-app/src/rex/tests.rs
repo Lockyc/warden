@@ -2537,6 +2537,39 @@ fn column_resize_names_first_leaves() {
 }
 
 #[test]
+fn resize_sends_every_split_in_order() {
+    let (fake, _inst, _) = column_fake(column_view(1, three_stack(), &["b1", "b2", "b3"]));
+    fake.reply("session.resize_pane", json!({"revision": 2}));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    let opened = hub
+        .open_column(&column_req(abc_stack()))
+        .expect("open_column");
+    let dividers = opened.windows[0].layout.dividers();
+    let op = crate::ScratchOp::Resize {
+        splits: vec![("s2".into(), 0.6), ("s1".into(), 0.3)],
+        sizes: None,
+    };
+    let picked = vec![dividers[1].clone(), dividers[0].clone()];
+
+    crate::scratch_work(&hub, "t::2", Path::new("/work/t"), &op, &picked).expect("resize");
+    let sent: Vec<Value> = fake
+        .requests_for("session.resize_pane")
+        .into_iter()
+        .map(|r| r.payload)
+        .collect();
+    assert_eq!(
+        sent,
+        vec![
+            json!({"session_id": "session:new", "direction": "vertical",
+                   "before_block_id": "b2", "after_block_id": "b3", "ratio": 0.6}),
+            json!({"session_id": "session:new", "direction": "vertical",
+                   "before_block_id": "b1", "after_block_id": "b2", "ratio": 0.3}),
+        ]
+    );
+}
+
+#[test]
 fn close_block_sends_block_close() {
     let (fake, _inst, _) = column_fake(column_view(
         1,

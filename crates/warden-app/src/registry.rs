@@ -2703,6 +2703,16 @@ impl Registry {
             .find(|d| d.split_id == split_id)
     }
 
+    /// Whether tab `id`'s Rex column shows its session's first window — the one its configured
+    /// stack opened as.
+    pub fn column_shows_first_window(&self, id: &str) -> bool {
+        self.tabs
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| t.column.as_ref())
+            .is_some_and(|c| c.is_rex() && !c.tabs.is_empty() && c.selected == 0)
+    }
+
     /// Which scratch tab of tab `id`'s column is Rex window `window_id`.
     pub fn scratch_tab_of_window(&self, id: &str, window_id: &str) -> Option<usize> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
@@ -4973,9 +4983,12 @@ mod tests {
         assert!(r.column_divider("t", "split-x").is_none());
         assert_eq!(r.scratch_tab_of_window("t", "w2"), Some(1));
         assert_eq!(r.scratch_tab_of_window("t", "w9"), None);
+        assert!(r.column_shows_first_window("t"));
         // Another scratch tab's dividers aren't on screen to drag.
         r.select_scratch("t", 1);
         assert!(r.column_divider("t", "split-a").is_none());
+        assert!(!r.column_shows_first_window("t"));
+        assert!(!r.column_shows_first_window("nope"));
     }
 
     #[test]
