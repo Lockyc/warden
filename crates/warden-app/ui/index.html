@@ -335,7 +335,7 @@
       :where(#agents) button { font: inherit; color: inherit; background: transparent; border: 0;
         cursor: pointer; padding: 0; }
       #agents button:disabled { cursor: default; opacity: 0.4; }
-      .a-row { display: flex; align-items: center; gap: 7px; padding: 4px 4px 4px 6px;
+      .a-row { display: flex; align-items: center; gap: 7px; padding: 4px;
         border-radius: 5px; cursor: default; }
       .a-row:hover { background: #22272e; }
       .a-row.sel { background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.55); }
@@ -378,20 +378,33 @@
       .a-caret { width: 9px; flex: none; }
       .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-group .cc-attention { margin-left: auto; }
-      .a-row.k { padding-left: 14px; }
-      /* A fork sits under the tab it came from, `--depth` (capped at 2) steps in, with a guide in
-         the window's colour down each level it's nested through — level 1 under its source's
-         caret, level 2 its box-shadow 12px right — and the fork mark before its name. */
-      #agents { --fork: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 62); }
-      .a-row.nested { position: relative; padding-left: calc(6px + var(--depth) * 12px); }
-      .a-row.k.nested { padding-left: calc(14px + var(--depth) * 12px); }
-      .a-row.nested::before { content: ""; position: absolute; top: 0; bottom: 0; left: 10px; width: 2px;
-        background: var(--fork); opacity: 0.75; }
-      .a-row.k.nested::before { left: 18px; }
-      .a-row.nested.d2::before { box-shadow: 12px 0 0 var(--fork); }
+      /* `--a-pad` is the row's left inset, `--a-line` its name line's height: the caret and the
+         guides' elbows are placed on that line, not the row's middle. */
+      .a-row { --a-pad: 6px; --a-line: 1.4em; position: relative; padding-left: var(--a-pad); }
+      .a-row.k { --a-pad: 14px; }
+      .a-name { line-height: var(--a-line); }
+      /* A fork sits under the tab it came from, `--depth` (capped at 2) steps in, joined to it by a
+         guide in the window's colour (`agentGuides`): a stem down from the source's caret, then
+         per level a rounded elbow into the fork (├ with a later sibling, └ on the last) or a
+         straight run past it — and the fork mark before its name. */
+      #agents { --fork: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 62);
+        --a-guide: hsl(from var(--fork) h s l / 0.45); }
+      .a-row { --a-step: 16px; }
+      .a-row.nested { padding-left: calc(var(--a-pad) + var(--depth) * var(--a-step)); }
+      .a-guide { position: absolute; pointer-events: none; box-sizing: border-box;
+        left: calc(var(--a-pad) + 6.5px + (var(--lv) - 1) * var(--a-step)); border-left: 1px solid var(--a-guide); }
+      .a-guide.stem { --lv: calc(var(--depth, 0) + 1); top: calc(4px + var(--a-line) / 2 + 6px); bottom: 0; }
+      .a-guide.through { top: 0; bottom: 0; }
+      .a-guide.elbow { top: 0; height: calc(4px + var(--a-line) / 2); width: 18px;
+        border-bottom: 1px solid var(--a-guide); border-bottom-left-radius: 5px; }
+      .a-row.forked .a-guide.elbow { width: 8px; }
       .a-fork-mark { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; color: var(--fork); }
-      .a-fork-caret { flex: none; width: 10px; margin-right: -3px; color: #7d8590; text-align: center; }
-      .a-fork-caret:hover { color: #c3ccd8; }
+      .a-fork-caret { flex: none; align-self: flex-start; width: 14px; height: var(--a-line);
+        margin-right: -5px; display: flex; align-items: center; justify-content: center;
+        color: #7d8590; border-radius: 4px; }
+      .a-fork-caret svg { width: 8px; height: 8px; transition: transform 120ms ease; }
+      .a-fork-caret.open svg { transform: rotate(90deg); }
+      .a-fork-caret:hover { color: #c3ccd8; background: #313640; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
       /* The row's second line, on every row so they stand one height: its context where it says
          more than the name, then background work still running past the turn's end ("2 shells")
@@ -459,7 +472,7 @@
       #agents.narrow .a-gname, #agents.narrow .a-group .a-caret, #agents.narrow .a-empty,
       #agents.narrow .a-newdrop, #agents.narrow .a-fork-caret, #agents.narrow .a-forks { display: none; }
       #agents.narrow .a-row.nested { box-shadow: inset 2px 0 0 var(--fork); }
-      #agents.narrow .a-row.nested::before { display: none; }
+      #agents.narrow .a-guide { display: none; }
       #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
         border-top: 1px solid #313640; margin: 4px 4px 0; }
       #agents.narrow .a-group .cc-attention { margin: 0; }
@@ -1758,6 +1771,29 @@
           '<path d="M4 4.7V6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V4.7M8 8v3.3"/></svg>';
         return t.content.firstChild;
       }
+      // A row's tree guides, by its shown level (depth capped at 2) among the rows shown with it:
+      // per level it's nested through, an elbow at its own (├ when a sibling follows, └ on the
+      // last) or a run past it while that level goes on below; and a stem down from an open caret.
+      function agentGuides(dto, r) {
+        const out = [];
+        const guide = (kind, lv) => {
+          const g = agentEl("span", "a-guide " + kind);
+          if (lv) g.style.setProperty("--lv", lv);
+          out.push(g);
+        };
+        const lvOf = (x) => Math.min(x.depth, 2);
+        const shown = dto.rows.filter((x) => (x.group ?? null) === (r.group ?? null) && !x.hidden);
+        const below = shown.slice(shown.findIndex((x) => x.id === r.id) + 1);
+        const own = lvOf(r);
+        for (let lv = 1; lv <= own; lv++) {
+          const end = below.findIndex((x) => lvOf(x) < lv);
+          const goesOn = (end < 0 ? below : below.slice(0, end)).some((x) => lvOf(x) === lv);
+          if (lv === own) guide("elbow", lv);
+          if (goesOn) guide("through", lv);
+        }
+        if (r.forks && !r.folded && own < 2) guide("stem");
+        return out;
+      }
       // An input in the list takes typing only once this webview is the key view — a terminal
       // holds first responder (same reason as ⌘⇧F's `focus_sidebar`).
       function focusInput(input) {
@@ -1875,8 +1911,8 @@
         row.dataset.group = r.group ?? "";
         row.dataset.parent = r.parent ?? "";
         row.classList.toggle("nested", r.depth > 0);
+        row.classList.toggle("forked", !!r.forks);
         row.style.setProperty("--depth", Math.min(r.depth, 2));
-        row.classList.toggle("d2", r.depth >= 2);
         const name = r.name || "untitled";
         // The second line: the current step while working, what it waits on you for, else what its
         // last reply did — falling back to the context unless that only repeats the name (a
@@ -1891,11 +1927,15 @@
         // While any row has forks, every row keeps the caret's slot, so names line up by depth.
         if (r.forks) {
           const n = r.forks === 1 ? "1 fork" : `${r.forks} forks`;
-          const caret = agentButton(r.folded ? "▸" : "▾", () =>
+          const caret = agentButton("", () =>
             agentCall("agent_fold_family", { tabId: tab, recordId: r.id, folded: !r.folded }), "a-fork-caret");
+          caret.classList.toggle("open", !r.folded);
+          caret.innerHTML = '<svg viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+            'stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 1 5.5 4 2.5 7"/></svg>';
           caret.title = (r.folded ? "Show " : "Fold ") + n;
           row.append(caret);
         } else if (dto.rows.some((x) => x.forks)) row.append(agentEl("span", "a-fork-caret"));
+        row.append(...agentGuides(dto, r));
         const text = agentEl("span", "a-text");
         if (agentUi.renaming === r.id) {
           const stop = () => { agentUi.renaming = null; renderAgents(); };
