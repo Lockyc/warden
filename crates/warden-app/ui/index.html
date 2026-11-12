@@ -1870,11 +1870,15 @@
         row.style.setProperty("--depth", Math.min(r.depth, 2));
         row.classList.toggle("d2", r.depth >= 2);
         const name = r.name || "untitled";
-        // The context, unless it only repeats the name (a terminal title the window took its name
-        // from, whole or cut short).
-        const said = (r.context || "").trim();
-        const repeats = said && r.name && (r.name.startsWith(said) || said.startsWith(r.name.trim()));
-        const ctx = (!repeats && said) || (r.state === "asleep" ? "asleep" : "");
+        // The second line: the current step while working, what it waits on you for, else what its
+        // last reply did — falling back to the context unless that only repeats the name (a
+        // terminal title the window took its name from, whole or cut short).
+        const shown = (r.context || "").trim();
+        const repeats = shown && r.name && (r.name.startsWith(shown) || shown.startsWith(r.name.trim()));
+        const context = !repeats && shown;
+        const ctx = r.state === "asleep" ? "asleep"
+          : r.state === "working" ? r.doing || context || ""
+          : r.needs || r.said || context || "";
         row.title = [name, ctx, r.background && "still running: " + r.background].filter(Boolean).join("\n");
         // While any row has forks, every row keeps the caret's slot, so names line up by depth.
         if (r.forks) {
