@@ -42,7 +42,8 @@ pub enum AgentOp {
     /// A new tab below the agent, in its group, selected, resuming the same conversation as an
     /// independent branch ([`agents::fork_command`]); the agent itself is left as it is.
     Fork(String),
-    /// Name the tab; a live one's window is relabelled in Rex.
+    /// Name the tab, pinned over its topic; a live one's window is relabelled in Rex. An empty
+    /// name resets it.
     Rename(String, String),
     /// Follow the session's windows as they are now.
     Refresh,
@@ -352,6 +353,8 @@ impl RexHub {
                         .chain(src.lineage.iter().cloned())
                         .collect(),
                     folded: false,
+                    // "<name> fork" stays pinned over the shared topic if its source's was.
+                    renamed: src.renamed,
                 });
                 // A fork is selected, so its source unfolds to show it.
                 records[si].folded = false;
@@ -367,9 +370,12 @@ impl RexHub {
                 if let (Some((_, sid)), Some(w)) = (&session, window) {
                     self.set_window_label_until(server, sid, &w, name, deadline)?;
                 }
+                // An empty name resets it: Rex restores its own label, which the block's title
+                // then replaces (`RexHub::name_windows`), and the row shows the topic again.
                 if !name.is_empty() {
                     records[i].name = name.to_owned();
                 }
+                records[i].renamed = !name.is_empty();
             }
         }
         if let Some((_, window, _)) = &closing {
@@ -827,6 +833,8 @@ pub struct AgentListDto {
 pub struct AgentRowDto {
     pub id: String,
     pub name: String,
+    /// `name` is the user's, shown in place of the topic ([`AgentRecord::renamed`]).
+    pub renamed: bool,
     pub group: Option<String>,
     /// The tab it was forked from, as the list nests it ([`agents::parent_of`]).
     pub parent: Option<String>,
@@ -992,10 +1000,12 @@ pub fn agent_list(
             needs: None,
             background: None,
             cache: None,
+            at: None,
         });
         rows.push(AgentRowDto {
             id: r.id.clone(),
             name: r.name.clone(),
+            renamed: r.renamed,
             group: r.group.clone(),
             parent: agents::parent_of(&records, r),
             depth: agents::depth_of(&records, r),
@@ -2699,6 +2709,7 @@ mod tests {
                 needs: Some("Pick a or b".into()),
                 background: None,
                 cache: None,
+                at: None,
             }),
             "block:2" => Some(BlockStatus {
                 state: AgentState::Done,
@@ -2712,6 +2723,7 @@ mod tests {
                 needs: None,
                 background: None,
                 cache: None,
+                at: None,
             }),
             _ => None,
         };
@@ -2815,6 +2827,7 @@ mod tests {
                     needs: Some("Pick a or b".into()),
                     background: Some("2 shells".into()),
                     cache: Some("1794445729".into()),
+                    at: None,
                 })
             };
             let row =
@@ -2853,6 +2866,7 @@ mod tests {
                     needs: None,
                     background: None,
                     cache: None,
+                    at: None,
                 })
             };
             agent_list("t", &s.lock().unwrap(), &Attention::default(), status).rows[0].blocked_kind
@@ -2887,6 +2901,7 @@ mod tests {
                 needs: None,
                 background: None,
                 cache: None,
+                at: None,
             })
         };
         let mut att = Attention::default();
@@ -2937,6 +2952,7 @@ mod tests {
                 needs: None,
                 background: None,
                 cache: None,
+                at: None,
             })
         };
         let mut att = Attention::default();
@@ -3603,6 +3619,7 @@ mod tests {
                 .map(|(id, g)| super::AgentRowDto {
                     id: (*id).into(),
                     name: (*id).into(),
+                    renamed: false,
                     group: g.map(Into::into),
                     parent: None,
                     depth: 0,
@@ -3761,6 +3778,7 @@ mod tests {
                 asked: None,
                 answered: None,
                 said: None,
+                at: None,
                 topic: None,
                 needs: None,
                 background: None,
@@ -3835,5 +3853,31 @@ mod tests {
         .expect("rename asleep");
         assert_eq!(f.requests_for("session.set_window_label").len(), 1);
         assert_eq!(state_of(&s, "b").unwrap().name, "later");
+    }
+
+    #[test]
+    fn a_rename_pins_the_name_until_an_empty_one_resets_it() {
+        let f = fake(Some("session:old"), vec![("window:1", "block:1", "a")]);
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
+        let rename = |name: &str| {
+            hub.agent_op(
+                &s,
+                &open(None),
+                &AgentOp::Rename("a".into(), name.into()),
+                7,
+            )
+            .expect("rename");
+        };
+        rename("review");
+        assert!(state_of(&s, "a").unwrap().renamed);
+
+        rename("  ");
+        let set = f.requests_for("session.set_window_label");
+        assert_eq!(set.len(), 2);
+        assert_eq!(set[1].payload["label"], "", "Rex restores its own label");
+        assert!(!state_of(&s, "a").unwrap().renamed);
     }
 }

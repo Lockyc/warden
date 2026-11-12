@@ -50,6 +50,10 @@ pub struct AgentRecord {
     /// Its forks are folded away under it.
     #[serde(default)]
     pub folded: bool,
+    /// `name` is one the user gave it, shown in place of the conversation's topic until they
+    /// reset it.
+    #[serde(default)]
+    pub renamed: bool,
 }
 
 /// A fresh record id: wall-clock nanoseconds plus a process-wide counter, in hex. Unique within
@@ -502,7 +506,7 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
     }
     changed!(
         project, name, group, position, resume, state, window_id, block_id, closed_at, selected,
-        lineage, folded
+        lineage, folded, renamed
     );
 }
 
@@ -649,6 +653,7 @@ pub fn reconcile(
                 selected: false,
                 lineage: Vec::new(),
                 folded: false,
+                renamed: false,
             });
             next += 1;
         }
@@ -680,6 +685,7 @@ mod tests {
             selected: false,
             lineage: Vec::new(),
             folded: false,
+            renamed: false,
         }
     }
 

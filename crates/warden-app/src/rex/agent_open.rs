@@ -423,6 +423,7 @@ pub(super) mod tests {
             selected: false,
             lineage: Vec::new(),
             folded: false,
+            renamed: false,
         }
     }
 

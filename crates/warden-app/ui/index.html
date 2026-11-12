@@ -1559,10 +1559,10 @@
       // `TabDto.colour`.
       // Shown by the same `.agents` class as the column; runs on every column sync, list render,
       // `warden:agents`, `warden:session-state` and snapshot.
-      // An agent's title, in its row and the summary alike: the conversation's topic, else its
-      // window's name (the terminal title the program set, or a rename).
+      // An agent's title, in its row and the summary alike: a name the user gave it, else the
+      // conversation's topic, else its window's name (the terminal title the program set).
       function agentTitle(r) {
-        return r.topic || r.name;
+        return r.renamed ? r.name : r.topic || r.name;
       }
       function summarySync() {
         const tab = agentsTab();
@@ -1946,9 +1946,13 @@
         const text = agentEl("span", "a-text");
         if (agentUi.renaming === r.id) {
           const stop = () => { agentUi.renaming = null; renderAgents(); };
-          text.append(textInput("a-rename", r.name, "Name", (v) => {
+          // Clearing the name resets it to the topic.
+          text.append(textInput("a-rename", title || "", "Name", (v) => {
             stop();
-            if (v !== r.name) agentCall("agent_rename", { tabId: tab, recordId: r.id, name: v });
+            const name = v.trim();
+            if (r.renamed ? name !== r.name : name && name !== title) {
+              agentCall("agent_rename", { tabId: tab, recordId: r.id, name });
+            }
           }, stop));
         } else {
           const label = agentEl("span", title ? "a-name" : "a-name untitled", name);
@@ -2000,7 +2004,14 @@
         });
         fork.disabled = !r.canFork;
         fork.title = r.forkReason || "Fork (⌥⌘T)";
-        btns.append(fork, agentButton("Close…", () => agentArm(r.id)), agentButton("Rename", () => startRename(r.id)));
+        const reset = agentButton("Reset Name", () => {
+          agentUi.open = null;
+          renderAgents();
+          agentCall("agent_rename", { tabId: tab, recordId: r.id, name: "" });
+        });
+        reset.disabled = !r.renamed;
+        reset.title = r.renamed ? "Show the conversation's topic" : "Not renamed";
+        btns.append(fork, agentButton("Close…", () => agentArm(r.id)), agentButton("Rename", () => startRename(r.id)), reset);
         box.append(btns);
         if (!r.canFork) box.append(agentEl("div", "a-reason", "Can't fork: " + r.forkReason));
         const label = agentEl("label", null, "Group");
