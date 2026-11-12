@@ -126,6 +126,9 @@ pub struct BlockStatus {
     pub background: Option<String>,
     /// The [`CACHE`] record's text.
     pub cache: Option<String>,
+    /// When the root record was last reported (Rex's `updated_at`): one finish's own stamp, so
+    /// whether that finish was seen outlives warden ([`super::attention::needs_you`]).
+    pub at: Option<String>,
 }
 
 /// One attached session's windows.
@@ -182,6 +185,7 @@ struct Record {
     msg: Option<String>,
     app: Option<String>,
     pid: Option<u64>,
+    at: Option<String>,
 }
 
 /// A block's title and the process (`pid`) that set it.
@@ -217,14 +221,15 @@ impl Tracked {
             &self.background,
             &self.cache,
         ];
-        let (state, kind, msg) = match &self.record.value {
+        let (state, kind, msg, at) = match &self.record.value {
             Some(r) => (
                 r.state,
                 r.kind.filter(|_| r.state == AgentState::Blocked),
                 r.msg.clone(),
+                r.at.clone(),
             ),
             None if title.is_none() && texts.iter().all(|t| t.value.is_none()) => return None,
-            None => (AgentState::Idle, None, None),
+            None => (AgentState::Idle, None, None, None),
         };
         Some(BlockStatus {
             state,
@@ -238,6 +243,7 @@ impl Tracked {
             needs: self.needs.value.clone(),
             background: self.background.value.clone(),
             cache: self.cache.value.clone(),
+            at,
         })
     }
 
@@ -992,6 +998,7 @@ fn parse_record(record: &Value) -> Record {
         kind: BlockedKind::parse(record["kind"].as_str().unwrap_or_default()),
         app: non_empty(&record["app"]),
         pid: record["owner"]["pid"].as_u64(),
+        at: non_empty(&record["updated_at"]),
     }
 }
 

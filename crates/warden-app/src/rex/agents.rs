@@ -54,6 +54,9 @@ pub struct AgentRecord {
     /// reset it.
     #[serde(default)]
     pub renamed: bool,
+    /// The stamp of the last finish the user saw ([`super::windows::BlockStatus::at`]).
+    #[serde(default)]
+    pub seen: Option<String>,
 }
 
 /// A fresh record id: wall-clock nanoseconds plus a process-wide counter, in hex. Unique within
@@ -197,6 +200,24 @@ impl AgentStore {
             self.save();
         }
         ok
+    }
+
+    /// The user saw `project`'s record `id` finish at stamp `at`. False (nothing changes) when it
+    /// already had that stamp or the record is unknown.
+    pub fn set_seen(&mut self, project: &str, id: &str, at: &str) -> bool {
+        let Some(r) = self
+            .records
+            .iter_mut()
+            .find(|r| r.id == id && r.project == project)
+        else {
+            return false;
+        };
+        if r.seen.as_deref() == Some(at) {
+            return false;
+        }
+        r.seen = Some(at.to_owned());
+        self.save();
+        true
     }
 
     /// Move `project`'s record `id`, with its forks, to `to`. Closed records keep their place.
@@ -506,7 +527,7 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
     }
     changed!(
         project, name, group, position, resume, state, window_id, block_id, closed_at, selected,
-        lineage, folded, renamed
+        lineage, folded, renamed, seen
     );
 }
 
@@ -654,6 +675,7 @@ pub fn reconcile(
                 lineage: Vec::new(),
                 folded: false,
                 renamed: false,
+                seen: None,
             });
             next += 1;
         }
@@ -686,6 +708,7 @@ mod tests {
             lineage: Vec::new(),
             folded: false,
             renamed: false,
+            seen: None,
         }
     }
 

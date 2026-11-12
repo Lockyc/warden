@@ -1470,6 +1470,7 @@ fn status_from_program_status_changed() {
             needs: None,
             background: None,
             cache: None,
+            at: Some("2026-10-28T00:00:01Z".into()),
         })
     );
 
@@ -1588,6 +1589,7 @@ fn status_pulled_on_attach() {
                 needs: None,
                 background: None,
                 cache: None,
+                at: Some("2026-10-28T00:00:00Z".into()),
             })
     });
     assert_eq!(
@@ -1731,6 +1733,7 @@ fn summary_pulled_on_attach() {
                 needs: Some("Pick a or b".into()),
                 background: Some("2 shells".into()),
                 cache: Some("1794445729".into()),
+                at: Some("2026-11-07T00:00:00Z".into()),
             })
     });
 }
@@ -1767,6 +1770,7 @@ fn title_change_updates_status_title() {
             needs: None,
             background: None,
             cache: None,
+            at: None,
         })
     );
     fake.push_block_event(
@@ -1789,6 +1793,7 @@ fn title_change_updates_status_title() {
                 needs: None,
                 background: None,
                 cache: None,
+                at: Some("2026-10-28T00:00:00Z".into()),
             })
     });
 }

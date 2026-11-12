@@ -14,7 +14,7 @@ use rex_client::{Endpoint, RexError};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::{self, AgentRecord, AgentStore, RecordState};
-use super::attention::Attention;
+use super::attention::{self, Attention};
 use super::spawn::unix_now;
 use super::windows::{AgentState, BlockStatus, BlockedKind};
 use super::{budget_error, lock, HubEvent, RexHub, OPEN_BUDGET};
@@ -355,6 +355,7 @@ impl RexHub {
                     folded: false,
                     // "<name> fork" stays pinned over the shared topic if its source's was.
                     renamed: src.renamed,
+                    seen: None,
                 });
                 // A fork is selected, so its source unfolds to show it.
                 records[si].folded = false;
@@ -877,8 +878,9 @@ pub struct AgentRowDto {
     pub can_fork: bool,
     /// Why the tab can't fork ([`refusal`] of [`AgentOp::Fork`]).
     pub fork_reason: Option<String>,
-    /// Done or errored since its tab was last on screen ([`Attention::needs_you`]).
-    pub unread: bool,
+    /// The stamp of a finish not yet seen ([`attention::unseen`]): what `agent_seen` sends back
+    /// once the row is on screen.
+    pub unseen: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -951,7 +953,8 @@ pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, usize)> {
 }
 
 /// Project `tab_id`'s list from `store`, a live row's state and context from `status` (the hub's
-/// [`RexHub::block_status`]), and a group amber when a row in it needs you ([`Attention`]).
+/// [`RexHub::block_status`]), and a group amber when a row in it needs you
+/// ([`attention::needs_you`]).
 pub fn agent_list(
     tab_id: &str,
     store: &AgentStore,
@@ -973,9 +976,15 @@ pub fn agent_list(
             (RecordState::Live, _) => "idle",
             _ => "asleep",
         };
-        let needs_you = match (r.block_id.as_deref(), st.as_ref()) {
-            (Some(block), Some(s)) if live => attention.needs_you(block, s.state),
-            _ => false,
+        let (needs_you, unseen) = match (r.block_id.as_deref(), st.as_ref()) {
+            (Some(block), Some(s)) if live && !attention.is_dismissed(block) => {
+                let (at, seen) = (s.at.as_deref(), r.seen.as_deref());
+                (
+                    attention::needs_you(s.state, at, seen),
+                    attention::unseen(s.state, at, seen),
+                )
+            }
+            _ => (false, None),
         };
         if let Some(g) = &r.group {
             match groups.iter_mut().find(|x| x.name == *g) {
@@ -1036,7 +1045,7 @@ pub fn agent_list(
             sleep_reason: (live && r.resume.is_none()).then(|| NO_RESUME.to_owned()),
             can_fork: fork_reason.is_none(),
             fork_reason: fork_reason.map(str::to_owned),
-            unread: needs_you && matches!(state, "done" | "error"),
+            unseen,
         });
     }
     // Rows are depth first, so a row's forks are the rows after it deeper than it. `amber` held
@@ -1708,9 +1717,9 @@ fn fill_column(
 }
 
 /// Block `block_id`'s status changed (main thread): track it ([`Attention::observe`]) and, for an
-/// agent tab, re-send its project's list. A hidden agent tab that now needs you raises attention
-/// on its project's row, with a banner naming the agent tab and saying why
-/// ([`crate::notify::raise`]); clicking the banner selects it.
+/// agent tab, re-send its project's list, which carries whether it needs you. A hidden agent tab
+/// moving into a need raises a banner naming it and saying why ([`crate::notify::agent_banner`]);
+/// clicking the banner selects it. A focused pop-out carrying it sees it ([`seen_popped`]).
 fn attend(app: &AppHandle, block_id: &str) {
     let (Some(store), Some(hub), Some(attention)) = (
         app.try_state::<Mutex<AgentStore>>(),
@@ -1733,16 +1742,26 @@ fn attend(app: &AppHandle, block_id: &str) {
         let mut a = lock(&attention);
         match status {
             Some(_) => {
-                a.observe(block_id, state, false);
+                a.observe(block_id, state);
             }
             None => a.forget(block_id),
         }
         return;
     };
-    let visible = visible_agents(app)
-        .iter()
-        .any(|(p, id)| *p == record.project && *id == record.id);
-    if lock(&attention).observe(block_id, state, visible) {
+    let raise = lock(&attention).observe(block_id, state);
+    let visible = raise
+        && visible_agents(app)
+            .iter()
+            .any(|(p, id)| *p == record.project && *id == record.id);
+    if raise {
+        log::info!(
+            "tab {:?}: agent {:?} {state:?}{}",
+            record.project,
+            record.id,
+            if visible { ", on screen" } else { ", banner" }
+        );
+    }
+    if raise && !visible {
         let tab = {
             let st = app.state::<ManagerState>();
             let m = st.lock();
@@ -1756,33 +1775,34 @@ fn attend(app: &AppHandle, block_id: &str) {
                 AgentState::Error => "error",
                 _ => "done",
             };
-            let lock = status
-                .as_ref()
-                .is_some_and(|s| s.kind == Some(BlockedKind::Permission));
             let body = status.and_then(|s| s.msg).unwrap_or_else(|| why.to_owned());
-            crate::notify::raise(
-                app,
+            crate::notify::agent_banner(
                 &label,
                 &record.project,
-                false,
-                Some((format!("{title} · {}", record.name), body)),
-                Some(&record.id),
-                lock,
+                &format!("{title} · {}", record.name),
+                &body,
+                &record.id,
             );
         }
     }
+    seen_popped(app);
     emit_agents(app, &record.project);
 }
 
-/// The agent tabs on screen, as `(project, record id)`: each focused window's active tab's
-/// selected agent tab, and each focused pop-out's travelling one.
-fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
-    let focused: Vec<String> = app
-        .windows()
+/// The labels of the focused windows.
+fn focused_labels(app: &AppHandle) -> Vec<String> {
+    app.windows()
         .into_iter()
         .filter(|(_, w)| w.is_focused().unwrap_or(false))
         .map(|(label, _)| label)
-        .collect();
+        .collect()
+}
+
+/// The agent tabs on screen, as `(project, record id)`: each focused window's active tab's
+/// selected agent tab, and each focused pop-out's travelling one. Decides only whether a change
+/// banners; what needs you is the list's ([`attention::needs_you`]).
+fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
+    let focused = focused_labels(app);
     if focused.is_empty() {
         return Vec::new();
     }
@@ -1804,44 +1824,52 @@ fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
     docked.chain(popped).collect()
 }
 
-/// Mark the agent tabs on screen seen ([`Attention::seen`]), re-sending the list of each project
-/// that clears for. Locks `ManagerState` and the stores, so callers must hold none.
-pub fn mark_seen(app: &AppHandle) {
-    let (Some(store), Some(attention)) = (
+/// Tab `tab_id`'s agent tab `record_id` was on screen finished at stamp `at`
+/// ([`AgentStore::set_seen`]); its list goes out again when that clears it. Locks `ManagerState`
+/// (through [`emit_agents`]), so callers must hold none.
+pub fn seen(app: &AppHandle, tab_id: &str, record_id: &str, at: &str) {
+    let Some(store) = app.try_state::<Mutex<AgentStore>>() else {
+        return;
+    };
+    if lock(&store).set_seen(tab_id, record_id, at) {
+        log::info!("tab {tab_id:?}: agent {record_id:?} seen at {at}");
+        emit_agents(app, tab_id);
+    }
+}
+
+/// The agent tab each focused pop-out carries is on screen: a finish it hasn't seen is seen
+/// ([`seen`]). A docked one is the page's to report (`agent_seen`), since only it knows what its
+/// list shows. Locks `ManagerState`, so callers must hold none.
+pub fn seen_popped(app: &AppHandle) {
+    let (Some(store), Some(hub)) = (
         app.try_state::<Mutex<AgentStore>>(),
-        app.try_state::<Mutex<Attention>>(),
+        app.try_state::<RexHub>(),
     ) else {
         return;
     };
-    let visible = visible_agents(app);
-    if visible.is_empty() {
-        return;
-    }
-    let blocks: Vec<(String, String)> = {
-        let s = lock(&store);
-        visible
-            .into_iter()
-            .filter_map(|(project, id)| {
-                let block = s
-                    .records(&project)
-                    .into_iter()
-                    .find(|r| r.id == id)?
-                    .block_id?;
-                Some((project, block))
-            })
+    let focused = focused_labels(app);
+    let popped: Vec<(String, String)> = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.detached
+            .iter()
+            .filter(|(label, _)| focused.contains(label))
+            .filter_map(|(_, ds)| Some((ds.tab_id.clone(), ds.agent.clone()?)))
             .collect()
     };
-    let cleared: Vec<String> = {
-        let mut a = lock(&attention);
-        blocks
-            .into_iter()
-            .filter(|(_, block)| a.seen(block))
-            .map(|(project, _)| project)
-            .collect()
-    };
-    for project in cleared {
-        if let Some(dto) = current_list(app, &project) {
-            let _ = app.emit("warden:agents", dto);
+    for (project, id) in popped {
+        let at = {
+            let s = lock(&store);
+            s.records(&project)
+                .into_iter()
+                .find(|r| r.id == id)
+                .and_then(|r| {
+                    let st = hub.block_status(r.block_id.as_deref()?)?;
+                    attention::unseen(st.state, st.at.as_deref(), r.seen.as_deref())
+                })
+        };
+        if let Some(at) = at {
+            seen(app, &project, &id, &at);
         }
     }
 }
@@ -2877,20 +2905,14 @@ mod tests {
         assert_eq!(row(None), None);
     }
 
-    #[test]
-    fn done_unseen_marks_group_amber() {
-        use crate::rex::windows::{AgentState, BlockStatus};
-        let mut a = record("a", RecordState::Live, Some("window:1"), None);
-        a.group = Some("g".into());
-        let mut b = record("b", RecordState::Live, Some("window:2"), None);
-        b.group = Some("g".into());
-        let mut c = record("c", RecordState::Live, Some("window:3"), None);
-        c.group = Some("h".into());
-        let s = store(vec![a, b, c]);
-        let state = std::cell::Cell::new(AgentState::Done);
-        let status = |block: &str| {
+    use crate::rex::windows::{AgentState, BlockStatus};
+
+    /// Every live block in `state`, its root record reported at stamp `at`; `block:1` reports
+    /// nothing.
+    fn finished(state: AgentState, at: &str) -> impl Fn(&str) -> Option<BlockStatus> + '_ {
+        move |block: &str| {
             (block != "block:1").then(|| BlockStatus {
-                state: state.get(),
+                state,
                 kind: None,
                 msg: None,
                 title: None,
@@ -2901,15 +2923,23 @@ mod tests {
                 needs: None,
                 background: None,
                 cache: None,
-                at: None,
+                at: Some(at.into()),
             })
-        };
+        }
+    }
+
+    #[test]
+    fn an_unseen_finish_ambers_its_group() {
+        let mut a = record("a", RecordState::Live, Some("window:1"), None);
+        a.group = Some("g".into());
+        let mut b = record("b", RecordState::Live, Some("window:2"), None);
+        b.group = Some("g".into());
+        let mut c = record("c", RecordState::Live, Some("window:3"), None);
+        c.group = Some("h".into());
+        c.seen = Some("t1".into());
+        let s = store(vec![a, b, c]);
         let mut att = Attention::default();
-        att.observe("block:2", AgentState::Working, false);
-        att.observe("block:3", AgentState::Working, false);
-        att.observe("block:2", AgentState::Done, false);
-        att.observe("block:3", AgentState::Done, true);
-        let amber = |att: &Attention| -> Vec<(String, bool)> {
+        let amber = |att: &Attention, status| -> Vec<(String, bool)> {
             agent_list("t", &s.lock().unwrap(), att, status)
                 .groups
                 .into_iter()
@@ -2917,94 +2947,69 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            amber(&att),
+            amber(&att, finished(AgentState::Done, "t1")),
             [("g".into(), true), ("h".into(), false)],
-            "b finished unseen; c finished on screen"
+            "b's finish unseen; c saw it"
         );
-        att.seen("block:2");
-        assert_eq!(amber(&att), [("g".into(), false), ("h".into(), false)]);
-        state.set(AgentState::Blocked);
+        assert!(s.lock().unwrap().set_seen("t", "b", "t1"));
+        assert!(!s.lock().unwrap().set_seen("t", "b", "t1"), "seen already");
         assert_eq!(
-            amber(&att),
+            amber(&att, finished(AgentState::Done, "t1")),
+            [("g".into(), false), ("h".into(), false)]
+        );
+        assert_eq!(
+            amber(&att, finished(AgentState::Blocked, "t1")),
             [("g".into(), true), ("h".into(), true)],
             "blocked needs you, seen or not"
+        );
+        att.dismiss("block:2");
+        assert_eq!(
+            amber(&att, finished(AgentState::Blocked, "t1")),
+            [("g".into(), false), ("h".into(), true)],
+            "a closing tab needs nothing"
         );
     }
 
     #[test]
-    fn done_unseen_rows_are_unread() {
-        use crate::rex::windows::{AgentState, BlockStatus};
+    fn a_row_carries_the_stamp_of_its_unseen_finish() {
         let b = record("b", RecordState::Live, Some("window:2"), None);
-        let c = record("c", RecordState::Live, Some("window:3"), None);
+        let mut c = record("c", RecordState::Live, Some("window:3"), None);
+        c.seen = Some("t1".into());
         let d = record("d", RecordState::Asleep, None, None);
         let s = store(vec![b, c, d]);
-        let state = std::cell::Cell::new(AgentState::Done);
-        let status = |_: &str| {
-            Some(BlockStatus {
-                state: state.get(),
-                kind: None,
-                msg: None,
-                title: None,
-                asked: None,
-                answered: None,
-                said: None,
-                topic: None,
-                needs: None,
-                background: None,
-                cache: None,
-                at: None,
-            })
-        };
-        let mut att = Attention::default();
-        att.observe("block:2", AgentState::Working, false);
-        att.observe("block:3", AgentState::Working, false);
-        att.observe("block:2", AgentState::Done, false);
-        att.observe("block:3", AgentState::Done, true);
-        let unread = |att: &Attention| -> Vec<(String, bool)> {
-            agent_list("t", &s.lock().unwrap(), att, status)
+        let att = Attention::default();
+        let unseen = |status| -> Vec<Option<String>> {
+            agent_list("t", &s.lock().unwrap(), &att, status)
                 .rows
                 .into_iter()
-                .map(|r| (r.id, r.unread))
+                .map(|r| r.unseen)
                 .collect()
         };
         assert_eq!(
-            unread(&att),
-            [("b".into(), true), ("c".into(), false), ("d".into(), false)],
-            "b finished hidden; c on screen; d asleep"
+            unseen(finished(AgentState::Done, "t1")),
+            [Some("t1".into()), None, None],
+            "b unseen; c seen; d asleep"
         );
-        att.seen("block:2");
-        assert!(unread(&att).iter().all(|(_, u)| !u), "seen clears it");
-
-        att.observe("block:2", AgentState::Working, false);
-        att.observe("block:2", AgentState::Done, false);
+        s.lock().unwrap().set_seen("t", "b", "t1");
+        assert_eq!(unseen(finished(AgentState::Done, "t1")), [None, None, None]);
         assert_eq!(
-            unread(&att)[0],
-            ("b".into(), true),
-            "done again: unread again"
+            unseen(finished(AgentState::Done, "t2")),
+            [Some("t2".into()), Some("t2".into()), None],
+            "a later finish"
         );
-        state.set(AgentState::Working);
-        att.observe("block:2", AgentState::Working, false);
-        assert!(
-            unread(&att).iter().all(|(_, u)| !u),
-            "back to working clears it"
+        assert_eq!(
+            unseen(finished(AgentState::Error, "t2")),
+            [Some("t2".into()), Some("t2".into()), None],
+            "error reads as done"
         );
-        state.set(AgentState::Error);
-        att.observe("block:2", AgentState::Error, false);
-        assert_eq!(unread(&att)[0], ("b".into(), true), "error reads as done");
-
-        state.set(AgentState::Blocked);
-        att.observe("block:2", AgentState::Working, false);
-        att.observe("block:2", AgentState::Blocked, false);
-        assert!(
-            unread(&att).iter().all(|(_, u)| !u),
+        assert_eq!(
+            unseen(finished(AgentState::Blocked, "t2")),
+            [None, None, None],
             "blocked keeps its own dot"
         );
-        state.set(AgentState::Done);
-        att.observe("block:2", AgentState::Done, false);
         assert_eq!(
-            unread(&att)[0],
-            ("b".into(), true),
-            "blocked then done: unread"
+            unseen(finished(AgentState::Working, "t2")),
+            [None, None, None]
         );
     }
 
@@ -3643,7 +3648,7 @@ mod tests {
                     sleep_reason: None,
                     can_fork: true,
                     fork_reason: None,
-                    unread: false,
+                    unseen: None,
                 })
                 .collect(),
             groups,

@@ -348,13 +348,12 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// Tab while it has a Rex scratch column, and Pop Out Tab (titled with the reason) unless the
 /// column is too full to carry; ⌘W is titled for what it closes, and ⌥⌘W enabled unless the window
 /// is a pop-out. Runs on every menu build, window focus, pane focus, tab activation, agent list
-/// change and scratch column change (a Rex view landing), so it also marks the agent tabs now on
-/// screen seen (`rex::lifecycle::mark_seen`); locks `ManagerState`, so callers must not hold it.
+/// change and scratch column change (a Rex view landing); locks `ManagerState`, so callers must
+/// not hold it.
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     use rex::lifecycle::{agent_move, agent_step, Step};
     use tauri::Manager;
-    rex::lifecycle::mark_seen(app);
     let Some(menu) = app.try_state::<AgentMenu>() else {
         return;
     };
@@ -1886,6 +1885,7 @@ fn pop_out_tab(
                         serde_json::json!({ "label": origin, "id": tab }),
                     );
                 }
+                rex::lifecycle::seen_popped(&app2);
                 sync_agent_menu(&app2);
             }
         });
@@ -2131,6 +2131,18 @@ fn agents_init(
 ) -> Option<rex::lifecycle::AgentListDto> {
     use tauri::Manager;
     rex::lifecycle::current_list(window.app_handle(), &tab_id)
+}
+
+/// The page shows tab `tab_id`'s agent tab `record_id` selected, finished at stamp `at` (its row's
+/// `unseen`): seen, while this window is focused. An unfocused window's page asks again when it
+/// regains focus (`warden:tab-seen`).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn agent_seen(window: tauri::WebviewWindow, tab_id: String, record_id: String, at: String) {
+    use tauri::Manager;
+    if window.is_focused().unwrap_or(false) {
+        rex::lifecycle::seen(window.app_handle(), &tab_id, &record_id, &at);
+    }
 }
 
 /// A new agent tab in tab `tab_id`'s main pane, typing the tab's `cmd`, selected.
@@ -3337,6 +3349,7 @@ fn main() {
             divider_menu,
             probe_now,
             agents_init,
+            agent_seen,
             agent_new,
             agent_select,
             agent_sleep,

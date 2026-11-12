@@ -173,23 +173,13 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         SurfaceSignal::Notification { title, body } => Some((title, body)),
         _ => None,
     };
-    raise(app, &label, &tab, visible, banner, None, false);
+    raise(app, &label, &tab, visible, banner);
 }
 
-/// Raise attention on tab `tab` of window `label` unless it's `visible`: badge its sidebar row —
-/// a padlock rather than the dot when `lock` (an agent waiting on a permission) — and, with a
-/// `banner` (title, body), post one. A banner for an `agent` tab stamps it, so a click selects
-/// that agent tab too. Main thread only. Both a surface's signals ([`handle`]) and a hidden agent
-/// tab needing you (`rex::lifecycle::attend`) land here.
-pub fn raise(
-    app: &AppHandle,
-    label: &str,
-    tab: &str,
-    visible: bool,
-    banner: Option<(String, String)>,
-    agent: Option<&str>,
-    lock: bool,
-) {
+/// Raise a surface's attention on tab `tab` of window `label` unless it's `visible`: badge its
+/// sidebar row and, with a `banner` (title, body), post one. Main thread only. An agent tab's
+/// need badges its row from the agent list instead, and banners through [`agent_banner`].
+fn raise(app: &AppHandle, label: &str, tab: &str, visible: bool, banner: Option<(String, String)>) {
     if visible {
         dbglog(&format!(
             "raise: tab {label}/{tab} is visible -> no notify (correct)"
@@ -204,7 +194,7 @@ pub fn raise(
     let _ = app.emit_to(
         label,
         "warden:notify",
-        serde_json::json!({ "label": label, "id": tab, "lock": lock, "agent": agent.is_some() }),
+        serde_json::json!({ "label": label, "id": tab }),
     );
 
     if let Some((title, body)) = banner {
@@ -213,9 +203,20 @@ pub fn raise(
             body: &body,
             window: label,
             tab,
-            context: agent,
+            context: None,
         });
     }
+}
+
+/// Post a banner for agent tab `agent` of tab `tab` in window `label`; a click selects it.
+pub fn agent_banner(label: &str, tab: &str, title: &str, body: &str, agent: &str) {
+    banner::fire(&Banner {
+        title,
+        body,
+        window: label,
+        tab,
+        context: Some(agent),
+    });
 }
 
 /// The `(window label, tab id, visible)` a signal from `surface_id` belongs to. A docked surface is
