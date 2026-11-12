@@ -46,7 +46,7 @@ public. Rex is chosen per tab.
 | `rex/column.rs` | A split pane's scratch column: one session whose windows are scratch tabs and whose split trees are the stacked panes — opening it (created from the config stack, retyped when restored), new tab, split, divider resize, closing a block or a tab, each block's size key. |
 | `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live. |
 | `rex/lifecycle.rs` | The agent tab list: new, wake, sleep, close, reopen, fork, rename (`RexHub::agent_op`), which agent shows (`settle`, an open's too), following a pane's windows and statuses, storing reported resume commands, and the list `warden:agents` carries. |
-| `rex/attention.rs` | Which agent tabs need you (blocked, or done and unseen): a group's amber, an agent row's unread, and the row badge and banner a hidden one raises (`notify::raise`). |
+| `rex/attention.rs` | Which agent tabs need you (blocked, or finished at a stamp not yet seen), and which change raises a banner. |
 
 Who holds which connection:
 
@@ -86,8 +86,10 @@ site omits it.
   resume command, asleep or closed), reconciled against Rex's windows whenever they change
   (`agents::reconcile`).
 - **Agent status comes from the hub, never a relay** (`program_status_changed`, `title_changed`;
-  `rex/windows.rs`), so an agent tab that isn't on screen still raises its project row's badge and
-  a banner, and ambers its group while folded (`rex/attention.rs` → `notify::raise`). The summary
+  `rex/windows.rs`), so an agent tab that isn't on screen still raises a banner. Whether an agent
+  needs you is one function, `attention::needs_you`, of Rex's root-record stamp against the agent
+  record's `seen`; the row, its group, a folded fork, the tally and the project row's badge all read
+  it from the list, and the page reports the selected agent seen (`agent_seen`). The summary
   block's rows ride the same path: *doing* is the root record's `msg`, and *asked* / *said* /
   *topic* / *needs* are OSC 7501 child records the hook writes straight to Rex (`warden/asked`,
   `warden/answered`, `warden/said`, `warden/topic`, `warden/needs`; which prompt is which and
