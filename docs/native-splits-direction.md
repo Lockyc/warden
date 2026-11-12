@@ -91,9 +91,9 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
   and its blocks (`session.close_window`).
 - **⌘D in a block** (Split Above) is `session.new_split` above it, and right-click ▸ Split Below
   the same below it (`rex::column::StackSide`); focus moves to the new block when Rex's next view
-  brings it (`Registry::focus_block`). Dragging an inner divider is `session.resize_pane`, sent on
-  release; right-clicking one sets its lower (or right) side to a preset share through the same
-  path (`scratchSetRatio`). It lasts as long as Rex keeps the session — nothing is saved.
+  brings it (`Registry::focus_block`). Dragging an inner divider moves only the two panes beside
+  it, each changed split a `session.resize_pane` on release, as is a right-click preset
+  (`scratchSetRatios`); the first scratch tab's sizes save to a config stack of as many panes.
 - **`exit` in a block**, or Close Pane on it (`block.close`), closes it: its scratch tab
   reflows, or goes with its last block and the selection leans to a neighbour; the session's
   last block gives way to a fresh scratch tab, so the split stays (`docs/rex.md`, *Lifecycle*). While the
