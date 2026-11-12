@@ -1039,20 +1039,27 @@
       function scratchSetRatios(tabId, view, splits) {
         const hold = { tabId, view, splits };
         scratchHeld = hold;
-        const release = () => {
-          if (scratchHeld !== hold) return;
-          scratchHeld = null;
-          if (activeId === hold.tabId && splitOf(activeId)) {
-            scratchRender(scratchView(activeId));
-            reportRect();
-          }
-        };
-        setTimeout(release, SCRATCH_HOLD_MS);
+        setTimeout(() => scratchRelease(hold), SCRATCH_HOLD_MS);
         invoke("scratch_resize", { id: tabId, splits, sizes: scratchColumnSizes(view) }).catch((err) => {
           if (sb) setWindowError("⚠ " + err);
-          release();
+          scratchRelease(hold);
         });
       }
+      // Drop hold `hold` if it is still the one held: the column shows its snapshot again.
+      function scratchRelease(hold) {
+        if (!hold || scratchHeld !== hold) return;
+        scratchHeld = null;
+        if (activeId === hold.tabId && splitOf(activeId)) {
+          scratchRender(scratchView(activeId));
+          reportRect();
+        }
+      }
+      // A column change of tab `id` failed in Rex after it was sent: a released drag held for it
+      // won't land.
+      listen("warden:scratch-hold-release", (e) => {
+        if (!forMe(e) || !e.payload || scratchDrag) return;
+        if (scratchHeld && scratchHeld.splits && scratchHeld.tabId === e.payload.id) scratchRelease(scratchHeld);
+      });
       // A right-click on a divider of the active tab: the backend pops its sizes. `splitId` names
       // a scratch column divider (null for the tab's own split); `size` is the share its after
       // side shows here — the second pane's, or the lower or right one's.

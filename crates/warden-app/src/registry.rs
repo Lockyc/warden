@@ -2690,7 +2690,7 @@ impl Registry {
         column.block(i)?.block_id.clone()
     }
 
-    /// Divider `split_id` of the scratch tab tab `id`'s column shows.
+    /// Divider `split_id` of the scratch tab that tab `id`'s column shows.
     pub fn column_divider(&self, id: &str, split_id: &str) -> Option<Divider> {
         let t = self.tabs.iter().find(|t| t.id == id)?;
         let column = t.column.as_ref()?;

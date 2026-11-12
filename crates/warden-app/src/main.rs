@@ -2429,7 +2429,7 @@ struct SplitRatio {
     ratio: f64,
 }
 
-/// Move dividers `splits` of the scratch tab tab `id`'s column shows, in order. `sizes`: the
+/// Move dividers `splits` of the scratch tab that tab `id`'s column shows, in order. `sizes`: the
 /// column's pane shares top to bottom, saved to the tab's config entry when the shown scratch tab
 /// is the one its stack opened as.
 #[cfg(target_os = "macos")]
@@ -2674,6 +2674,12 @@ fn scratch_landed(
     if let Err(e) = &done {
         log::error!("{label}: tab {id:?}: scratch column: {e}");
         rex::lifecycle::banner(app, label, e);
+        // A resize's dragged layout, still held by the page, won't land.
+        let _ = app.emit_to(
+            label,
+            "warden:scratch-hold-release",
+            serde_json::json!({ "label": label, "id": id }),
+        );
     }
     if let Some(dto) = dto {
         let _ = app.emit_to(label, "warden:refresh", dto);
