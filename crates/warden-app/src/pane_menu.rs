@@ -1,30 +1,35 @@
-//! The terminal right-click menu: what a pane offers (Copy, Paste, Split, Close Pane, Size ▸), as a pure
-//! item list, and the Tauri menu built from it. Each item's id stamps the clicked pane, its
-//! window label and tab, `pane-menu:<op>:<pane>:<label>:<tab>` (label and tab escaped — a
-//! pop-out's label holds a `:`), so `main.rs::on_menu_event` acts on that pane whichever window
-//! is focused when the event lands.
-//!
-//! A divider's right-click menu is its sizes: the tab's split takes the pane menu's Size items; a
-//! scratch column divider's ids are `divider-menu:<preset>:<split>:<label>:<tab>`.
+//! The terminal right-click menu: what a pane offers (Copy, Paste, Split, Close Pane, Scratch
+//! Column Width ▸, and on a scratch block Pane Height ▸ or Pane Width ▸), as a pure item list,
+//! and the Tauri menu built from it. Each item's id stamps the clicked pane, its window label and
+//! tab, `pane-menu:<op>:<pane>:<label>:<tab>` (label and tab escaped — a pop-out's label holds a
+//! `:`), so `main.rs::on_menu_event` acts on that pane whichever window is focused when the event
+//! lands.
 
 use crate::registry::PaneIdx;
 #[cfg(test)]
 use crate::registry::COLUMN_OPENING;
 
-/// The fixed choices under Size ▸, the second pane's share, ascending.
+/// The fixed choices under Scratch Column Width ▸, the second pane's share, ascending.
 pub const PRESETS: [f64; 4] = [0.25, 1.0 / 3.0, 0.5, 2.0 / 3.0];
+
+/// The fixed choices under Pane Height ▸ / Pane Width ▸, a scratch block's share of its run,
+/// ascending.
+pub const PANE_PRESETS: [f64; 6] = [0.10, 0.15, 0.20, 0.25, 1.0 / 3.0, 0.5];
 
 /// Why a popped-out tab's Split is disabled.
 pub const DOCK_TO_SPLIT: &str = "Dock the tab to split";
-/// Why a popped-out tab's Size ▸ is disabled: its divider is the detach page's, which keeps no
-/// ratio warden can read.
+/// Why a popped-out tab's size submenus are disabled: its divider is the detach page's, which
+/// keeps no ratio warden can read.
 pub const DOCK_TO_RESIZE: &str = "Dock the tab to resize";
+/// Why a column's lone block has no Pane Height ▸: nothing shares the column with it.
+pub const ONLY_PANE: &str = "only pane in the column";
 
 /// How close a size must be to another to count as the same one (the file keeps two decimals).
 const SAME_SIZE: f64 = 0.005;
 
 const PREFIX: &str = "pane-menu:";
-const DIVIDER_PREFIX: &str = "divider-menu:";
+
+const COLUMN_WIDTH: &str = "Scratch Column Width";
 
 /// What Split does on the clicked pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +57,32 @@ pub struct SizeState {
     pub inherited: f64,
 }
 
+/// The axis a scratch block's run lays its items along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Axis {
+    /// A stack: the items sit one above another.
+    Height,
+    /// A side-by-side run.
+    Width,
+}
+
+impl Axis {
+    fn title(self) -> &'static str {
+        match self {
+            Axis::Height => "Pane Height",
+            Axis::Width => "Pane Width",
+        }
+    }
+}
+
+/// A scratch block as the menu shows it: its run's axis and its share of the run now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneSizeState {
+    pub axis: Axis,
+    pub current: f64,
+}
+
 /// What the menu needs to know about the right-clicked pane.
 #[derive(Debug, Clone)]
 pub struct PaneMenuCtx {
@@ -61,15 +92,18 @@ pub struct PaneMenuCtx {
     pub has_selection: bool,
     /// `Err` is why the tab can't split, shown on the disabled item.
     pub can_split: Result<SplitKind, String>,
-    /// `None` while the tab shows no split; `Err` is why Size ▸ is disabled.
+    /// `None` while the tab shows no split; `Err` is why Scratch Column Width ▸ is disabled.
     pub split: Option<Result<SizeState, String>>,
     /// Close Pane (`Registry::close_pane_item`): `None` for no item, `Err` why it is disabled.
     pub close_pane: Option<Result<(), String>>,
+    /// A scratch block's Pane Height ▸ / Pane Width ▸: `None` on the main pane, `Err` why it is
+    /// disabled (shown as Pane Height).
+    pub pane_size: Option<Result<PaneSizeState, String>>,
 }
 
 /// The menu for pane `pane` of tab `tab` popped out into window `label`: Copy, Paste and Close
-/// Pane act on its surface (Close Pane on its scratch pane, while `split_shown`); Split and
-/// Size ▸ act on a docked tab only.
+/// Pane act on its surface (Close Pane on its scratch pane, while `split_shown`); Split and the
+/// size submenus act on a docked tab only.
 pub fn detached_ctx(
     label: &str,
     tab: &str,
@@ -77,6 +111,7 @@ pub fn detached_ctx(
     has_selection: bool,
     split_shown: bool,
 ) -> PaneMenuCtx {
+    let block = split_shown && matches!(pane, PaneIdx::Block(_));
     PaneMenuCtx {
         label: label.to_owned(),
         tab: tab.to_owned(),
@@ -84,11 +119,13 @@ pub fn detached_ctx(
         has_selection,
         can_split: Err(DOCK_TO_SPLIT.to_owned()),
         split: split_shown.then(|| Err(DOCK_TO_RESIZE.to_owned())),
-        close_pane: (split_shown && matches!(pane, PaneIdx::Block(_))).then_some(Ok(())),
+        close_pane: block.then_some(Ok(())),
+        pane_size: block.then(|| Err(DOCK_TO_RESIZE.to_owned())),
     }
 }
 
-/// One menu entry. `checked` is `Some` for a checkable item.
+/// One menu entry. `checked` is `Some` for a checkable item; `submenu` names the submenu it
+/// nests under.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub id: String,
@@ -96,6 +133,7 @@ pub struct Item {
     pub enabled: bool,
     pub checked: Option<bool>,
     pub separator_before: bool,
+    pub submenu: Option<&'static str>,
 }
 
 /// What an item does, decoded from its id.
@@ -113,8 +151,12 @@ pub enum Op {
     Size(usize),
     /// Back to the inherited size.
     SizeDefault,
-    /// Size ▸ itself, disabled: nothing to choose.
+    /// Scratch Column Width ▸ itself, disabled: nothing to choose.
     SizeUnavailable,
+    /// The clicked block takes `PANE_PRESETS[i]` of its run.
+    PaneSize(usize),
+    /// Pane Height ▸ itself, disabled.
+    PaneSizeUnavailable,
 }
 
 impl Op {
@@ -128,6 +170,8 @@ impl Op {
             Op::Size(i) => format!("size-{i}"),
             Op::SizeDefault => "size-default".into(),
             Op::SizeUnavailable => "size-none".into(),
+            Op::PaneSize(i) => format!("pane-size-{i}"),
+            Op::PaneSizeUnavailable => "pane-size-none".into(),
         }
     }
 
@@ -140,16 +184,27 @@ impl Op {
             "close" => Op::ClosePane,
             "size-default" => Op::SizeDefault,
             "size-none" => Op::SizeUnavailable,
+            "pane-size-none" => Op::PaneSizeUnavailable,
             _ => {
+                if let Some(i) = s.strip_prefix("pane-size-") {
+                    let i: usize = i.parse().ok()?;
+                    return (i < PANE_PRESETS.len()).then_some(Op::PaneSize(i));
+                }
                 let i: usize = s.strip_prefix("size-")?.parse().ok()?;
                 (i < PRESETS.len()).then_some(Op::Size(i))?
             }
         })
     }
 
-    /// An item under Size ▸.
+    /// An item under Scratch Column Width ▸.
+    #[cfg(test)]
     fn is_size(self) -> bool {
         matches!(self, Op::Size(_) | Op::SizeDefault)
+    }
+
+    /// A size submenu's disabled stand-in.
+    fn is_unavailable(self) -> bool {
+        matches!(self, Op::SizeUnavailable | Op::PaneSizeUnavailable)
     }
 
     /// The menu-bar chord the item mirrors, shown beside it.
@@ -228,8 +283,9 @@ fn percent(size: f64) -> String {
     format!("{}%", (size * 100.0).round())
 }
 
-/// The menu for `ctx`, in order: Copy, Paste — Split, Close Pane (a scratch pane's) — Size ▸
-/// (flattened here; every item under it carries a size op, and [`build`] nests them).
+/// The menu for `ctx`, in order: Copy, Paste — Split, Close Pane (a scratch pane's) — Scratch
+/// Column Width ▸, Pane Height ▸ (flattened here; every item under one names it as its
+/// `submenu`, and [`build`] nests them).
 pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
     let item = |op: Op, title: String, enabled: bool, separator_before: bool| Item {
         id: item_id(op, ctx.pane, &ctx.label, &ctx.tab),
@@ -237,6 +293,7 @@ pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
         enabled,
         checked: None,
         separator_before,
+        submenu: None,
     };
     let mut out = vec![
         item(Op::Copy, "Copy".into(), ctx.has_selection, false),
@@ -265,11 +322,26 @@ pub fn items(ctx: &PaneMenuCtx) -> Vec<Item> {
         None => {}
         Some(Err(why)) => out.push(item(
             Op::SizeUnavailable,
-            format!("Size ({why})"),
+            format!("{COLUMN_WIDTH} ({why})"),
             false,
             true,
         )),
         Some(Ok(s)) => out.extend(size_items(&ctx.label, &ctx.tab, ctx.pane, *s)),
+    }
+    let separator = ctx.split.is_none();
+    match &ctx.pane_size {
+        None => {}
+        Some(Err(why)) => out.push(item(
+            Op::PaneSizeUnavailable,
+            format!("{} ({why})", Axis::Height.title()),
+            false,
+            separator,
+        )),
+        Some(Ok(s)) => out.extend(PANE_PRESETS.iter().enumerate().map(|(i, p)| Item {
+            checked: Some(same_size(*p, s.current)),
+            submenu: Some(s.axis.title()),
+            ..item(Op::PaneSize(i), percent(*p), true, separator && i == 0)
+        })),
     }
     out
 }
@@ -278,8 +350,8 @@ fn same_size(a: f64, b: f64) -> bool {
     (a - b).abs() < SAME_SIZE
 }
 
-/// Size ▸'s items for a split at `s`, ascending: the presets, the inherited size among them as
-/// "(default)", the current one checked. The first carries the separator.
+/// Scratch Column Width ▸'s items for a split at `s`, ascending: the presets, the inherited
+/// size among them as "(default)", the current one checked. The first carries the separator.
 fn size_items(label: &str, tab: &str, pane: PaneIdx, s: SizeState) -> Vec<Item> {
     let mut sizes: Vec<(f64, Op)> = PRESETS
         .iter()
@@ -301,111 +373,59 @@ fn size_items(label: &str, tab: &str, pane: PaneIdx, s: SizeState) -> Vec<Item> 
             enabled: true,
             checked: Some(same_size(size, s.current)),
             separator_before: i == 0,
+            submenu: Some(COLUMN_WIDTH),
         })
         .collect()
 }
 
-/// The divider a right-click landed on.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DividerCtx {
-    /// The tab's own split, between the main pane and the scratch column.
-    Tab(SizeState),
-    /// A divider inside the scratch column: Rex split `split_id`, whose after (lower, or right)
-    /// side holds `after` of it now.
-    Scratch {
-        split_id: String,
-        vertical: bool,
-        after: f64,
-    },
+/// One entry of the built menu: an item, or a submenu of the items naming it, or a disabled
+/// submenu standing in for one with nothing to choose.
+enum Node<'a> {
+    Item(&'a Item),
+    Submenu(&'static str, Vec<&'a Item>),
+    Disabled(&'a Item),
 }
 
-/// A divider's right-click menu: a disabled heading naming whose share the sizes are, then the
-/// sizes. The tab's split offers the pane menu's Size items (saved to the config); a scratch
-/// divider offers the presets as its after side's share.
-pub fn divider_items(label: &str, tab: &str, ctx: &DividerCtx) -> Vec<Item> {
-    let heading = |title: &str| Item {
-        id: format!("{DIVIDER_PREFIX}heading"),
-        title: title.to_owned(),
-        enabled: false,
-        checked: None,
-        separator_before: false,
-    };
-    match ctx {
-        DividerCtx::Tab(s) => {
-            let mut out = vec![heading("Scratch column")];
-            out.extend(
-                size_items(label, tab, PaneIdx::Primary, *s)
-                    .into_iter()
-                    .map(|i| Item {
-                        separator_before: false,
-                        ..i
-                    }),
-            );
-            out
-        }
-        DividerCtx::Scratch {
-            split_id,
-            vertical,
-            after,
-        } => {
-            let mut out = vec![heading(if *vertical {
-                "Lower pane"
-            } else {
-                "Right pane"
-            })];
-            out.extend(PRESETS.iter().enumerate().map(|(i, p)| Item {
-                id: format!(
-                    "{DIVIDER_PREFIX}{i}:{}:{}:{}",
-                    escape(split_id),
-                    escape(label),
-                    escape(tab)
-                ),
-                title: percent(*p),
-                enabled: true,
-                checked: Some(same_size(*p, *after)),
-                separator_before: false,
-            }));
-            out
+impl Node<'_> {
+    fn separator_before(&self) -> bool {
+        match self {
+            Node::Item(it) | Node::Disabled(it) => it.separator_before,
+            Node::Submenu(_, its) => its.first().is_some_and(|it| it.separator_before),
         }
     }
 }
 
-/// A chosen scratch divider size: Rex split `split_id` of tab `tab` in window `label`, its after
-/// side to take `PRESETS[preset]`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DividerTarget {
-    pub preset: usize,
-    pub split_id: String,
-    pub label: String,
-    pub tab: String,
+/// `items` as the menu nests them: consecutive items naming the same submenu under it.
+fn nodes(items: &[Item]) -> Vec<Node<'_>> {
+    let mut out: Vec<Node> = Vec::new();
+    for it in items {
+        if parse(&it.id).is_some_and(|t| t.op.is_unavailable()) {
+            out.push(Node::Disabled(it));
+            continue;
+        }
+        match (it.submenu, out.last_mut()) {
+            (Some(title), Some(Node::Submenu(t, its))) if *t == title => its.push(it),
+            (Some(title), _) => out.push(Node::Submenu(title, vec![it])),
+            (None, _) => out.push(Node::Item(it)),
+        }
+    }
+    out
 }
 
-impl DividerTarget {
-    /// The split's ratio as Rex keeps it: its before side's share.
-    pub fn ratio(&self) -> f64 {
-        1.0 - PRESETS[self.preset]
-    }
-}
-
-/// Decode a scratch divider size's id; `None` for any other id, the heading's included.
-pub fn parse_divider(id: &str) -> Option<DividerTarget> {
-    let mut parts = id.strip_prefix(DIVIDER_PREFIX)?.split(':');
-    let preset: usize = parts.next()?.parse().ok()?;
-    if preset >= PRESETS.len() {
-        return None;
-    }
-    let split_id = unescape(parts.next()?)?;
-    let label = unescape(parts.next()?)?;
-    let tab = unescape(parts.next()?)?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(DividerTarget {
-        preset,
-        split_id,
-        label,
-        tab,
-    })
+/// The submenus [`build`] makes of `items`: each title and its items' titles (none for a
+/// disabled one).
+#[cfg(test)]
+fn submenus(items: &[Item]) -> Vec<(String, Vec<String>)> {
+    nodes(items)
+        .into_iter()
+        .filter_map(|n| match n {
+            Node::Item(_) => None,
+            Node::Submenu(t, its) => {
+                Some((t.to_owned(), its.iter().map(|i| i.title.clone()).collect()))
+            }
+            Node::Disabled(it) => Some((it.title.clone(), Vec::new())),
+        })
+        .collect()
 }
 
 /// One item as a Tauri menu entry: checkable when `checked` is set, else with its chord.
@@ -431,81 +451,41 @@ fn entry<R: tauri::Runtime>(
     })
 }
 
-/// The Tauri menu for a divider's `items`, flat.
-pub fn build_divider<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    items: &[Item],
-) -> tauri::Result<tauri::menu::Menu<R>> {
-    let menu = tauri::menu::Menu::new(app)?;
-    for it in items {
-        menu.append(&*entry(app, it)?)?;
-    }
-    Ok(menu)
-}
-
-/// The Tauri menu for `items`, the size items nested under Size ▸.
+/// The Tauri menu for `items`, nested as [`nodes`] groups them.
 pub fn build<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     items: &[Item],
 ) -> tauri::Result<tauri::menu::Menu<R>> {
     use tauri::menu::{Menu, PredefinedMenuItem, SubmenuBuilder};
     let menu = Menu::new(app)?;
-    let mut size: Option<SubmenuBuilder<R, _>> = None;
-    for it in items {
-        let op = parse(&it.id).map(|t| t.op);
-        if it.separator_before && !(size.is_some() && op.is_some_and(Op::is_size)) {
+    for node in nodes(items) {
+        if node.separator_before() {
             menu.append(&PredefinedMenuItem::separator(app)?)?;
         }
-        if op == Some(Op::SizeUnavailable) {
-            menu.append(&SubmenuBuilder::new(app, &it.title).enabled(false).build()?)?;
-            continue;
+        match node {
+            Node::Item(it) => menu.append(&*entry(app, it)?)?,
+            Node::Disabled(it) => {
+                menu.append(&SubmenuBuilder::new(app, &it.title).enabled(false).build()?)?
+            }
+            Node::Submenu(title, its) => {
+                let mut sub = SubmenuBuilder::new(app, title);
+                for it in its {
+                    sub = sub.item(&*entry(app, it)?);
+                }
+                menu.append(&sub.build()?)?;
+            }
         }
-        let entry = entry(app, it)?;
-        if op.is_some_and(Op::is_size) {
-            size = Some(
-                size.unwrap_or_else(|| SubmenuBuilder::new(app, "Size"))
-                    .item(&*entry),
-            );
-            continue;
-        }
-        menu.append(&*entry)?;
-    }
-    if let Some(size) = size {
-        menu.append(&size.build()?)?;
     }
     Ok(menu)
 }
 
 /// Pop `ctx`'s menu over its window at `(x, y)` (content-view points, top-left origin).
 pub fn popup(app: &tauri::AppHandle, ctx: &PaneMenuCtx, x: f64, y: f64) -> Result<(), String> {
-    let menu = build(app, &items(ctx)).map_err(|e| e.to_string())?;
-    popup_at(app, &ctx.label, &menu, x, y)
-}
-
-/// Pop the menu for a divider of tab `tab` in window `label` at `(x, y)`, as [`popup`].
-pub fn popup_divider(
-    app: &tauri::AppHandle,
-    label: &str,
-    tab: &str,
-    ctx: &DividerCtx,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
-    let menu = build_divider(app, &divider_items(label, tab, ctx)).map_err(|e| e.to_string())?;
-    popup_at(app, label, &menu, x, y)
-}
-
-fn popup_at(
-    app: &tauri::AppHandle,
-    label: &str,
-    menu: &tauri::menu::Menu<tauri::Wry>,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
     use tauri::Manager;
-    let window = app.get_window(label).ok_or("window not found")?;
+    let menu = build(app, &items(ctx)).map_err(|e| e.to_string())?;
+    let window = app.get_window(&ctx.label).ok_or("window not found")?;
     window
-        .popup_menu_at(menu, tauri::LogicalPosition::new(x, y))
+        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
         .map_err(|e| e.to_string())
 }
 
@@ -522,6 +502,7 @@ mod tests {
             can_split: Ok(SplitKind::Split),
             split: None,
             close_pane: None,
+            pane_size: None,
         }
     }
 
@@ -582,78 +563,132 @@ mod tests {
         assert!(items(&ctx()).iter().all(|i| op_of(i) != Op::SplitBelow));
     }
 
+    fn block(pane_size: Option<Result<PaneSizeState, String>>) -> PaneMenuCtx {
+        PaneMenuCtx {
+            pane: PaneIdx::Block(1),
+            can_split: Ok(SplitKind::Stack),
+            close_pane: Some(Ok(())),
+            pane_size,
+            ..sized(0.5, 0.5)
+        }
+    }
+
+    fn pane_sizes(items: &[Item]) -> Vec<(String, Option<bool>)> {
+        items
+            .iter()
+            .filter(|i| matches!(op_of(i), Op::PaneSize(_)))
+            .map(|i| (i.title.clone(), i.checked))
+            .collect()
+    }
+
     #[test]
-    fn tab_divider_offers_the_size_items_flat_under_a_heading() {
-        let m = divider_items(
-            "w0",
-            "/tmp/a",
-            &DividerCtx::Tab(SizeState {
-                current: 0.5,
-                inherited: 0.3,
-            }),
+    fn tab_split_submenu_is_scratch_column_width() {
+        let s = submenus(&items(&sized(0.5, 0.5)));
+        assert_eq!(
+            s,
+            [(
+                "Scratch Column Width".to_string(),
+                vec![
+                    "25%".to_string(),
+                    "33%".into(),
+                    "50% (default)".into(),
+                    "67%".into()
+                ]
+            )]
+        );
+        // The main pane offers no Pane Height.
+        assert!(items(&sized(0.5, 0.5))
+            .iter()
+            .all(|i| !matches!(op_of(i), Op::PaneSize(_) | Op::PaneSizeUnavailable)));
+    }
+
+    #[test]
+    fn block_offers_pane_height_presets_with_current_checked() {
+        let m = items(&block(Some(Ok(PaneSizeState {
+            axis: Axis::Height,
+            current: 0.2,
+        }))));
+        let s = submenus(&m);
+        assert_eq!(
+            s.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["Scratch Column Width", "Pane Height"]
         );
         assert_eq!(
-            m.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
-            [
-                "Scratch column",
-                "25%",
-                "30% (default)",
-                "33%",
-                "50%",
-                "67%"
-            ]
+            s[1].1,
+            ["10%", "15%", "20%", "25%", "33%", "50%"].map(String::from)
         );
-        assert!(!m[0].enabled && parse(&m[0].id).is_none() && parse_divider(&m[0].id).is_none());
-        assert!(m.iter().all(|i| !i.separator_before));
-        assert_eq!(m[4].checked, Some(true));
-        // The pane menu's own ops, so choosing one saves the size as Size ▸ does.
-        let t = parse(&m[2].id).unwrap();
+        let checked: Vec<_> = pane_sizes(&m)
+            .into_iter()
+            .filter(|(_, c)| *c == Some(true))
+            .map(|(t, _)| t)
+            .collect();
+        assert_eq!(checked, ["20%"]);
+        let twenty = m.iter().find(|i| i.title == "20%").unwrap();
+        let t = parse(&twenty.id).unwrap();
+        assert_eq!((t.op, t.pane), (Op::PaneSize(2), PaneIdx::Block(1)));
+    }
+
+    #[test]
+    fn side_by_side_block_offers_pane_width() {
+        let m = items(&block(Some(Ok(PaneSizeState {
+            axis: Axis::Width,
+            current: 0.5,
+        }))));
+        let s = submenus(&m);
+        assert_eq!(s[1].0, "Pane Width");
         assert_eq!(
-            (t.op, t.label.as_str(), t.tab.as_str()),
-            (Op::SizeDefault, "w0", "/tmp/a")
+            pane_sizes(&m)
+                .into_iter()
+                .filter(|(_, c)| *c == Some(true))
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>(),
+            ["50%"]
         );
     }
 
     #[test]
-    fn scratch_divider_sizes_its_after_side() {
-        let m = divider_items(
+    fn only_pane_is_disabled_with_the_reason() {
+        let m = items(&block(Some(Err(ONLY_PANE.to_owned()))));
+        let p = find(&m, Op::PaneSizeUnavailable);
+        assert_eq!(
+            (p.title.as_str(), p.enabled),
+            ("Pane Height (only pane in the column)", false)
+        );
+        assert!(pane_sizes(&m).is_empty());
+        assert_eq!(
+            submenus(&m)[1],
+            ("Pane Height (only pane in the column)".to_string(), vec![])
+        );
+    }
+
+    #[test]
+    fn pop_out_disables_both_with_dock_to_resize() {
+        let m = items(&detached_ctx(
             "shell-detach:k1",
-            "/tmp/a:b",
-            &DividerCtx::Scratch {
-                split_id: "s:1".into(),
-                vertical: true,
-                after: 1.0 / 3.0,
-            },
-        );
+            "/tmp/a",
+            PaneIdx::Block(0),
+            false,
+            true,
+        ));
         assert_eq!(
-            m.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(),
-            ["Lower pane", "25%", "33%", "50%", "67%"]
+            submenus(&m),
+            [
+                (
+                    "Scratch Column Width (Dock the tab to resize)".to_string(),
+                    vec![]
+                ),
+                ("Pane Height (Dock the tab to resize)".to_string(), vec![]),
+            ]
         );
-        assert_eq!(m[2].checked, Some(true));
-        assert!(m.iter().all(|i| parse(&i.id).is_none()));
-        let t = parse_divider(&m[1].id).unwrap();
-        assert_eq!(
-            t,
-            DividerTarget {
-                preset: 0,
-                split_id: "s:1".into(),
-                label: "shell-detach:k1".into(),
-                tab: "/tmp/a:b".into(),
-            }
-        );
-        assert!((t.ratio() - 0.75).abs() < 1e-9);
-        let side = divider_items(
-            "w0",
-            "t",
-            &DividerCtx::Scratch {
-                split_id: "s1".into(),
-                vertical: false,
-                after: 0.5,
-            },
-        );
-        assert_eq!(side[0].title, "Right pane");
-        assert_eq!(parse_divider("divider-menu:4:s1:w0:t"), None);
-        assert_eq!(parse_divider("divider-menu:0:s1:w0:t:x"), None);
+        // Its main pane has only the column's.
+        let m = items(&detached_ctx(
+            "shell-detach:k1",
+            "/tmp/a",
+            PaneIdx::Primary,
+            false,
+            true,
+        ));
+        assert!(m.iter().all(|i| op_of(i) != Op::PaneSizeUnavailable));
     }
 
     #[test]
@@ -788,7 +823,11 @@ mod tests {
         let s = find(&m, Op::SizeUnavailable);
         assert_eq!(
             (s.title.as_str(), s.enabled, s.separator_before),
-            ("Size (no config entry for tab \"x\")", false, true)
+            (
+                "Scratch Column Width (no config entry for tab \"x\")",
+                false,
+                true
+            )
         );
         assert!(sizes(&m).is_empty());
     }
@@ -807,9 +846,9 @@ mod tests {
         let size = find(&m, Op::SizeUnavailable);
         assert_eq!(
             (size.title.as_str(), size.enabled),
-            ("Size (Dock the tab to resize)", false)
+            ("Scratch Column Width (Dock the tab to resize)", false)
         );
-        // An unsplit pop-out has no Size ▸ at all.
+        // An unsplit pop-out has no size submenu at all.
         let m = items(&detached_ctx(
             "shell-detach:k1",
             "/tmp/a",
@@ -855,6 +894,7 @@ mod tests {
             ]
         );
         assert_eq!(parse("pane-menu:size-9:0:w0:t"), None);
+        assert_eq!(parse("pane-menu:pane-size-6:1:w0:t"), None);
         assert_eq!(parse("warden:split-pane"), None);
     }
 }

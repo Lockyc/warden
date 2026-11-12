@@ -1219,11 +1219,22 @@ fn config_tab(
         .ok_or_else(|| format!("no config entry for tab {id:?}"))
 }
 
+/// A scratch block's share of its innermost run, as the page shows it.
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct PaneShare {
+    axis: pane_menu::Axis,
+    share: f64,
+}
+
 /// The page's answer to `warden:pane-menu`: pop the right-click menu for pane `pane` (its wire
 /// index) of tab `id` at `(x, y)` in this window. `size` is the second pane's share the page
-/// shows — a divider drag included — or `None` while the tab shows no split.
+/// shows — a divider drag included — or `None` while the tab shows no split. `pane_share` is a
+/// scratch block's share of its run (`None` on the main pane); `only_pane`, that the block is its
+/// column's only one.
 #[cfg(target_os = "macos")]
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn pane_menu(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
@@ -1232,8 +1243,22 @@ fn pane_menu(
     x: f64,
     y: f64,
     size: Option<f64>,
+    pane_share: Option<PaneShare>,
+    only_pane: Option<bool>,
 ) -> Result<(), String> {
     let pane = registry::PaneIdx::from_index(pane);
+    let pane_size = match pane {
+        registry::PaneIdx::Primary => None,
+        registry::PaneIdx::Block(_) if only_pane == Some(true) => {
+            Some(Err(pane_menu::ONLY_PANE.to_owned()))
+        }
+        registry::PaneIdx::Block(_) => pane_share.filter(|s| s.share.is_finite()).map(|s| {
+            Ok(pane_menu::PaneSizeState {
+                axis: s.axis,
+                current: s.share,
+            })
+        }),
+    };
     let label = window.label().to_owned();
     let (has_selection, can_split, close_pane, tab) = {
         let m = state.lock();
@@ -1264,53 +1289,9 @@ fn pane_menu(
         can_split,
         split,
         close_pane,
+        pane_size,
     };
     pane_menu::popup(tauri::Manager::app_handle(&window), &ctx, x, y)
-}
-
-/// A right-click on a divider of tab `id`: pop its sizes at `(x, y)` in this window. `split_id`
-/// names a scratch column divider, `None` the tab's own split; `size` is the share its after
-/// side (the second pane, or the lower or right one) shows now — a drag included.
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn divider_menu(
-    window: tauri::WebviewWindow,
-    state: tauri::State<ManagerState>,
-    id: String,
-    split_id: Option<String>,
-    size: f64,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
-    if !size.is_finite() {
-        return Err("a divider size must be a number".into());
-    }
-    let label = window.label().to_owned();
-    let ctx = match split_id {
-        Some(split_id) => {
-            let m = state.lock();
-            let ws = m.windows.get(&label).ok_or("window not found")?;
-            let d = ws
-                .registry
-                .column_divider(&id, &split_id)
-                .ok_or("that divider is no longer on screen")?;
-            pane_menu::DividerCtx::Scratch {
-                split_id,
-                vertical: d.dir == rex::layout::Dir::Vertical,
-                after: size,
-            }
-        }
-        None => {
-            let (title, tab) = config_tab(&state.lock(), &label, &id)?;
-            // Read outside the lock: it parses the file.
-            let inherited = split_write::current_inherited_size(&title, &tab)?;
-            pane_menu::DividerCtx::Tab(pane_menu::SizeState {
-                current: size,
-                inherited,
-            })
-        }
-    };
-    pane_menu::popup_divider(tauri::Manager::app_handle(&window), &label, &id, &ctx, x, y)
 }
 
 /// A right-click menu item was chosen.
@@ -1359,9 +1340,30 @@ fn on_pane_menu(app: &tauri::AppHandle, target: pane_menu::Target) {
                 banner(e);
             }
         }
-        Op::SizeUnavailable => {}
+        Op::SizeUnavailable | Op::PaneSizeUnavailable => {}
         Op::Size(i) => save_tab_split(app, label, tab, split_write::SplitEdit::Size(PRESETS[i])),
         Op::SizeDefault => save_tab_split(app, label, tab, split_write::SplitEdit::ResetSize),
+        // The page resizes the block's run as a drag's release does.
+        Op::PaneSize(i) => {
+            let block = state
+                .lock()
+                .windows
+                .get(label)
+                .and_then(|ws| ws.registry.rex_block_id(tab, pane));
+            match block {
+                Some(block_id) => {
+                    let _ = app.emit_to(
+                        label,
+                        "warden:scratch-size",
+                        serde_json::json!({
+                            "label": label, "id": tab, "blockId": block_id,
+                            "share": pane_menu::PANE_PRESETS[i],
+                        }),
+                    );
+                }
+                None => log::warn!("pane size of tab {tab:?}: pane {pane:?} is not a Rex block"),
+            }
+        }
     }
 }
 
@@ -3240,17 +3242,6 @@ fn main() {
                 on_pane_menu(app, target);
                 return;
             }
-            // A scratch column divider's size: the page resizes it as a drag's release does.
-            if let Some(t) = pane_menu::parse_divider(id) {
-                let _ = app.emit_to(
-                    t.label.as_str(),
-                    "warden:scratch-size",
-                    serde_json::json!({
-                        "label": t.label, "id": t.tab, "splitId": t.split_id, "ratio": t.ratio(),
-                    }),
-                );
-                return;
-            }
 
             // Tab ▸ Cycle Tabs: save the flip; the watcher's reload rebuilds the menu. muda already
             // flipped the tick, so a failed write rebuilds to undo it.
@@ -3451,7 +3442,6 @@ fn main() {
             shell_home_open_window,
             window_menu,
             pane_menu,
-            divider_menu,
             probe_now,
             agents_init,
             agent_seen,

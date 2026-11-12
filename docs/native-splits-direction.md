@@ -48,8 +48,8 @@ panes (below). The config is the one source of a tab's split:
   global for discovered projects; schema in `docs/config.md`). The tab is created with its
   second pane already declared, both spawn together (also under `load_on_open`), the
   second pane runs `split.cmd` (bare shell when absent) in the tab's own shell and dir, and
-  `split.size`/`split.side` seed the divider. A divider drag saves its size to the config (as does Size ▸ in a
-  terminal's right-click menu, or right-clicking the divider); the page holds the dragged
+  `split.size`/`split.side` seed the divider. A divider drag saves its size to the config (as does Scratch Column
+  Width ▸ in a terminal's right-click menu); the page holds the dragged
   ratio in `ratioOverride` until the reload lands. `exit` in
   the second shell closes the pane for the same lifetime — `Registry::unload` re-declares it,
   so it is back on the next spawn — and ⌘D recreates it from config. This is the frame-less
@@ -92,7 +92,7 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
 - **⌘D in a block** (Split Above) is `session.new_split` above it, and right-click ▸ Split Below
   the same below it (`rex::column::StackSide`); focus moves to the new block when Rex's next view
   brings it (`Registry::focus_block`). Dragging an inner divider moves only the two panes beside
-  it, each changed split a `session.resize_pane` on release, as is a right-click preset
+  it, each changed split a `session.resize_pane` on release, as is a block's Pane Height ▸
   (`scratchSetRatios`); the first scratch tab's sizes save to a config stack of as many panes.
 - **`exit` in a block**, or Close Pane on it (`block.close`), closes it: its scratch tab
   reflows, or goes with its last block and the selection leans to a neighbour; the session's
@@ -223,7 +223,7 @@ only by eye. Each step below is written to actually fail if the feature regresse
 - With a local Rex running, `just run`'s `stack` tab opens its column stacked at the declared
   sizes; `+` adds scratch tab 2 with one shell, and clicking `1`/`2` swaps the column while the
   agent pane stays put; ⌘D in a block adds a block above it, focused, and right-click ▸ Split
-  Below one below it; right-clicking an inner divider and picking 50% evens its two sides; dragging an inner divider
+  Below one below it; a block's Pane Height ▸ 20% gives it 20% and the block below absorbs; dragging an inner divider
   resizes only its two sides and survives a tab switch; `exit` in a non-last block reflows the
   rest; `exit` in tab 2's only block returns to tab 1, and Close Pane and the shown tab's × do
   the same as `exit`, for a block and a whole tab; ⌘T and ⌘W with focus in a block act on the

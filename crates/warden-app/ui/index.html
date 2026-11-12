@@ -843,10 +843,6 @@
           const el = document.createElement("div");
           el.className = "scratch-div";
           el.addEventListener("mousedown", (e) => scratchDragStart(e, Number(el.dataset.i)));
-          el.addEventListener("contextmenu", (e) => {
-            const d = scratchView(activeId).dividers[Number(el.dataset.i)];
-            if (d) dividerMenu(e, d.split_id, 1 - d.ratio);
-          });
           body.append(el);
           divs.push(el);
         }
@@ -901,9 +897,64 @@
         const [s, e] = scratchAxis(x.rect, x.dir === "vertical");
         return s + x.ratio * (e - s);
       };
-      // `view` with divider `di` moved to `ratio` of its split, the rest of its run held. The run
-      // is every divider along the same line (its direction, its cross-axis span) — a stack's
-      // nested splits. Only the two items beside the boundary resize: whatever lies between the
+      // The run divider `d` belongs to: every divider along the same line (its direction, its
+      // cross-axis span) — a stack's nested splits. `idx` indexes `view.dividers`; `c0`/`c1` is the
+      // cross-axis span, `start`/`end` the run's extent along its axis.
+      function scratchRun(view, d) {
+        const vert = d.dir === "vertical";
+        const near = (a, b) => Math.abs(a - b) <= SCRATCH_EPS;
+        const [c0, c1] = scratchAxis(d.rect, !vert);
+        const idx = view.dividers.flatMap((x, i) => x.dir === d.dir &&
+          near(scratchAxis(x.rect, !vert)[0], c0) && near(scratchAxis(x.rect, !vert)[1], c1) ? [i] : []);
+        const run = idx.map((i) => view.dividers[i]);
+        const start = Math.min(...run.map((x) => scratchAxis(x.rect, vert)[0]));
+        const end = Math.max(...run.map((x) => scratchAxis(x.rect, vert)[1]));
+        return { vert, c0, c1, idx, start, end, bounds: run.map(scratchBoundary) };
+      }
+      // Tile `ti`'s innermost run — the smallest run holding the tile — and the item of it the
+      // tile is in, `[itemStart, itemEnd]` along the run's axis; null for a lone tile.
+      function scratchPaneRun(view, ti) {
+        const t = view.tiles[ti] && view.tiles[ti].rect;
+        let best = null;
+        for (const d of t ? view.dividers : []) {
+          const r = scratchRun(view, d);
+          const [x0, x1] = scratchAxis(t, !r.vert);
+          const [a0, a1] = scratchAxis(t, r.vert);
+          if (x0 < r.c0 - SCRATCH_EPS || x1 > r.c1 + SCRATCH_EPS) continue;
+          if (a0 < r.start - SCRATCH_EPS || a1 > r.end + SCRATCH_EPS) continue;
+          const area = (r.c1 - r.c0) * (r.end - r.start);
+          if (best && area >= best.area - SCRATCH_EPS) continue;
+          const cuts = [r.start, ...r.bounds, r.end];
+          const itemStart = Math.max(...cuts.filter((b) => b <= a0 + SCRATCH_EPS));
+          const itemEnd = Math.min(...cuts.filter((b) => b >= a1 - SCRATCH_EPS));
+          best = { ...r, area, itemStart, itemEnd };
+        }
+        return best;
+      }
+      // Tile `ti`'s share of its innermost run, as `pane_menu` takes it; null for a lone tile.
+      function scratchPaneShare(view, ti) {
+        const r = scratchPaneRun(view, ti);
+        if (!r) return null;
+        return { axis: r.vert ? "height" : "width", share: (r.itemEnd - r.itemStart) / (r.end - r.start) };
+      }
+      // `view` with tile `ti`'s item taking `share` of its innermost run: its trailing boundary
+      // moves to `itemStart + share·run`, or for the run's last item its leading one to
+      // `end − share·run`, through `scratchResized`. Null for a lone tile.
+      function scratchPaneResized(view, ti, share) {
+        const r = scratchPaneRun(view, ti);
+        if (!r) return null;
+        const extent = r.end - r.start;
+        const last = r.itemEnd >= r.end - SCRATCH_EPS;
+        const at = last ? r.itemStart : r.itemEnd;
+        const target = last ? r.end - share * extent : r.itemStart + share * extent;
+        const k = r.bounds.findIndex((b) => Math.abs(b - at) <= SCRATCH_EPS);
+        if (k < 0) return null;
+        const di = r.idx[k];
+        const [ds, de] = scratchAxis(view.dividers[di].rect, r.vert);
+        return de > ds ? scratchResized(view, di, (target - ds) / (de - ds)) : null;
+      }
+      // `view` with divider `di` moved to `ratio` of its split, the rest of its run (`scratchRun`)
+      // held. Only the two items beside the boundary resize: whatever lies between the
       // run's neighbouring boundaries scales into its new side, everything else stays where it
       // is, and every divider's ratio is re-derived over its new rect. Each moved item keeps at
       // least `scratchBand[0]` of the run. A re-derived ratio outside `scratchBand` — a pane
@@ -924,15 +975,8 @@
       // `scratchResized`'s one move, its re-derived ratios as they fall.
       function scratchMoved(view, di, ratio) {
         const d = view.dividers[di];
-        const vert = d.dir === "vertical";
-        const near = (a, b) => Math.abs(a - b) <= SCRATCH_EPS;
-        const [c0, c1] = scratchAxis(d.rect, !vert);
-        const run = view.dividers.filter((x) => x.dir === d.dir &&
-          near(scratchAxis(x.rect, !vert)[0], c0) && near(scratchAxis(x.rect, !vert)[1], c1));
-        const runStart = Math.min(...run.map((x) => scratchAxis(x.rect, vert)[0]));
-        const runEnd = Math.max(...run.map((x) => scratchAxis(x.rect, vert)[1]));
+        const { vert, c0, c1, start: runStart, end: runEnd, bounds } = scratchRun(view, d);
         const b0 = scratchBoundary(d);
-        const bounds = run.map(scratchBoundary);
         const prev = Math.max(runStart, ...bounds.filter((b) => b < b0 - SCRATCH_EPS));
         const next = Math.min(runEnd, ...bounds.filter((b) => b > b0 + SCRATCH_EPS));
         const [ds, de] = scratchAxis(d.rect, vert);
@@ -990,7 +1034,7 @@
         return vert ? (e.clientY - body.top) / extent : (e.clientX - body.left) / extent;
       }
       function scratchDragStart(e, di) {
-        if (e.button !== 0) return; // a right-click is the divider's menu (`dividerMenu`)
+        if (e.button !== 0) return;
         const view = scratchView(activeId);
         const d = view.dividers[di];
         if (!activeId || !d) return;
@@ -1060,24 +1104,16 @@
         if (!forMe(e) || !e.payload || scratchDrag) return;
         if (scratchHeld && scratchHeld.splits && scratchHeld.tabId === e.payload.id) scratchRelease(scratchHeld);
       });
-      // A right-click on a divider of the active tab: the backend pops its sizes. `splitId` names
-      // a scratch column divider (null for the tab's own split); `size` is the share its after
-      // side shows here — the second pane's, or the lower or right one's.
-      function dividerMenu(e, splitId, size) {
-        e.preventDefault();
-        if (!activeId) return;
-        invoke("divider_menu", { id: activeId, splitId, size, x: e.clientX, y: e.clientY })
-          .catch((err) => { if (sb) setWindowError("⚠ " + err); });
-      }
-      // A size chosen for a scratch column divider: the column moves to it as a drag's release does.
+      // A Pane Height ▸ / Pane Width ▸ share chosen for block `blockId`: its run moves to it as a
+      // drag's release does.
       listen("warden:scratch-size", (e) => {
         if (!forMe(e)) return;
         const p = e.payload;
-        if (!p || p.id !== activeId || !Number.isFinite(p.ratio)) return;
+        if (!p || p.id !== activeId || !Number.isFinite(p.share)) return;
         const view = scratchView(activeId);
-        const di = view.dividers.findIndex((d) => d.split_id === p.splitId);
-        if (di < 0) return;
-        const moved = scratchResized(view, di, p.ratio);
+        const ti = view.tiles.findIndex((t) => t.block_id === p.blockId);
+        const moved = ti < 0 ? null : scratchPaneResized(view, ti, p.share);
+        if (!moved) return;
         const splits = scratchChanged(view, moved);
         if (!splits.length) return;
         scratchSetRatios(activeId, moved, splits);
@@ -2636,7 +2672,7 @@
           dragTabId = null;
         }
         divider.addEventListener("mousedown", (e) => {
-          if (e.button !== 0) return; // a right-click is the divider's menu (`dividerMenu`)
+          if (e.button !== 0) return;
           e.preventDefault();
           const usable = usableWidth();
           const p = primaryEl.getBoundingClientRect();
@@ -2649,10 +2685,6 @@
           window.addEventListener("mousemove", onMove);
           window.addEventListener("mouseup", end);
           window.addEventListener("blur", end);
-        });
-        divider.addEventListener("contextmenu", (e) => {
-          const s = activeId !== null && splitOf(activeId) ? loadSplit(activeId) : null;
-          if (s) dividerMenu(e, null, 1 - s.ratio);
         });
       })();
 
@@ -2750,14 +2782,19 @@
       });
 
       // A right-click on a terminal: the backend pops its menu once told the second pane's share
-      // as shown here — a divider drag lives only in `ratioOverride`.
+      // as shown here — a divider drag lives only in `ratioOverride` — and, for a scratch block,
+      // its share of its run.
       listen("warden:pane-menu", (e) => {
         if (!forMe(e)) return;
         const p = e.payload;
         if (!p || !p.id) return;
         const s = splitOf(p.id) ? loadSplit(p.id) : null;
-        invoke("pane_menu", { id: p.id, pane: p.pane, x: p.x, y: p.y, size: s ? 1 - s.ratio : null })
-          .catch((err) => console.error("warden: IPC pane_menu failed", err));
+        const view = s && p.pane > 0 ? scratchView(p.id) : null;
+        const onlyPane = !!view && view.tiles.length === 1;
+        const paneShare = view && !onlyPane ? scratchPaneShare(view, p.pane - 1) : null;
+        invoke("pane_menu", {
+          id: p.id, pane: p.pane, x: p.x, y: p.y, size: s ? 1 - s.ratio : null, paneShare, onlyPane,
+        }).catch((err) => console.error("warden: IPC pane_menu failed", err));
       });
 
       // A size chosen from that menu, saved: it replaces any dragged ratio. The reload that

@@ -1023,7 +1023,8 @@ impl WindowManager {
     /// A right-click asked for warden's menu at `(x, y)` on a surface. In a docked window the page
     /// holds the one thing the menu can't learn here — the split's live ratio, a divider drag
     /// included — so it gets `warden:pane-menu` and answers with `pane_menu`, which pops the menu.
-    /// A pop-out's menu is built and popped here: Copy and Paste, Split and Size ▸ disabled.
+    /// A pop-out's menu is built and popped here: Copy and Paste, Split and the size submenus
+    /// disabled.
     pub fn handle_context_menu(app: &AppHandle, surface_id: usize, x: f64, y: f64) {
         let state = app.state::<ManagerState>();
         let lock = state.lock();
