@@ -857,13 +857,15 @@ pub struct AgentRowDto {
     pub context: Option<String>,
     /// The summary block's rows for a live tab: the user's latest prompt and any short reply
     /// typed since it, the program's status message (its current step), the agent's latest
-    /// reply, the conversation's topic, and what the agent waits on the user for — only while
-    /// it isn't working, so a turn under way never shows the last turn's question.
+    /// reply, the conversation's topic, the threads the session has covered, and what the agent
+    /// waits on the user for — only while it isn't working, so a turn under way never shows the
+    /// last turn's question.
     pub asked: Option<String>,
     pub answered: Option<String>,
     pub doing: Option<String>,
     pub said: Option<String>,
     pub topic: Option<String>,
+    pub story: Option<String>,
     pub needs: Option<String>,
     /// The background work still running as the agent's last turn ended ("2 shells · 1
     /// agent"), while it isn't working.
@@ -1006,6 +1008,7 @@ pub fn agent_list(
             answered: None,
             said: None,
             topic: None,
+            story: None,
             needs: None,
             background: None,
             cache: None,
@@ -1034,6 +1037,7 @@ pub fn agent_list(
             doing: st.msg,
             said: st.said,
             topic: st.topic,
+            story: st.story,
             needs: st.needs.filter(|_| state != "working"),
             background: st.background.filter(|_| state != "working"),
             cache: st
@@ -2734,6 +2738,7 @@ mod tests {
                 answered: Some("b".into()),
                 said: Some("Fixed.".into()),
                 topic: Some("Parser quoting".into()),
+                story: Some("Parser quoting ✓".into()),
                 needs: Some("Pick a or b".into()),
                 background: None,
                 cache: None,
@@ -2748,6 +2753,7 @@ mod tests {
                 answered: None,
                 said: None,
                 topic: None,
+                story: None,
                 needs: None,
                 background: None,
                 cache: None,
@@ -2772,7 +2778,7 @@ mod tests {
             ],
             "ungrouped above the groups"
         );
-        let summary: Vec<[Option<&str>; 6]> = list
+        let summary: Vec<[Option<&str>; 7]> = list
             .rows
             .iter()
             .map(|r| {
@@ -2782,6 +2788,7 @@ mod tests {
                     r.doing.as_deref(),
                     r.said.as_deref(),
                     r.topic.as_deref(),
+                    r.story.as_deref(),
                     r.needs.as_deref(),
                 ]
             })
@@ -2795,11 +2802,12 @@ mod tests {
                     Some("needs you"),
                     Some("Fixed."),
                     Some("Parser quoting"),
+                    Some("Parser quoting ✓"),
                     Some("Pick a or b"),
                 ],
-                [None; 6],
-                [None; 6],
-                [None; 6],
+                [None; 7],
+                [None; 7],
+                [None; 7],
             ],
             "a live row's own words; an asleep one has none"
         );
@@ -2852,6 +2860,7 @@ mod tests {
                     answered: None,
                     said: None,
                     topic: None,
+                    story: None,
                     needs: Some("Pick a or b".into()),
                     background: Some("2 shells".into()),
                     cache: Some("1794445729".into()),
@@ -2891,6 +2900,7 @@ mod tests {
                     answered: None,
                     said: None,
                     topic: None,
+                    story: None,
                     needs: None,
                     background: None,
                     cache: None,
@@ -2920,6 +2930,7 @@ mod tests {
                 answered: None,
                 said: None,
                 topic: None,
+                story: None,
                 needs: None,
                 background: None,
                 cache: None,
@@ -3640,6 +3651,7 @@ mod tests {
                     answered: None,
                     said: None,
                     topic: None,
+                    story: None,
                     needs: None,
                     background: None,
                     cache: None,
@@ -3785,6 +3797,7 @@ mod tests {
                 said: None,
                 at: None,
                 topic: None,
+                story: None,
                 needs: None,
                 background: None,
                 cache: None,

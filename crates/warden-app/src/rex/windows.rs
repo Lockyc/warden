@@ -92,18 +92,20 @@ impl AgentState {
 
 /// The child records an agent's hook (`scripts/agent-hooks/claude-hook.sh`) keeps on its block,
 /// one line each: the user's latest prompt, a short reply typed since it, the agent's latest
-/// reply, the conversation's topic, and what the agent is waiting on the user for.
+/// reply, the conversation's topic, the threads the session has covered, and what the agent is
+/// waiting on the user for.
 const ASKED: &str = "warden/asked";
 const ANSWERED: &str = "warden/answered";
 const SAID: &str = "warden/said";
 const TOPIC: &str = "warden/topic";
+const STORY: &str = "warden/story";
 const NEEDS: &str = "warden/needs";
 /// The agent's background work still running as its last turn ended ("2 shells · 1 agent"),
 /// until the next prompt; while it stands, the turn has ended.
 const BACKGROUND: &str = "warden/background";
 /// When the conversation's prompt cache goes cold, in epoch seconds.
 const CACHE: &str = "warden/cache";
-const TEXTS: [&str; 7] = [ASKED, ANSWERED, SAID, TOPIC, NEEDS, BACKGROUND, CACHE];
+const TEXTS: [&str; 8] = [ASKED, ANSWERED, SAID, TOPIC, STORY, NEEDS, BACKGROUND, CACHE];
 
 /// What a block's program last reported. A block with no root status record is `Idle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +123,8 @@ pub struct BlockStatus {
     pub said: Option<String>,
     /// The [`TOPIC`] record's text.
     pub topic: Option<String>,
+    /// The [`STORY`] record's text.
+    pub story: Option<String>,
     /// The [`NEEDS`] record's text.
     pub needs: Option<String>,
     /// The [`BACKGROUND`] record's text.
@@ -205,6 +209,7 @@ pub(super) struct Tracked {
     answered: Fact<Option<String>>,
     said: Fact<Option<String>>,
     topic: Fact<Option<String>>,
+    story: Fact<Option<String>>,
     needs: Fact<Option<String>>,
     background: Fact<Option<String>>,
     cache: Fact<Option<String>>,
@@ -218,6 +223,7 @@ impl Tracked {
             &self.answered,
             &self.said,
             &self.topic,
+            &self.story,
             &self.needs,
             &self.background,
             &self.cache,
@@ -246,6 +252,7 @@ impl Tracked {
             answered: self.answered.value.clone(),
             said: self.said.value.clone(),
             topic: self.topic.value.clone(),
+            story: self.story.value.clone(),
             needs: self.needs.value.clone(),
             background: self.background.value.clone(),
             cache: self.cache.value.clone(),
@@ -260,6 +267,7 @@ impl Tracked {
             ANSWERED => Some(&mut self.answered),
             SAID => Some(&mut self.said),
             TOPIC => Some(&mut self.topic),
+            STORY => Some(&mut self.story),
             NEEDS => Some(&mut self.needs),
             BACKGROUND => Some(&mut self.background),
             CACHE => Some(&mut self.cache),
