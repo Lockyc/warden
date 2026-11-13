@@ -63,7 +63,7 @@ on motion), `MOUSE_SHAPE` drives the cursor via cursor rects, `OPEN_URL` goes th
 `surface/link.rs`, which screens terminal-output targets the way Ghostty.app does: a custom
 scheme asks first unless the config's `trusted_link_schemes` lists it, and anything executable
 is refused with an alert; a relative path resolves against the pane's last OSC 7 directory, else
-its tab's `dir`. Mouse events report ⌘ as ⌘⇧ (`surface/ghostty.rs::mouse_mods`), so
+its tab's `dir`, and a bare `domain.tld/path` naming nothing there opens as `https:`. Mouse events report ⌘ as ⌘⇧ (`surface/ghostty.rs::mouse_mods`), so
 ⌘-hover and ⌘-click stay with libghostty even while the program inside tracks the mouse — where
 Ghostty.app needs ⇧⌘. When a link misbehaves, check in this order:
 

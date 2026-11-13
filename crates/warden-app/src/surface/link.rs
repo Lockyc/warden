@@ -98,6 +98,11 @@ fn open_trusted(raw: &str) {
 /// [`decide`] rejects as scheme-less, so a path becomes the file URL it names first — a relative one
 /// joined onto `base`. A value with unsafe characters passes through unchanged so `decide` rejects
 /// it before percent-encoding hides them.
+///
+/// libghostty's bare-path branch (`word.word/…`) also matches a scheme-less web address and, unlike
+/// its URL branch, keeps a trailing `.` or `,`. So a bare relative target drops that punctuation
+/// unless the path exists with it, and one naming nothing under `base` whose first segment is a
+/// domain ([`is_domain`]) becomes an `https:` URL.
 fn unknown_target(raw: &str, base: &Path) -> String {
     let has_scheme =
         NSURL::URLWithString(&NSString::from_str(raw)).is_some_and(|u| u.scheme().is_some());
@@ -108,7 +113,16 @@ fn unknown_target(raw: &str, base: &Path) -> String {
     let raw = if raw.starts_with('/') || raw.starts_with('~') {
         raw
     } else {
+        let bare = !raw.starts_with('.');
+        let raw = if bare && !base.join(raw).exists() {
+            raw.trim_end_matches(['.', ','])
+        } else {
+            raw
+        };
         joined = base.join(raw);
+        if bare && !joined.exists() && raw.split('/').next().is_some_and(is_domain) {
+            return format!("https://{raw}");
+        }
         joined.to_str().unwrap_or(raw)
     };
     let path = NSString::from_str(raw).stringByStandardizingPath();
@@ -116,6 +130,19 @@ fn unknown_target(raw: &str, base: &Path) -> String {
         .absoluteString()
         .map(|s| s.to_string())
         .unwrap_or_default()
+}
+
+/// Two or more dot-separated labels of letters, digits and hyphens, the last alphabetic and at
+/// least two letters long — `example.com`, not `foo.d` or `v1.2`.
+fn is_domain(s: &str) -> bool {
+    let labels: Vec<&str> = s.split('.').collect();
+    labels.len() >= 2
+        && labels
+            .iter()
+            .all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels
+            .last()
+            .is_some_and(|t| t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 fn open_untrusted(raw: &str) {
@@ -692,6 +719,34 @@ mod tests {
         );
         // Left raw so `decide` still sees the character.
         assert_eq!(unknown_target("a\u{202E}b", base), "a\u{202E}b");
+    }
+
+    #[test]
+    fn unknown_kind_bare_domains_become_web_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        // libghostty's path branch matches a scheme-less domain, sentence full stop included.
+        assert_eq!(
+            unknown_target("club.example.org.au/members.", base),
+            "https://club.example.org.au/members"
+        );
+        assert_eq!(
+            unknown_target("docs.rs/serde,", base),
+            "https://docs.rs/serde"
+        );
+        // A real file under the pane's directory wins over the domain reading.
+        std::fs::create_dir(base.join("example.com")).unwrap();
+        std::fs::write(base.join("example.com/notes.txt"), "x\n").unwrap();
+        let canonical = base.canonicalize().unwrap();
+        let local = unknown_target("example.com/notes.txt.", base);
+        assert!(
+            local.starts_with("file://") && local.ends_with("/example.com/notes.txt"),
+            "{local} under {}",
+            canonical.display()
+        );
+        // No dotted first segment, or a one-letter last label: still a path.
+        assert!(unknown_target("src/main.rs.", base).ends_with("/src/main.rs"));
+        assert!(unknown_target("foo.d/bar", base).starts_with("file://"));
     }
 
     #[test]
