@@ -14,7 +14,7 @@
 #   is Claude Code's own (a background task's `<task-notification>`, a command's output) and
 #   writes nothing else. Either clears `warden/needs`. The reply's first line is `warden/said`,
 #   until the turn's digest (`digest`, also run on a resume) rewrites it with `warden/topic`,
-#   `warden/asked` and `warden/needs`. Stop also writes `warden/background`, what is still
+#   `warden/story`, `warden/asked` and `warden/needs`. Stop also writes `warden/background`, what is still
 #   running as the turn ends, which every prompt clears first, and Stop and a resume
 #   `warden/cache`, when the prompt cache goes cold. These need `jq`; without it they do nothing.
 #
@@ -86,17 +86,20 @@ record() {
 
 # The digest of the turn just ended: a background Haiku call over the transcript's last turns
 # (and, at Stop, the reply that may not be in the file yet) that rewrites `warden/topic`,
-# `warden/asked` (a short reply read against the question it answers, so `warden/answered`
+# `warden/story` (the previous story, kept per session in `story_dir` so a resume carries it,
+# merged with these turns), `warden/asked` (a short reply read against the question it answers, so `warden/answered`
 # clears), `warden/said` and `warden/needs`. A prompt sent before it lands replaces its token,
 # and the stale digest is dropped. Needs `claude` and `jq`; `WARDEN_DIGEST=0` turns it off.
 DIGEST_PROMPT='You write the status lines a terminal multiplexer shows under a coding agent'"'"'s pane, for a user glancing across many agents. From the conversation excerpt, fill:
 topic: what the whole conversation is working on, 2 to 6 words, no trailing period.
+story: the threads this whole session has covered, oldest first, joined by " · ", each 2 to 6 words followed by its state: ✓ done, … under way, ⏸ parked or deferred. Start from the Previous story at the top of the excerpt: keep every thread in it, update their states, merge a turn into the thread it continues, and append new threads. At most 200 characters; past that, fold the oldest done threads together, never drop the newest.
 asked: what the user'"'"'s last message asks for, at most 90 characters, in their terms. When it is a short reply (a letter, "yes", "do it"), it answers the question in the Agent message just before it, never one in a later message: say what that choice meant.
 said: what the agent did or found in its last reply, at most 110 characters, outcome first.
 needs: the decision or input the agent is waiting on from the user, at most 90 characters, naming the options it offered; an empty string when it needs nothing.
 Plain text, no markdown, no quotes around values.'
-DIGEST_SCHEMA='{"type":"object","properties":{"topic":{"type":"string"},"asked":{"type":"string"},"said":{"type":"string"},"needs":{"type":"string"}},"required":["topic","asked","said","needs"]}'
+DIGEST_SCHEMA='{"type":"object","properties":{"topic":{"type":"string"},"story":{"type":"string"},"asked":{"type":"string"},"said":{"type":"string"},"needs":{"type":"string"}},"required":["topic","story","asked","said","needs"]}'
 digest_dir=${TMPDIR:-/tmp}/warden-digest
+story_dir=${XDG_STATE_HOME:-$HOME/.local/state}/warden/story
 
 digest() {
 	[ "${WARDEN_DIGEST:-1}" != 0 ] || return 0
@@ -126,6 +129,10 @@ digest() {
 			+ (map("\(.who): \(.text | if length > 1500 then .[:700] + " … " + .[-700:] else . end)")
 				| join("\n\n"))' "$path" 2>/dev/null)
 	[ -n "$excerpt" ] || return 0
+	story=$(cat "$story_dir/$sid" 2>/dev/null)
+	excerpt="Previous story: ${story:-(none)}
+
+$excerpt"
 	(
 		cd / || exit 0
 		out=$(printf '%s' "$excerpt" | env -u REX_BLOCK CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 \
@@ -136,7 +143,9 @@ digest() {
 		[ "$(cat "$digest_dir/$sid" 2>/dev/null)" = "$token" ] || exit 0
 		d=$(printf '%s' "$out" | jq -c '.structured_output // empty' 2>/dev/null)
 		[ -n "$d" ] || exit 0
-		for k in topic asked said needs; do
+		s=$(printf '%s' "$d" | jq -r '.story // ""')
+		[ -z "$s" ] || { mkdir -p "$story_dir" && printf '%s' "$s" >"$story_dir/$sid"; }
+		for k in topic story asked said needs; do
 			printf '%s' "$d" | jq -r --arg k "$k" '.[$k] // ""' | put "warden/$k"
 		done
 		emit "${esc}]7501;id=warden/answered:state=clear${esc}\\"
