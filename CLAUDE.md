@@ -73,7 +73,7 @@ bin/warden.rs  `warden validate` (warden's schema) + `warden fmt` (delegates to 
 
 Formatting and colour live in config-core, re-exported at the crate root (`format_str`/`format_file`, `Colour`).
 
-`crates/warden-app` — `plan.rs` (config → `WindowDecl`/`WindowSpec`/`TabPlan`, reconcile → `TabOp`; `derive_tree_meta`), `manager.rs` (`WindowManager`: each window's terminals, held configs, pop-outs; `effective_config` expanding roots), `windows.rs` (`WardenHost`), `scanner.rs`, `registry.rs` (per-window tab registry over surfaces), `surface/` + `ffi/` (the libghostty embed), `geometry.rs` (web-rect ↔ NSView-rect), `probe.rs`, `notify.rs`, `session.rs`, `rex/` (Rex tabs). `ui/index.html` is the page shell + controller; the home surface is shell-core's `home.html`.
+`crates/warden-app` — `plan.rs` (config → `WindowDecl`/`WindowSpec`/`TabPlan`, reconcile → `TabOp`; `derive_tree_meta`), `manager.rs` (`WindowManager`: each window's terminals, held configs, pop-outs; `effective_config` expanding roots), `windows.rs` (`WardenHost`), `scanner.rs`, `registry.rs` (per-window tab registry over surfaces), `surface/` + `ffi/` (the libghostty embed), `geometry.rs` (web-rect ↔ NSView-rect), `probe.rs`, `notify.rs`, `session.rs`, `rex/` (Rex tabs). `ui/index.html` is the page shell + controller; `ui/scratch-run.js` the scratch column's run maths, a classic script with `node:test` tests in `tests/scratch-run.test.js`; the home surface is shell-core's `home.html`.
 
 `crates/rex-client` — `control.rs` (`ControlClient`), `data.rs` (`DataStream`), `wire.rs` (codecs, `StreamDemux`, `strip_terminal_replies`), `endpoint.rs`, `fake.rs`. `crates/warden-relay` — `main.rs` (stream + stdin loops, resume/restart, redraw on a size change), `vt.rs` (libghostty-vt FFI: snapshot → VT), `term.rs` (raw mode, SIGWINCH count); vendored libghostty-vt in its `vendor/`.
 
@@ -90,7 +90,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 ## Build / test / run
 
 - `cargo build` / `cargo test`; `warden-app` compiles only on macOS, by design.
-- **`just`** lists recipes: `just run` (against `examples/config.toml` — never your real config), `validate`, `test`, `fmt`, `clippy`, `gate` (fmt-check + clippy + tests + config fmt-check + active-`[patch]` guard), `build`, `install`.
+- **`just`** lists recipes: `just run` (against `examples/config.toml` — never your real config), `validate`, `test`, `fmt`, `clippy`, `gate` (fmt-check + clippy + Rust and JS tests + config fmt-check + active-`[patch]` guard), `build`, `install`.
 - **`just hooks` once per clone** — `core.hooksPath` is local config, so a fresh clone has neither the docgraph pre-push gate nor the active-`[patch]` pre-commit guard until it runs. No CI: warden ships on macOS only, so the local `just gate` is the check — green per change and before tagging a release.
 - **Toolchain is pinned** in `rust-toolchain.toml`; config-core carries the canonical pin — bump there first, then here and in curator and lector. The cores build with warden's toolchain, not their own.
 - Vendored libghostty and revendoring: [`docs/surface.md`](docs/surface.md). Packaging, signing, releases, the updater: [`docs/releasing.md`](docs/releasing.md).

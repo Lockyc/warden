@@ -195,7 +195,7 @@ pub fn stack_layout(panes: &[StackPane], dir: &Path) -> Value {
 }
 
 /// `[min, max]` of a scratch split's ratio: each side holds at least 5% of the split. The page's
-/// divider drag (`scratchDragRatio` in `ui/index.html`) is sent it as `InitDto.scratch_band`.
+/// divider drag (`scratchDragRatio` in `ui/scratch-run.js`) is sent it as `InitDto.scratch_band`.
 pub const RATIO_BAND: [f64; 2] = [0.05, 0.95];
 
 /// A split ratio kept to [`RATIO_BAND`].

@@ -175,8 +175,8 @@ persists under its `shell-detach:` label, derived by `plan::detach_window_token`
 
 ## Verifying splits by eye
 
-warden's chrome has no automated test harness — splits are rendering behaviour, verified
-only by eye. Each step below is written to actually fail if the feature regresses.
+Only the scratch column's run maths have tests (`crates/warden-app/tests/scratch-run.test.js`);
+splits are otherwise rendering behaviour, verified only by eye. Each step below is written to actually fail if the feature regresses.
 
 - An unsplit tab is visually unchanged from before splits existed — no divider, no second
   hole, no layout shift.

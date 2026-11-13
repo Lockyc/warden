@@ -29,10 +29,11 @@ run: seed-examples
 validate path="examples/config.toml":
     cargo run -p warden-config --bin warden -- validate "{{path}}"
 
-# Run the workspace tests
+# Run the workspace tests and the page's JS tests (node:test, zero deps)
 [group("check")]
 test:
     cargo test --workspace
+    node --test crates/warden-app/tests/*.test.js
 
 # Type-check the workspace without producing binaries
 [group("check")]
@@ -58,13 +59,14 @@ hooks:
     @echo "✓ hooks enabled (.githooks): docgraph pre-push gate + active-[patch] pre-commit guard"
 
 # The active-[patch] guard also runs via .githooks/pre-commit — see `just hooks`.
-# Full pre-merge gate: fmt-check, clippy, tests, config fmt-check, active-[patch] guard
+# Full pre-merge gate: fmt-check, clippy, tests (Rust + the page's JS), config fmt-check, active-[patch] guard
 [group("check")]
 gate:
     cargo fmt --all --check
     cargo clippy --workspace -- -D warnings
     @{{ just_executable() }} _core-patch guard # after clippy, whose build.rs generates core-patch.sh on a fresh clone
     cargo test --workspace
+    node --test crates/warden-app/tests/*.test.js
     cargo run -p warden-config --bin warden -- fmt --check examples/config.toml
 
 # Prints how long a high-priority "render" thread takes to finish a fixed workload while a
