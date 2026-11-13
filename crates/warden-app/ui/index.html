@@ -294,14 +294,14 @@
          squares it from its own frame. Opaque, like every painted surface on this transparent
          window. `.narrow` folds it to a rail of dots — automatically on a narrow hole, or by the
          fold button (`railPref`). */
-      /* The summary block: under #pane-primary, shown with the agent list. Fixed-height
-         single-line rows, so text never grows it; colours are the active tab's `TabDto.colour`
+      /* The summary block: under #pane-primary, shown with the agent list. Fixed-height rows,
+         one line each but the story's two, so text never grows it; colours are the active tab's `TabDto.colour`
          (`--s-*`, set on #main-col by `summarySync`). It and the agent column set their text at
          the terminal's size (`--term-font`, `applyTermFont`), and size everything else in `em`
          from it. */
       /* `--s-gap` is the agent column's ground between the band (tile + summary) and the list and
          terminal above it: the tile's margin over #agents' own background, the summary's border. */
-      :root { --term-font: 13px; --s-rows: 4; --s-gap: 0.5em; --agents-bg: #15191e; }
+      :root { --term-font: 13px; --s-rows: 6; --s-gap: 0.5em; --agents-bg: #15191e; }
       #summary { display: none; flex: none; font-size: var(--term-font); user-select: none;
         -webkit-user-select: none; color: var(--s-fg); background: var(--s-shade);
         border-top: var(--s-gap) solid var(--agents-bg); }
@@ -311,6 +311,9 @@
       #summary .s-k { flex: none; width: 3.6em; opacity: 0.6; }
       #summary .s-v { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       #summary [data-key="title"] .s-v, #summary .needs .s-v { font-weight: 600; }
+      #summary [data-key="story"] { height: 3em; white-space: normal; }
+      #summary [data-key="story"] .s-v { display: -webkit-box; -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical; overflow-wrap: anywhere; }
       /* A short reply after the ask: never cut, so the ask's ellipsis gives way to it. */
       #summary .s-then { flex: none; white-space: pre; opacity: 0.6; }
       /* The identity tile: the agent list's foot, beside the summary block at its height, solid
@@ -572,10 +575,11 @@
           </div>
         </div>
         <!-- The summary block (a Rex tab's main pane only, with the agent list): the selected
-             agent's topic (unlabelled, from the labels' edge) / asked / doing, or what it needs
-             from you / said. Filled by `summarySync`. -->
+             agent's topic (unlabelled, from the labels' edge) / story / asked / doing, or what it
+             needs from you / said. Filled by `summarySync`. -->
         <div id="summary">
           <div class="s-row" data-key="title"><span class="s-v"></span><span class="s-cache"></span></div>
+          <div class="s-row" data-key="story"><span class="s-k">story</span><span class="s-v"></span></div>
           <div class="s-row" data-key="asked"><span class="s-k">asked</span><span class="s-v"></span><span class="s-then"></span></div>
           <div class="s-row" data-key="doing"><span class="s-k">doing</span><span class="s-v"></span></div>
           <div class="s-row" data-key="said"><span class="s-k">said</span><span class="s-v"></span></div>
@@ -1564,6 +1568,7 @@
         const sel = dto && dto.rows.find((r) => r.selected);
         const words = {
           title: sel && agentTitle(sel),
+          story: sel && sel.story,
           asked: sel && sel.asked,
           doing: sel && (sel.needs || sel.doing || DOING_STATE[sel.state]),
           said: sel && sel.said,
