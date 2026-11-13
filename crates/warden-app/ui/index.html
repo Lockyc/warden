@@ -2664,7 +2664,7 @@
       });
 
       // A right-click on a terminal: the backend pops its menu once told the second pane's share
-      // as shown here — a divider drag lives only in `ratioOverride` — and, for a scratch block,
+      // as shown here — a divider drag sits in `ratioOverride` until its save reloads — and, for a scratch block,
       // its share of its run.
       listen("warden:pane-menu", (e) => {
         if (!forMe(e)) return;

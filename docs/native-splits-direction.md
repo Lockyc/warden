@@ -115,7 +115,8 @@ Mechanism: `warden-config`'s `Tab.split: Option<Split>` (`resolve.rs::resolve_sp
 `TabDto.split_layout` and `TabDto.column` (`ColumnDto`) → the chrome's
 `splitLayoutById`/`ratioOverride` and `scratchRender`, the `split_pane`/`focus_pane` and
 `scratch_select`/`scratch_new`/`scratch_resize` commands (`main.rs`), and the chrome's
-pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`).
+pane/divider DOM + `setSplitVisible` (`crates/warden-app/ui/index.html`), with a scratch
+column's run maths in `ui/scratch-run.js`; sizes save through `split_write.rs`.
 Read *Traps* below before touching split visibility, routing, or the backstop.
 
 ## Pop-out: session-preserving, whole-tab
