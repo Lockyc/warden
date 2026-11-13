@@ -774,6 +774,29 @@ server = "s"
             .map(|p| p.size.unwrap())
             .collect();
         assert_eq!(got, vec![0.6, 0.4]);
+
+        // Reloaded, the project resolves through its override, and the root's own stack — what
+        // every other project under it inherits — is unchanged.
+        warden_config::load(&p).expect("the saved config loads");
+        let w = &raw.windows[0];
+        let root = &w.extra.roots[0];
+        let resolved = |near: &[Option<&RawSplit>]| -> Vec<(f64, Option<String>)> {
+            warden_config::resolve::cascade_split_over(&raw, w, near)
+                .unwrap()
+                .unwrap()
+                .panes
+                .iter()
+                .map(|p| (p.size, p.startup.clone()))
+                .collect()
+        };
+        assert_eq!(
+            resolved(&[root.tabs[0].split.as_ref(), root.split.as_ref()]),
+            vec![(0.6, Some("x".into())), (0.4, None)]
+        );
+        assert_eq!(
+            resolved(&[root.split.as_ref()]),
+            vec![(0.5, Some("x".into())), (0.5, None)]
+        );
     }
 
     fn bare_tab() -> Tab {
