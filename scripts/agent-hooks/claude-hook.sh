@@ -92,7 +92,7 @@ record() {
 # and the stale digest is dropped. Needs `claude` and `jq`; `WARDEN_DIGEST=0` turns it off.
 DIGEST_PROMPT='You write the status lines a terminal multiplexer shows under a coding agent'"'"'s pane, for a user glancing across many agents. From the conversation excerpt, fill:
 topic: what the whole conversation is working on, 2 to 6 words, no trailing period.
-story: the threads this whole session has covered, oldest first, joined by " · ", each 2 to 6 words followed by its state: ✓ done, … under way, ⏸ parked or deferred. Start from the Previous story at the top of the excerpt: keep every thread in it, update their states, merge a turn into the thread it continues, and append new threads. At most 200 characters; past that, fold the oldest done threads together, never drop the newest.
+story: the threads this whole session has covered, oldest first, joined by " · ", each 2 to 6 words followed by its state: ✓ done, … under way, ⏸ parked or deferred. Start from the Previous story at the top of the excerpt: keep every thread in it, update their states, merge a turn into the thread it continues, and append new threads. At most 140 characters; past that, fold the oldest done threads together, never drop the newest.
 asked: what the user'"'"'s last message asks for, at most 90 characters, in their terms. When it is a short reply (a letter, "yes", "do it"), it answers the question in the Agent message just before it, never one in a later message: say what that choice meant.
 said: what the agent did or found in its last reply, at most 110 characters, outcome first.
 needs: the decision or input the agent is waiting on from the user, at most 90 characters, naming the options it offered; an empty string when it needs nothing.
@@ -129,7 +129,11 @@ digest() {
 			+ (map("\(.who): \(.text | if length > 1500 then .[:700] + " … " + .[-700:] else . end)")
 				| join("\n\n"))' "$path" 2>/dev/null)
 	[ -n "$excerpt" ] || return 0
-	story=$(cat "$story_dir/$sid" 2>/dev/null)
+	# A fork's transcript is rewritten under its own session id but keeps its messages' uuids, so
+	# `root/<first message uuid>` names the session that started the line, and a fork's first
+	# digest carries on from that session's story.
+	root=$story_dir/root/$(jq -rn 'first(inputs | .uuid // empty)' "$path" 2>/dev/null)
+	story=$(cat "$story_dir/$sid" 2>/dev/null || cat "$story_dir/$(cat "$root" 2>/dev/null)" 2>/dev/null)
 	excerpt="Previous story: ${story:-(none)}
 
 $excerpt"
@@ -143,9 +147,15 @@ $excerpt"
 		[ "$(cat "$digest_dir/$sid" 2>/dev/null)" = "$token" ] || exit 0
 		d=$(printf '%s' "$out" | jq -c '.structured_output // empty' 2>/dev/null)
 		[ -n "$d" ] || exit 0
-		s=$(printf '%s' "$d" | jq -r '.story // ""')
-		[ -z "$s" ] || { mkdir -p "$story_dir" && printf '%s' "$s" >"$story_dir/$sid"; }
-		for k in topic story asked said needs; do
+		# Oldest first, so an over-long story loses its oldest threads, never the one under way;
+		# an empty answer keeps the previous story.
+		s=$(printf '%s' "$d" | jq -r '.story // "" | gsub("\\s+"; " ")
+			| if length > 160 then .[-160:] | sub("^[^·]*· ?"; "") else . end')
+		[ -n "$s" ] || s=$story
+		[ -z "$s" ] || { mkdir -p "$story_dir/root" && printf '%s' "$s" >"$story_dir/$sid"; }
+		[ -e "$root" ] || [ "${root%/}" = "$story_dir/root" ] || printf '%s' "$sid" >"$root"
+		printf '%s' "$s" | put warden/story
+		for k in topic asked said needs; do
 			printf '%s' "$d" | jq -r --arg k "$k" '.[$k] // ""' | put "warden/$k"
 		done
 		emit "${esc}]7501;id=warden/answered:state=clear${esc}\\"
