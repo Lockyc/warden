@@ -91,8 +91,8 @@ site omits it.
   record's `seen`; the row, its group, a folded fork, the tally and the project row's badge all read
   it from the list, and the page reports the selected agent seen (`agent_seen`). The summary
   block's rows ride the same path: *doing* is the root record's `msg`, and *asked* / *said* /
-  *topic* / *needs* are OSC 7501 child records the hook writes straight to Rex (`warden/asked`,
-  `warden/answered`, `warden/said`, `warden/topic`, `warden/needs`; which prompt is which and
+  *topic* / *story* / *needs* are OSC 7501 child records the hook writes straight to Rex (`warden/asked`,
+  `warden/answered`, `warden/said`, `warden/topic`, `warden/story`, `warden/needs`; which prompt is which and
   the end-of-turn digest that rewrites them: `scripts/agent-hooks/claude-hook.sh`), so they reach
   warden for an agent no relay streams, and on a remote server. *title*, in the row and the summary alike, is a name the user gave the tab (until Reset Name), else the topic, else the window's name.
   The root record is Claude Code's own: it reads working for as long as background shells or
