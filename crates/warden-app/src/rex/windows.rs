@@ -105,7 +105,9 @@ const NEEDS: &str = "warden/needs";
 const BACKGROUND: &str = "warden/background";
 /// When the conversation's prompt cache goes cold, in epoch seconds.
 const CACHE: &str = "warden/cache";
-const TEXTS: [&str; 8] = [ASKED, ANSWERED, SAID, TOPIC, STORY, NEEDS, BACKGROUND, CACHE];
+const TEXTS: [&str; 8] = [
+    ASKED, ANSWERED, SAID, TOPIC, STORY, NEEDS, BACKGROUND, CACHE,
+];
 
 /// What a block's program last reported. A block with no root status record is `Idle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
