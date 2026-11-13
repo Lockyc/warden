@@ -414,6 +414,17 @@
       .a-sub .a-ctx { flex: 1; min-width: 0; }
       .a-row.sel .a-sub { color: #c3ccd8; }
       .a-bg, .a-cache { flex: none; white-space: nowrap; }
+      /* The count turns while the background work runs, as the busy dot does, so a finished
+         turn's row still shows work going on. */
+      @property --a-bg-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+      .a-bg::before { content: ""; display: inline-block; width: 8px; height: 8px;
+        margin-right: 4px; vertical-align: -1px; border-radius: 50%;
+        background: conic-gradient(from var(--a-bg-a), rgb(86 180 233 / 0.15), rgb(86 180 233));
+        -webkit-mask-image: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+        mask-image: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+        animation: a-bg-spin 1.2s linear infinite; }
+      @keyframes a-bg-spin { to { --a-bg-a: 360deg; } }
+      @media (prefers-reduced-motion: reduce) { .a-bg::before { animation: none; } }
       .a-bg + .a-cache::before { content: "·"; margin-right: 6px; color: #6b7280; }
       .a-cache.warn, #summary .s-cache.warn { color: #f0883e; }
       .a-cache.cold { color: #6b7280; }
