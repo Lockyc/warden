@@ -413,7 +413,9 @@
         font-size: 0.9em; }
       .a-sub .a-ctx { flex: 1; min-width: 0; }
       .a-row.sel .a-sub { color: #c3ccd8; }
-      .a-bg, .a-cache { flex: none; white-space: nowrap; }
+      .a-bg, .a-cache { flex: none; color: #9aa4b2; font-size: 0.85em; line-height: 1.35;
+        padding: 0 5px; border: 1px solid #3d444d; border-radius: 8px; white-space: nowrap; }
+      .a-row.sel :is(.a-bg, .a-cache:not(.warn, .cold)) { color: #c3ccd8; border-color: #4d5560; }
       /* The count turns while the background work runs, as the busy dot does, so a finished
          turn's row still shows work going on. */
       @property --a-bg-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
@@ -425,9 +427,9 @@
         animation: a-bg-spin 1.2s linear infinite; }
       @keyframes a-bg-spin { to { --a-bg-a: 360deg; } }
       @media (prefers-reduced-motion: reduce) { .a-bg::before { animation: none; } }
-      .a-bg + .a-cache::before { content: "·"; margin-right: 6px; color: #6b7280; }
       .a-cache.warn, #summary .s-cache.warn { color: #f0883e; }
-      .a-cache.cold { color: #6b7280; }
+      .a-cache.warn { border-color: #6b4423; }
+      .a-cache.cold { color: #6b7280; border-style: dashed; }
       #summary .s-cache { flex: none; margin-left: auto; padding-left: 1em; opacity: 0.75; }
       #summary .s-cache.warn { opacity: 1; }
       #summary .s-cache.cold { opacity: 0.45; }
