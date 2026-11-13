@@ -1978,7 +1978,7 @@
         row.append(text);
         if (r.folded) row.append(agentEl("span", "a-forks", "+" + r.forks));
         const rec = agentControlRecord(r);
-        if (rec.attention || r.amber) row.append(agentControls.attention(true));
+        if (rec.attention || r.amber) row.append(agentControls.attention(rec.attention || true));
         row.append(agentControls.presence(rec, r.state !== "asleep"));
         const more = agentButton("⋯", () => toggleActions(r.id), "a-more");
         more.title = "Fork, close, rename, group";
