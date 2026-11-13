@@ -1989,6 +1989,12 @@
           startRename(r.id);
         });
         row.addEventListener("mousedown", (e) => rowMouseDown(e, tab, r, row));
+        // A middle-click closes the row, as ⌘W does.
+        row.addEventListener("auxclick", (e) => {
+          if (e.button !== 1) return;
+          e.preventDefault();
+          agentClose(tab, r);
+        });
         return agentUi.open === r.id ? [row, agentActions(tab, dto, r)] : [row];
       }
       function toggleActions(id) {
