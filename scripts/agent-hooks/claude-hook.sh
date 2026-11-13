@@ -85,13 +85,14 @@ record() {
 }
 
 # The digest of the turn just ended: a background Haiku call over the transcript's last turns
-# (and, at Stop, the reply that may not be in the file yet) that rewrites `warden/topic`,
-# `warden/story` (the previous story, kept per session in `story_dir` so a resume carries it,
-# merged with these turns), `warden/asked` (a short reply read against the question it answers, so `warden/answered`
+# (and, at Stop, the reply that may not be in the file yet) that rewrites `warden/topic` and
+# `warden/story` (each fed its previous value, kept per session in `story_dir` so a resume
+# carries it: the topic held unless the session's aim changes, the story merged with these
+# turns), `warden/asked` (a short reply read against the question it answers, so `warden/answered`
 # clears), `warden/said` and `warden/needs`. A prompt sent before it lands replaces its token,
 # and the stale digest is dropped. Needs `claude` and `jq`; `WARDEN_DIGEST=0` turns it off.
 DIGEST_PROMPT='You write the status lines a terminal multiplexer shows under a coding agent'"'"'s pane, for a user glancing across many agents. From the conversation excerpt, fill:
-topic: what the whole conversation is working on, 2 to 6 words, no trailing period.
+topic: the session'"'"'s overarching aim, 2 to 6 words, no trailing period: the name the user knows this tab by, never its latest thread. Keep the Previous topic at the top of the excerpt word for word unless the story shows the aim of the whole session has changed.
 story: the threads this whole session has covered, oldest first, joined by " · ", each 2 to 6 words followed by its state: ✓ done, … under way, ⏸ parked or deferred. Start from the Previous story at the top of the excerpt: keep every thread in it, update their states, merge a turn into the thread it continues, and append new threads. At most 140 characters; past that, fold the oldest done threads together, never drop the newest.
 asked: what the user'"'"'s last message asks for, at most 90 characters, in their terms. When it is a short reply (a letter, "yes", "do it"), it answers the question in the Agent message just before it, never one in a later message: say what that choice meant.
 said: what the agent did or found in its last reply, at most 110 characters, outcome first.
@@ -131,10 +132,13 @@ digest() {
 	[ -n "$excerpt" ] || return 0
 	# A fork's transcript is rewritten under its own session id but keeps its messages' uuids, so
 	# `root/<first message uuid>` names the session that started the line, and a fork's first
-	# digest carries on from that session's story.
+	# digest carries on from that session's story and topic.
 	root=$story_dir/root/$(jq -rn 'first(inputs | .uuid // empty)' "$path" 2>/dev/null)
-	story=$(cat "$story_dir/$sid" 2>/dev/null || cat "$story_dir/$(cat "$root" 2>/dev/null)" 2>/dev/null)
-	excerpt="Previous story: ${story:-(none)}
+	from=$(cat "$root" 2>/dev/null)
+	story=$(cat "$story_dir/$sid" 2>/dev/null || cat "$story_dir/$from" 2>/dev/null)
+	topic=$(cat "$story_dir/topic/$sid" 2>/dev/null || cat "$story_dir/topic/$from" 2>/dev/null)
+	excerpt="Previous topic: ${topic:-(none)}
+Previous story: ${story:-(none)}
 
 $excerpt"
 	(
@@ -152,10 +156,15 @@ $excerpt"
 		s=$(printf '%s' "$d" | jq -r '.story // "" | gsub("\\s+"; " ")
 			| if length > 160 then .[-160:] | sub("^[^·]*· ?"; "") else . end')
 		[ -n "$s" ] || s=$story
-		[ -z "$s" ] || { mkdir -p "$story_dir/root" && printf '%s' "$s" >"$story_dir/$sid"; }
+		t=$(printf '%s' "$d" | jq -r '.topic // ""')
+		[ -n "$t" ] || t=$topic
+		mkdir -p "$story_dir/root" "$story_dir/topic"
+		[ -z "$s" ] || printf '%s' "$s" >"$story_dir/$sid"
+		[ -z "$t" ] || printf '%s' "$t" >"$story_dir/topic/$sid"
 		[ -e "$root" ] || [ "${root%/}" = "$story_dir/root" ] || printf '%s' "$sid" >"$root"
 		printf '%s' "$s" | put warden/story
-		for k in topic asked said needs; do
+		printf '%s' "$t" | put warden/topic
+		for k in asked said needs; do
 			printf '%s' "$d" | jq -r --arg k "$k" '.[$k] // ""' | put "warden/$k"
 		done
 		emit "${esc}]7501;id=warden/answered:state=clear${esc}\\"
