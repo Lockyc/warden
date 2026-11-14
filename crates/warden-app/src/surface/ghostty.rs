@@ -1447,6 +1447,19 @@ unsafe fn mods_from_event(event: &NSEvent) -> ffi::ghostty_input_mods_e {
     mods
 }
 
+/// The mods a key event's `text` already accounts for: ⇧, when there is printable text. In the
+/// Kitty keyboard protocol an unconsumed ⇧ makes libghostty report the key as `CSI <key>;2u`
+/// instead of its text, and without the report-alternates flag that report doesn't carry the
+/// shifted character, so ⇧' reaches fish as a key with no `"`. ⌥ stays unconsumed so
+/// `macos-option-as-alt` still turns ⌥-keys into Alt; ⌃ and ⌘ never produce the text.
+fn consumed_mods(mods: ffi::ghostty_input_mods_e, has_text: bool) -> ffi::ghostty_input_mods_e {
+    if has_text {
+        mods & ffi::GHOSTTY_MODS_SHIFT
+    } else {
+        ffi::GHOSTTY_MODS_NONE
+    }
+}
+
 /// The mods a mouse event reports: ⌘ also carries ⇧. Under mouse reporting (Claude Code, tmux
 /// `mouse on`) libghostty hands clicks to the program unless ⇧ is held, and a mouse report can't
 /// carry ⌘ — so a ⌘-click would reach the program as a bare click. Adding ⇧ keeps ⌘-hover and
@@ -1623,7 +1636,7 @@ unsafe fn forward_key(
     let key = ffi::ghostty_input_key_s {
         action,
         mods,
-        consumed_mods: ffi::GHOSTTY_MODS_NONE,
+        consumed_mods: consumed_mods(mods, c_text.is_some()),
         keycode: event.keyCode() as u32,
         text: text_ptr,
         unshifted_codepoint: unshifted,
@@ -2172,9 +2185,9 @@ impl Drop for GhosttySurface {
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_press, end_press, is_close_chord, is_printable_text, key_down_forwards, mouse_mods,
-        right_click_route, Button, Route, NS_FLAG_COMMAND, NS_FLAG_CONTROL, NS_FLAG_OPTION,
-        NS_FLAG_SHIFT,
+        begin_press, consumed_mods, end_press, is_close_chord, is_printable_text,
+        key_down_forwards, mouse_mods, right_click_route, Button, Route, NS_FLAG_COMMAND,
+        NS_FLAG_CONTROL, NS_FLAG_OPTION, NS_FLAG_SHIFT,
     };
     use crate::ffi;
     use std::cell::Cell;
@@ -2188,6 +2201,20 @@ mod tests {
             .expect("event");
         assert_eq!(e.r#type(), objc2_app_kit::NSEventType::MouseMoved);
         assert_eq!(e.locationInWindow(), at);
+    }
+
+    /// ⇧ that produced the text is consumed, so a Kitty-mode program gets `"` rather than
+    /// `CSI 39;2u`; ⌥, ⌃ and ⌘ never are, and a key with no text consumes nothing.
+    #[test]
+    fn shift_with_text_is_consumed() {
+        let s = ffi::GHOSTTY_MODS_SHIFT;
+        assert_eq!(consumed_mods(s, true), s);
+        assert_eq!(consumed_mods(s | ffi::GHOSTTY_MODS_ALT, true), s);
+        assert_eq!(
+            consumed_mods(ffi::GHOSTTY_MODS_CTRL, true),
+            ffi::GHOSTTY_MODS_NONE
+        );
+        assert_eq!(consumed_mods(s, false), ffi::GHOSTTY_MODS_NONE);
     }
 
     /// ⌘ on a mouse event also reports ⇧, so a ⌘-click stays with libghostty (link open) even
