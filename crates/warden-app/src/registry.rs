@@ -1101,6 +1101,73 @@ impl TabEntry {
         });
         main.chain(blocks)
     }
+
+    /// [`keyed`](Self::keyed)'s slots, in its order and with its panes, mutably — for moving every
+    /// surface a tab owns at once ([`Registry::adopt_tab`]). Rust can't lend one walk both ways,
+    /// so `slots_mut_walks_every_slot_keyed_names` holds the two to the same slots.
+    fn slots_mut(&mut self) -> impl Iterator<Item = (PaneIdx, &mut TabSlot)> {
+        let agents = self.primary.agents.iter_mut().map(|a| &mut a.slot);
+        let main = std::iter::once(&mut self.primary.slot)
+            .chain(agents)
+            .map(|s| (PaneIdx::Primary, s));
+        let blocks = self.column.iter_mut().flat_map(|c| {
+            c.tabs.iter_mut().flat_map(|t| {
+                t.blocks
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(i, b)| (PaneIdx::Block(i), &mut b.slot))
+            })
+        });
+        main.chain(blocks)
+    }
+
+    /// The placeholder a tab leaves behind when it moves to another window ([`Registry::take_tab`]):
+    /// its spec and title, so `reconcile` still counts it present, and nothing else — its agents,
+    /// column and surfaces all travel with it.
+    fn placeholder(&self) -> TabEntry {
+        TabEntry {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            primary: Pane::new(self.primary.spec.clone(), TabSlot::Detached),
+            column: None,
+            focused: PaneIdx::Primary,
+            rex_error: None,
+        }
+    }
+
+    /// Whether this is a placeholder for a tab whose surfaces are in another window.
+    fn is_placeholder(&self) -> bool {
+        matches!(self.primary.slot, TabSlot::Detached)
+    }
+}
+
+/// One whole tab in transit between two windows' registries ([`Registry::take_tab`] →
+/// [`Registry::adopt_tab`]): its entry with every surface, agent and scratch block, and the window
+/// those surfaces are still in, so an adopt that fails partway can put them back. The entry is
+/// boxed: `adopt_tab` hands the whole thing back in its `Err`.
+pub struct MovedTab {
+    entry: Box<TabEntry>,
+    from: *mut c_void,
+}
+
+// SAFETY: as `Registry` — `from` is a raw `NSWindow *` only ever read on the main thread.
+unsafe impl Send for MovedTab {}
+
+#[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
+impl MovedTab {
+    pub fn id(&self) -> &str {
+        &self.entry.id
+    }
+
+    /// The tab's main-pane spec: what the destination window is titled and keyed by.
+    pub fn spec(&self) -> &TabSpec {
+        &self.entry.primary.spec
+    }
+
+    /// Whether any of its surfaces is spawned — a cold tab has nothing to carry.
+    pub fn is_live(&self) -> bool {
+        self.entry.live()
+    }
 }
 
 /// A slot's key as [`TabEntry::keyed`] lends it: a spec id, or an agent's record id, whose key
@@ -2986,6 +3053,104 @@ impl Registry {
             _ => None,
         };
         Some((primary, secondary))
+    }
+
+    /// Move tab `id` out of this registry whole, for another window to
+    /// [`adopt`](Self::adopt_tab): its entry leaves with every surface (none closed — the PTYs are
+    /// what a move preserves), agent and scratch block, and a [`placeholder`](TabEntry::placeholder)
+    /// stands at its index, so the row stays where it was and `reconcile` counts the tab present.
+    /// `None` for an unknown id or a placeholder: a tab already out has nothing here to move.
+    #[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
+    pub fn take_tab(&mut self, id: &str) -> Option<MovedTab> {
+        let idx = self
+            .tabs
+            .iter()
+            .position(|t| t.id == id && !t.is_placeholder())?;
+        let placeholder = self.tabs[idx].placeholder();
+        let entry = Box::new(std::mem::replace(&mut self.tabs[idx], placeholder));
+        Some(MovedTab {
+            entry,
+            from: self.ns_window,
+        })
+    }
+
+    /// Take in a tab another registry [`took`](Self::take_tab): its live surfaces move into this
+    /// window at this window's holes, then the entry fills its placeholder here, or — in a
+    /// registry with no tabs, a fresh pop-out — becomes its one tab, active.
+    ///
+    /// `Err` hands the tab back with nothing moved: when this registry has tabs but no placeholder
+    /// for it (reconcile removed it while it was out), or when a surface won't move, in which case
+    /// every surface already moved goes back to the window it came from. Where to land is decided
+    /// before any surface moves, so a refusal never strands a surface in a window with no row
+    /// for it.
+    ///
+    /// Every pane of the tab ends up shown or hidden as [`show_active`](Self::show_active) says,
+    /// since a reparent un-hides each view it moves — a hidden agent's or scratch tab's included.
+    #[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
+    pub fn adopt_tab(&mut self, mut tab: MovedTab) -> Result<(), MovedTab> {
+        let landing = self
+            .tabs
+            .iter()
+            .position(|t| t.id == tab.entry.id && t.is_placeholder());
+        if landing.is_none() && !self.tabs.is_empty() {
+            return Err(tab);
+        }
+        if tab.from != self.ns_window {
+            let rects: Vec<PixelRect> = tab
+                .entry
+                .slots_mut()
+                .map(|(which, _)| self.rect_for(which))
+                .collect();
+            let mut moved = Vec::new();
+            let mut failed = None;
+            for (i, ((_, slot), rect)) in tab.entry.slots_mut().zip(&rects).enumerate() {
+                let TabSlot::Spawned(s) = slot else { continue };
+                match s.reparent(self.ns_window, *rect) {
+                    Ok(()) => moved.push(i),
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = failed {
+                log::error!(
+                    "tab {:?}: move refused, a surface won't move: {e}",
+                    tab.entry.title
+                );
+                // The rect is a stopgap: whichever registry adopts the tab next frames every
+                // surface it shows ([`show_active`](Self::show_active)).
+                let (from, title) = (tab.from, tab.entry.title.clone());
+                for (i, (_, slot)) in tab.entry.slots_mut().enumerate() {
+                    if !moved.contains(&i) {
+                        continue;
+                    }
+                    if let TabSlot::Spawned(s) = slot {
+                        if let Err(e) = s.reparent(from, rects[i]) {
+                            log::error!("tab {title:?}: a surface won't move back: {e}");
+                        }
+                    }
+                }
+                return Err(tab);
+            }
+        }
+        let id = tab.entry.id.clone();
+        match landing {
+            Some(idx) => self.tabs[idx] = *tab.entry,
+            None => {
+                self.tabs.push(*tab.entry);
+                self.active = Some(id);
+            }
+        }
+        self.show_active();
+        Ok(())
+    }
+
+    /// Whether this registry's one tab has a live surface — a pop-out's, whose window has nothing
+    /// left to show once it goes cold. `false` for a registry holding any other number of tabs.
+    #[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
+    pub fn sole_tab_live(&self) -> bool {
+        matches!(self.tabs.as_slice(), [t] if t.live())
     }
 
     /// Bring tab `id` live in place if it is `Cold`, spawning its surface(s) against this
@@ -5941,5 +6106,138 @@ mod tests {
             Some("t::2")
         );
         assert_eq!(r.agent_keys("t"), ["t::agent:r1"]);
+    }
+
+    fn abc() -> Registry {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        for id in ["a", "b", "c"] {
+            r.add(&spec(id, "/tmp"), false).unwrap();
+        }
+        r
+    }
+
+    fn rows(r: &Registry) -> Vec<(String, bool)> {
+        r.tab_dtos()
+            .into_iter()
+            .map(|d| (d.id, d.detached))
+            .collect()
+    }
+
+    #[test]
+    fn take_tab_leaves_a_detached_placeholder_at_its_index() {
+        let mut r = abc();
+        let moved = r.take_tab("b").expect("b moves");
+        assert_eq!(moved.id(), "b");
+        assert_eq!(moved.spec().id, "b");
+        assert!(!moved.is_live(), "a cold tab carries nothing live");
+        assert_eq!(
+            rows(&r),
+            [("a".into(), false), ("b".into(), true), ("c".into(), false)]
+        );
+    }
+
+    #[test]
+    fn take_tab_refuses_a_placeholder_and_unknown_ids() {
+        let mut r = abc();
+        let _moved = r.take_tab("b").unwrap();
+        assert!(
+            r.take_tab("b").is_none(),
+            "a placeholder holds nothing to move"
+        );
+        assert!(r.take_tab("zz").is_none());
+    }
+
+    #[test]
+    fn adopt_tab_replaces_the_placeholder() {
+        let mut r = abc();
+        let moved = r.take_tab("b").unwrap();
+        assert!(r.adopt_tab(moved).is_ok());
+        assert_eq!(
+            rows(&r),
+            [
+                ("a".into(), false),
+                ("b".into(), false),
+                ("c".into(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn adopt_tab_into_an_empty_registry_makes_it_active() {
+        let mut origin = abc();
+        let moved = origin.take_tab("b").unwrap();
+        let mut out = Registry::new(std::ptr::null_mut(), crate::manager::INITIAL_RECT);
+        assert!(out.adopt_tab(moved).is_ok());
+        assert_eq!(out.active_tab(), Some("b"));
+        assert_eq!(rows(&out), [("b".into(), false)]);
+        assert!(!out.sole_tab_live(), "its one tab is cold");
+    }
+
+    #[test]
+    fn adopt_tab_without_a_placeholder_refuses() {
+        let mut r = abc();
+        let moved = r.take_tab("b").unwrap();
+        // Reconcile removed b while it was out.
+        r.remove("b");
+        let back = r.adopt_tab(moved).expect_err("no slot for b");
+        assert_eq!(back.id(), "b");
+        assert_eq!(rows(&r), [("a".into(), false), ("c".into(), false)]);
+    }
+
+    #[test]
+    fn adopt_tab_refuses_a_tab_already_here() {
+        let mut r = abc();
+        let mut other = abc();
+        let moved = other.take_tab("b").unwrap();
+        let back = r
+            .adopt_tab(moved)
+            .expect_err("b is already here, not a placeholder");
+        assert_eq!(back.id(), "b");
+        assert_eq!(r.tabs.len(), 3);
+    }
+
+    #[test]
+    fn adopt_carries_agents_and_column() {
+        let mut origin = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b", "c"])]);
+        origin.force_agents("t", &["r1", "r2"], Some("r2"));
+        let column = |r: &Registry| serde_json::to_value(&r.tab_dtos()[0].column).unwrap();
+        let keys = |r: &Registry| -> Vec<(String, PaneIdx)> {
+            r.tabs[0]
+                .keyed()
+                .map(|(k, w, _)| (k.owned("t"), w))
+                .collect()
+        };
+        let (col, ks) = (column(&origin), keys(&origin));
+        assert!(col.is_object(), "the tab has a column");
+
+        let moved = origin.take_tab("t").unwrap();
+        let d = &origin.tab_dtos()[0];
+        assert!(d.detached && d.column.is_none());
+        assert_eq!(
+            origin.selected_agent("t"),
+            None,
+            "the placeholder holds no agents"
+        );
+
+        let mut out = Registry::new(std::ptr::null_mut(), rect());
+        assert!(out.adopt_tab(moved).is_ok());
+        assert_eq!(out.selected_agent("t"), Some("r2"));
+        assert_eq!(column(&out), col);
+        assert_eq!(keys(&out), ks);
+
+        let back = out.take_tab("t").unwrap();
+        assert!(origin.adopt_tab(back).is_ok());
+        assert_eq!(origin.selected_agent("t"), Some("r2"));
+        assert_eq!(column(&origin), col);
+        assert_eq!(keys(&origin), ks);
+    }
+
+    #[test]
+    fn slots_mut_walks_every_slot_keyed_names() {
+        let mut r = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b", "c"])]);
+        r.force_agents("t", &["r1", "r2"], Some("r1"));
+        let named: Vec<PaneIdx> = r.tabs[0].keyed().map(|(_, w, _)| w).collect();
+        let walked: Vec<PaneIdx> = r.tabs[0].slots_mut().map(|(w, _)| w).collect();
+        assert_eq!(walked, named);
     }
 }
