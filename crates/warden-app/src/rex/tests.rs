@@ -1008,6 +1008,23 @@ fn synthesized_tab_attaches_existing_session() {
 }
 
 #[test]
+fn destroying_an_unopened_unclaimed_row_ends_its_session() {
+    let fake = scripted(json!([{"session_id": "session:orphan", "label": "proj · main"}]));
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub_on(fake.endpoint(), &dir);
+    hub.connect("local").expect("connect");
+    let key = "rex:session:orphan";
+    assert!(hub.session_alive(key), "the row's dot is lit");
+    hub.destroy(key).expect("destroy");
+    let sent: Vec<_> = fake
+        .requests_for("session.destroy")
+        .iter()
+        .map(|r| r.payload["session_id"].clone())
+        .collect();
+    assert_eq!(sent, [json!("session:orphan")]);
+}
+
+#[test]
 fn an_adopted_session_that_ended_is_never_recreated() {
     let fake = scripted(json!([]));
     fake.on("session.attach", |_, _| {

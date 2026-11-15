@@ -210,6 +210,24 @@ impl State {
             .or_else(|| own(column::column_of(pane_key)?))
     }
 
+    /// For an unclaimed session's row not yet opened (so neither stored nor adopted), the server
+    /// whose session list — live, else last heard — holds its session.
+    fn listed_unclaimed(&self, pane_key: &str) -> Option<PaneRecord> {
+        let id = unclaimed::session_of(pane_key)?;
+        let listed = |list: &[SessionInfo]| list.iter().any(|s| s.id == id);
+        let server = self
+            .conns
+            .iter()
+            .find(|(_, c)| listed(&c.live))
+            .map(|(s, _)| s)
+            .or_else(|| self.heard.iter().find(|(_, l)| listed(l)).map(|(s, _)| s))?;
+        Some(PaneRecord {
+            server: server.clone(),
+            session_id: id.to_owned(),
+            instance: None,
+        })
+    }
+
     /// Forget agent `agent_key`'s binding, block and size.
     fn unbind_agent(&mut self, agent_key: &str) {
         self.agents.remove(agent_key);
@@ -418,18 +436,14 @@ impl RexHub {
     /// unmapped, or the server was never heard from.
     pub fn session_alive(&self, pane_key: &str) -> bool {
         let st = self.inner.lock();
-        let listed = |list: &[SessionInfo], id: &str| list.iter().any(|s| s.id == id);
         match st.record(pane_key) {
             Some(rec) => {
                 !st.restored(rec)
                     && st
                         .sessions(&rec.server)
-                        .is_some_and(|l| listed(l, &rec.session_id))
+                        .is_some_and(|l| l.iter().any(|s| s.id == rec.session_id))
             }
-            None => unclaimed::session_of(pane_key).is_some_and(|id| {
-                st.conns.values().any(|c| listed(&c.live, id))
-                    || st.heard.values().any(|l| listed(l, id))
-            }),
+            None => st.listed_unclaimed(pane_key).is_some(),
         }
     }
 
@@ -448,7 +462,8 @@ impl RexHub {
 
     /// End `pane_key`'s session and forget its mapping. The mapping goes even if the server
     /// can't be told, so the pane never reattaches a session it was asked to end; a session that
-    /// survives that shows as unclaimed. An unmapped pane is a no-op.
+    /// survives that shows as unclaimed. An unclaimed row's key ends its listed session; any
+    /// other unmapped pane is a no-op.
     pub fn destroy(&self, pane_key: &str) -> Result<(), RexError> {
         let _held = self.inner.hold_pane(pane_key, None)?;
         self.inner.destroy(pane_key)
@@ -634,7 +649,10 @@ impl Inner {
         pane_key: &str,
         deadline: Option<Instant>,
     ) -> Result<(), RexError> {
-        let Some(rec) = self.forget(pane_key) else {
+        let rec = self
+            .forget(pane_key)
+            .or_else(|| self.lock().listed_unclaimed(pane_key));
+        let Some(rec) = rec else {
             return Ok(());
         };
         let (client, _) = self.conn(&rec.server)?;
