@@ -2528,6 +2528,20 @@ impl Registry {
         t.column.as_ref().filter(|c| c.is_rex())?.change_blocked()
     }
 
+    /// Which Rex answer tab `id`'s column waits on: an open ([`COLUMN_OPENING`]) or a change
+    /// ([`COLUMN_CHANGING`]). `None` when none is pending — a column whose open failed included.
+    pub fn column_in_flight(&self, id: &str) -> Option<&'static str> {
+        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let column = t.column.as_ref().filter(|c| c.is_rex())?;
+        if column.rex.opening().is_some() {
+            Some(COLUMN_OPENING)
+        } else if column.changing {
+            Some(COLUMN_CHANGING)
+        } else {
+            None
+        }
+    }
+
     /// Mark tab `id`'s Rex column as waiting on a change sent to Rex, until
     /// [`end_column_change`](Self::end_column_change): one at a time, so a press repeated while
     /// Rex is slow doesn't queue a second split behind the first. `Err` is why it can't start.
@@ -5362,6 +5376,29 @@ mod tests {
         assert!(out.is_connecting("t"), "the next activate asks again");
         assert!(!asked_out.lock().unwrap().is_empty(), "of its own window");
         assert_eq!(asked.lock().unwrap().len(), before, "never of the old one");
+    }
+
+    /// Only an open or change actually pending holds a column back; one whose open failed has
+    /// nothing in flight.
+    #[test]
+    fn column_in_flight_is_only_a_pending_open_or_change() {
+        let (mut r, asked) = rex_registry();
+        r.add(&split_rex_spec("t", 3), false).unwrap();
+        r.ensure_spawned(0, PaneIdx::Block(0), false).unwrap();
+        assert_eq!(r.column_in_flight("t"), Some(COLUMN_OPENING));
+        let req = column_open(&asked);
+        let _ = r.rex_opened(&req.pane_key, req.token, Err("refused".into()));
+        assert_eq!(r.column_change_blocked("t"), Some(COLUMN_OPENING));
+        assert_eq!(
+            r.column_in_flight("t"),
+            None,
+            "a failed open is not pending"
+        );
+
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
+        assert_eq!(r.column_in_flight("t"), None);
+        r.begin_column_change("t").expect("a change");
+        assert_eq!(r.column_in_flight("t"), Some(COLUMN_CHANGING));
     }
 
     /// A column change Rex hadn't answered is forgotten by the move too.

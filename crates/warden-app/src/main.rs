@@ -1513,24 +1513,26 @@ fn pop_out_tab(
         }
         // A Rex open or column change in flight answers the window that asked, so the tab can't
         // move until it lands. Asked before the tab is brought up, so a refusal wakes nothing it
-        // can already see; and again after, for the open bringing a cold Rex tab up starts.
-        let in_flight = |reg: &registry::Registry| {
-            if reg.is_connecting(&id) {
-                return Some(
-                    "the tab is still connecting to its Rex server — pop it out once it opens"
-                        .to_string(),
-                );
-            }
-            reg.column_change_blocked(&id)
+        // can already see; the main pane again after, for the open bringing a cold Rex tab up
+        // starts. A column open that bring-up starts again travels: the move forgets it and the
+        // pop-out asks afresh, so a column whose open failed never holds the tab back.
+        let connecting = |reg: &registry::Registry| {
+            reg.is_connecting(&id).then(|| {
+                "the tab is still connecting to its Rex server — pop it out once it opens"
+                    .to_string()
+            })
+        };
+        let column = |reg: &registry::Registry| {
+            reg.column_in_flight(&id)
                 .map(|why| format!("{why} — pop the tab out once its scratch column settles"))
         };
-        if let Some(why) = in_flight(&ws.registry) {
+        if let Some(why) = connecting(&ws.registry).or_else(|| column(&ws.registry)) {
             return Err(why);
         }
         ws.registry
             .ensure_spawned_by_id(&id)
             .map_err(|e| format!("could not open the tab to pop it out: {e}"))?;
-        if let Some(why) = in_flight(&ws.registry) {
+        if let Some(why) = connecting(&ws.registry) {
             return Err(why);
         }
         let moved = ws
