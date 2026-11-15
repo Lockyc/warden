@@ -42,8 +42,7 @@
          40–60% intensity round the corner. That softness is the accepted trade for a hairline;
          2px was tried and holds ≥96% on every row of the curve — flip this one token if the look
          ever changes. Read by `.pane`'s border, the ring's `inset`, and the ground cover's inner
-         radii; the native side restates it in `SURFACE_CORNER_RADIUS` (= `--pane-radius` − this).
-         shell-core's detach.html carries the same token. */
+         radii; the native side restates it in `SURFACE_CORNER_RADIUS` (= `--pane-radius` − this). */
       :root { --ring-w: 1px; }
       /* `--sq`: a rect outline whose corners are Apple continuous corners of radii `--sq-tl` /
          `--sq-tr` / `--sq-br` / `--sq-bl` (0 = square), for `clip-path: shape(var(--sq))`. The
@@ -100,6 +99,30 @@
          adds `.cc-root` (opaque flex column). Width is the density-aware token, overridden inline by
          the resize controller. */
       #sidebar { width: var(--cc-sidebar-w, 240px); flex: none; }
+      /* A popped-out tab (`html.popout`, `POPOUT` in the script): no sidebar; the banner over the
+         hole instead. Its height is shell-core's `detach::BANNER_H`, which places the surfaces'
+         first frame before this page reports their holes. The Overlay titlebar floats the
+         traffic lights over its left end, which the 78px inset clears (chrome-core's
+         `--cc-lights-inset`). */
+      #popout-banner, #popout-error { display: none; }
+      html.popout #app { flex-direction: column; }
+      html.popout #terminal-hole { min-height: 0; }
+      html.popout #popout-banner { display: flex; flex: none; height: 2.25rem; box-sizing: border-box;
+        align-items: center; padding: 0 0.9rem 0 78px; background: var(--accent, #6b7280); color: #fff;
+        user-select: none; -webkit-user-select: none; }
+      #popout-title { font-size: 0.8rem; font-weight: 700; letter-spacing: 0.01em; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+      /* An error for this window, or the config's load error, under the banner. Monospace, as
+         written: a TOML parse error points a caret at its column. Capped, so it never swallows
+         the hole. */
+      html.popout #popout-error:not([hidden]) { display: flex; flex: none; align-items: flex-start;
+        gap: 8px; background: #7a1f1f; color: #ffd; padding: 6px 12px; font-size: 12px;
+        line-height: 1.3; max-height: 30vh; overflow: auto; }
+      #popout-error-text { flex: 1; white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
+        user-select: text; -webkit-user-select: text; }
+      #popout-error-close { flex: none; cursor: pointer; border: 0; background: transparent;
+        color: inherit; opacity: 0.7; font-size: 16px; line-height: 1; padding: 0 2px; }
+      #popout-error-close:hover { opacity: 1; }
       /* #terminal-hole is a flex row of the main pane and the scratch column (#pane-secondary)
          with a divider between them. Unsplit
          (the common case), #pane-secondary and #pane-divider are `hidden` — the SOLE authority
@@ -150,9 +173,7 @@
          the dark ground whatever the user picked. The same lift-the-hue idea as chrome-core's
          `liftColour` for the sidebar's active bar, so the two accents read as one. The neutral
          no-colour fallback (chrome-core's `NEUTRAL_COLOUR` slate, hue ≈220) resolves to an
-         electric blue, so a colourless window gets a ring, not grey. Same formula, same
-         reasoning, as shell-core's `.hole.focused` in `detach.html` — the two rules must stay
-         identical, the way the two dividers do.
+         electric blue, so a colourless window gets a ring, not grey.
 
          Ring ONLY — no `box-shadow` halo. The native surface covers the content box, so a glow
          could show nowhere but the 5px divider strip, where it bled across the gap and read as
@@ -190,6 +211,12 @@
          top-right corner is no longer a window corner. Extra classes, to outrank the split rules. */
       #terminal-hole.cc-hole.cc-hole-collapsed #pane-primary,
       #terminal-hole.cc-hole.cc-hole-collapsed.split .block.edge-r.edge-t { --c-tr: 0px; }
+      /* A pop-out: the banner sits above the hole, so no top corner is a window corner, and with
+         no sidebar the leftmost pane's bottom-left is one — the primary's unless the agent list
+         or a left column sits beside it. The ids outrank the docked rules above. */
+      html.popout #app #terminal-hole .pane { --c-tr: 0px; }
+      html.popout #app #terminal-hole:not(.agents):not(.secondary-left) #pane-primary,
+      html.popout #app #terminal-hole.secondary-left .block.edge-l.edge-b { --c-bl: var(--pane-radius); }
       #terminal-hole.split .pane.focused::before {
         background: hsl(from var(--accent, #6b7280) h calc(max(s, 85)) 62); }
       /* #main-col holds the agent list beside #primary-col (#pane-primary over the summary
@@ -243,8 +270,7 @@
          terminals, not a bar) and the line is #393f40, a flat neutral in the same register as the
          app's dark chrome. The strip is wider than the line because a 1px target cannot be
          grabbed; the extra width is invisible by construction. No close control rides it — a
-         split closes from its second pane (exit, Close Pane, the strip's ×) or the config.
-         (Same values, same reasoning, as shell-core's `.divider` in the detached page.) */
+         split closes from its second pane (exit, Close Pane, the strip's ×) or the config. */
       #pane-divider { flex: 0 0 5px; cursor: col-resize; display: none;
         background: linear-gradient(to right, var(--pane-ground) 2px, #393f40 2px, #393f40 3px,
           var(--pane-ground) 3px); }
@@ -529,6 +555,12 @@
            sidebar BODY drag is stamped by chrome-core per the `windowDrag` DTO flag (from
            `sidebar_drag`). -->
       <aside id="sidebar" data-tauri-drag-region></aside>
+      <!-- A popped-out tab's banner and error bar, in place of the sidebar (`html.popout`). -->
+      <header id="popout-banner" data-tauri-drag-region><span id="popout-title"></span></header>
+      <div id="popout-error" hidden>
+        <span id="popout-error-text"></span>
+        <button id="popout-error-close" aria-label="Dismiss">×</button>
+      </div>
       <!-- Sleep Server's confirm: every loss by name. Filled by `showServerSleep`. -->
       <div id="server-sleep" hidden role="alertdialog" aria-labelledby="server-sleep-head">
         <div id="server-sleep-head" class="ss-head"></div>
@@ -628,6 +660,38 @@
       const { invoke } = window.__TAURI__.core;
       const { listen } = window.__TAURI__.event;
 
+      // A popped-out tab: shell-core's `open_detached` loads this page with `__SHELL_DETACH__`
+      // (`title`, `colour`, `label`, `loadError`). Its window holds that one tab: no sidebar and
+      // no chrome-core component (`sb` stays null) — the banner over the hole instead, and the
+      // tab activated as the component's selection would activate it docked (`applyDto`).
+      const POPOUT = !!window.__SHELL_DETACH__;
+      const popoutPayload = POPOUT ? JSON.parse(window.__SHELL_DETACH__) : null;
+      document.documentElement.classList.toggle("popout", POPOUT);
+      if (POPOUT) {
+        document.getElementById("sidebar").remove();
+        popoutBanner(popoutPayload.title, popoutPayload.colour);
+      }
+      // The banner's title and colour: the payload's until `init_tabs` answers, then every
+      // snapshot's (a relabel or recolour).
+      function popoutBanner(title, colour) {
+        document.title = title || "warden";
+        document.getElementById("popout-title").textContent = title || "";
+        if (colour) document.documentElement.style.setProperty("--accent", colour);
+        else document.documentElement.style.removeProperty("--accent");
+      }
+      // The error bar under the banner. Dismissing hides this error only; a different one shows.
+      let popoutShownError = null;
+      function popoutSetError(msg) {
+        msg = msg || null;
+        if (msg === popoutShownError) return;
+        popoutShownError = msg;
+        document.getElementById("popout-error-text").textContent = msg || "";
+        document.getElementById("popout-error").hidden = !msg;
+      }
+      document.getElementById("popout-error-close").addEventListener("click", () => {
+        document.getElementById("popout-error").hidden = true;
+      });
+
       function invokeSafe(cmd, args) {
         return invoke(cmd, args).catch((err) => console.error("warden: IPC " + cmd + " failed", err));
       }
@@ -719,21 +783,9 @@
         const o = ratioOverride.get(tabId);
         return { ratio: Number.isFinite(o) ? o : primaryFracFromLayout(layout) };
       }
-      // The divider ratio a pop-out of `tabId` should carry, or null for an unsplit tab.
-      // Pop-out is whole-tab, so a split tab's second pane goes with it and the detached
-      // window has to lay out two holes at the SAME ratio the tab has here — otherwise the
-      // terminal visibly jumps width the moment it pops out. Read via `loadSplit`, which
-      // resolves to the in-memory override (or the declared `size` if none). The backend treats this as advisory: it
-      // decides the hole count from the surfaces it actually detached, so a stale or absent
-      // value can only cost the right WIDTH, never a hole with no terminal.
-      function popOutRatio(tabId) {
-        const p = loadSplit(tabId);
-        return p ? p.ratio : null;
-      }
-
-      // ⤢ and ⌘⇧O both land here. A refusal (a stacked scratch column) shows its reason.
+      // ⤢ and ⌘⇧O both land here. A refusal (a pane still waiting on Rex) shows its reason.
       function popOut(id) {
-        invoke("pop_out_tab", { id, ratio: popOutRatio(id) }).catch((err) => { if (sb) setWindowError("⚠ " + err); });
+        invoke("pop_out_tab", { id }).catch((err) => setWindowError("⚠ " + err));
       }
 
       // In-app updates are a chrome-core capability (check / install / relaunch + the 6h re-check
@@ -747,10 +799,25 @@
 
       // Whether the error bar holds a global (config) error, the one kind `warden:error-clear`
       // clears. Every per-window error goes through `setWindowError`, which replaces it.
+      // In a pop-out that global error is the config's load error (`shell-detach:error`).
       let globalErrorShown = false;
       function setWindowError(msg) {
         globalErrorShown = false;
-        sb.setError(msg);
+        if (POPOUT) popoutSetError(msg);
+        else if (sb) sb.setError(msg);
+      }
+      function popoutLoadError(error) {
+        if (error) {
+          popoutSetError("⚠ " + error);
+          globalErrorShown = true;
+        } else if (globalErrorShown) {
+          popoutSetError(null);
+          globalErrorShown = false;
+        }
+      }
+      if (POPOUT) {
+        popoutLoadError(popoutPayload.loadError);
+        listen("shell-detach:error", (e) => popoutLoadError((e.payload || {}).error));
       }
 
       // The rect handed to `set_hole_rect` must be the pane's CONTENT box, not its border box.
@@ -852,6 +919,7 @@
           [el.style.left, el.style.width] = scratchSpan(r.x, r.w);
           [el.style.top, el.style.height] = scratchSpan(r.y, r.h);
           el.classList.toggle("edge-t", !view.rex && r.y <= SCRATCH_EPS);
+          el.classList.toggle("edge-l", r.x <= SCRATCH_EPS);
           el.classList.toggle("edge-r", r.x + r.w >= 1 - SCRATCH_EPS);
           el.classList.toggle("edge-b", r.y + r.h >= 1 - SCRATCH_EPS);
         });
@@ -893,12 +961,12 @@
       }
       function scratchNew() {
         if (!activeId) return;
-        invoke("scratch_new", { id: activeId }).catch((err) => { if (sb) setWindowError("⚠ " + err); });
+        invoke("scratch_new", { id: activeId }).catch((err) => setWindowError("⚠ " + err));
       }
       // Close scratch tab `index` of the active tab's column; Rex's next view re-renders it.
       function scratchCloseTab(index) {
         if (!activeId) return;
-        invoke("scratch_close_tab", { id: activeId, index }).catch((err) => { if (sb) setWindowError("⚠ " + err); });
+        invoke("scratch_close_tab", { id: activeId, index }).catch((err) => setWindowError("⚠ " + err));
       }
       // An inner divider drag: the two sides follow the pointer live, reported as they go; the
       // release asks Rex to resize, and Rex's view arrives back as `warden:refresh`. The same
@@ -972,7 +1040,7 @@
         scratchHeld = hold;
         setTimeout(() => scratchRelease(hold), SCRATCH_HOLD_MS);
         invoke("scratch_resize", { id: tabId, splits, sizes }).catch((err) => {
-          if (sb) setWindowError("⚠ " + err);
+          setWindowError("⚠ " + err);
           scratchRelease(hold);
         });
       }
@@ -1084,8 +1152,8 @@
       // the `.pane.focused` rule), so this runs unconditionally rather than every caller having
       // to know the split state.
       function updateFocusMarker() {
-        // No marker for a popped-out tab: its panes are in the detached window and these two
-        // are empty, so a ring here would point at nothing.
+        // No marker for a popped-out tab: its panes are in its pop-out and these are empty, so a
+        // ring here would point at nothing.
         const f = activeId !== null && !detached.has(activeId) ? focusedPaneById.get(activeId) || 0 : -1;
         document.getElementById("pane-primary").classList.toggle("focused", f === 0);
         scratchBlocks().forEach((el, i) => el.classList.toggle("focused", f === 1 + i));
@@ -1338,13 +1406,16 @@
         splitBand = dto.split_band;
         scratchBand = dto.scratch_band;
         applyTermFont(dto);
+        const componentDto = toComponentDto(dto);
         // chrome-core's first-tab fallback fires onSelect inside `update` — warden's own open.
-        wardenSelect(() => sb.update(toComponentDto(dto)));
+        if (sb) wardenSelect(() => sb.update(componentDto));
         summarySync(); // a relabel or recolour arrives with no tab switch
         // The window colour on the ROOT, for the pane focus ring (`.pane.focused` reads it —
-        // the panes sit outside chrome-core's sidebar root, so its own tokens never reach them).
-        // Hot-reload re-runs this, so a `colour` edit re-tints the ring with the banner.
-        if (dto.colour) document.documentElement.style.setProperty("--accent", dto.colour);
+        // the panes sit outside chrome-core's sidebar root, so its own tokens never reach them)
+        // and a pop-out's banner. Hot-reload re-runs this, so a `colour` edit re-tints the ring
+        // with the banner.
+        if (POPOUT) popoutBanner(dto.title, dto.colour);
+        else if (dto.colour) document.documentElement.style.setProperty("--accent", dto.colour);
         else document.documentElement.style.removeProperty("--accent");
         if (!dto.tabs.length) {
           setActiveId(null, false); // zero tabs → blank; the ≥1 case fires onSelect
@@ -1373,14 +1444,14 @@
         // harmless (a backstop painted under a live surface is simply invisible).
         secondarySpawnedById.set(id, false);
         ratioOverride.delete(id);
-        sb.setLive(id, false);
+        sb?.setLive(id, false);
         if (newActive) {
-          sb.setActive(newActive);
+          sb?.setActive(newActive);
           clearBadge(newActive); // now visible
           setActiveId(newActive, true); // pick_live_neighbour only returns already-spawned tabs
         } else if (id === activeId) {
           // The tab we were looking at went cold and nothing live remains → blank hole.
-          sb.setActive(null);
+          sb?.setActive(null);
           setActiveId(null, false);
         }
         // else: a BACKGROUND tab went cold. `unload` only names a new active tab when the tab it
@@ -1426,7 +1497,7 @@
           await invoke("split_pane", { id: activeId });
         } catch (err) {
           console.error("warden: IPC split_pane failed", err);
-          if (sb) setWindowError("⚠ " + err);
+          setWindowError("⚠ " + err);
         }
       }
 
@@ -1646,7 +1717,8 @@
       }
 
       // The head band ends where the sidebar's Search box does (0 with the sidebar collapsed: its
-      // strip already sits above the hole). Re-measured when anything above Search changes size —
+      // strip already sits above the hole; and in a pop-out, which has no Search box, so the head
+      // sits at the column's top). Re-measured when anything above Search changes size —
       // banner, error and update bars — and with the hole (`#terminal-hole`'s observer).
       let headObserved = false;
       function syncAgentsHead() {
@@ -1690,12 +1762,12 @@
         scheduleMeasure(); // every agent tab's hole folds with the rail
       }
 
-      // Run an agent command; a refusal or Rex failure shows in the sidebar's error bar. The list
+      // Run an agent command; a refusal or Rex failure shows in the window's error bar. The list
       // itself follows `warden:agents`.
       function agentCall(cmd, args) {
         return invoke(cmd, args).catch((err) => {
           console.error("warden: IPC " + cmd + " failed", err);
-          if (sb) setWindowError("⚠ " + err);
+          setWindowError("⚠ " + err);
         });
       }
       function agentSelect(tab, id) {
@@ -2228,7 +2300,7 @@
           dto = await invoke("init_tabs");
         } catch (err) {
           console.error("warden: init_tabs failed", err);
-          if (sb) setWindowError("⚠ failed to load window: " + err);
+          setWindowError("⚠ failed to load window: " + err);
           return;
         }
         if (!dto) return; // no managed window for this label yet (race: init_tabs ran before this window's WindowState was inserted)
@@ -2237,50 +2309,33 @@
         scratchBand = dto.scratch_band;
         applyTermFont(dto);
 
+        if (POPOUT) {
+          applyDto(dto);
+          // Its one tab, opened as a docked window opens its active tab: warden's own open, so
+          // an agent there that sleeps stays asleep. Once — a tab gone cold closes the pop-out.
+          if (dto.tabs.length) wardenSelect(() => activateTab(dto.tabs[0].id));
+        } else {
+          mountSidebar(dto);
+        }
+        if (dto.error) setWindowError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
+
+        // (The launch + 6h update checks are armed by chrome-core from the `autoUpdate` mount config.)
+
+        // Ask for the first probe pass only AFTER the session-state listener is registered, so the
+        // first emit can't race ahead of it. This populates the presence dots at startup.
+        try { await sessionListenReady; } catch (e) { /* listener still works */ }
+        invokeSafe("probe_now");
+      }
+
+      // A docked window's chrome: chrome-core's sidebar, opened on the backend's active tab.
+      function mountSidebar(dto) {
         sb = window.ChromeSidebar.mount(
           document.getElementById("sidebar"),
           {
-            async onSelect(id) {
-              // Read before any await: warden's own selects are synchronous calls into the component.
-              const user = !wardenSelecting;
-              // A popped-out tab has no local surface to activate — "select" means "raise its
-              // window". Don't change local selection (leave activeId on whatever's in this hole).
-              if (detached.has(id)) {
-                invokeSafe("raise_popped_window", { id });
-                return;
-              }
-              // Focusing a tab clears its unread badge (it's now visible).
-              clearBadge(id);
-              setActiveId(id, false); // not known live until the spawn returns; already reports
-                                       // both holes via setSplitVisible
-              // activate_tab reports whether a surface now covers the hole, PLUS this
-              // tab's own split/focused layout — the authoritative answer `setActiveId`'s third
-              // arg exists for (see its own doc comment): this is the ONE place a tab switch's
-              // preserved focus (Registry::activate's untestable branch) is ever confirmed.
-              const res = await invoke("activate_tab", { id, user }).catch((err) => {
-                console.error("warden: IPC activate_tab failed", err);
-                return { live: false, split: false, focused: 0 };
-              });
-              if (activeId === id) { // ignore a stale reply for an old click
-                focusedPaneById.set(id, res.focused);
-                setActiveId(id, res.live, res.split);
-                // Repaint the row's live/cold dot now the spawn has settled. setActiveId only
-                // tracks selection + the empty-state; without this an unloaded tab that a cold
-                // start just brought live keeps showing a hollow (cold) dot until the next full
-                // refresh (the "cold-start indicator never lights up" bug).
-                sb.setLive(id, res.live || (res.split && !!secondarySpawnedById.get(id)));
-              }
-              // A row clicked from a filtered list: the activated terminal just took first
-              // responder, so hand it back to the search — Esc clears, typing replaces the filter.
-              if (activeId === id && sb.query.trim()) {
-                await invoke("focus_sidebar").catch((err) => console.error("warden: IPC focus_sidebar failed", err));
-                sb.focusSearch();
-              }
-            },
+            onSelect: activateTab,
             onUnload: unloadTab,
             onPopOut(id) {
-              // Pop the tab out into its own window (preserving the live terminal). The backend
-              // detaches the surface, opens a detached window, reparents into it, and pushes a
+              // Pop the tab out into a one-tab window of its own, terminals intact, and push a
               // refresh so this row re-renders detached. chrome-core only offers this control on a
               // not-already-detached tab.
               popOut(id);
@@ -2346,14 +2401,45 @@
         if (dto.active) sb.setActive(dto.active);
         applyDto(dto);
         if (dto.active) wardenSelect(() => sb.select(dto.active));
-        if (dto.error) setWindowError("⚠ " + dto.error); // a launch-time spawn failure rode in on init
+      }
 
-        // (The launch + 6h update checks are armed by chrome-core from the `autoUpdate` mount config.)
-
-        // Ask for the first probe pass only AFTER the session-state listener is registered, so the
-        // first emit can't race ahead of it. This populates the presence dots at startup.
-        try { await sessionListenReady; } catch (e) { /* listener still works */ }
-        invokeSafe("probe_now");
+      // Select tab `id`: chrome-core's onSelect docked, a pop-out's own open of its one tab.
+      async function activateTab(id) {
+        // Read before any await: warden's own selects are synchronous calls into the component.
+        const user = !wardenSelecting;
+        // A popped-out tab has no local surface to activate — "select" means "raise its
+        // window". Don't change local selection (leave activeId on whatever's in this hole).
+        if (detached.has(id)) {
+          invokeSafe("raise_popped_window", { id });
+          return;
+        }
+        // Focusing a tab clears its unread badge (it's now visible).
+        clearBadge(id);
+        setActiveId(id, false); // not known live until the spawn returns; already reports
+                                 // both holes via setSplitVisible
+        // activate_tab reports whether a surface now covers the hole, PLUS this
+        // tab's own split/focused layout — the authoritative answer `setActiveId`'s third
+        // arg exists for (see its own doc comment): this is the ONE place a tab switch's
+        // preserved focus (Registry::activate's untestable branch) is ever confirmed.
+        const res = await invoke("activate_tab", { id, user }).catch((err) => {
+          console.error("warden: IPC activate_tab failed", err);
+          return { live: false, split: false, focused: 0 };
+        });
+        if (activeId === id) { // ignore a stale reply for an old click
+          focusedPaneById.set(id, res.focused);
+          setActiveId(id, res.live, res.split);
+          // Repaint the row's live/cold dot now the spawn has settled. setActiveId only
+          // tracks selection + the empty-state; without this an unloaded tab that a cold
+          // start just brought live keeps showing a hollow (cold) dot until the next full
+          // refresh (the "cold-start indicator never lights up" bug).
+          sb?.setLive(id, res.live || (res.split && !!secondarySpawnedById.get(id)));
+        }
+        // A row clicked from a filtered list: the activated terminal just took first
+        // responder, so hand it back to the search — Esc clears, typing replaces the filter.
+        if (sb && activeId === id && sb.query.trim()) {
+          await invoke("focus_sidebar").catch((err) => console.error("warden: IPC focus_sidebar failed", err));
+          sb.focusSearch();
+        }
       }
 
       // Density-aware default sidebar width, read from chrome-core's `--cc-sidebar-w` token (240
@@ -2369,8 +2455,8 @@
       // dropping it is safe (init() pulls a fresh init_dto and replays presence via probe_now).
       listen("warden:refresh", (e) => {
         const p = e.payload;
-        if (!p || !Array.isArray(p.tabs) || !sb) return;
-        if (myLabel && p.label && p.label !== myLabel) return;
+        if (!p || !Array.isArray(p.tabs) || myLabel === null) return;
+        if (p.label && p.label !== myLabel) return;
         applyDto(p);
       });
 
@@ -2380,7 +2466,7 @@
       listen("warden:tab-exited", (e) => {
         if (!forMe(e)) return;
         const p = e.payload;
-        if (!p || !p.id || !sb) return;
+        if (!p || !p.id) return;
         applyUnloaded(p.id, p.newActive || null);
       });
 
@@ -2388,14 +2474,15 @@
       // per-tab spawn error is {label,message} (own window only); a global config error is a bare
       // string shown everywhere.
       // `warden:error-clear` (a good config save) clears only a global error: a per-window one
-      // stays until dismissed or replaced.
+      // stays until dismissed or replaced. A pop-out shows its own; its global one is
+      // `shell-detach:error`'s.
       listen("warden:error", (e) => {
         const p = e.payload;
-        if (p && typeof p === "object" && p.label && myLabel && p.label !== myLabel) return;
-        if (!sb) return;
+        if (myLabel === null) return;
+        if (p && typeof p === "object" && p.label && p.label !== myLabel) return;
         if (p && typeof p === "object" && p.label) {
           setWindowError("⚠ " + p.message);
-        } else {
+        } else if (sb) {
           sb.setError("⚠ " + (p && typeof p === "object" ? p.message : p));
           globalErrorShown = true;
         }
@@ -2458,7 +2545,7 @@
       // on it — so its row drops the bell badge (selecting a popped-out row only raises that
       // window, never clears), and the agent it shows is seen.
       listen("warden:tab-seen", (e) => {
-        if (!forMe(e) || !sb) return;
+        if (!forMe(e)) return;
         const id = e.payload && e.payload.id;
         if (id) clearBadge(id);
         agentAck();
@@ -2473,10 +2560,10 @@
       // Probe results: light/clear the cyan presence dot per tab. Resolves once the backend has
       // registered this listener, so init() can await it before the first probe_now.
       const sessionListenReady = listen("warden:session-state", (e) => {
-        if (!forMe(e) || !sb) return;
+        if (!forMe(e)) return;
         for (const [id, state] of Object.entries(e.payload?.states || {})) {
           session.set(id, state);
-          sb.setPresence(id, state);
+          sb?.setPresence(id, state);
         }
         summarySync(); // the identity tile's session word
       });
@@ -2710,10 +2797,10 @@
       // Tab ▸ Suspend Session (⌘⇧S) / Terminate Session (⌘⇧K): chrome-core's requestEnd suspends at
       // once and arms the confirm row before a terminate, landing on onSuspend/onDestroy above.
       listen("warden:suspend-tab", (e) => {
-        if (forMe(e) && activeId) sb.requestEnd(activeId, "suspend");
+        if (forMe(e) && activeId) sb?.requestEnd(activeId, "suspend");
       });
       listen("warden:terminate-tab", (e) => {
-        if (forMe(e) && activeId) sb.requestEnd(activeId, "destroy");
+        if (forMe(e) && activeId) sb?.requestEnd(activeId, "destroy");
       });
 
       // The agent tab list of a tab (`warden:agents`, sent to every window — see `agentLists`).
@@ -2731,7 +2818,7 @@
       let sleepConfirm = null; // { server, tabId, names } while the confirm shows
       function placeSleepConfirm() {
         const box = document.getElementById("server-sleep");
-        const side = document.getElementById("sidebar").getBoundingClientRect();
+        const side = document.getElementById(POPOUT ? "agents" : "sidebar").getBoundingClientRect();
         box.style.left = side.left + 8 + "px";
         box.style.width = Math.max(160, side.width - 16) + "px";
       }
@@ -2800,7 +2887,7 @@
 
       window.addEventListener("resize", () => {
         const sidebar = document.getElementById("sidebar");
-        const cur = parseInt(getComputedStyle(sidebar).width, 10);
+        const cur = sidebar ? parseInt(getComputedStyle(sidebar).width, 10) : NaN;
         if (Number.isFinite(cur)) {
           const max = Math.min(400, window.innerWidth * 0.4);
           sidebar.style.width = Math.max(120, Math.min(cur, max)) + "px";
