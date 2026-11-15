@@ -128,7 +128,7 @@ hot-reload edit to it is forwarded to the pop-out (`WindowManager::apply`).
 The window serves warden's own `ui/index.html` (shell-core's `DetachSpec.page`); in `POPOUT` mode
 the page swaps the sidebar for `#popout-banner` and `#popout-error`, and the rest is the docked
 page. Menu items act in the pop-out, except Suspend / Terminate, disabled there
-(`main.rs::end_session_item`), and the sidebar commands, which `menu::route` sends to the origin.
+(`main.rs::end_session_item`), and the sidebar commands and Sleep Server, which act in the origin.
 A pop-out closes once its tab is no longer up (`manager.rs::popout_should_close`); closing it
 returns the tab: `redock` → `return_target` (the origin by label, else by title, reopened if
 closed) → `adopt_tab` → `reconcile_returned_tab`.

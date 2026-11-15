@@ -3090,8 +3090,24 @@ fn main() {
                 let m = st.lock();
                 Some(m.windows.get(l)?.origin.as_ref()?.label.clone())
             };
-            // Sleep Server ▸ <server>: the focused window confirms any loss.
+            // Sleep Server ▸ <server>: the focused window confirms any loss — a pop-out's origin,
+            // raised, since a pop-out's page anchors the confirm on an agent list it may not show.
             if let Some(server) = id.strip_prefix(MENU_SLEEP_SERVER) {
+                let label = match origin_of(&label) {
+                    Some(origin) => match app.get_webview_window(&origin) {
+                        Some(w) => {
+                            let _ = w.set_focus();
+                            origin
+                        }
+                        // The origin was closed: bring it back. Its chrome mounts fresh, with
+                        // nothing listening yet for the confirm, so the command ends there.
+                        None => {
+                            open_or_focus_window(app, &origin);
+                            return;
+                        }
+                    },
+                    None => label,
+                };
                 if let Err(message) = rex::lifecycle::sleep_server(app, &label, server, &[]) {
                     let _ = app.emit_to(
                         label.as_str(),
