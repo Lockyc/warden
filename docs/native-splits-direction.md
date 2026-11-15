@@ -121,7 +121,8 @@ defining property**: `Registry::take_tab` moves the tab's whole entry — agents
 every live surface — and `Registry::adopt_tab` reparents each surface into the new window
 (`GhosttySurface::reparent`, which never tears a surface down), so PTY, scrollback and process
 survive both trips. The origin keeps a `TabSlot::Detached` placeholder at the tab's index: the row
-reads popped out (a click calls `raise_popped_window`), `reconcile` counts the tab present, and a
+reads popped out (a click calls `raise_popped_window`) with the tab's badge and dot
+(`manager::tab_rows`), `reconcile` counts the tab present, and a
 hot-reload edit to it is forwarded to the pop-out (`WindowManager::apply`).
 
 The window serves warden's own `ui/index.html` (shell-core's `DetachSpec.page`); in `POPOUT` mode

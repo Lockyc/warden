@@ -162,7 +162,7 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         ));
     }
     let located = locate(app, event.surface_id);
-    let Some((label, tab, visible)) = located else {
+    let Some(at) = located else {
         dbglog("handle: surface not located (unloaded?) -> dropped");
         return; // surface not found (e.g. just unloaded) — drop the signal
     };
@@ -175,29 +175,33 @@ fn handle(app: &AppHandle, event: SurfaceEvent) {
         SurfaceSignal::Notification { title, body } => Some((title, body)),
         _ => None,
     };
-    raise(app, &label, &tab, visible, banner);
+    raise(app, &at, banner);
 }
 
-/// Raise a surface's attention on tab `tab` of window `label` unless it's `visible`: badge its
-/// sidebar row and, with a `banner` (title, body), post one. Main thread only. An agent tab's
-/// need badges its row from the agent list instead, and banners through [`agent_banner`].
-fn raise(app: &AppHandle, label: &str, tab: &str, visible: bool, banner: Option<(String, String)>) {
-    if visible {
+/// Raise a surface's attention on the tab `at` names unless it's visible: badge its sidebar rows
+/// ([`tab_rows`](crate::manager::tab_rows)) and, with a `banner` (title, body), post one. Main
+/// thread only. An agent tab's need badges its row from the agent list instead, and banners
+/// through [`agent_banner`].
+fn raise(app: &AppHandle, at: &Located, banner: Option<(String, String)>) {
+    let (label, tab) = (at.label.as_str(), at.tab.as_str());
+    if at.visible {
         dbglog(&format!(
             "raise: tab {label}/{tab} is visible -> no notify (correct)"
         ));
         return; // the user is already looking at this tab
     }
 
-    // Badge the tab in its window's sidebar; the chrome marks it unread until focused. emit_to
-    // leaks to sibling windows here (see CLAUDE.md), so stamp the target window label into the
-    // payload and let the chrome drop events meant for a sibling — same guard as every other
-    // per-window event. Without it, a hidden tab's bell badges a same-titled tab in another window.
-    let _ = app.emit_to(
-        label,
-        "warden:notify",
-        serde_json::json!({ "label": label, "id": tab }),
-    );
+    // Badge the tab's rows; the chrome marks each unread until seen. emit_to leaks to sibling
+    // windows here (see CLAUDE.md), so stamp the target window label into the payload and let the
+    // chrome drop events meant for a sibling — same guard as every other per-window event.
+    // Without it, a hidden tab's bell badges a same-titled tab in another window.
+    for (row_label, row_tab) in crate::manager::tab_rows(label, tab, at.origin.as_ref()) {
+        let _ = app.emit_to(
+            row_label,
+            "warden:notify",
+            serde_json::json!({ "label": row_label, "id": row_tab }),
+        );
+    }
 
     if let Some((title, body)) = banner {
         banner::fire(&Banner {
@@ -221,19 +225,35 @@ pub fn agent_banner(label: &str, tab: &str, title: &str, body: &str, agent: &str
     });
 }
 
-/// The `(window label, tab id, visible)` a signal from `surface_id` belongs to: the window whose
-/// registry holds the surface — a pop-out's for a popped-out tab, the row its page shows — and
-/// whether that window is focused with the surface on screen.
-fn locate(app: &AppHandle, surface_id: usize) -> Option<(String, String, bool)> {
-    let (label, tab, shown) = app
-        .state::<ManagerState>()
-        .lock()
-        .locate_surface(surface_id)?;
+/// Where a signal from a surface lands ([`locate`]).
+struct Located {
+    /// The window whose registry holds the surface — a pop-out's for a popped-out tab.
+    label: String,
+    tab: String,
+    /// Whether that window is focused with the surface on screen.
+    visible: bool,
+    /// The pop-out's origin, whose placeholder row badges too.
+    origin: Option<crate::manager::PopOrigin>,
+}
+
+fn locate(app: &AppHandle, surface_id: usize) -> Option<Located> {
+    let (label, tab, shown, origin) = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        let (label, tab, shown) = m.locate_surface(surface_id)?;
+        let origin = m.windows.get(&label).and_then(|ws| ws.origin.clone());
+        (label, tab, shown, origin)
+    };
     let focused = app
         .get_window(&label)
         .and_then(|w| w.is_focused().ok())
         .unwrap_or(false);
-    Some((label, tab, shown && focused))
+    Some(Located {
+        label,
+        tab,
+        visible: shown && focused,
+        origin,
+    })
 }
 
 /// The window a banner for tab `tab` of window `label` raises — wherever the tab is when it is

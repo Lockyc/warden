@@ -3,6 +3,7 @@
 //! to the chrome. Generic by design — warden knows nothing about tmux/amux;
 //! the command lives in config.
 
+use crate::manager::{tab_rows, PopOrigin};
 use crate::ManagerState;
 use std::collections::{BTreeMap, HashMap};
 use std::os::unix::process::CommandExt;
@@ -576,11 +577,34 @@ fn emit_states(app: &AppHandle, label: &str, states: serde_json::Map<String, ser
     );
 }
 
-/// Emit one tab's presence as a single-entry `warden:session-state` (see `emit_states`).
-fn emit_one(app: &AppHandle, label: &str, id: &str, on: Presence) {
-    let mut states = serde_json::Map::new();
-    states.insert(id.to_string(), serde_json::json!(on));
-    emit_states(app, label, states);
+/// Emit tab `id` of window `label`'s presence as a single-entry `warden:session-state` (see
+/// `emit_states`) to each of its rows ([`tab_rows`]): a pop-out's (`origin`) tab dots its
+/// origin's placeholder row too, which no probe of the origin's own covers.
+fn emit_one(app: &AppHandle, label: &str, id: &str, origin: Option<&PopOrigin>, on: Presence) {
+    for (label, id) in tab_rows(label, id, origin) {
+        let mut states = serde_json::Map::new();
+        states.insert(id.to_string(), serde_json::json!(on));
+        emit_states(app, label, states);
+    }
+}
+
+/// Record tab `id` of window `label`'s presence under each of its rows (see [`emit_one`]).
+fn record_one(
+    state: &ManagerState,
+    label: &str,
+    id: &str,
+    origin: Option<&PopOrigin>,
+    on: Presence,
+) {
+    let mut m = state.lock();
+    for (label, id) in tab_rows(label, id, origin) {
+        m.presence_cache.record_one(label, id, on);
+    }
+}
+
+/// Window `label`'s pop-out origin, if it is a pop-out.
+fn origin_of(state: &ManagerState, label: &str) -> Option<PopOrigin> {
+    state.lock().windows.get(label)?.origin.clone()
 }
 
 /// Set one tab's presence from a source other than its probe (a Rex tab's sessions): recorded in
@@ -591,12 +615,14 @@ pub fn set_presence(app: &AppHandle, label: &str, tab_id: &str, p: Presence) {
         return;
     };
     let prev = state.lock().presence_cache.snapshot(label);
+    let origin = origin_of(&state, label);
+    let origin = origin.as_ref();
     observe(
         &prev,
         tab_id,
         p,
-        |id, on| state.lock().presence_cache.record_one(label, id, on),
-        |id, on| emit_one(app, label, id, on),
+        |id, on| record_one(&state, label, id, origin, on),
+        |id, on| emit_one(app, label, id, origin, on),
     );
 }
 
@@ -706,6 +732,8 @@ pub(crate) fn probe_window(
             .flat_map(|(_lbl, tabs)| tabs)
             .collect()
     };
+    let origin = origin_of(&state, label);
+    let origin = origin.as_ref();
     sweep(
         work,
         priority,
@@ -716,8 +744,8 @@ pub(crate) fn probe_window(
                 prev,
                 id,
                 on,
-                |id, on: Presence| state.lock().presence_cache.record_one(label, id, on),
-                |id, on| emit_one(app, label, id, on),
+                |id, on: Presence| record_one(&state, label, id, origin, on),
+                |id, on| emit_one(app, label, id, origin, on),
             )
         },
     )

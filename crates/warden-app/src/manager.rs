@@ -202,6 +202,19 @@ pub struct PopOrigin {
     pub tab_id: String,
 }
 
+/// The sidebar rows `(window label, tab id)` showing tab `tab` of window `label`: that row, and
+/// for a pop-out (its `origin`) the origin's placeholder row, which stands for the tab while it is
+/// out. A badge, a seen and a presence dot for the tab go to each.
+pub fn tab_rows<'a>(
+    label: &'a str,
+    tab: &'a str,
+    origin: Option<&'a PopOrigin>,
+) -> Vec<(&'a str, &'a str)> {
+    let mut rows = vec![(label, tab)];
+    rows.extend(origin.map(|o| (o.label.as_str(), o.tab_id.as_str())));
+    rows
+}
+
 /// Where a pop-out's tab goes home to ([`return_target`]).
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReturnTarget {
@@ -579,8 +592,8 @@ impl WindowManager {
 
     /// Register pop-out `label`: a one-tab window whose `registry` already holds the tab moved
     /// out of `origin`, shown under the tab's `title` in the origin's `colour`. It remembers no
-    /// tabs and carries no sections; its focus clears the badge its tab took while unfocused and
-    /// refreshes the menu, as a configured window's does.
+    /// tabs and carries no sections; its focus clears the badge its tab took while unfocused, on
+    /// its own row and the origin's placeholder ([`tab_rows`]), and refreshes the menu.
     pub fn add_popout(
         &mut self,
         app: &AppHandle,
@@ -597,17 +610,20 @@ impl WindowManager {
                     crate::probe::bump(&label);
                     let seen = app.try_state::<crate::ManagerState>().and_then(|st| {
                         let m = st.lock();
-                        m.windows
-                            .get(&label)?
-                            .registry
-                            .active_tab()
-                            .map(str::to_owned)
+                        let ws = m.windows.get(&label)?;
+                        let tab = ws.registry.active_tab()?;
+                        Some(
+                            tab_rows(&label, tab, ws.origin.as_ref())
+                                .into_iter()
+                                .map(|(l, t)| (l.to_owned(), t.to_owned()))
+                                .collect::<Vec<_>>(),
+                        )
                     });
-                    if let Some(tab) = seen {
+                    for (row_label, row_tab) in seen.unwrap_or_default() {
                         let _ = app.emit_to(
-                            label.as_str(),
+                            row_label.as_str(),
                             "warden:tab-seen",
-                            serde_json::json!({ "label": label, "id": tab }),
+                            serde_json::json!({ "label": row_label, "id": row_tab }),
                         );
                     }
                     crate::sync_agent_menu(&app);
@@ -1868,6 +1884,18 @@ mod tests {
             title: title.into(),
             tab_id: "/tmp/a".into(),
         }
+    }
+
+    /// A configured window's row is the only one; a pop-out's tab is also the origin's
+    /// placeholder row, so a badge, a seen or a presence dot reaches both.
+    #[test]
+    fn rows_for_a_popped_out_tab_include_the_origin_placeholder() {
+        assert_eq!(tab_rows("work", "/tmp/a", None), [("work", "/tmp/a")]);
+        let from = origin("work", "work");
+        assert_eq!(
+            tab_rows("shell-detach:k", "/tmp/a", Some(&from)),
+            [("shell-detach:k", "/tmp/a"), ("work", "/tmp/a")]
+        );
     }
 
     /// The origin's own label wins over a title lookup, which would take the first window carrying
