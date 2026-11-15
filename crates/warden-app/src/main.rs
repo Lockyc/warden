@@ -332,9 +332,9 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
 /// Tab while it has a Rex scratch column, Suspend / Terminate Session outside a pop-out; ⌘W is
-/// titled for what it closes. A pop-out's one tab answers like any active tab. Runs on every menu build, window focus, pane focus, tab
-/// activation, agent list change and scratch column change (a Rex view landing); locks
-/// `ManagerState`, so callers must not hold it.
+/// titled for what it closes. A pop-out's one tab answers like any active tab. Runs on every menu
+/// build, window focus, pane focus, tab activation, agent list change and scratch column change
+/// (a Rex view landing); locks `ManagerState`, so callers must not hold it.
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     use rex::lifecycle::{agent_move, agent_step, Step};
