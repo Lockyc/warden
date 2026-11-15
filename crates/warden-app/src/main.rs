@@ -1714,25 +1714,11 @@ fn redock(app: &tauri::AppHandle, label: &str) {
     // (`load_on_open`, remembered, or the first shown) would otherwise spawn a second live
     // terminal, and the return would find no slot. The lock is released: the `WindowSet` builds
     // through `WardenHost`, which takes it.
-    let target = {
-        let m = st.lock();
-        let Some(origin) = m.windows.get(label).and_then(|ws| ws.origin.as_ref()) else {
-            return; // already returned (double close) — nothing to do
-        };
-        let open: Vec<(&str, &str)> = m
-            .windows
-            .iter()
-            .filter(|(_, ws)| ws.origin.is_none())
-            .map(|(l, ws)| (l.as_str(), ws.title.as_str()))
-            .collect();
-        manager::return_target(origin, &open)
+    let Some(target) = st.lock().origin_home(label) else {
+        return; // already returned (double close) — nothing to do
     };
     if let manager::ReturnTarget::Reopen(title) = target {
-        let set = app.state::<WindowSet>();
-        let entries = set.entries();
-        if let Some(home) = shell_core::windows::plan::entry_for_title(&entries, &title) {
-            set.open_or_focus(app, &home.id);
-        }
+        reopen_by_title(app, &title);
     }
     let redocked = st.lock().redock(app, label);
     let Some(manager::Redocked {
@@ -2701,6 +2687,19 @@ fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
     let _ = rebuild_menu(app);
 }
 
+/// Open (or focus) the configured window titled `title` — a pop-out's closed origin
+/// (`manager::ReturnTarget::Reopen`). No-op when no window carries the title. Takes
+/// `ManagerState` through `WardenHost`, so callers must hold none.
+#[cfg(target_os = "macos")]
+fn reopen_by_title(app: &tauri::AppHandle, title: &str) {
+    use tauri::Manager;
+    let set = app.state::<WindowSet>();
+    let entries = set.entries();
+    if let Some(home) = shell_core::windows::plan::entry_for_title(&entries, title) {
+        set.open_or_focus(app, &home.id);
+    }
+}
+
 /// The banner's context menu (chrome-core's `onBannerMenu`) at the chrome's `(x, y)`: Edit
 /// Window… and Delete Window… for the calling window. Its items arrive as menu events.
 #[cfg(target_os = "macos")]
@@ -3093,19 +3092,21 @@ fn main() {
             // Sleep Server ▸ <server>: the focused window confirms any loss — a pop-out's origin,
             // raised, since a pop-out's page anchors the confirm on an agent list it may not show.
             if let Some(server) = id.strip_prefix(MENU_SLEEP_SERVER) {
-                let label = match origin_of(&label) {
-                    Some(origin) => match app.get_webview_window(&origin) {
-                        Some(w) => {
+                let home = app.state::<ManagerState>().lock().origin_home(&label);
+                let label = match home {
+                    Some(manager::ReturnTarget::Open(origin)) => {
+                        if let Some(w) = app.get_webview_window(&origin) {
                             let _ = w.set_focus();
-                            origin
                         }
-                        // The origin was closed: bring it back. Its chrome mounts fresh, with
-                        // nothing listening yet for the confirm, so the command ends there.
-                        None => {
-                            open_or_focus_window(app, &origin);
-                            return;
-                        }
-                    },
+                        origin
+                    }
+                    // The origin was closed: bring it back. Its chrome mounts fresh, with nothing
+                    // listening yet for the confirm, so the command ends there.
+                    Some(manager::ReturnTarget::Reopen(title)) => {
+                        reopen_by_title(app, &title);
+                        let _ = rebuild_menu(app);
+                        return;
+                    }
                     None => label,
                 };
                 if let Err(message) = rex::lifecycle::sleep_server(app, &label, server, &[]) {

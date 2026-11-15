@@ -416,6 +416,19 @@ impl WindowManager {
         Some(ws.origin.as_ref().map_or(&ws.title, |o| &o.title))
     }
 
+    /// Pop-out `label`'s origin among the open configured windows ([`return_target`]); `None`
+    /// when `label` is no pop-out.
+    pub fn origin_home(&self, label: &str) -> Option<ReturnTarget> {
+        let origin = self.windows.get(label)?.origin.as_ref()?;
+        let open: Vec<(&str, &str)> = self
+            .windows
+            .iter()
+            .filter(|(_, ws)| ws.origin.is_none())
+            .map(|(l, ws)| (l.as_str(), ws.title.as_str()))
+            .collect();
+        Some(return_target(origin, &open))
+    }
+
     /// Update the shared probe-pass cadence (the scheduler reads it each tick).
     pub fn set_probe_interval(&self, secs: u64) {
         self.probe_interval.store(secs, Ordering::Relaxed);
@@ -1018,22 +1031,14 @@ impl WindowManager {
     /// out reached only its placeholder, which `adopt_tab` overwrites, so this is where a deleted
     /// tab goes, a changed `dir`/`cmd` respawns, and a relabel lands.
     pub fn redock(&mut self, app: &AppHandle, label: &str) -> Option<Redocked> {
-        self.windows.get(label)?.origin.as_ref()?;
+        let home = match self.origin_home(label)? {
+            ReturnTarget::Open(l) => l,
+            ReturnTarget::Reopen(_) => self.windows.get(label)?.origin.as_ref()?.label.clone(),
+        };
         let ws = self.windows.remove(label)?;
         self.sync_popouts(app);
         let origin = ws.origin?;
         let mut popped = ws.registry;
-        let open: Vec<(String, String)> = self
-            .windows
-            .iter()
-            .filter(|(_, w)| w.origin.is_none())
-            .map(|(l, w)| (l.clone(), w.title.clone()))
-            .collect();
-        let pairs: Vec<(&str, &str)> = open.iter().map(|(l, t)| (l.as_str(), t.as_str())).collect();
-        let home = match return_target(&origin, &pairs) {
-            ReturnTarget::Open(l) => l,
-            ReturnTarget::Reopen(_) => origin.label.clone(),
-        };
         let tab_id = origin.tab_id;
         let Some(mut moved) = popped.take_tab(&tab_id) else {
             // Nothing came back to fill the placeholder: its row goes cold rather than reading
@@ -1953,6 +1958,30 @@ mod tests {
             pending_focus: None,
             origin,
         }
+    }
+
+    /// A pop-out's home among the open windows: a configured window under the origin's title
+    /// wins over the origin's dead label, and no window under it reopens it by title. Never the
+    /// pop-out itself, nor a window that isn't a pop-out.
+    #[test]
+    fn origin_home_follows_an_origin_rebuilt_under_a_new_label() {
+        let mut m = WindowManager::new();
+        let empty = || Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let label = shell_core::detach::detached_label("k");
+        m.windows.insert(
+            label.clone(),
+            window_state(empty(), Some(origin("old", "w"))),
+        );
+        assert_eq!(
+            m.origin_home(&label),
+            Some(ReturnTarget::Reopen("w".into()))
+        );
+        m.windows.insert("new".into(), window_state(empty(), None));
+        assert_eq!(
+            m.origin_home(&label),
+            Some(ReturnTarget::Open("new".into()))
+        );
+        assert_eq!(m.origin_home("new"), None);
     }
 
     /// A pop-out's tab is remembered by its origin; the pop-out itself records nothing, even when a
