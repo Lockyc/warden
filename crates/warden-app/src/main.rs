@@ -1452,8 +1452,8 @@ const POPOUT_DEFAULT_HEIGHT: f64 = 640.0;
 /// via `shell_core::detach::wire_return`) takes the tab home.
 ///
 /// A cold tab is brought live first, so the ⤢ on any row works; one with nothing to run once up
-/// (an agent pane whose agents all sleep) stays put. A Rex tab still opening can't move: its open
-/// lands in the window that asked.
+/// (an agent pane whose agents all sleep) stays put. A Rex tab whose main pane or scratch column
+/// is still waiting on Rex can't move: the answer lands in the window that asked.
 ///
 /// **Lock discipline (load-bearing):** `ManagerState` is held only to take the tab out (phase 1)
 /// and to register the pop-out (phase 3). `open_detached` builds a window and re-enters AppKit, so
@@ -1487,6 +1487,12 @@ fn pop_out_tab(
                 "the tab is still connecting to its Rex server — pop it out once it opens"
                     .to_string(),
             );
+        }
+        // Likewise its Rex column: an open or change in flight answers the window that asked.
+        if let Some(why) = ws.registry.column_change_blocked(&id) {
+            return Err(format!(
+                "{why} — pop the tab out once its scratch column settles"
+            ));
         }
         let moved = ws
             .registry
