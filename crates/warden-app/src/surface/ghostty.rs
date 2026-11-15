@@ -81,9 +81,9 @@ const NS_FLAG_COMMAND: usize = 1 << 20;
 const NS_KEYCODE_GRAVE: u16 = 0x32;
 
 /// Corner radius (AppKit points) of a surface's render layer. The chrome's pane ring
-/// (`--pane-radius` in ui/index.html, mirrored by `--hole-radius` in shell-core's detach.html)
-/// is the WINDOW's own corner — Apple's CONTINUOUS curve at 16pt, measured on macOS 26 off the
-/// window's alpha mask, not a circle — so a pane corner that IS a window corner curves with it;
+/// (`--pane-radius` in ui/index.html) is the WINDOW's own corner — Apple's CONTINUOUS curve at
+/// 16pt, measured on macOS 26 off the window's alpha mask, not a circle — so a pane corner that IS
+/// a window corner curves with it;
 /// this is that radius less the ring's width (`--ring-w`, 1px — the border the surface sits
 /// inside), so the surface's curve sits concentrically inside the ring's; the inset squircle at
 /// r − w is a true 1:1 offset of the outer to within 1.5%, measured. The layer's corner CURVE is
@@ -1939,9 +1939,9 @@ impl GhosttySurface {
                 let cg: *mut CGColor = msg_send![color, CGColor];
                 let _: () = msg_send![layer, setBackgroundColor: cg];
                 // Round the surface's window corners to sit concentrically inside the chrome's
-                // rounded pane ring (`.pane`'s per-corner radii in ui/index.html, `.hole`'s in
-                // shell-core's detach.html): the surface composites ABOVE the webview, so without
-                // this its square corners paint straight over the ring's curve. `masksToBounds` is
+                // rounded pane ring (`.pane`'s per-corner radii in ui/index.html): the surface
+                // composites ABOVE the webview, so without this its square corners paint straight
+                // over the ring's curve. `masksToBounds` is
                 // what actually clips the Metal contents — `cornerRadius` alone rounds only the
                 // layer's own background. WHICH corners: `apply_corner_mask`, from geometry. The
                 // corner cost is a sliver of the outermost cells' corners, inside libghostty's

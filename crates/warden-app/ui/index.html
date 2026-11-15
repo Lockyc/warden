@@ -31,7 +31,7 @@
          surface's render layer carries the concentric inner curve (`SURFACE_CORNER_RADIUS` in
          surface/ghostty.rs — this less `--ring-w`, with the same continuous corner curve) and
          decides the same corners from its own frame vs the window (`apply_corner_mask`); a test
-         there fails if the two part. shell-core's detach.html mirrors it as `--hole-radius`. */
+         there fails if the two part. */
       :root { --pane-radius: 16px; }
       /* The focus ring's width — and the pane border that is the ring's layout inset, and the
          inset the native surface sits at. 1px, a hairline, by choice: geometrically it is 1px
@@ -57,8 +57,7 @@
          radii and be invalid everywhere. The ring (`.pane::before`, the OUTER outline at the
          pane's radii) and the ground cover (`#empty-state`, the INNER outline at the radii less
          `--ring-w`, on the padding box) are this one path at two sizes; the ring is whatever
-         shows between them. Same block, same reasoning, as shell-core's `detach.html` — the two
-         must stay identical. */
+         shows between them. */
       .pane, .pane::before, #empty-state, .scratch-empty { --sq:
         from 0 calc(1.528665 * var(--sq-tl)),
         curve to calc(0.074911 * var(--sq-tl)) calc(0.631494 * var(--sq-tl)) with 0 calc(1.088490 * var(--sq-tl)) / 0 calc(0.868407 * var(--sq-tl)),

@@ -157,7 +157,7 @@ via `dispatch_async_f`; any future surface-destroying or lock-taking action take
   which can only curve as a circle and lifts off the window edge. `--ring-w` is 1px by choice; its
   softness round the curve on a 1x display is the accepted trade — don't thicken anything else to
   fix it. The radius lives on both sides of the seam (`--pane-radius` in `ui/index.html`,
-  `--hole-radius` in shell-core's `detach.html`, `SURFACE_CORNER_RADIUS` = radius − ring) and
+  `SURFACE_CORNER_RADIUS` = radius − ring) and
   changes together.
 - **The surface frame is snapped inward to the device-pixel grid** (`geometry::snap_inward`, in
   `set_hole_rect`): ceil the origin, floor the far edge. Rounding to nearest or leaving it
