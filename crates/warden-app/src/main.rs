@@ -119,6 +119,21 @@ const MENU_SCRATCH_NEW: &str = "warden:scratch-new";
 const SPLIT_TITLE: &str = "Split";
 const AGENT_NEW_TITLE: &str = "New Agent Tab";
 const SCRATCH_NEW_TITLE: &str = "New Scratch Tab";
+const SUSPEND_TITLE: &str = "Suspend Session";
+const TERMINATE_TITLE: &str = "Terminate Session…";
+
+/// Why Suspend / Terminate Session can't act in the focused window, if they can't: both run
+/// through the sidebar row's confirm, which a pop-out has none of.
+const END_SESSION_POPOUT: &str = "dock the tab to end its session";
+
+/// Suspend or Terminate Session's enabled state and title: `title` as is, or disabled with
+/// `why` beside it.
+fn end_session_item(title: &str, why: Option<&str>) -> (bool, String) {
+    match why {
+        Some(why) => (false, format!("{title} ({why})")),
+        None => (true, title.to_owned()),
+    }
+}
 
 /// The items whose enabled state follows the focused window's active tab, kept from the last menu
 /// build so [`sync_agent_menu`] can set it without a rebuild.
@@ -142,6 +157,10 @@ struct AgentItems {
     pane_left: tauri::menu::MenuItem<tauri::Wry>,
     pane_right: tauri::menu::MenuItem<tauri::Wry>,
     scratch_new: tauri::menu::MenuItem<tauri::Wry>,
+    /// Suspend / Terminate Session (⌘⇧S / ⌘⇧K), disabled with the reason in a pop-out
+    /// ([`END_SESSION_POPOUT`]).
+    suspend: tauri::menu::MenuItem<tauri::Wry>,
+    terminate: tauri::menu::MenuItem<tauri::Wry>,
 }
 
 #[cfg(target_os = "macos")]
@@ -312,8 +331,8 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// holds agent tabs, Sleep Agent Tab while its selected one can sleep, Reopen Last Closed while
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
-/// Tab while it has a Rex scratch column; ⌘W is titled for what it closes. A pop-out's one tab
-/// answers like any active tab. Runs on every menu build, window focus, pane focus, tab
+/// Tab while it has a Rex scratch column, Suspend / Terminate Session outside a pop-out; ⌘W is
+/// titled for what it closes. A pop-out's one tab answers like any active tab. Runs on every menu build, window focus, pane focus, tab
 /// activation, agent list change and scratch column change (a Rex view landing); locks
 /// `ManagerState`, so callers must not hold it.
 #[cfg(target_os = "macos")]
@@ -337,6 +356,12 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let reg = &m.windows.get(&label)?.registry;
         reg.column_change_blocked(reg.active_tab()?)
     });
+    let popped = focused_label(app).is_some_and(|label| {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.windows.get(&label).is_some_and(|ws| ws.origin.is_some())
+    });
+    let end_why = popped.then_some(END_SESSION_POPOUT);
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -383,6 +408,11 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             Some(why) => format!("{SCRATCH_NEW_TITLE} ({why})"),
             None => SCRATCH_NEW_TITLE.to_owned(),
         });
+        for (item, title) in [(&i.suspend, SUSPEND_TITLE), (&i.terminate, TERMINATE_TITLE)] {
+            let (enabled, text) = end_session_item(title, end_why);
+            let _ = item.set_enabled(enabled);
+            let _ = item.set_text(text);
+        }
     }
 }
 
@@ -562,10 +592,10 @@ fn build_app_menu(
     let split_pane_item = MenuItemBuilder::with_id(MENU_TAB_SPLIT, SPLIT_TITLE)
         .accelerator("CmdOrCtrl+D")
         .build(app)?;
-    let suspend_item = MenuItemBuilder::with_id(MENU_TAB_SUSPEND, "Suspend Session")
+    let suspend_item = MenuItemBuilder::with_id(MENU_TAB_SUSPEND, SUSPEND_TITLE)
         .accelerator("Shift+Cmd+KeyS")
         .build(app)?;
-    let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, "Terminate Session…")
+    let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, TERMINATE_TITLE)
         .accelerator("Shift+Cmd+KeyK")
         .build(app)?;
     // Enabled by `sync_agent_menu`, which `rebuild_menu` runs right after this build.
@@ -694,6 +724,8 @@ fn build_app_menu(
             pane_left: pane_left_item,
             pane_right: pane_right_item,
             scratch_new: scratch_new_item,
+            suspend: suspend_item,
+            terminate: terminate_item,
         });
     }
     if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
@@ -3441,6 +3473,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn end_session_items_disable_with_their_reason_in_a_popout() {
+        assert_eq!(
+            end_session_item(SUSPEND_TITLE, None),
+            (true, "Suspend Session".to_owned())
+        );
+        assert_eq!(
+            end_session_item(TERMINATE_TITLE, Some(END_SESSION_POPOUT)),
+            (
+                false,
+                "Terminate Session… (dock the tab to end its session)".to_owned()
+            )
+        );
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
