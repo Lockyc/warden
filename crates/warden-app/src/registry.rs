@@ -99,15 +99,6 @@ pub enum AgentClosed {
     PaneCold(Option<String>),
 }
 
-/// What became of a tab whose popped-out surfaces ended ([`Registry::clear_detached`]).
-#[derive(Debug, PartialEq, Eq)]
-pub enum DetachedEnded {
-    /// The tab went cold; the sidebar leans to this tab (as `unload`).
-    Cold(Option<String>),
-    /// Its main pane still holds a running agent, now selected: the tab stays.
-    SiblingShown,
-}
-
 /// Where a Rex pane stands on its way to a session. Lives beside the slot, which stays `Cold`
 /// until a surface exists.
 #[derive(Debug, Clone, PartialEq)]
@@ -195,9 +186,8 @@ pub struct TabDto {
     pub tree: bool,    // row belongs to a project-tree (root) section
     #[serde(rename = "treePath")]
     pub tree_path: Vec<String>, // folder segments between root and project
-    /// The tab's live surface has been moved to a popped-out window's registry
-    /// (`Registry::detach`) — it is present here as a placeholder only, has no
-    /// local surface, and `spawned` is always false alongside this.
+    /// The tab has moved to a pop-out's registry ([`Registry::take_tab`]) — it is present here as
+    /// a placeholder only, has no local surface, and `spawned` is always false alongside this.
     pub detached: bool,
     /// Whether any block of this tab's scratch column is live — `false` both when the tab is
     /// unsplit (no column exists) and when every block is cold. `spawned` above is primary-only
@@ -218,8 +208,6 @@ pub struct TabDto {
     pub split_layout: Option<SplitLayoutDto>,
     /// The scratch column's tabs and blocks; `None` for an unsplit tab.
     pub column: Option<ColumnDto>,
-    /// Why the tab can't be popped out (`Registry::pop_out_blocked`), or `None`.
-    pub pop_out_blocked: Option<String>,
     /// The main pane holds agent tabs, so the chrome shows the agent tab list beside it.
     pub agents: bool,
     /// The project's colours for the agent pane's summary block and identity tile
@@ -241,7 +229,7 @@ pub struct TabDto {
     pub presence: Option<crate::probe::Presence>,
 }
 
-/// A tab's surface is live, cold, or detached. Cold = not yet spawned, or
+/// A tab's surface is live, cold, or out in a pop-out. Cold = not yet spawned, or
 /// unloaded — retains its `TabSpec` on `TabEntry` so it can (re)spawn locally.
 /// The `TabSpec` lives on `TabEntry`, not in the slot, so a cold tab always retains
 /// what it needs to (re)spawn — `unload` returns a live tab to `Cold` without
@@ -249,15 +237,12 @@ pub struct TabDto {
 enum TabSlot {
     Spawned(GhosttySurface),
     Cold,
-    /// The tab's live surface has been moved OUT to a popped-out window's own
-    /// `Registry` (via `detach`), without freeing the PTY. This slot holds no
-    /// surface — it's a placeholder that keeps the tab's identity present so
-    /// hot-reload `reconcile` counts it as still here (not missing → no
-    /// respawn; not stale → no duplicate add). `attach` is the return path,
-    /// putting a surface back as `Spawned` when the tab moves home. Every
-    /// local (this-registry) operation on a `Detached` tab is a no-op: there
-    /// is nothing here to spawn, show, kill, or free — the surface and its
-    /// lifecycle belong to whichever registry currently holds it `Spawned`.
+    /// The main pane of a placeholder ([`TabEntry::placeholder`]): the tab has moved whole to a
+    /// pop-out's own `Registry`, PTYs intact. It keeps the tab's identity present so hot-reload
+    /// `reconcile` counts it as still here (not missing → no respawn; not stale → no duplicate
+    /// add), and [`Registry::adopt_tab`] replaces the whole entry when the tab comes home. Every
+    /// local operation on it is a no-op: there is nothing here to spawn, show, kill, or free.
+    /// Only a main pane is ever `Detached` — a placeholder carries no agents and no column.
     Detached,
 }
 
@@ -287,34 +272,6 @@ impl PaneIdx {
             i => PaneIdx::Block(i - 1),
         }
     }
-
-    /// The **hole** (left-to-right slice of a detached window's content) this pane occupies —
-    /// the one home for the hole↔pane mapping, the detached counterpart of
-    /// [`index`](Self::index). shell-core's detach page knows holes only by position
-    /// (`DetachSpec.panes` order = report/focus index), and it must not learn what a "split"
-    /// is; so a `side = "left"` split — which the docked chrome draws with the secondary
-    /// FIRST (`.secondary-left`, a flex `order` over an untouched pane→index contract) — is
-    /// mirrored here, on warden's side of the seam: `mirrored` → the secondary is hole 0
-    /// and the primary hole 1. Unmirrored (secondary on the right, or a single hole) the
-    /// hole is the pane's ordinary `index`. Without this the popped-out tab lays out
-    /// primary-left whatever side the config declared.
-    pub fn hole(self, mirrored: bool) -> usize {
-        match (self, mirrored) {
-            (PaneIdx::Primary, true) => 1,
-            (PaneIdx::Block(_), true) => 0,
-            (which, false) => which.index(),
-        }
-    }
-    /// Inverse of [`hole`](Self::hole): which pane a detached window's hole `i` reports for. A
-    /// pop-out carries at most one block, so anything past the second hole is the primary, never
-    /// an error — a stale rect for a hole that has since collapsed can't leave a surface
-    /// unpositioned.
-    pub fn from_hole(i: usize, mirrored: bool) -> Self {
-        match (i, mirrored) {
-            (0, true) | (1, false) => PaneIdx::Block(0),
-            _ => PaneIdx::Primary,
-        }
-    }
 }
 
 /// One agent tab of a Rex tab's main pane: its record, its own surface (a relay on the agent's
@@ -326,14 +283,12 @@ struct AgentSlot {
     rex: RexState,
 }
 
-/// One terminal within a tab: its spawn recipe plus its live/cold/detached slot, and — for a pane
+/// One terminal within a tab: its spawn recipe plus its slot, and — for a pane
 /// whose spec names a `server` — how far its Rex session has got.
 ///
 /// A Rex tab's main pane ([`hosts_agents`]) shows its session's windows as agent tabs: `rex` is
 /// the open of the whole pane, `agents` holds one slot per live agent the open found, and only
-/// the `selected` one is ever on screen. Its own `slot` stays `Cold` — `Detached` while popped
-/// out, and `Spawned` only for a surface that returned from a pop-out after the pane stopped
-/// hosting agents (`attach` with no agent to land in).
+/// the `selected` one is ever on screen. Its own `slot` stays `Cold` (`Detached` in a placeholder).
 struct Pane {
     spec: TabSpec,
     slot: TabSlot,
@@ -401,8 +356,8 @@ impl Pane {
 
     /// Whether this main pane is up in this registry, so its tab's column may spawn beside it: a
     /// surface is live, or it is an agent pane whose agents are all asleep — open and blank,
-    /// waiting on a row's click. Never while popped out: the column's surfaces would be born in
-    /// a window the tab isn't showing in.
+    /// waiting on a row's click. Never in a placeholder: the column's surfaces would be born in a
+    /// window the tab isn't showing in.
     fn holds_column(&self) -> bool {
         !matches!(self.slot, TabSlot::Detached) && (self.live() || self.rex == RexState::Asleep)
     }
@@ -433,7 +388,7 @@ pub enum BlockClose {
     Plain,
 }
 
-/// One terminal of a scratch tab: its spawn recipe, live/cold/detached slot and hole.
+/// One terminal of a scratch tab: its spawn recipe, slot and hole.
 struct BlockSlot {
     /// The Rex block it attaches; `None` for a plain tab's one block.
     block_id: Option<String>,
@@ -637,20 +592,6 @@ impl Column {
         self.surfaces().next().is_some()
     }
 
-    /// How many panes a pop-out would have to carry: the blocks across every scratch tab. A
-    /// scratch tab is never empty (Rex closes a window with its last block), so more than one
-    /// block covers more than one tab too.
-    fn pop_out_load(&self) -> usize {
-        self.slots().count()
-    }
-
-    /// Whether a pop-out can carry this column: the detached window lays out one block beside
-    /// the primary, so at most one scratch tab holding at most one block — and a Rex column must
-    /// have landed, or its blocks would come up in the origin beside a primary no longer there.
-    fn fits_pop_out(&self) -> bool {
-        !self.opening() && self.pop_out_load() <= 1
-    }
-
     /// Close every live block, leaving its slot `Cold`. Returns whether one was closed.
     fn close_live(&mut self) -> bool {
         let mut closed = false;
@@ -723,48 +664,6 @@ impl Column {
         };
     }
 
-    /// The slot a popped-out block returns to or stands in for: Rex block `block`'s wherever it
-    /// is, else the selected tab's first block. A Rex block the column no longer lists gets a tab
-    /// of its own, selected, until the session's next view says where it is; a column with no
-    /// block at all gets one running its spec.
-    fn slot_for(&mut self, block: Option<&str>) -> &mut BlockSlot {
-        let at = self.tabs.iter().enumerate().find_map(|(t, tab)| {
-            let b = tab
-                .blocks
-                .iter()
-                .position(|s| block.is_some() && s.block_id.as_deref() == block)?;
-            Some((t, b))
-        });
-        let (t, b) = match (at, block) {
-            (Some(at), _) => at,
-            (None, Some(id)) if self.is_rex() => {
-                let slot = self.rex_block(id, TabSlot::Cold);
-                self.tabs.push(ScratchTab {
-                    window_id: None,
-                    label: String::new(),
-                    layout: Layout::single(id),
-                    blocks: vec![slot],
-                });
-                self.selected = self.tabs.len() - 1;
-                (self.selected, 0)
-            }
-            (None, _) => {
-                if self.block(0).is_none() {
-                    let slot = BlockSlot::new(None, self.spec.clone(), TabSlot::Cold);
-                    self.tabs.push(ScratchTab {
-                        window_id: None,
-                        label: String::new(),
-                        layout: Layout::single(""),
-                        blocks: vec![slot],
-                    });
-                    self.selected = self.tabs.len() - 1;
-                }
-                (self.selected, 0)
-            }
-        };
-        &mut self.tabs[t].blocks[b]
-    }
-
     /// The Rex block that takes focus when shown block `i` leaves: the one before it in its
     /// scratch tab, else the one after, else the first of the tab the selection leans to when
     /// this one closes ([`sync`](Self::sync)) — the next, else the previous. `None` when the
@@ -784,33 +683,6 @@ impl Column {
             .or_else(|| lean()?.blocks.first())?
             .block_id
             .as_deref()
-    }
-
-    /// Retire the blocks that left with a pop-out and ended while out (`Detached`, the tab back
-    /// without them): a scratch tab holding nothing else goes, the selection leaning as
-    /// [`remove_block`](Self::remove_block)'s does; one beside live blocks waits cold for the
-    /// session's next view. Returns whether the column still has a tab — a Rex session can hold
-    /// other windows, made in Rex.app while the tab was out.
-    fn retire_detached(&mut self) -> bool {
-        let mut i = 0;
-        while i < self.tabs.len() {
-            let blocks = &mut self.tabs[i].blocks;
-            if blocks.iter().all(|b| matches!(b.slot, TabSlot::Detached)) {
-                self.tabs.remove(i);
-                if self.selected > i {
-                    self.selected -= 1;
-                }
-                continue;
-            }
-            for b in blocks.iter_mut() {
-                if matches!(b.slot, TabSlot::Detached) {
-                    b.slot = TabSlot::Cold;
-                }
-            }
-            i += 1;
-        }
-        self.selected = self.selected.min(self.tabs.len().saturating_sub(1));
-        !self.tabs.is_empty()
     }
 
     /// Drop block `i` of the selected scratch tab, closing its surface; a tab left with no block
@@ -858,9 +730,7 @@ impl Column {
 /// tab, its column's Rex pane key, so a reopened split reattaches the same session. The tab's
 /// `server` carries over: a whole project lives on one server.
 ///
-/// Every site that declares the column goes through here — `split`, `attach` and
-/// `mark_detached` (which recreate it for a popped-out split whose origin was rebuilt from
-/// config). None may re-derive it: two spellings of one spec would drift the second pane's
+/// Every site that declares the column goes through here. None may re-derive it: two spellings of one spec would drift the second pane's
 /// surface id, and a mismatched id routes its bell, notification and child-exit to nothing.
 fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
@@ -888,30 +758,13 @@ pub(crate) fn tab_of_secondary(id: &str) -> Option<&str> {
 }
 
 /// The Rex pane key of pane `which` of the tab whose primary runs `primary` — the main pane's
-/// spec id, or for a block its column's ([`secondary_id`]) — or `None` for a plain tab. Also
-/// reads a popped-out tab, whose origin registry may be gone.
-pub(crate) fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> {
+/// spec id, or for a block its column's ([`secondary_id`]) — or `None` for a plain tab.
+#[cfg(test)]
+fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> {
     primary.server.as_ref()?;
     Some(match which {
         PaneIdx::Primary => primary.id.clone(),
         PaneIdx::Block(_) => secondary_id(&primary.id),
-    })
-}
-
-/// The Rex key of the surface pane `which` of that tab shows: agent `agent`'s [`agent_key`] for a
-/// main pane showing one, column block `block`'s [`block_key`] for a block, else
-/// [`rex_pane_key`]. What a popped-out surface's size claims and exit check name.
-pub(crate) fn shown_rex_key(
-    primary: &TabSpec,
-    which: PaneIdx,
-    agent: Option<&str>,
-    block: Option<&str>,
-) -> Option<String> {
-    let key = rex_pane_key(primary, which)?;
-    Some(match (which, agent, block) {
-        (PaneIdx::Primary, Some(record_id), _) => agent_key(&primary.id, record_id),
-        (PaneIdx::Block(_), _, Some(block)) => block_key(&key, block),
-        _ => key,
     })
 }
 
@@ -1031,13 +884,6 @@ impl TabEntry {
         }
     }
 
-    fn slot_mut(&mut self, which: PaneIdx) -> Option<&mut TabSlot> {
-        match which {
-            PaneIdx::Primary => Some(&mut self.primary.slot),
-            PaneIdx::Block(i) => Some(&mut self.column.as_mut()?.block_mut(i)?.slot),
-        }
-    }
-
     /// Whether pane `which` exists: the primary always, a block while the selected scratch tab
     /// has it.
     fn has_pane(&self, which: PaneIdx) -> bool {
@@ -1152,7 +998,6 @@ pub struct MovedTab {
 // SAFETY: as `Registry` — `from` is a raw `NSWindow *` only ever read on the main thread.
 unsafe impl Send for MovedTab {}
 
-#[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
 impl MovedTab {
     pub fn id(&self) -> &str {
         &self.entry.id
@@ -1166,6 +1011,12 @@ impl MovedTab {
     /// Whether any of its surfaces is spawned — a cold tab has nothing to carry.
     pub fn is_live(&self) -> bool {
         self.entry.live()
+    }
+
+    /// End the tab: close every surface it carries, leaving it cold. For a tab with no window
+    /// left to land in, or one that can come home only cold.
+    pub fn close(&mut self) {
+        self.entry.close_live();
     }
 }
 
@@ -1281,8 +1132,7 @@ impl Registry {
         // first snapshot, and spawn it alongside an eager primary so `load_on_open` brings both
         // panes up together (a lazy tab's `activate` already spawns every cold pane). This eager
         // path (`load_on_open` + a config split) is pinned by inspection only — the registry
-        // tests run against a null NSWindow and never spawn — the same test-double gap `attach`'s
-        // `Detached`-retire branch records.
+        // tests run against a null NSWindow and never spawn.
         if spec.split.is_some() {
             let idx = self.tabs.len() - 1;
             self.split(&spec.id);
@@ -1581,27 +1431,6 @@ impl Registry {
             .and_then(|t| t.shown(which))
     }
 
-    /// Why tab `id` can't be popped out, or `None`: its scratch column holds more than a pop-out
-    /// carries, or hasn't opened yet (`Column::fits_pop_out`, which [`detach`](Self::detach)
-    /// enforces). Until a Rex column lands, its configured stack is the count.
-    pub fn pop_out_blocked(&self, id: &str) -> Option<String> {
-        let t = self.tabs.iter().find(|t| t.id == id)?;
-        let column = t.column.as_ref()?;
-        if column.fits_pop_out() {
-            return None;
-        }
-        let load = if column.opening() {
-            stack_of(&t.primary.spec).len()
-        } else {
-            column.pop_out_load()
-        };
-        Some(if load > 1 {
-            format!("Pop out carries one scratch pane; this tab has {load}")
-        } else {
-            COLUMN_OPENING.to_owned()
-        })
-    }
-
     /// Point keyboard focus at one of tab `id`'s panes. Returns false (and changes
     /// nothing) if that pane does not exist. Focus given here supersedes a block still waiting
     /// for it ([`focus_block`](Self::focus_block)).
@@ -1649,23 +1478,19 @@ impl Registry {
             .unwrap_or_default()
     }
 
-    /// Is tab `id` currently a `Detached` placeholder (its live surface popped
-    /// out into another window's registry)? The hot-reload reconcile
-    /// (`manager::apply_tab_reconcile`) consults this to leave a popped-out tab's
-    /// placeholder untouched — a config diff must never remove/respawn a tab
-    /// whose surface it doesn't hold, or the live PTY is clobbered and `redock`
-    /// loses its return slot. `id` is the same `Tab::key` (`id`-else-normalized-
-    /// `dir`) the registry keys every entry on.
-    ///
-    /// Primary-only, not any-pane, and still correct now that pop-out carries both panes:
-    /// `detach` refuses unless the PRIMARY is live and only then touches the secondary, so
-    /// a tab is detached exactly when its primary slot says so. Reading any-pane instead
-    /// would call a tab detached on the strength of a secondary alone, which no path
-    /// produces.
-    pub fn is_detached(&self, id: &str) -> bool {
-        self.tabs
-            .iter()
-            .any(|t| t.id == id && matches!(t.primary.slot, TabSlot::Detached))
+    /// Is tab `id` a placeholder — the tab moved whole into a pop-out's registry? The hot-reload
+    /// reconcile (`manager::apply_tab_reconcile`) consults this to leave the placeholder alone: a
+    /// config diff must never remove or respawn a tab whose surfaces it doesn't hold, or
+    /// `adopt_tab` loses the slot the tab comes home to. `id` is the same `Tab::key`
+    /// (`id`-else-normalized-`dir`) the registry keys every entry on.
+    pub fn is_placeholder(&self, id: &str) -> bool {
+        self.tabs.iter().any(|t| t.id == id && t.is_placeholder())
+    }
+
+    /// Whether this registry holds tab `id` itself — present, and not a placeholder for a tab
+    /// moved to another window.
+    pub fn holds_tab(&self, id: &str) -> bool {
+        self.tabs.iter().any(|t| t.id == id && !t.is_placeholder())
     }
 
     /// Does tab `id` have a `probe` command (⇒ a presence dot the scheduler tracks)? `activate_tab`
@@ -1679,74 +1504,15 @@ impl Registry {
             .any(|t| t.id == id && runs_probe(&t.primary.spec))
     }
 
-    /// Stand tab `id` up as popped out without extracting anything: its live surfaces are
-    /// already in a detached window. `WindowManager::build_window` calls this for every tab
-    /// still out when its origin window is rebuilt (closed, then reopened — by the user or by
-    /// `redock` itself), so the rebuilt row is the same `Detached` placeholder `detach` leaves:
-    /// `activate`/`ensure_spawned_by_id` spawn nothing for it, the row renders popped out, and
-    /// the hot-reload guards (`is_detached`) see it. Call it on a cold slot only — a `Spawned`
-    /// one would be overwritten without `close()`.
-    ///
-    /// `has_secondary` marks the column's travelling block too — Rex block `block` of a Rex
-    /// column ([`column_block`](Self::column_block) at pop-out) — declaring the column
-    /// (`secondary_spec`) and that block when the rebuilt tab lacks them: a runtime (⌘D) split is
-    /// in no config, so the rebuild is unsplit, a rebuilt Rex column has not opened yet, and the
-    /// returning pair still needs a slot to land in. With `false` a config split's declared column
-    /// stays `Cold`, as `detach` leaves a block that wasn't live. Unknown tab = no-op (it left the
-    /// config while out; `redock` drops it).
-    pub fn mark_detached(&mut self, id: &str, has_secondary: bool, block: Option<&str>) {
-        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
-            return;
-        };
-        t.primary.slot = TabSlot::Detached;
-        if has_secondary {
-            let spec = secondary_spec(&t.primary.spec, id);
-            let column = t.column.get_or_insert_with(|| Column::new(spec));
-            column.slot_for(block).slot = TabSlot::Detached;
-        }
-    }
-
-    /// The Rex block of tab `id`'s column that a pop-out carries: its one block, when the column
-    /// holds exactly one and it is a Rex block. What `mark_detached` and `attach` take back.
-    pub fn column_block(&self, id: &str) -> Option<String> {
-        let c = self.tabs.iter().find(|t| t.id == id)?.column.as_ref()?;
-        if c.slots().count() != 1 {
-            return None;
-        }
-        c.slots().next()?.block_id.clone()
-    }
-
-    /// Test-only: force tab `id`'s slot straight to `Detached`, bypassing
-    /// `detach` (which needs a real `Spawned` surface to extract — unavailable
-    /// in a unit test with no AppKit). `TabSlot::Detached` carries no data, so
-    /// this is a safe, direct state construction — it exercises every
-    /// Detached-tab code path (`describe`, `unload`, `start_session`, `remove`,
-    /// `close_all`, a second `detach`) without ever touching a `GhosttySurface`.
-    #[cfg(test)]
-    pub fn force_detached(&mut self, id: &str) {
-        self.force_detached_pane(id, PaneIdx::Primary);
-    }
-
-    /// Test-only: the per-pane form of `force_detached` — pop-out now moves both panes,
-    /// so the secondary has its own `Detached` state to construct and assert against.
-    #[cfg(test)]
-    pub fn force_detached_pane(&mut self, id: &str, which: PaneIdx) {
+    /// Stand tab `id`'s placeholder where its cold entry is: the tab is out in a pop-out while
+    /// this window is rebuilt (closed, then reopened), so its row reads popped out, nothing here
+    /// spawns for it, and [`adopt_tab`](Self::adopt_tab) has its slot to come home to. Call it on
+    /// a cold entry only — a live surface would be dropped without `close()`. Unknown tab = no-op:
+    /// it left the config while out, and its return drops it.
+    pub fn stand_placeholder(&mut self, id: &str) {
         if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
-            if let Some(slot) = t.slot_mut(which) {
-                *slot = TabSlot::Detached;
-            }
+            *t = t.placeholder();
         }
-    }
-
-    /// Test-only: is pane `which` of tab `id` a `Detached` placeholder? `false` for a
-    /// missing tab or pane.
-    #[cfg(test)]
-    pub fn is_pane_detached(&self, id: &str, which: PaneIdx) -> bool {
-        self.tabs
-            .iter()
-            .find(|t| t.id == id)
-            .and_then(|t| t.slot(which))
-            .is_some_and(|s| matches!(s, TabSlot::Detached))
     }
 
     /// Test-only: give tab `id`'s main pane cold agent slots for `records`, `selected` among them,
@@ -1782,19 +1548,9 @@ impl Registry {
         }
     }
 
-    /// Test-only: agent `record_id`'s surface out in a pop-out, as `detach` leaves the pane.
-    #[cfg(test)]
-    pub fn force_detached_agent(&mut self, id: &str, record_id: &str) {
-        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) {
-            t.primary.slot = TabSlot::Detached;
-            if let Some(a) = t.primary.agent_mut(record_id) {
-                a.slot = TabSlot::Detached;
-            }
-        }
-    }
-
     /// The agent tab `id`'s main pane has selected, on screen or not; `None` for a pane holding
-    /// no agents. Pop-out records it as the agent whose surface travels.
+    /// no agents.
+    #[cfg(test)]
     pub fn selected_agent(&self, id: &str) -> Option<&str> {
         let pane = &self.tabs.iter().find(|t| t.id == id)?.primary;
         pane.selected.as_deref().filter(|r| pane.agent(r).is_some())
@@ -1807,9 +1563,6 @@ impl Registry {
             return None;
         }
         let pane = &self.tabs.iter().find(|t| t.id == id)?.primary;
-        if matches!(pane.slot, TabSlot::Detached) {
-            return None;
-        }
         pane.selected.as_deref().filter(|r| pane.agent(r).is_some())
     }
 
@@ -1852,9 +1605,13 @@ impl Registry {
     }
 
     /// What a lifecycle op on tab `id`'s agent tabs needs to know of its main pane (as a user
-    /// [`RexOpen`]), or `None` for a tab whose main pane holds no agent tabs.
+    /// [`RexOpen`]), or `None` for a tab whose main pane holds no agent tabs — a placeholder's
+    /// among them, whose agents are the pop-out's.
     pub fn agent_request(&self, id: &str) -> Option<RexOpen> {
-        let t = self.tabs.iter().find(|t| t.id == id)?;
+        let t = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id && !t.is_placeholder())?;
         let spec = &t.primary.spec;
         if !hosts_agents(spec, PaneIdx::Primary) {
             return None;
@@ -1878,12 +1635,17 @@ impl Registry {
         self.agent_request(id).map(|_| id)
     }
     /// Follow a lifecycle op's answer in tab `id`'s main pane: one slot per live agent `found`
-    /// lists, keeping each surface still on its terminal and closing the rest (one out in a pop-out
-    /// stays), and `found.selected` selected. On the visible tab the selected agent spawns and
-    /// shows. With nothing live the pane settles asleep, so only a user open asks again. A pane
-    /// holding no agents that isn't on screen is left for its next open to reconcile.
+    /// lists, keeping each surface still on its terminal and closing the rest, and
+    /// `found.selected` selected. On the visible tab the selected agent spawns and shows. With
+    /// nothing live the pane settles asleep, so only a user open asks again. A pane holding no
+    /// agents that isn't on screen is left for its next open to reconcile, and a placeholder is
+    /// left alone: the pop-out holding the tab follows the op.
     pub fn sync_agents(&mut self, id: &str, found: AgentsOpened) -> Result<(), SurfaceError> {
-        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+        let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| t.id == id && !t.is_placeholder())
+        else {
             return Ok(());
         };
         let active = self.active.as_deref() == Some(id);
@@ -1899,7 +1661,7 @@ impl Registry {
                     let mut a = old.remove(i);
                     if a.rex != ready {
                         // A surface here on another terminal (the agent was woken again) is
-                        // stale; one out in a pop-out stays, as it does below.
+                        // stale.
                         if matches!(a.slot, TabSlot::Spawned(_)) {
                             if let TabSlot::Spawned(s) =
                                 std::mem::replace(&mut a.slot, TabSlot::Cold)
@@ -1920,10 +1682,8 @@ impl Registry {
             pane.agents.push(slot);
         }
         for a in old {
-            match a.slot {
-                TabSlot::Spawned(s) => s.close(),
-                TabSlot::Detached => pane.agents.push(a),
-                TabSlot::Cold => {}
+            if let TabSlot::Spawned(s) = a.slot {
+                s.close();
             }
         }
         if let Some(selected) = found.selected {
@@ -2025,7 +1785,6 @@ impl Registry {
                     size: s.size,
                 }),
                 column: t.column.as_ref().map(Column::dto),
-                pop_out_blocked: self.pop_out_blocked(&t.id),
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
                 colour: crate::project_colour::project_colour(&t.title, t.primary.spec.colour),
                 server: t.primary.spec.server.clone(),
@@ -2037,11 +1796,12 @@ impl Registry {
     /// `(id, dir, title, probe_cmd)` for every tab with a configured probe — the
     /// work-list the probe runner snapshots. Includes cold tabs (a session can
     /// exist while warden's own surface is unloaded — that's the point). Excludes Rex tabs:
-    /// Rex reports their sessions (`rex_tabs`).
+    /// Rex reports their sessions (`rex_tabs`). Excludes placeholders: a popped-out tab is probed
+    /// in the pop-out holding it.
     pub fn probe_targets(&self) -> Vec<ProbeTarget> {
         self.tabs
             .iter()
-            .filter(|t| runs_probe(&t.primary.spec))
+            .filter(|t| runs_probe(&t.primary.spec) && !t.is_placeholder())
             .filter_map(|t| {
                 t.primary.spec.probe.as_ref().map(|p| {
                     (
@@ -2099,7 +1859,7 @@ impl Registry {
                 true
             }
             TabSlot::Cold => false,
-            TabSlot::Detached => false, // no local shell — its surface lives elsewhere
+            TabSlot::Detached => false, // a placeholder: no local shell
         }
     }
 
@@ -2133,9 +1893,7 @@ impl Registry {
     }
 
     /// Which side tab `id`'s config split puts its second pane on, or `None` for an unknown
-    /// tab or one whose config declares no split. Pop-out reads this to decide whether the
-    /// detached window's holes are mirrored (`PaneIdx::hole`), as the docked chrome's
-    /// `.secondary-left` keys off the same `split_layout`.
+    /// tab or one whose config declares no split.
     pub fn split_side(&self, id: &str) -> Option<warden_config::SplitSide> {
         self.tabs
             .iter()
@@ -2144,19 +1902,17 @@ impl Registry {
             .map(|s| s.side)
     }
 
-    /// Ids of the tabs with a terminal standing — primary live here, or `Detached` into a
-    /// popped-out window — in sidebar order. What `remember_tabs` records as "loaded".
+    /// Ids of the tabs with a terminal standing — primary live here, or moved out to a pop-out
+    /// (a placeholder) — in sidebar order. What `remember_tabs` records as "loaded".
     pub fn loaded_ids(&self) -> Vec<String> {
         self.tabs
             .iter()
-            .filter(|t| t.primary.live() || matches!(t.primary.slot, TabSlot::Detached))
+            .filter(|t| t.primary.live() || t.is_placeholder())
             .map(|t| t.id.clone())
             .collect()
     }
 
-    /// Tab `id`'s (primary pane's) spec, or `None` if unknown. Pop-out records it as the spec
-    /// the travelling surface runs (`DetachedSurface::spec`), so `redock` can tell whether the
-    /// config it returns to still matches.
+    /// Tab `id`'s (primary pane's) spec, or `None` if unknown.
     pub fn spec_of(&self, id: &str) -> Option<&TabSpec> {
         self.tabs
             .iter()
@@ -2164,7 +1920,7 @@ impl Registry {
             .map(|t| &t.primary.spec)
     }
 
-    /// The display title of tab `id` (for a detached window's banner), or `None` if unknown.
+    /// The display title of tab `id`, or `None` if unknown.
     pub fn tab_title(&self, id: &str) -> Option<String> {
         self.tabs
             .iter()
@@ -2464,35 +2220,31 @@ impl Registry {
     /// already-**live** neighbour so unloading never spawns a fresh surface just to
     /// fill the hole (see `shell_core::pick_live_neighbour`); return that neighbour's
     /// id for the chrome to move its highlight to. `None` if nothing live remains —
-    /// the chrome then blanks the hole rather than waking a cold tab.
+    /// the chrome then blanks the hole rather than waking a cold tab. A placeholder is left
+    /// as it is: the tab's terminals are the pop-out's, and a cold entry here would look locally
+    /// respawnable, spawning a second surface for the same identity.
     pub fn unload(&mut self, id: &str) -> Option<String> {
-        let idx = self.tabs.iter().position(|t| t.id == id)?;
+        let idx = self
+            .tabs
+            .iter()
+            .position(|t| t.id == id && !t.is_placeholder())?;
         // Act on every pane: a cold split respawns split, so the column (if any) stays present
-        // and only its slots move to `Cold` alongside the primary's. A `Detached` slot keeps its
-        // placeholder: its surface lives in another window's registry (a pop-out), and a `Cold`
-        // one would look locally respawnable, spawning a second surface for the same identity.
+        // and only its slots move to `Cold` alongside the primary's.
         let t = &mut self.tabs[idx];
         let any_closed = t.close_live();
         let pane = &mut t.primary;
         // An open still in flight is no longer wanted: its answer lands stale.
         pane.rex = RexState::Idle;
-        // The agents go with their surfaces; the next open reconciles them afresh. One out in a
-        // pop-out keeps its slot to return to.
-        pane.agents.retain(|a| matches!(a.slot, TabSlot::Detached));
-        if pane.agents.is_empty() {
-            pane.selected = None;
-        }
+        // The agents go with their surfaces; the next open reconciles them afresh.
+        pane.agents.clear();
+        pane.selected = None;
         // A Rex column lets go of its session as the main pane does: the next open finds whatever
-        // the session is by then, keeping the blocks still out in a pop-out.
+        // the session is by then.
         if let Some(c) = t.column.as_mut().filter(|c| c.is_rex()) {
             c.rex = RexState::Idle;
             c.session = None;
             c.pending_focus = None;
-            c.tabs.retain(|tab| {
-                tab.blocks
-                    .iter()
-                    .any(|b| matches!(b.slot, TabSlot::Detached))
-            });
+            c.tabs.clear();
             c.selected = 0;
         }
         if matches!(t.focused, PaneIdx::Block(i) if t.block(i).is_none()) {
@@ -2897,10 +2649,16 @@ impl Registry {
             .collect()
     }
 
+    /// Tab `id`, the active one, came home with nothing live: lean to a live neighbour as
+    /// [`unload`](Self::unload) does, returning it. `None` for an unknown tab too.
+    pub fn lean_away(&mut self, id: &str) -> Option<String> {
+        let idx = self.tabs.iter().position(|t| t.id == id)?;
+        self.lean_to_live_neighbour(idx)
+    }
+
     /// The active tab at `idx` just lost its terminal: move `active` to an already-**live**
     /// neighbour and return its id, or `None` (hole left blank) when nothing live remains — never
-    /// spawning a cold tab just to fill the hole. Shared by `unload` and `clear_detached`, the two
-    /// ways a tab's terminal ends, so both leave the sidebar in the same place.
+    /// spawning a cold tab just to fill the hole.
     fn lean_to_live_neighbour(&mut self, idx: usize) -> Option<String> {
         self.active = None;
         let live: Vec<bool> = self.tabs.iter().map(TabEntry::live).collect();
@@ -2912,154 +2670,11 @@ impl Registry {
         Some(next)
     }
 
-    /// Retire tab `id`'s `Detached` placeholders to `Cold`: its popped-out surfaces ended (the
-    /// primary's child exited inside the detached window — `WindowManager::handle_child_exited`)
-    /// and are never coming back through `attach`. A `Cold` secondary never left and is
-    /// untouched. Returns what `unload` would (`Cold`): the live neighbour the sidebar leans to
-    /// when this was the active tab, else `None` — the same "this tab's terminal is gone" outcome,
-    /// reached from another window. A main pane whose travelling agent ended but which still holds
-    /// a running sibling is not gone (`SiblingShown`): it stays where it is, selecting that
-    /// sibling, for the caller to activate when it is the tab on screen.
-    pub fn clear_detached(&mut self, id: &str) -> DetachedEnded {
-        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
-            return DetachedEnded::Cold(None);
-        };
-        let t = &mut self.tabs[idx];
-        let mut any = false;
-        let blocks = t.column.iter_mut().flat_map(|c| c.slots_mut());
-        for slot in std::iter::once(&mut t.primary.slot).chain(blocks.map(|b| &mut b.slot)) {
-            if matches!(slot, TabSlot::Detached) {
-                *slot = TabSlot::Cold;
-                any = true;
-            }
-        }
-        let pane = &mut t.primary;
-        let mut sibling = false;
-        // The agent that went out with the pane ended there. A selection naming it leans to the
-        // nearest running sibling; one the user made here since stays.
-        if let Some(at) = pane
-            .agents
-            .iter()
-            .position(|a| matches!(a.slot, TabSlot::Detached))
-        {
-            let gone = pane.agents[at].record_id.clone();
-            if pane.selected.as_deref() == Some(gone.as_str()) {
-                let running: Vec<bool> = pane
-                    .agents
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| i != at && matches!(a.rex, RexState::Ready(_)))
-                    .collect();
-                let next = shell_core::pick_live_neighbour(at, &running);
-                pane.selected = next.map(|n| pane.agents[n].record_id.clone());
-            }
-            pane.agents.remove(at);
-            sibling = pane.selected.as_deref().is_some_and(|s| {
-                pane.agent(s)
-                    .is_some_and(|a| matches!(a.rex, RexState::Ready(_)))
-            });
-        }
-        if !any {
-            return DetachedEnded::Cold(None);
-        }
-        if sibling {
-            return DetachedEnded::SiblingShown;
-        }
-        if self.active.as_deref() == Some(id) {
-            return DetachedEnded::Cold(self.lean_to_live_neighbour(idx));
-        }
-        DetachedEnded::Cold(None)
-    }
-
-    /// Detach tab `id`'s live surfaces for a move to another window's `Registry`
-    /// (pop-out): extracts the `Spawned` surface of **every** pane the tab has and
-    /// leaves each slot `Detached` — a placeholder that keeps the tab present for
-    /// `reconcile` (not missing → no respawn; not stale → no duplicate) while the
-    /// actual `GhosttySurface`s move to the caller (the manager reparents their
-    /// AppKit views and calls `attach` on the destination registry). The surfaces
-    /// are **returned, never closed** — closing one here would kill the PTY the
-    /// whole feature exists to preserve.
-    ///
-    /// Pop-out is whole-tab, so a split tab travels as a pair: `(primary,
-    /// Some(secondary))`. The secondary is `None` both for an unsplit tab and for a
-    /// split tab whose second pane is `Cold` (nothing live to carry — that slot stays
-    /// `Cold` and simply respawns in place on the next `activate`). The pane count the
-    /// caller lays the detached window out with therefore derives from what actually
-    /// came back, never from `is_split`: a hole with no surface behind it is a
-    /// transparent leak to the desktop.
-    ///
-    /// `None` (nothing extracted, **no slot touched**) for: an unknown id; a `Cold`
-    /// primary (restored to `Cold`, not left `Detached`, since there is no surface
-    /// anywhere to stand the placeholder in for); or a primary already `Detached`
-    /// (restored to `Detached` — already gone elsewhere, calling this twice is a
-    /// no-op, not a second extraction). The primary is decided **first**, so a
-    /// refused detach leaves the secondary untouched rather than half-extracting a
-    /// tab that isn't going anywhere.
-    ///
-    /// A main pane holding agents carries its selected agent's surface out, leaving that agent's
-    /// slot and the pane's own `Detached`; its other agents stay here, hidden, until it returns.
-    ///
-    /// The second surface is the column's one block: a column holding more than one block, or
-    /// more than one scratch tab, refuses the whole detach (`None`, nothing touched) — the
-    /// detached window lays out one hole beside the primary.
-    pub fn detach(&mut self, id: &str) -> Option<(GhosttySurface, Option<GhosttySurface>)> {
-        let idx = self.tabs.iter().position(|t| t.id == id)?;
-        if !self.tabs[idx]
-            .column
-            .as_ref()
-            .is_none_or(Column::fits_pop_out)
-        {
-            return None;
-        }
-        let main = &mut self.tabs[idx].primary;
-        let shown = main
-            .selected
-            .as_deref()
-            .and_then(|r| main.agents.iter().position(|a| a.record_id == r));
-        let primary = match shown {
-            Some(i) => {
-                if !matches!(main.agents[i].slot, TabSlot::Spawned(_)) {
-                    return None;
-                }
-                let TabSlot::Spawned(s) =
-                    std::mem::replace(&mut main.agents[i].slot, TabSlot::Detached)
-                else {
-                    return None;
-                };
-                main.slot = TabSlot::Detached;
-                s
-            }
-            None if !main.agents.is_empty() => return None,
-            None => match std::mem::replace(&mut main.slot, TabSlot::Detached) {
-                TabSlot::Spawned(s) => s,
-                TabSlot::Cold => {
-                    main.slot = TabSlot::Cold;
-                    return None;
-                }
-                TabSlot::Detached => {
-                    main.slot = TabSlot::Detached;
-                    return None;
-                }
-            },
-        };
-        let secondary = match self.tabs[idx].slot_mut(PaneIdx::Block(0)) {
-            Some(slot) if matches!(slot, TabSlot::Spawned(_)) => {
-                match std::mem::replace(slot, TabSlot::Detached) {
-                    TabSlot::Spawned(s) => Some(s),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-        Some((primary, secondary))
-    }
-
     /// Move tab `id` out of this registry whole, for another window to
     /// [`adopt`](Self::adopt_tab): its entry leaves with every surface (none closed — the PTYs are
     /// what a move preserves), agent and scratch block, and a [`placeholder`](TabEntry::placeholder)
     /// stands at its index, so the row stays where it was and `reconcile` counts the tab present.
     /// `None` for an unknown id or a placeholder: a tab already out has nothing here to move.
-    #[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
     pub fn take_tab(&mut self, id: &str) -> Option<MovedTab> {
         let idx = self
             .tabs
@@ -3085,7 +2700,6 @@ impl Registry {
     ///
     /// Every pane of the tab ends up shown or hidden as [`show_active`](Self::show_active) says,
     /// since a reparent un-hides each view it moves — a hidden agent's or scratch tab's included.
-    #[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
     pub fn adopt_tab(&mut self, mut tab: MovedTab) -> Result<(), MovedTab> {
         let landing = self
             .tabs
@@ -3156,27 +2770,18 @@ impl Registry {
 
     /// Whether this registry's one tab has a live surface — a pop-out's, whose window has nothing
     /// left to show once it goes cold. `false` for a registry holding any other number of tabs.
-    #[cfg_attr(not(test), expect(dead_code, reason = "pop-out moves tabs whole next"))]
     pub fn sole_tab_live(&self) -> bool {
         matches!(self.tabs.as_slice(), [t] if t.live())
     }
 
     /// Bring tab `id` live in place if it is `Cold`, spawning its surface(s) against this
-    /// window — so a never-opened tab can be popped out (pop-out then `detach`s the now-live
-    /// surfaces and reparents them into its own window). No-op for a pane already `Spawned`
-    /// or `Detached` (a detached tab's live surface is in another window — never respawn a
-    /// second one), and a no-op returning `Ok` if `id` is unknown (the caller's follow-up
-    /// `detach` surfaces the not-found).
+    /// window — so a never-opened tab can be popped out (pop-out then moves the whole tab,
+    /// [`take_tab`](Self::take_tab)). No-op for a pane already `Spawned`, for a placeholder (its
+    /// terminals are in another window — never respawn a second one), and for an unknown `id`.
     ///
-    /// A split tab's SECOND pane is spawned too, best-effort: pop-out takes the whole tab, so
-    /// leaving a cold secondary behind would pop the tab out at half its content and strand
-    /// the other pane in the origin. Its error is discarded rather than shadowing the
-    /// primary's — the same asymmetry `activate` uses, and for the same reason: a secondary
-    /// that won't spawn must not cost the user the pop-out. `detach` then simply carries one
-    /// surface instead of two, and the detached window lays out one hole.
-    ///
-    /// Both spawns go through [`spawn_panes`](Self::spawn_panes), whose gate keeps the whole
-    /// call a no-op on an already-`Detached` tab.
+    /// A split tab's column is spawned too, best-effort: its error is discarded rather than
+    /// shadowing the primary's — the same asymmetry `activate` uses, and for the same reason: a
+    /// column that won't spawn must not cost the user the pop-out.
     ///
     /// Warden, not the user, is bringing the tab up (`load_on_open` turned on, a pop-out), so an
     /// agent pane left `Asleep` stays so.
@@ -3196,10 +2801,7 @@ impl Registry {
     /// Spawn tab `idx`'s primary, then its column best-effort, returning the primary's
     /// result — the one answer to "may this registry birth a column surface?", which
     /// `activate`, `ensure_spawned_by_id` and a landed open all ask. The column is gated on the
-    /// PRIMARY being live **in this registry**: pop out a split tab whose block spawn failed and
-    /// the primary is `Detached` while the block is still `Cold`, and an ungated spawn would birth
-    /// a surface in the ORIGIN window for a tab that isn't showing there — with no pop-out left
-    /// to carry it out again.
+    /// main pane being up **in this registry** ([`Pane::holds_column`]), never a placeholder's.
     fn spawn_panes(&mut self, idx: usize, auto: bool) -> Result<bool, SurfaceError> {
         let primary = self.ensure_spawned(idx, PaneIdx::Primary, auto);
         if self.tabs[idx].primary.holds_column() {
@@ -3211,116 +2813,6 @@ impl Registry {
             }
         }
         primary
-    }
-
-    /// Return a surface to slot `id` as `Spawned` — the inverse of `detach`,
-    /// called when a popped-out window's tab is reparented back into its
-    /// origin registry. Succeeds from a `Detached` **or** a `Cold` slot →
-    /// `Ok(())`, and the slot becomes `Spawned(surface)`.
-    ///
-    /// The slot is normally `Detached`: the placeholder `detach` left when the
-    /// origin stayed open, or the one `mark_detached` stood up when the origin
-    /// was rebuilt while the tab was out. A `Cold` slot is accepted too — it
-    /// holds no surface, so landing the returning one there leaks nothing.
-    ///
-    /// On failure — unknown `id`, or a slot that is already `Spawned` (a
-    /// live surface already occupies it; overwriting would leak that surface's
-    /// PTY) — the surfaces are handed **back** as `Err((primary, secondary))`
-    /// rather than silently dropped. A `bool` return (as the task brief's other
-    /// suggested shape) was rejected for this reason: on the failure path the
-    /// parameters would simply fall out of scope and hit `GhosttySurface`'s
-    /// `Drop` safety net, closing surfaces the caller doesn't expect to lose.
-    /// Returning them keeps that decision with the caller instead of making it
-    /// silently here.
-    ///
-    /// **Both panes land, or neither does.** Every slot is validated before any is
-    /// written, so a refusal hands the caller back exactly what it passed in and the
-    /// registry is unchanged — there is no "the primary landed, the secondary didn't"
-    /// state for a caller to discover, and no shape in the `Err` that could express one.
-    ///
-    /// A returning `secondary` lands in its column block — Rex block `block` of a Rex column
-    /// ([`column_block`](Self::column_block) at pop-out), else the selected scratch tab's first
-    /// block. A tab with **no** column, or no such block, has it recreated (`secondary_spec`, the
-    /// same derivation `split` and `mark_detached` use) rather than refusing: refusing would end
-    /// a live PTY purely because its slot is missing.
-    ///
-    /// A returning `agent`'s surface (the record `selected_agent` named at pop-out) lands in that
-    /// agent's slot — the one `detach` left `Detached`, or, in a pane rebuilt while it was out, a
-    /// slot made for it — and is selected, so its key stays the agent's for size and exit.
-    pub fn attach(
-        &mut self,
-        id: &str,
-        primary: GhosttySurface,
-        secondary: Option<GhosttySurface>,
-        agent: Option<&str>,
-        block: Option<&str>,
-    ) -> Result<(), (GhosttySurface, Option<GhosttySurface>)> {
-        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
-            return Err((primary, secondary));
-        };
-        // Validate BOTH slots first — see the all-or-nothing note above.
-        if matches!(t.primary.slot, TabSlot::Spawned(_)) {
-            return Err((primary, secondary));
-        }
-        let landing = |c: &Column| {
-            c.slots()
-                .find(|b| block.is_some() && b.block_id.as_deref() == block)
-                .or_else(|| c.block(0))
-                .is_some_and(|b| matches!(b.slot, TabSlot::Spawned(_)))
-        };
-        if secondary.is_some() && t.column.as_ref().is_some_and(landing) {
-            return Err((primary, secondary));
-        }
-        let agent = agent.filter(|_| hosts_agents(&t.primary.spec, PaneIdx::Primary));
-        if agent.is_some_and(|r| {
-            t.primary
-                .agent(r)
-                .is_some_and(|a| matches!(a.slot, TabSlot::Spawned(_)))
-        }) {
-            return Err((primary, secondary));
-        }
-        match agent {
-            Some(record_id) => {
-                let main = &mut t.primary;
-                match main.agent_mut(record_id) {
-                    Some(a) => a.slot = TabSlot::Spawned(primary),
-                    None => main.agents.push(AgentSlot {
-                        record_id: record_id.to_string(),
-                        slot: TabSlot::Spawned(primary),
-                        rex: RexState::Idle,
-                    }),
-                }
-                main.selected = Some(record_id.to_string());
-                main.slot = TabSlot::Cold;
-            }
-            None => t.primary.slot = TabSlot::Spawned(primary),
-        }
-        match secondary {
-            Some(s) => {
-                let spec = secondary_spec(&t.primary.spec, id);
-                let column = t.column.get_or_insert_with(|| Column::new(spec));
-                column.slot_for(block).slot = TabSlot::Spawned(s);
-            }
-            None => {
-                // A block that left with the tab (`Detached`) and didn't come back ended while it
-                // was out — its child exited in the detached window and `handle_child_exited`
-                // closed it. Retire it ([`Column::retire_detached`]), and the column with it when
-                // nothing else is left, or the tab reads as split forever around a placeholder no
-                // `attach` will ever fill. A `Cold` block never left and stays: it respawns on the
-                // next `activate`.
-                if let Some(c) = t
-                    .column
-                    .as_mut()
-                    .filter(|c| c.slots().any(|b| matches!(b.slot, TabSlot::Detached)))
-                {
-                    if !c.retire_detached() {
-                        t.column = None;
-                    }
-                    t.focused = PaneIdx::Primary;
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Show + focus tab `id` (spawning it if cold) and hide the rest. Returns `Ok(true)` iff this call
@@ -3544,9 +3036,8 @@ impl Registry {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         let pane = &mut self.tabs[idx].primary;
         let at = pane.agents.iter().position(|a| a.record_id == record_id)?;
-        // Every agent but this one that can be shown, in list order: live here or out in a
-        // pop-out, or still running in Rex with its terminal in hand (only the selected agent ever
-        // has a surface).
+        // Every agent but this one that can be shown, in list order: live, or still running in
+        // Rex with its terminal in hand (only the selected agent ever has a surface).
         let showable: Vec<bool> = pane
             .agents
             .iter()
@@ -3555,9 +3046,7 @@ impl Registry {
                 i != at
                     && matches!(
                         (&a.slot, &a.rex),
-                        (TabSlot::Spawned(_), _)
-                            | (TabSlot::Detached, _)
-                            | (TabSlot::Cold, RexState::Ready(_))
+                        (TabSlot::Spawned(_), _) | (TabSlot::Cold, RexState::Ready(_))
                     )
             })
             .collect();
@@ -3581,9 +3070,7 @@ impl Registry {
                     log::error!("couldn't open agent {next:?} of tab {id:?}: {e}");
                 }
             }
-            let primary = &self.tabs[idx].primary;
-            let out = matches!(primary.slot, TabSlot::Detached);
-            if !primary.live() && !out && !column_live {
+            if !self.tabs[idx].primary.live() && !column_live {
                 // Its surface is already closed, so `unload` finds nothing to close and leaves
                 // the sidebar where it is; lean from here, as it would have.
                 let next = self.unload(id);
@@ -3870,197 +3357,78 @@ mod tests {
 
     // --- detach / attach (pop a tab out) -------------------------------------
     //
-    // A real `Spawned` slot needs a live `GhosttySurface`, which needs AppKit —
-    // unconstructable in this unit-test process (ns_window is null; every test
-    // in this file stays on load_on_open=false for exactly this reason). So the
-    // slot-state transitions below use `force_detached` (a safe, data-free
-    // direct construction of `TabSlot::Detached`) to reach the states a real
-    // pop-out would produce, and prove `detach`/`unload`/`start_session`/
-    // `remove`/`close_all`/a second `detach` all treat that slot correctly
-    // without ever touching a `GhosttySurface`. The one thing genuinely
-    // untestable here is `detach` extracting a *live* surface and `attach`
-    // accepting one back — that needs a real surface, so it's covered by the
+    // A real `Spawned` slot needs a live `GhosttySurface`, which needs AppKit — unconstructable
+    // in this unit-test process (ns_window is null; every test in this file stays on
+    // load_on_open=false for exactly this reason). A placeholder needs none: `stand_placeholder`
+    // (or `take_tab` of a cold tab) stands one, and these prove every local operation leaves it
+    // alone. Moving a *live* tab between windows needs a real surface, so it's covered by the
     // by-eye checks in docs/native-splits-direction.md instead.
 
     #[test]
-    fn detach_of_cold_tab_returns_none_and_stays_cold() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        assert!(r.detach("t0").is_none());
-        assert!(!r.is_spawned("t0"));
-        assert!(!r.is_detached("t0"), "a cold tab must not become Detached");
-        assert!(!r.tab_dtos()[0].detached);
-    }
-
-    #[test]
-    fn detach_of_unknown_tab_returns_none() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        assert!(r.detach("nope").is_none());
-    }
-
-    #[test]
-    fn detach_of_already_detached_tab_is_noop() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        r.force_detached("t0");
-        assert!(
-            r.detach("t0").is_none(),
-            "nothing live here to extract a second time"
-        );
-        assert!(r.is_detached("t0"), "must stay Detached, not reset to Cold");
-    }
-
-    #[test]
-    fn detach_of_a_split_cold_tab_leaves_both_panes_alone() {
-        // The primary is decided first: a refused detach must not half-extract the tab by
-        // marking the SECONDARY detached on the way past. Nothing is live here, so nothing
-        // moves — and neither slot may end up a placeholder for a surface that is still here.
+    fn a_placeholder_of_a_split_tab_reads_as_popped_out_and_unsplit() {
+        // What the chrome sees for a popped-out split: one popped-out row, no local surface and
+        // no column here — the whole tab, column included, is in the pop-out.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
         r.split("t0");
-        assert!(r.detach("t0").is_none());
-        assert!(!r.is_pane_detached("t0", PaneIdx::Primary));
-        assert!(
-            !r.is_pane_detached("t0", PaneIdx::Block(0)),
-            "the second pane must not be marked Detached when nothing was detached"
-        );
-        assert!(r.is_split("t0"), "the tab is still split, just cold");
-    }
-
-    #[test]
-    fn detach_of_an_already_detached_split_tab_is_a_noop_on_both_panes() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        r.split("t0");
-        r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Block(0));
-        assert!(
-            r.detach("t0").is_none(),
-            "nothing live here to extract a second time"
-        );
-        assert!(r.is_pane_detached("t0", PaneIdx::Primary));
-        assert!(
-            r.is_pane_detached("t0", PaneIdx::Block(0)),
-            "both placeholders must survive — their surfaces are in the popped-out window"
-        );
-    }
-
-    #[test]
-    fn a_detached_split_tab_reads_as_detached_and_not_secondary_spawned() {
-        // What the chrome sees for a popped-out split: one detached row, no local surface in
-        // either pane (so neither hole is claimed live while the terminals are elsewhere).
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        r.split("t0");
-        r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Block(0));
+        r.stand_placeholder("t0");
         let dto = r.tab_dtos().into_iter().find(|d| d.id == "t0").unwrap();
         assert!(dto.detached);
         assert!(!dto.spawned);
         assert!(!dto.secondary_spawned);
+        assert!(!dto.split);
     }
 
     #[test]
-    fn unload_of_a_detached_split_tab_keeps_both_placeholders() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        r.split("t0");
-        r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Block(0));
-        assert_eq!(r.unload("t0"), None, "no local surfaces to kill");
-        assert!(r.is_pane_detached("t0", PaneIdx::Primary));
-        assert!(
-            r.is_pane_detached("t0", PaneIdx::Block(0)),
-            "a Detached secondary must not fall back to Cold — that would make it look \
-             locally respawnable and duplicate the popped-out surface"
-        );
-    }
-
-    #[test]
-    fn attach_recreates_a_missing_secondary_slot_with_the_split_spec() {
-        // `attach` recreating the slot (redock into an origin that was closed and rebuilt
-        // unsplit) must produce the SAME spec `split` does, or the returning surface's
-        // events route nowhere. Both go through `secondary_spec`; this pins that they agree.
+    fn secondary_spec_is_the_split_panes_spec() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
         r.split("t0");
         let from_split = r.secondary_spec_for_test("t0").unwrap();
-        let from_attach = secondary_spec(&spec("t0", "/tmp"), "t0");
-        assert_eq!(from_split.id, from_attach.id, "same surface id");
-        assert_eq!(from_split.dir, from_attach.dir);
-        assert_eq!(from_split.startup, from_attach.startup);
-        assert_eq!(from_attach.id, "t0::2");
-        assert!(
-            from_attach.startup.is_none(),
-            "the second pane runs a shell"
-        );
+        let derived = secondary_spec(&spec("t0", "/tmp"), "t0");
+        assert_eq!(from_split.id, derived.id, "same surface id");
+        assert_eq!(from_split.dir, derived.dir);
+        assert_eq!(from_split.startup, derived.startup);
+        assert_eq!(derived.id, "t0::2");
+        assert!(derived.startup.is_none(), "the second pane runs a shell");
     }
 
     #[test]
-    fn detached_tab_is_still_listed_by_describe() {
+    fn a_placeholder_is_still_listed_by_describe() {
         // reconcile-relevant: the placeholder keeps the tab present (not
         // missing → no respawn attempt; not stale → no duplicate add).
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
         let _ = r.add(&spec("t1", "/tmp"), false);
-        r.force_detached("t0");
+        r.stand_placeholder("t0");
         let dtos = r.tab_dtos();
-        assert_eq!(
-            dtos.len(),
-            2,
-            "detached tab must still be listed, not dropped"
-        );
+        assert_eq!(dtos.len(), 2, "the placeholder is listed, not dropped");
         let t0 = dtos.iter().find(|d| d.id == "t0").unwrap();
         assert!(t0.detached, "detached: true");
         assert!(!t0.spawned, "spawned: false alongside detached: true");
+        assert!(!r.holds_tab("t0") && r.holds_tab("t1"));
     }
 
-    // `attach` itself is NOT unit-tested: every path through it needs a real
-    // `GhosttySurface` argument (there is no valid empty/placeholder value to
-    // construct one from — see the module-level note above), so both its
-    // success arms (Cold -> Spawned, when redock reopened the origin, and
-    // Detached -> Spawned, when the origin stayed open) and its Err-returns-the-
-    // surfaces failure arm (a `Spawned` slot) need a live surface to even call it
-    // with. The slot gate it relies on is exercised structurally above via
-    // `force_detached` + `is_detached`, and the one piece of its two-pane path that
-    // needs no surface — the spec it recreates a missing secondary slot with — is
-    // pinned by `attach_recreates_a_missing_secondary_slot_with_the_split_spec`.
-    // See the task report for the GUI-driven verification plan.
-
     #[test]
-    fn unload_of_detached_tab_is_noop_and_stays_detached() {
+    fn unload_of_a_placeholder_is_a_noop() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
-        r.force_detached("t0");
+        r.stand_placeholder("t0");
         assert_eq!(r.unload("t0"), None, "no local surface to kill");
-        assert!(
-            r.is_detached("t0"),
-            "must stay Detached, not fall back to Cold"
-        );
+        assert!(r.is_placeholder("t0"), "still a placeholder, not cold");
     }
 
     #[test]
-    fn ensure_spawned_by_id_never_respawns_a_detached_tab_or_panics_on_unknown() {
-        // Pop-out calls this to bring a COLD tab live before detaching it. It must NOT touch a
-        // Detached tab (whose live surface is in another window — a second spawn would duplicate
-        // it), and an unknown id must be a clean no-op (the caller's follow-up `detach` reports
-        // not-found). The Cold→spawn path needs AppKit and is GUI-only (Task-12 driver).
+    fn ensure_spawned_by_id_never_respawns_a_placeholder_or_panics_on_unknown() {
+        // Pop-out calls this to bring a COLD tab live before moving it. A placeholder's
+        // terminals are in another window — a spawn here would duplicate them — and an unknown
+        // id is a clean no-op. The Cold→spawn path needs AppKit and is GUI-only.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
-        r.force_detached("t0");
+        r.stand_placeholder("t0");
         assert!(r.ensure_spawned_by_id("t0").is_ok());
-        assert!(r.is_detached("t0"), "must stay Detached, not respawn");
+        assert!(r.is_placeholder("t0"), "still a placeholder, not respawned");
         assert!(!r.is_spawned("t0"), "no second surface spawned here");
-        // Same for its SECOND pane: this call spawns a cold secondary for the pop-out that
-        // follows, but a Detached tab has no pop-out to follow — a surface spawned here would
-        // sit in a window the tab isn't in, with nothing to carry it out again.
-        r.split("t0");
-        assert!(r.ensure_spawned_by_id("t0").is_ok());
-        assert!(
-            !r.is_spawned("t0"),
-            "neither pane of a Detached tab may spawn locally"
-        );
         assert!(
             r.ensure_spawned_by_id("does-not-exist").is_ok(),
             "unknown id is a clean no-op"
@@ -4068,63 +3436,35 @@ mod tests {
     }
 
     #[test]
-    fn mark_detached_makes_a_rebuilt_tab_read_as_popped_out() {
-        // An origin window rebuilt while one of its tabs is still popped out: the tab's live
-        // terminal is in the detached window, so the rebuilt row must be the same `Detached`
-        // placeholder `detach` leaves — never a cold slot `activate` would spawn a second
-        // terminal into.
+    fn stand_placeholder_makes_a_rebuilt_tab_read_as_popped_out() {
+        // An origin window rebuilt while one of its tabs is still popped out: the tab's
+        // terminals are in the pop-out, so the rebuilt row must be the placeholder `take_tab`
+        // leaves — never a cold slot `activate` would spawn a second terminal into.
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/tmp"), false).unwrap();
-        r.mark_detached("t0", false, None);
-        assert!(r.is_detached("t0"));
+        let mut split = spec("t0", "/tmp");
+        split.split = Some(warden_config::Split {
+            side: warden_config::SplitSide::Right,
+            size: 0.5,
+            panes: vec![warden_config::StackPane {
+                size: 1.0,
+                startup: None,
+            }],
+        });
+        r.add(&split, false).unwrap();
+        r.stand_placeholder("t0");
+        assert!(r.is_placeholder("t0"));
         assert!(r.activate("t0").is_ok());
         assert!(r.ensure_spawned_by_id("t0").is_ok());
         assert!(!r.is_spawned("t0"), "a popped-out tab never spawns locally");
-        assert!(
-            r.tab_dtos()[0].detached,
-            "the row renders popped out, not cold"
-        );
-        assert!(!r.is_split("t0"));
+        assert!(r.tab_dtos()[0].detached, "the row renders popped out");
+        assert!(!r.is_split("t0"), "its column is the pop-out's");
     }
 
     #[test]
-    fn mark_detached_with_a_secondary_declares_a_detached_second_pane() {
-        // A runtime (⌘D) split lives in no config, so the rebuilt origin has no second pane; the
-        // returning pair still needs one to land in, and the row reads as split meanwhile.
+    fn stand_placeholder_of_unknown_tab_is_a_noop() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&spec("t0", "/tmp"), false).unwrap();
-        r.mark_detached("t0", true, None);
-        assert!(r.is_pane_detached("t0", PaneIdx::Primary));
-        assert!(r.is_pane_detached("t0", PaneIdx::Block(0)));
-        assert_eq!(
-            r.secondary_spec_for_test("t0").map(|s| s.id),
-            Some("t0::2".to_string())
-        );
-    }
-
-    #[test]
-    fn mark_detached_of_unknown_tab_is_a_noop() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.mark_detached("nope", true, None);
+        r.stand_placeholder("nope");
         assert!(r.tab_dtos().is_empty());
-    }
-
-    #[test]
-    fn activate_never_spawns_a_secondary_for_a_detached_tab() {
-        // The same gate `ensure_spawned_by_id` carries, asserted on the OTHER site that can birth
-        // a secondary — the two must stay in step. Reachable shape: pop out a split tab whose
-        // secondary spawn failed, so the primary is Detached and the secondary still Cold; an
-        // ungated `activate` on that id would put a surface in the ORIGIN window for a tab that
-        // isn't showing there, with no pop-out left to carry it out again.
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        r.split("t0");
-        r.force_detached_pane("t0", PaneIdx::Primary);
-        assert!(r.activate("t0").is_ok());
-        assert!(
-            !r.is_spawned("t0"),
-            "neither pane of a Detached tab may spawn locally"
-        );
     }
 
     #[test]
@@ -4145,36 +3485,36 @@ mod tests {
     }
 
     #[test]
-    fn start_session_noop_for_detached_tab() {
+    fn start_session_noop_for_a_placeholder() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let mut with_cmd = spec("t0", "/tmp");
         with_cmd.startup = Some("amux".into());
         let _ = r.add(&with_cmd, false);
-        r.force_detached("t0");
+        r.stand_placeholder("t0");
         assert!(
             !r.start_session("t0"),
-            "no local shell to type into once detached"
+            "no local shell to type into once popped out"
         );
     }
 
     #[test]
-    fn remove_of_detached_tab_does_not_panic_and_drops_placeholder() {
+    fn remove_of_a_placeholder_does_not_panic_and_drops_it() {
         // Must not attempt to free anything (there is no surface here to
-        // free — it lives in the popped-out window's registry).
+        // free — it lives in the pop-out's registry).
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
         let _ = r.add(&spec("t1", "/tmp"), false);
-        r.force_detached("t0");
+        r.stand_placeholder("t0");
         r.remove("t0");
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["t1".to_string()]);
     }
 
     #[test]
-    fn close_all_with_detached_tab_does_not_panic() {
+    fn close_all_with_a_placeholder_does_not_panic() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         let _ = r.add(&spec("t0", "/tmp"), false);
-        r.force_detached("t0");
+        r.stand_placeholder("t0");
         r.close_all();
         assert_eq!(r.tab_dtos().len(), 0);
     }
@@ -4703,35 +4043,6 @@ mod tests {
     }
 
     #[test]
-    fn hole_mapping_is_identity_unless_mirrored() {
-        // Unmirrored (secondary on the right, or one hole): hole i IS pane i.
-        assert_eq!(PaneIdx::Primary.hole(false), 0);
-        assert_eq!(PaneIdx::Block(0).hole(false), 1);
-        assert_eq!(PaneIdx::from_hole(0, false), PaneIdx::Primary);
-        assert_eq!(PaneIdx::from_hole(1, false), PaneIdx::Block(0));
-        assert_eq!(
-            PaneIdx::from_hole(7, false),
-            PaneIdx::Primary,
-            "never an error"
-        );
-        // Mirrored (a `side = "left"` split): the secondary takes the FIRST hole.
-        assert_eq!(PaneIdx::Primary.hole(true), 1);
-        assert_eq!(PaneIdx::Block(0).hole(true), 0);
-        assert_eq!(PaneIdx::from_hole(0, true), PaneIdx::Block(0));
-        assert_eq!(PaneIdx::from_hole(1, true), PaneIdx::Primary);
-        assert_eq!(
-            PaneIdx::from_hole(7, true),
-            PaneIdx::Primary,
-            "never an error"
-        );
-        for which in [PaneIdx::Primary, PaneIdx::Block(0)] {
-            for mirrored in [false, true] {
-                assert_eq!(PaneIdx::from_hole(which.hole(mirrored), mirrored), which);
-            }
-        }
-    }
-
-    #[test]
     fn split_side_reports_the_config_split_only() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&spec_with_split("a", None), false).unwrap(); // side = Left
@@ -4740,42 +4051,6 @@ mod tests {
         assert_eq!(r.split_side("a"), Some(warden_config::SplitSide::Left));
         assert_eq!(r.split_side("b"), None);
         assert_eq!(r.split_side("nope"), None);
-    }
-
-    #[test]
-    fn clear_detached_returns_every_detached_pane_to_cold() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        r.split("t0");
-        r.force_detached_pane("t0", PaneIdx::Primary);
-        r.force_detached_pane("t0", PaneIdx::Block(0));
-        assert!(r.is_detached("t0"));
-        // Not the active tab, nothing live elsewhere → no neighbour to lean to.
-        assert_eq!(r.clear_detached("t0"), DetachedEnded::Cold(None));
-        assert!(!r.is_detached("t0"));
-        assert!(!r.is_pane_detached("t0", PaneIdx::Block(0)));
-        assert!(
-            r.is_split("t0"),
-            "the split structure survives; only the slots go cold"
-        );
-        assert!(!r.is_spawned("t0"));
-    }
-
-    #[test]
-    fn clear_detached_leaves_a_cold_secondary_and_unknown_tabs_alone() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        let _ = r.add(&spec("t0", "/tmp"), false);
-        r.split("t0");
-        r.force_detached_pane("t0", PaneIdx::Primary); // secondary stayed Cold (never carried)
-        assert_eq!(r.clear_detached("t0"), DetachedEnded::Cold(None));
-        assert!(!r.is_detached("t0"));
-        assert!(r.is_split("t0"));
-        assert_eq!(
-            r.clear_detached("t0"),
-            DetachedEnded::Cold(None),
-            "nothing detached any more → no-op"
-        );
-        assert_eq!(r.clear_detached("nope"), DetachedEnded::Cold(None));
     }
 
     #[test]
@@ -5310,17 +4585,9 @@ mod tests {
         let col = r.tab_dtos()[0].column.clone().unwrap();
         assert!(col.rex && col.tabs.is_empty() && col.tiles.is_empty());
         assert_eq!(r.pane_to("t", Side::Right), None);
-        // Nothing to add a scratch tab to yet, and nothing a pop-out could carry.
+        // Nothing to add a scratch tab to yet.
         assert_eq!(col.new_blocked.as_deref(), Some(COLUMN_OPENING));
         assert_eq!(r.rex_column("t"), None);
-        assert_eq!(
-            r.pop_out_blocked("t").as_deref(),
-            Some("Pop out carries one scratch pane; this tab has 2"),
-            "the configured stack counts until Rex's own layout lands"
-        );
-        let (mut one, _) = rex_registry();
-        one.add(&split_rex_spec("t", 1), false).unwrap();
-        assert_eq!(one.pop_out_blocked("t").as_deref(), Some(COLUMN_OPENING));
         let landed = landed_column(vec![scratch("w1", &["a"])]);
         assert_eq!(
             landed.tab_dtos()[0].column.as_ref().unwrap().new_blocked,
@@ -5386,17 +4653,6 @@ mod tests {
     }
 
     #[test]
-    fn close_pane_item_waits_while_the_column_opens() {
-        let (mut r, _) = rex_registry();
-        r.add(&split_rex_spec("t", 2), false).unwrap();
-        // A popped-out block stands in the column before its session's open lands.
-        r.mark_detached("t", true, Some("b1"));
-        assert!(r.focus_pane("t", PaneIdx::Block(0)));
-        assert_eq!(r.close_pane_item("t"), Some(Err(COLUMN_OPENING.to_owned())));
-        assert_eq!(r.begin_close_block("t", 0), None);
-    }
-
-    #[test]
     fn the_column_session_ending_drops_the_column() {
         let mut r = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b"])]);
         r.focus_pane("t", PaneIdx::Block(0));
@@ -5417,27 +4673,6 @@ mod tests {
         assert_eq!(r.scratch_block_keys("t"), ["t::2#c"]);
         assert!(r.close_block("t", 0), "the last block: the column goes");
         assert!(!r.is_split("t"));
-    }
-
-    #[test]
-    fn pop_out_blocked_names_the_count() {
-        let three = landed_column(vec![scratch("w1", &["a", "b", "c"])]);
-        assert_eq!(
-            three.pop_out_blocked("t").as_deref(),
-            Some("Pop out carries one scratch pane; this tab has 3")
-        );
-        let one = landed_column(vec![scratch("w1", &["a"])]);
-        assert_eq!(one.pop_out_blocked("t"), None);
-        let two_tabs = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b"])]);
-        assert_eq!(
-            two_tabs.pop_out_blocked("t").as_deref(),
-            Some("Pop out carries one scratch pane; this tab has 2")
-        );
-        assert_eq!(one.pop_out_blocked("nope"), None);
-        assert_eq!(
-            three.tab_dtos()[0].pop_out_blocked.as_deref(),
-            three.pop_out_blocked("t").as_deref()
-        );
     }
 
     #[test]
@@ -5507,47 +4742,6 @@ mod tests {
     }
 
     #[test]
-    fn a_block_that_ended_while_popped_out_leaves_the_rest_of_its_column() {
-        let mut r = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b", "c"])]);
-        let column = r.tabs[0].column.as_mut().unwrap();
-        column.tabs[0].blocks[0].slot = TabSlot::Detached;
-        column.tabs[1].blocks[1].slot = TabSlot::Detached;
-        assert!(column.retire_detached(), "w2 still holds a block");
-        assert_eq!(column.tabs.len(), 1, "w1 held only the ended block");
-        assert_eq!(column.tabs[0].window_id.as_deref(), Some("w2"));
-        assert_eq!(column.selected, 0);
-        assert!(
-            matches!(column.tabs[0].blocks[1].slot, TabSlot::Cold),
-            "a block beside live ones waits cold for the next view"
-        );
-        // A plain tab's one block: nothing is left.
-        let mut plain = Column::new(spec("p", "/tmp/p"));
-        plain.tabs[0].blocks[0].slot = TabSlot::Detached;
-        assert!(!plain.retire_detached());
-    }
-
-    #[test]
-    fn detach_refuses_a_column_holding_more_than_one_block() {
-        let fits = |r: &Registry| {
-            let t = r.tabs.iter().find(|t| t.id == "t").unwrap();
-            t.column.as_ref().unwrap().fits_pop_out()
-        };
-        let mut two_blocks = landed_column(vec![scratch("w1", &["a", "b"])]);
-        assert!(!fits(&two_blocks));
-        assert!(two_blocks.detach("t").is_none());
-        let mut two_tabs = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b"])]);
-        assert!(!fits(&two_tabs));
-        assert!(two_tabs.detach("t").is_none());
-        // One block in one tab gets past the refusal (this cold primary then has nothing to carry).
-        let one = landed_column(vec![scratch("w1", &["a"])]);
-        assert!(fits(&one));
-        let mut plain = Registry::new(std::ptr::null_mut(), rect());
-        plain.add(&spec("p", "/tmp/p"), false).unwrap();
-        plain.split("p");
-        assert!(plain.tabs[0].column.as_ref().unwrap().fits_pop_out());
-    }
-
-    #[test]
     fn a_frame_for_a_block_the_column_lacks_is_ignored() {
         let mut r = landed_column(vec![scratch("w1", &["a", "b"])]);
         r.active = Some("t".into());
@@ -5571,25 +4765,6 @@ mod tests {
         r.set_pane_frame(PaneIdx::Block(1), at(4.0));
         assert_eq!(r.last_rect_for_test(PaneIdx::Block(0)), at(3.0));
         assert_eq!(r.last_rect_for_test(PaneIdx::Block(1)), at(1.0));
-    }
-
-    #[test]
-    fn a_popped_out_column_block_keeps_its_key() {
-        let mut r = landed_column(vec![scratch("w1", &["a"])]);
-        assert_eq!(r.column_block("t").as_deref(), Some("a"));
-        let t = r.spec_of("t").unwrap().clone();
-        assert_eq!(
-            shown_rex_key(&t, PaneIdx::Block(0), None, Some("a")).as_deref(),
-            Some("t::2#a")
-        );
-        // An origin rebuilt while it was out declares the block for it to return to.
-        let (mut fresh, _) = rex_registry();
-        fresh.add(&split_rex_spec("t", 1), false).unwrap();
-        fresh.mark_detached("t", true, Some("a"));
-        assert!(fresh.is_pane_detached("t", PaneIdx::Block(0)));
-        assert_eq!(fresh.scratch_block_keys("t"), ["t::2#a"]);
-        r.sync_column("t", opened(vec![scratch("w1", &["a", "b"])]));
-        assert_eq!(r.column_block("t"), None, "two blocks: none travels alone");
     }
 
     #[test]
@@ -5862,53 +5037,6 @@ mod tests {
         assert_eq!(r.close_agent("t", "gone"), None);
     }
 
-    #[test]
-    fn a_hidden_agent_exiting_while_a_sibling_is_popped_out_keeps_the_tab() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&rex_spec("t", "local"), false).unwrap();
-        r.force_agents("t", &["a", "b"], Some("a"));
-        r.force_detached_agent("t", "a");
-        assert_eq!(r.close_agent("t", "b"), Some(AgentClosed::PaneLive));
-        assert!(r.is_detached("t"), "the pop-out still holds the tab");
-        assert_eq!(r.agent_keys("t"), ["t::agent:a"]);
-        // Likewise while the origin still has the popped-out tab selected.
-        r.force_agents("t", &["a", "b"], Some("a"));
-        r.force_detached_agent("t", "a");
-        r.active = Some("t".into());
-        assert_eq!(r.close_agent("t", "b"), Some(AgentClosed::PaneLive));
-        assert!(r.is_detached("t"));
-    }
-
-    #[test]
-    fn a_popped_out_agent_keeps_its_agent_key() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&rex_spec("t", "local"), false).unwrap();
-        r.add(&spec("p", "/tmp"), false).unwrap();
-        r.force_agents("t", &["r1", "r2"], Some("r2"));
-        // What pop-out records as the travelling agent, and the key its exit and size then name.
-        let agent = r.selected_agent("t");
-        assert_eq!(agent, Some("r2"));
-        let t = r.spec_of("t").unwrap();
-        assert_eq!(
-            shown_rex_key(t, PaneIdx::Primary, agent, None).as_deref(),
-            Some("t::agent:r2")
-        );
-        assert_eq!(
-            shown_rex_key(t, PaneIdx::Block(0), agent, None).as_deref(),
-            Some("t::2"),
-            "a split pane is never an agent"
-        );
-        assert_eq!(
-            shown_rex_key(t, PaneIdx::Primary, None, None).as_deref(),
-            Some("t")
-        );
-        assert_eq!(r.selected_agent("p"), None);
-        assert_eq!(
-            shown_rex_key(r.spec_of("p").unwrap(), PaneIdx::Primary, None, None),
-            None
-        );
-    }
-
     fn target(block: &str) -> PaneTarget {
         PaneTarget {
             endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
@@ -5934,24 +5062,22 @@ mod tests {
         assert_eq!(r.selected_agent("t"), Some("r3"));
     }
 
+    /// A popped-out tab's agents are the pop-out's: an op's answer landing in every window
+    /// holding the tab passes over the origin's placeholder, and no op is asked of it.
     #[test]
-    fn sync_keeps_a_popped_out_agents_slot_out() {
+    fn sync_and_agent_request_leave_a_placeholder_alone() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());
         r.add(&rex_spec("t", "local"), false).unwrap();
-        r.force_agents("t", &["a", "b"], Some("a"));
-        r.force_detached_agent("t", "a");
-        // `a` answers on a terminal it wasn't known on: its surface is out, not stale here.
+        r.stand_placeholder("t");
+        r.active = Some("t".into());
         let found = AgentsOpened {
             agents: vec![("a".into(), target("block:a"))],
             selected: Some("a".into()),
         };
         r.sync_agents("t", found).unwrap();
-        let a = r.tabs[0].primary.agent("a").unwrap();
-        assert!(
-            matches!(a.slot, TabSlot::Detached),
-            "the pop-out still holds it"
-        );
-        assert_eq!(a.rex, RexState::Ready(target("block:a")));
+        assert!(r.agent_keys("t").is_empty(), "nothing to spawn here");
+        assert_eq!(r.agent_request("t"), None);
+        assert_eq!(r.active_agent_tab(), None);
     }
 
     #[test]
@@ -6029,45 +5155,6 @@ mod tests {
         assert_eq!(r.active_agent_tab(), None);
         r.active = Some("t".into());
         assert_eq!(r.active_agent_tab(), Some("t"));
-    }
-
-    #[test]
-    fn a_popped_out_agent_ending_leans_its_pane_to_a_sibling() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&rex_spec("t", "local"), false).unwrap();
-        r.force_ready_agents("t", &["r1", "r2", "r3"], Some("r2"));
-        r.force_detached_agent("t", "r2");
-        r.add(&spec("p", "/tmp"), false).unwrap();
-        // The origin shows the tab (its pane is out, so nothing spawns here).
-        let _ = r.activate("t");
-        assert_eq!(r.clear_detached("t"), DetachedEnded::SiblingShown);
-        assert_eq!(r.active_tab(), Some("t"), "the tab stays on screen");
-        assert_eq!(r.agent_keys("t"), ["t::agent:r1", "t::agent:r3"]);
-        assert_eq!(r.selected_agent("t"), Some("r1"), "not a removed record");
-        assert!(!r.is_detached("t"));
-    }
-
-    #[test]
-    fn a_selection_made_in_the_origin_survives_the_popped_out_agent_ending() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&rex_spec("t", "local"), false).unwrap();
-        r.force_ready_agents("t", &["r1", "r2", "r3"], Some("r2"));
-        r.force_detached_agent("t", "r2");
-        r.select_agent("t", "r3").unwrap();
-        assert_eq!(r.clear_detached("t"), DetachedEnded::SiblingShown);
-        assert_eq!(r.selected_agent("t"), Some("r3"));
-    }
-
-    #[test]
-    fn a_popped_out_last_agent_ending_takes_the_tab_cold() {
-        let mut r = Registry::new(std::ptr::null_mut(), rect());
-        r.add(&rex_spec("t", "local"), false).unwrap();
-        r.force_ready_agents("t", &["r1"], Some("r1"));
-        r.force_detached_agent("t", "r1");
-        let _ = r.activate("t");
-        assert_eq!(r.clear_detached("t"), DetachedEnded::Cold(None));
-        assert_eq!(r.active_tab(), None);
-        assert!(r.agent_keys("t").is_empty());
     }
 
     #[test]

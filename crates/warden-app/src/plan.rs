@@ -72,14 +72,14 @@ pub struct WindowSpec {
     pub tabs: Vec<TabPlan>,
 }
 
-/// The opaque token identifying a popped-out tab's detached window, built from its origin
+/// The opaque token identifying a popped-out tab's pop-out window, built from its origin
 /// window label + the tab's id (= `Tab::key`). Combined and sanitized to the Tauri label
 /// charset, then suffixed with a hash of the raw pair, so `shell_core::detach::detached_label(token)`
 /// is always a valid, distinct label: two different tabs (different id) never collide — not even
 /// ids that sanitize alike (`/x/my proj` and `/x/my-proj`) — and the same tab can't be popped out twice
-/// (its registry slot goes `Detached` on the first pop-out, so a second `detach` is a no-op).
-/// The value is never parsed back — the manager tracks `origin_label` + `tab_id` on the
-/// `DetachedSurface` itself — so the colon separator is purely for human legibility of the label.
+/// (the first pop-out leaves a placeholder, which `take_tab` won't move).
+/// The value is never parsed back — the pop-out's `WindowState::origin` carries the origin and
+/// tab — so the colon separator is purely for human legibility of the label.
 pub fn detach_window_token(origin_label: &str, tab_id: &str) -> String {
     let raw = format!("{origin_label}:{tab_id}");
     // FNV-1a: stable across builds and Rust versions, since the label also keys the pop-out's

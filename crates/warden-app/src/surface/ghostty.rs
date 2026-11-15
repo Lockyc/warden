@@ -109,7 +109,7 @@ const CORNER_TOUCH_EPS: f64 = 3.0;
 /// chrome's rule (`.pane`/`.hole` per-corner radii) restated on the native side, derived here
 /// from geometry rather than plumbed through the rect report: a corner is a window corner iff
 /// BOTH its edges touch the content view's matching edges. So a pane's corners at the divider,
-/// against the sidebar, or under the detached window's banner stay square, and the two sides of
+/// against the sidebar, or under a pop-out's banner stay square, and the two sides of
 /// the seam agree by construction (the chrome can only round a corner that is at the window's
 /// edge, which is exactly what this measures). Called wherever the frame is set — `new`,
 /// `set_frame`, `reparent` — since a resize, a split, or a move to another window can change
@@ -2029,12 +2029,9 @@ impl GhosttySurface {
             self.host_view.removeFromSuperview();
             content_view.addSubview(&self.host_view);
 
-            // Un-hide the view. A reparent target ALWAYS shows this surface: the detached window
-            // exists to show its one tab, and a redock immediately re-`activate`s the returned
-            // tab. Load-bearing for popping out a NON-active tab: that tab's surface was
-            // `hide()`n (setHidden(true)) when it was deselected in the origin, and without this
-            // it would stay hidden in the detached window — only the banner would appear, no
-            // terminal (the "unselected tab pops out to just a title bar" bug).
+            // Un-hide the view. The registry adopting the moved tab (`Registry::adopt_tab`) then
+            // shows or hides each surface as its own selection says, so a surface hidden in the
+            // window it left — a NON-active tab's — doesn't stay hidden where it lands.
             self.host_view.setHidden(false);
 
             // Adopt the new window as this surface's owner (replaces the old retain), fit the view

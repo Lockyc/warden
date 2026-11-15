@@ -1,5 +1,5 @@
-//! Owns each open window's content: its terminals (a `Registry` per window label), the held
-//! configs, pop-outs and remembered tabs. Which windows exist and under which label is
+//! Owns each open window's content: its terminals (a `Registry` per window label, a pop-out's
+//! among them), the held configs and remembered tabs. Which windows exist and under which label is
 //! shell-core's `WindowSet`'s, which builds and tears down this content through `WardenHost`
 //! (`windows.rs`). Impure (Tauri + AppKit) — verified at checkpoints.
 
@@ -7,11 +7,10 @@ use crate::plan::{tab_ops, window_to_spec, TabPlan, WindowSpec};
 use crate::probe::Presence;
 use crate::registry::{ProbeTarget, Registry, TabDto};
 use crate::surface::ghostty::GhosttySurface;
-use crate::surface::{PixelRect, TabSpec, TerminalSurface};
+use crate::surface::{PixelRect, TabSpec};
 use crate::ManagerState;
 use shell_core::windows::WindowSet;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::os::raw::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -19,10 +18,6 @@ use warden_config::{Colour, Config, Reconciliation, SpecChange};
 
 /// Initial surface rect: offset by the 160px sidebar so the surface never
 /// overlaps it before the first JS rect report arrives. (Matches the spike.)
-///
-/// `pub(crate)` for one more caller than `redock`: `pop_out_tab`'s reparent-rollback needs
-/// the same "any plausible rect, corrected by the next `activate`" placeholder, and a second
-/// literal there would be a copy of this fact that could drift from it.
 pub(crate) const INITIAL_RECT: PixelRect = PixelRect {
     x: 160.0,
     y: 0.0,
@@ -197,8 +192,69 @@ pub struct InitDto {
     pub error: Option<String>,
 }
 
+/// Where a pop-out's tab came from: the window it returns to — found by `label` while that
+/// window is open, else by `title`, which follows a rename in place (`retitle`) and a rebuild
+/// under another label (`build_window`) — and the tab's id there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PopOrigin {
+    pub label: String,
+    pub title: String,
+    pub tab_id: String,
+}
+
+/// Where a pop-out's tab goes home to ([`return_target`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReturnTarget {
+    /// The open window under this label.
+    Open(String),
+    /// No window is open with the origin's title: reopen the window with this title first.
+    Reopen(String),
+}
+
+/// Where a pop-out's tab returns, given the open windows as `(label, title)`: the origin's own
+/// label while a window under it still has the origin's title; else the window now carrying that
+/// title (renamed in place, or rebuilt under another label); else reopen it by title. A window
+/// that took the origin's label under another title is not its home.
+pub fn return_target(origin: &PopOrigin, open: &[(&str, &str)]) -> ReturnTarget {
+    let titled = |t: &str| t.trim() == origin.title.trim();
+    if open.iter().any(|(l, t)| *l == origin.label && titled(t)) {
+        return ReturnTarget::Open(origin.label.clone());
+    }
+    match open.iter().find(|(_, t)| titled(t)) {
+        Some((l, _)) => ReturnTarget::Open((*l).to_owned()),
+        None => ReturnTarget::Reopen(origin.title.clone()),
+    }
+}
+
+/// Whether a pop-out has nothing left to show: its one tab holds no live surface. Its window then
+/// closes and the tab goes home cold ([`close_spent_popouts`]).
+pub fn popout_should_close(reg: &Registry) -> bool {
+    !reg.sole_tab_live()
+}
+
+/// Close every pop-out with nothing left to show ([`popout_should_close`]) — run after a child
+/// exit, an unload or an agent close, any of which can leave a pop-out's tab cold. Each window's
+/// `Destroyed` then returns its tab (`main.rs::redock`). Locks `ManagerState`, so callers must
+/// hold none.
+pub fn close_spent_popouts(app: &AppHandle) {
+    let spent: Vec<String> = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        m.windows
+            .iter()
+            .filter(|(l, ws)| WindowManager::is_popout(l) && popout_should_close(&ws.registry))
+            .map(|(l, _)| l.clone())
+            .collect()
+    };
+    for label in spent {
+        log::info!("{label:?}: nothing left running, closing");
+        if let Some(w) = app.get_window(&label) {
+            let _ = w.close();
+        }
+    }
+}
+
 pub struct WindowState {
-    pub window: WebviewWindow,
     pub registry: Registry,
     pub title: String,
     pub colour: String,
@@ -214,7 +270,8 @@ pub struct WindowState {
     /// Surface-spawn failure(s) from `build_window`, shown once via the init DTO.
     pub spawn_error: Option<String>,
     /// The `SessionStore` key this window's remembered tabs live under: its launch label
-    /// (`WindowSet::launch_label`), which a rename in place moves (`retitle`).
+    /// (`WindowSet::launch_label`), which a rename in place moves (`retitle`). Empty for a
+    /// pop-out, which remembers nothing.
     pub session_key: String,
     /// Whether this window's chrome has pulled its init snapshot (`init_tabs`), so an emitted
     /// `warden:focus-tab` reaches a listener.
@@ -222,6 +279,10 @@ pub struct WindowState {
     /// The tab a `warden://open?…&tab=` named before the chrome mounted; `init_tabs` hands it
     /// over as the tab to open on.
     pub pending_focus: Option<String>,
+    /// A pop-out's origin; `None` for a configured window. A pop-out is a one-tab window under a
+    /// `shell-detach:` label whose registry holds the tab moved out of the origin, where a
+    /// placeholder keeps its row ([`Registry::take_tab`]).
+    pub origin: Option<PopOrigin>,
 }
 
 /// The id of the tab `name` names among `tabs` (`(id, title)` pairs): an exact id, else the
@@ -231,24 +292,6 @@ pub fn tab_named<'a>(tabs: &[(&'a str, &'a str)], name: &str) -> Option<&'a str>
         .find(|(id, _)| *id == name)
         .or_else(|| tabs.iter().find(|(_, title)| *title == name))
         .map(|(id, _)| *id)
-}
-
-/// The chrome half of retiring a popped-out tab's second pane, run with the lock RELEASED after
-/// [`WindowManager::close_detached_secondary`]: the detached page collapses to one hole (the
-/// surface is already gone, so its immediate re-report for pane 0 lands on the primary, and a
-/// stale pane-1 rect is dropped by `set_detached_frame`), and the origin's chrome, when
-/// `origin_label` names it, gets the same `warden:pane-closed` a docked exit sends, so its
-/// dragged ratio (`ratioOverride`) goes too.
-pub fn announce_detached_secondary_closed(
-    app: &AppHandle,
-    dlabel: &str,
-    origin_label: Option<&str>,
-    tab_id: &str,
-) {
-    let _ = shell_core::detach::set_panes(app, dlabel, &[]);
-    if let Some(origin_label) = origin_label {
-        announce_pane_closed(app, origin_label, tab_id);
-    }
 }
 
 /// Tell window `label`'s chrome that tab `tab_id`'s scratch column is gone — a plain tab's one
@@ -263,169 +306,13 @@ pub fn announce_pane_closed(app: &AppHandle, label: &str, tab_id: &str) {
     );
 }
 
-/// A popped-out tab [`WindowManager::end_detached`] ended, for [`announce_detached_ended`].
-pub struct DetachedTabEnded {
-    dlabel: String,
-    origin_label: String,
-    tab_id: String,
-    /// The origin's new active tab when the whole tab went cold; `None` when a running sibling
-    /// agent keeps it.
-    new_active: Option<Option<String>>,
-    dto: Option<InitDto>,
-}
-
-/// The chrome half of [`WindowManager::end_detached`], run with the lock RELEASED: the detached
-/// window closes, then the origin gets a snapshot (the row stops rendering detached, reads cold)
-/// and the same `warden:tab-exited` a docked exit sends.
-pub fn announce_detached_ended(app: &AppHandle, ended: DetachedTabEnded) {
-    let DetachedTabEnded {
-        dlabel,
-        origin_label,
-        tab_id,
-        new_active,
-        dto,
-    } = ended;
-    if let Some(win) = app.get_window(&dlabel) {
-        let _ = win.close();
-    }
-    if let Some(dto) = dto {
-        let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
-    }
-    if let Some(new_active) = new_active {
-        let _ = app.emit_to(
-            origin_label.as_str(),
-            "warden:tab-exited",
-            serde_json::json!({ "label": origin_label, "id": tab_id, "newActive": new_active }),
-        );
-    }
-}
-
-/// Tear down a popped-out tab's surfaces on purpose — the one place a live PTY is
-/// intentionally ended by the pop-out/redock flow (and its failure arms). Goes through
-/// `close()`, never a bare `drop`: `GhosttySurface::drop` treats a surface dropped without
-/// `close()` as a registry bug and says so in debug builds, so a bare drop here reported a
-/// false bug on every deliberate teardown. One helper for every site so the pair can't be
-/// half-closed.
-pub(crate) fn close_both(primary: GhosttySurface, secondary: Option<GhosttySurface>) {
-    primary.close();
-    if let Some(s) = secondary {
-        s.close();
-    }
-}
-
 /// What `WindowManager::redock` hands its caller to announce with the lock released.
 pub struct Redocked {
     pub origin_label: String,
-    /// `(tab_id, new_active)` when the returning tab's terminal ended on arrival — it left the
-    /// config while it was out, or had no slot to land in: the chrome gets the same
-    /// `warden:tab-exited` an unload sends, so its selection follows the neighbour the registry
-    /// leaned to.
+    /// `(tab_id, new_active)` when the returning tab came home with nothing live, or was dropped
+    /// (it left the config while out): the chrome gets the same `warden:tab-exited` an unload
+    /// sends, so its selection follows the neighbour the registry leaned to.
     pub dropped: Option<(String, Option<String>)>,
-}
-
-/// A tab that has been popped out into its own detached window. Holds the live surface(s)
-/// (moved out of its origin `WindowState`'s `Registry`, which keeps a `Detached`
-/// placeholder in each slot) plus the bookkeeping needed to return them when the detached
-/// window closes: which origin window/tab they belong to.
-///
-/// Pop-out is **whole-tab**, so a split tab brings its second pane along: `secondary` is
-/// `Some` exactly when `Registry::detach` handed back a live second surface. The detached
-/// window then lays out two holes and `set_detached_frame` routes each hole's rect to its
-/// own surface — through [`DetachedSurface::mirrored`], since a `side = "left"` split puts
-/// the secondary in the FIRST hole (the docked layout, carried out; see `PaneIdx::hole`).
-///
-/// These live in `WindowManager::detached`, **separate from `windows`**, so hot-reload
-/// `reconcile` (which only walks `windows`) never sees them and can't close or duplicate
-/// them. Their count goes to the `WindowSet` (`sync_detached`) so the home surface doesn't
-/// pop up while a detached window is the only thing on screen.
-pub struct DetachedSurface {
-    pub surface: GhosttySurface,
-    /// The pane with keyboard focus here: seeded from the origin's at pop-out, then each
-    /// `SurfaceSignal::Focused` ([`WindowManager::handle_surface_focused`]). ⌥⌘← / ⌥⌘→ read it
-    /// ([`Self::pane_to`]).
-    pub focused: crate::registry::PaneIdx,
-    /// The tab's second pane, when it had a live one at pop-out time. `None` for an
-    /// unsplit tab (and for a split tab whose secondary was still cold — nothing live to
-    /// carry, so the window opens with one hole rather than one it can't fill).
-    pub secondary: Option<GhosttySurface>,
-    /// A second pane went out with the tab at pop-out — fixed then, unlike `secondary`, which
-    /// drops to `None` when that pane's shell exits in the detached window. An origin rebuilt
-    /// while the tab is out marks the pane from this, so the pane reads `Detached` there just as
-    /// in an origin that stayed open, and `attach` retires it alike if it doesn't come back.
-    pub secondary_went_out: bool,
-    /// The Rex block the travelling column block attaches (`Registry::column_block` at pop-out):
-    /// its size claims and exit name its block key, and it returns to that block's slot. `None`
-    /// for a plain tab's block and an unsplit tab.
-    pub block: Option<String>,
-    /// The tab's config split declares `side = "left"` — its second pane sits BEFORE the
-    /// primary, docked and popped out alike. `false` for a right-side split and an unsplit tab.
-    /// Read only through [`Self::mirrored`].
-    pub secondary_left: bool,
-    /// The spec the travelling surfaces were spawned from — what they still run. `redock`
-    /// compares the config against this, not the origin registry's spec, which a hot-reload's
-    /// `set_meta` or a rebuilt origin has moved on (`reconcile_returned_tab`).
-    pub spec: TabSpec,
-    /// The origin window's current label — repointed when the origin is rebuilt under another
-    /// label (`build_window`) or found under one on return (`main.rs::redock`).
-    pub origin_label: String,
-    /// The origin window's title, which identifies it across a rename in place (`retitle`) and a
-    /// close: a window renamed in place keeps its live label, but its closed slot is relabelled
-    /// from the new title, and a new window may take the label it left.
-    pub origin_title: String,
-    pub tab_id: String,
-    /// The agent whose surface travelled (`Registry::selected_agent` at pop-out), for a Rex
-    /// tab's main pane holding agents; `None` otherwise.
-    pub agent: Option<String>,
-}
-
-impl DetachedSurface {
-    /// The pane to `side` of the focused one here (⌥⌘← / ⌥⌘→), as a docked tab's
-    /// (`Registry::pane_to`).
-    pub fn pane_to(&self, side: crate::registry::Side) -> Option<crate::registry::PaneIdx> {
-        crate::registry::pane_toward(
-            self.secondary.is_some(),
-            self.secondary_left,
-            self.focused,
-            side,
-        )
-    }
-
-    /// Give pane `which` keyboard focus; its `SurfaceSignal::Focused` then records it in
-    /// `focused`. False when this pop-out has no such pane.
-    pub fn focus_pane(&self, which: crate::registry::PaneIdx) -> bool {
-        self.pane(which).map(|s| s.focus()).is_some()
-    }
-
-    /// The travelling surface of pane `which`: the primary, or the one column block that went
-    /// out with the tab (`Block(0)`). `None` for any other block — a pop-out carries one — and
-    /// for a second pane no longer here.
-    pub fn pane(&self, which: crate::registry::PaneIdx) -> Option<&GhosttySurface> {
-        match which {
-            crate::registry::PaneIdx::Primary => Some(&self.surface),
-            crate::registry::PaneIdx::Block(0) => self.secondary.as_ref(),
-            crate::registry::PaneIdx::Block(_) => None,
-        }
-    }
-
-    /// The Rex key pane `which`'s travelling surface answers to: the agent's own for an agent,
-    /// the block's for a column block, else the pane's (`registry::shown_rex_key`). `None` for a
-    /// plain tab.
-    pub fn rex_key(&self, which: crate::registry::PaneIdx) -> Option<String> {
-        crate::registry::shown_rex_key(
-            &self.spec,
-            which,
-            self.agent.as_deref(),
-            self.block.as_deref(),
-        )
-    }
-
-    /// Whether this window's holes are laid out secondary-first: a left-side split with its
-    /// second pane still live. Once the secondary is gone the one remaining hole is the
-    /// primary's whatever the side was, so this is keyed on `secondary`'s presence, not just
-    /// the flag — the `mirrored` argument every `PaneIdx::hole`/`from_hole` call here passes.
-    pub fn mirrored(&self) -> bool {
-        self.secondary_left && self.secondary.is_some()
-    }
 }
 
 pub struct WindowManager {
@@ -450,13 +337,6 @@ pub struct WindowManager {
     /// drops its title, and a rename in place carries it. Titles since deleted from the config
     /// are skipped at reopen time (`plan::next_reopen_target`).
     pub last_closed: Vec<String>,
-    /// Tabs currently popped out into their own detached windows, keyed by the detached
-    /// window's Tauri label (`shell_core::detach::detached_label`). Kept **separate from
-    /// `windows`** so hot-reload reconcile never touches them (it walks `windows` only); their
-    /// count is mirrored into the `WindowSet` (`sync_detached`), which keeps the home surface
-    /// away while a detached window is the only surface on screen. Populated by `pop_out_tab`,
-    /// drained by `redock` when the detached window closes.
-    pub detached: HashMap<String, DetachedSurface>,
     /// Each window's remembered loaded + active tabs (`remember_tabs`): read by `build_window`,
     /// written by `record_session`. In-memory only until `main.rs`'s setup points it at disk.
     pub session: crate::session::SessionStore,
@@ -475,17 +355,45 @@ impl WindowManager {
             probe_interval,
             presence_cache: PresenceCache::default(),
             last_closed: Vec::new(),
-            detached: HashMap::new(),
             session: Default::default(),
         }
     }
 
-    /// Mirror the popped-out window count into the `WindowSet`, which keeps the home surface away
-    /// while a detached window is the only surface on screen. Call after `detached` changes.
-    pub fn sync_detached(&self, app: &AppHandle) {
+    /// Mirror the pop-out count into the `WindowSet`, which keeps the home surface away while a
+    /// pop-out is the only window on screen. Call after a pop-out opens or closes.
+    pub fn sync_popouts(&self, app: &AppHandle) {
         if let Some(set) = app.try_state::<WindowSet>() {
-            set.set_detached_count(app, self.detached.len());
+            let n = self.windows.keys().filter(|l| Self::is_popout(l)).count();
+            set.set_detached_count(app, n);
         }
+    }
+
+    /// Whether `label` is a pop-out's: a one-tab window under a `shell-detach:` label.
+    pub fn is_popout(label: &str) -> bool {
+        shell_core::detach::is_detached_label(label)
+    }
+
+    /// The pop-out holding tab `tab_id` popped out of window `origin_label`, if it is out.
+    pub fn popout_of(&self, origin_label: &str, tab_id: &str) -> Option<&str> {
+        self.windows.iter().find_map(|(l, ws)| {
+            let o = ws.origin.as_ref()?;
+            (o.label == origin_label && o.tab_id == tab_id).then_some(l.as_str())
+        })
+    }
+
+    /// The window holding tab `tab_id` itself — a pop-out holding it, never a window with only its
+    /// placeholder — for a reader that knows the tab but not the window.
+    pub fn home_of(&self, tab_id: &str) -> Option<&str> {
+        self.windows
+            .iter()
+            .find(|(_, ws)| ws.registry.holds_tab(tab_id))
+            .map(|(l, _)| l.as_str())
+    }
+
+    /// The config window title `label`'s tabs live under: its own, or for a pop-out its origin's.
+    pub fn config_title(&self, label: &str) -> Option<&str> {
+        let ws = self.windows.get(label)?;
+        Some(ws.origin.as_ref().map_or(&ws.title, |o| &o.title))
     }
 
     /// Update the shared probe-pass cadence (the scheduler reads it each tick).
@@ -563,38 +471,40 @@ impl WindowManager {
             .flatten()
             .map(|r| r.restore(spec.tabs.iter().map(|t| t.spec.id.as_str())))
             .unwrap_or_default();
-        // A tab still popped out of this window (rebuilt while it's out) already has its
-        // terminal in the detached window: it is added cold and then marked `Detached`, the
-        // same placeholder `detach` leaves, so nothing here or later spawns a second one.
-        // Matched by title: the window may come back under another label than the one it had.
-        let out: HashMap<String, (bool, Option<String>)> = self
-            .detached
+        // A tab still popped out of this window (rebuilt while it's out) has its terminals in the
+        // pop-out: its entry is added cold and then made the placeholder `take_tab` leaves, so
+        // nothing here spawns a second one and the tab has its slot to come home to. Matched by
+        // title: the window may come back under another label than the one it had.
+        let out: Vec<String> = self
+            .windows
             .values_mut()
-            .filter(|d| d.origin_title == spec.title)
-            .map(|d| {
-                d.origin_label = spec.label.clone();
-                (d.tab_id.clone(), (d.secondary_went_out, d.block.clone()))
+            .filter_map(|ws| ws.origin.as_mut())
+            .filter(|o| o.title == spec.title)
+            .map(|o| {
+                o.label = spec.label.clone();
+                o.tab_id.clone()
             })
             .collect();
         for t in &spec.tabs {
             let id = t.spec.id.as_str();
-            let eager = (t.load_on_open || restore.loaded.contains(id)) && !out.contains_key(id);
+            let eager =
+                (t.load_on_open || restore.loaded.contains(id)) && !out.iter().any(|o| o == id);
             if let Err(e) = registry.add(&t.spec, eager) {
                 spawn_errors.push(format!("{}: {e}", t.spec.title));
             }
         }
-        for (id, (has_secondary, block)) in &out {
-            registry.mark_detached(id, *has_secondary, block.as_deref());
+        for id in &out {
+            registry.stand_placeholder(id);
         }
-        // The first tab shown is one with a terminal to show here — never a popped-out one,
-        // whose hole in this window would sit empty.
+        // The first tab shown is one with a terminal to show here — never a placeholder, whose
+        // hole in this window would sit empty.
         let active = restore
             .active
             .as_deref()
             .and_then(|id| spec.tabs.iter().find(|t| t.spec.id == id))
             .into_iter()
             .chain(&spec.tabs)
-            .find(|t| !registry.is_detached(&t.spec.id));
+            .find(|t| !registry.is_placeholder(&t.spec.id));
         if let Some(first) = active {
             if let Err(e) = registry.activate(&first.spec.id) {
                 let msg = format!("{}: {e}", first.spec.title);
@@ -628,7 +538,7 @@ impl WindowManager {
                         let m = st.lock();
                         let reg = &m.windows.get(&label_for_event)?.registry;
                         let tab = reg.active_tab()?;
-                        (!reg.is_detached(tab)).then(|| tab.to_owned())
+                        (!reg.is_placeholder(tab)).then(|| tab.to_owned())
                     });
                 if let Some(tab) = seen {
                     let _ = app_for_event.emit_to(
@@ -645,7 +555,6 @@ impl WindowManager {
         self.windows.insert(
             spec.label.clone(),
             WindowState {
-                window: window.clone(),
                 registry,
                 title: spec.title.clone(),
                 colour: spec.colour.clone(),
@@ -655,9 +564,65 @@ impl WindowManager {
                 session_key,
                 chrome_ready: false,
                 pending_focus: None,
+                origin: None,
             },
         );
         Ok(window)
+    }
+
+    /// Register pop-out `label`: a one-tab window whose `registry` already holds the tab moved
+    /// out of `origin`, shown under the tab's `title` in the origin's `colour`. It remembers no
+    /// tabs and carries no sections; its focus clears the badge its tab took while unfocused and
+    /// refreshes the menu, as a configured window's does.
+    pub fn add_popout(
+        &mut self,
+        app: &AppHandle,
+        label: &str,
+        registry: Registry,
+        title: String,
+        colour: String,
+        origin: PopOrigin,
+    ) {
+        if let Some(window) = app.get_window(label) {
+            let (app, label) = (app.clone(), label.to_owned());
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Focused(true) = event {
+                    crate::probe::bump(&label);
+                    let seen = app.try_state::<crate::ManagerState>().and_then(|st| {
+                        let m = st.lock();
+                        m.windows
+                            .get(&label)?
+                            .registry
+                            .active_tab()
+                            .map(str::to_owned)
+                    });
+                    if let Some(tab) = seen {
+                        let _ = app.emit_to(
+                            label.as_str(),
+                            "warden:tab-seen",
+                            serde_json::json!({ "label": label, "id": tab }),
+                        );
+                    }
+                    crate::sync_agent_menu(&app);
+                }
+            });
+        }
+        self.windows.insert(
+            label.to_owned(),
+            WindowState {
+                registry,
+                title,
+                colour,
+                open_tabs_section: false,
+                background_tabs_section: false,
+                spawn_error: None,
+                session_key: String::new(),
+                chrome_ready: false,
+                pending_focus: None,
+                origin: Some(origin),
+            },
+        );
+        self.sync_popouts(app);
     }
 
     /// `WardenHost::closed`: drop `label`'s state and reap its surfaces eagerly via `close_all`
@@ -695,10 +660,12 @@ impl WindowManager {
             .or_else(|| crate::plan::launch_label(&self.last_good, idx));
         crate::plan::retitle_window(&mut self.last_good, &old, title, colour);
         crate::plan::retitle_window(&mut self.raw_config, &old, title, colour);
-        let renamed = self
-            .last_closed
-            .iter_mut()
-            .chain(self.detached.values_mut().map(|d| &mut d.origin_title));
+        let renamed = self.last_closed.iter_mut().chain(
+            self.windows
+                .values_mut()
+                .filter_map(|ws| ws.origin.as_mut())
+                .map(|o| &mut o.title),
+        );
         for t in renamed.filter(|t| **t == old) {
             *t = title.to_string();
         }
@@ -753,13 +720,17 @@ impl WindowManager {
                 split_band: SPLIT_BAND,
                 scratch_band: crate::rex::layout::RATIO_BAND,
                 terminal_font_size: crate::surface::ghostty::terminal_font_size(),
-                trees: self
-                    .last_good
-                    .windows
-                    .iter()
-                    .find(|w| w.title == ws.title)
-                    .map(warden_config::Window::tree_names)
-                    .unwrap_or_default(),
+                // A pop-out's one tab carries no root section of its own.
+                trees: match ws.origin {
+                    Some(_) => Vec::new(),
+                    None => self
+                        .last_good
+                        .windows
+                        .iter()
+                        .find(|w| w.title == ws.title)
+                        .map(warden_config::Window::tree_names)
+                        .unwrap_or_default(),
+                },
                 active: ws.registry.active_tab().map(str::to_string),
                 tabs,
                 error: ws.spawn_error.clone(),
@@ -803,17 +774,8 @@ impl WindowManager {
     /// column to follow what the hub finds (`Registry::release_block`): the session's next view
     /// drops the block, or its end drops the column with the same `warden:pane-closed`.
     ///
-    /// **Popped-out surfaces route too.** A surface not found in any `windows` registry is looked
-    /// up in `detached` — the same two outcomes, reached from the detached window: a secondary
-    /// exit closes that surface and asks the shared detach page to relayout to one hole
-    /// (`shell_core::detach::set_panes`), telling the origin's chrome the same `warden:pane-closed`
-    /// the docked path would (so its dragged ratio, `ratioOverride`, goes too) — for a Rex block only once its
-    /// session ends, as docked; a primary exit ends the tab — both
-    /// surfaces closed, the origin's `Detached` placeholders retired to `Cold`
-    /// (`Registry::clear_detached`), the detached window closed, and the origin's chrome told
-    /// `warden:tab-exited` exactly as if the exit had happened docked — never a "Process exited"
-    /// overlay left sitting in the detached window. A travelling agent whose pane still holds a
-    /// running sibling ends only itself: the origin tab stays, showing that sibling if on screen.
+    /// A pop-out's surface takes the same path in the pop-out's own registry; a pop-out left with
+    /// nothing live then closes, taking its tab home cold ([`close_spent_popouts`]).
     ///
     /// **A Rex pane** exits the same way (its relay is the child), and additionally has its Rex
     /// session ended when the program in it finished (`rex::spawn::end_if_exited`, on a worker),
@@ -821,6 +783,12 @@ impl WindowManager {
     /// session to be reattached. An agent's relay exiting closes that agent alone
     /// (`Registry::close_agent`): the tab stays live while another of its agents is.
     pub fn handle_child_exited(app: &AppHandle, surface_id: usize) {
+        Self::child_exited(app, surface_id);
+        close_spent_popouts(app);
+    }
+
+    /// [`handle_child_exited`](Self::handle_child_exited)'s work in the window holding the surface.
+    fn child_exited(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
         // The WINDOW lookup only — its tab id is deliberately discarded. Resolving the tab twice
@@ -891,88 +859,7 @@ impl WindowManager {
                 "warden:tab-exited",
                 serde_json::json!({ "label": label, "id": tab_id, "newActive": new_active }),
             );
-            return;
         }
-
-        // Not docked anywhere: a popped-out tab's surface, held by a detached window's entry.
-        let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
-            return; // already gone (redocked or closed) — drop the signal
-        };
-        let mut rex = false;
-        if let Some(d) = lock.detached.get(&dlabel) {
-            if let Some(key) = d.rex_key(which) {
-                rex = true;
-                let owner = d
-                    .agent
-                    .clone()
-                    .filter(|_| which == crate::registry::PaneIdx::Primary)
-                    .map(|r| (d.tab_id.clone(), r));
-                crate::rex::spawn::end_if_exited(app, key, owner);
-            }
-        }
-        match which {
-            crate::registry::PaneIdx::Block(_) => {
-                let Some((origin_label, tab_id)) = lock.close_detached_secondary(&dlabel) else {
-                    return;
-                };
-                drop(lock);
-                // A Rex block's column outlives it: an emptied session gets a fresh scratch tab
-                // (`RexHub::column_fill`), so the origin keeps its split.
-                let origin = (!rex).then_some(origin_label.as_str());
-                announce_detached_secondary_closed(app, &dlabel, origin, &tab_id);
-            }
-            crate::registry::PaneIdx::Primary => {
-                if let Some(ended) = lock.end_detached(app, &dlabel) {
-                    drop(lock);
-                    announce_detached_ended(app, ended);
-                }
-            }
-        }
-    }
-
-    /// End popped-out tab `dlabel` whole, scratch pane included — the same one-dead-tab semantic
-    /// the docked primary path applies via `unload` — and retire its origin's placeholder. A
-    /// travelling agent that ended leaves its pane's running siblings: the tab stays, showing one
-    /// if it is the tab on screen. Returns what [`announce_detached_ended`] tells, once the lock is
-    /// released; `None` when `dlabel` isn't a detached window.
-    pub fn end_detached(&mut self, app: &AppHandle, dlabel: &str) -> Option<DetachedTabEnded> {
-        let DetachedSurface {
-            surface,
-            secondary,
-            origin_label,
-            tab_id,
-            ..
-        } = self.detached.remove(dlabel)?;
-        close_both(surface, secondary);
-        let ended = self.windows.get_mut(&origin_label).map(|ws| {
-            let ended = ws.registry.clear_detached(&tab_id);
-            if ended == crate::registry::DetachedEnded::SiblingShown
-                && ws.registry.active_tab() == Some(tab_id.as_str())
-            {
-                if let Err(e) = ws.registry.activate(&tab_id) {
-                    log::error!("couldn't show an agent of tab {tab_id:?}: {e}");
-                }
-            }
-            ended
-        });
-        let new_active = match ended {
-            Some(crate::registry::DetachedEnded::Cold(next)) => Some(next),
-            Some(crate::registry::DetachedEnded::SiblingShown) => None,
-            None => Some(None),
-        };
-        self.record_session(app, &origin_label);
-        // The entry is gone from `detached`, so nothing may be open now (origin closed while
-        // the tab was out): the home surface must appear, exactly as it would after `redock`. The
-        // window's own `Destroyed` → `redock` finds no entry and is a no-op.
-        self.sync_detached(app);
-        let dto = self.init_dto(&origin_label);
-        Some(DetachedTabEnded {
-            dlabel: dlabel.to_owned(),
-            origin_label,
-            tab_id,
-            new_active,
-            dto,
-        })
     }
 
     /// Record that the surface `surface_id` became first responder — the user clicked into it, or
@@ -981,26 +868,11 @@ impl WindowManager {
     /// the one route that catches a click on LIVE terminal content: the native `NSView` sits above
     /// the webview and consumes the click, so the chrome's own per-pane `mousedown` (which drives
     /// `focus_pane` for a cold pane's backstop) never fires for it. Both routes land on the same
-    /// registry record. A surface in a detached window drives that page's own ring instead, via
-    /// shell-core's `set_focused_hole` — the popped-out tab shows the same marker it did docked.
+    /// registry record.
     pub fn handle_surface_focused(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let mut lock = state.lock();
         let Some((label, _, _)) = lock.locate_surface(surface_id) else {
-            let Some((dlabel, which)) = lock.locate_detached_surface(surface_id) else {
-                return;
-            };
-            // The page's ring is per HOLE, not per pane — a left-side split's primary is
-            // its second hole.
-            let hole = match lock.detached.get_mut(&dlabel) {
-                Some(ds) => {
-                    ds.focused = which;
-                    which.hole(ds.mirrored())
-                }
-                None => return,
-            };
-            drop(lock);
-            let _ = shell_core::detach::set_focused_hole(app, &dlabel, hole);
             return;
         };
         let Some(ws) = lock.windows.get_mut(&label) else {
@@ -1020,35 +892,13 @@ impl WindowManager {
         );
     }
 
-    /// A right-click asked for warden's menu at `(x, y)` on a surface. In a docked window the page
-    /// holds the one thing the menu can't learn here — the split's live ratio, a divider drag
-    /// included — so it gets `warden:pane-menu` and answers with `pane_menu`, which pops the menu.
-    /// A pop-out's menu is built and popped here: Copy and Paste, Split and the size submenus
-    /// disabled.
+    /// A right-click asked for warden's menu at `(x, y)` on a surface. The page holds the one
+    /// thing the menu can't learn here — the split's live ratio, a divider drag included — so it
+    /// gets `warden:pane-menu` and answers with `pane_menu`, which pops the menu.
     pub fn handle_context_menu(app: &AppHandle, surface_id: usize, x: f64, y: f64) {
         let state = app.state::<ManagerState>();
         let lock = state.lock();
         let Some((label, _, _)) = lock.locate_surface(surface_id) else {
-            let Some((dlabel, pane)) = lock.locate_detached_surface(surface_id) else {
-                return;
-            };
-            let Some(ds) = lock.detached.get(&dlabel) else {
-                return;
-            };
-            let has_selection = lock
-                .pane_surface(&dlabel, &ds.tab_id, pane)
-                .is_some_and(|s| s.has_selection());
-            let ctx = crate::pane_menu::detached_ctx(
-                &dlabel,
-                &ds.tab_id,
-                pane,
-                has_selection,
-                ds.secondary.is_some(),
-            );
-            drop(lock);
-            if let Err(e) = crate::pane_menu::popup(app, &ctx, x, y) {
-                log::error!("pop-out {dlabel:?}: right-click menu not shown: {e}");
-            }
             return;
         };
         let Some((tab_id, which)) = lock
@@ -1070,7 +920,6 @@ impl WindowManager {
     /// chrome, which cannot see it for itself: the surface composites above the webview and takes
     /// the pointer at the boundary, so a fast flick out of the sidebar delivers no further event to
     /// the page and its CSS `:hover` freezes (chrome-core's de-emphasised main list stayed lit).
-    /// Detached windows carry no sidebar, so a surface that isn't in a docked window is ignored.
     pub fn handle_pointer_entered(app: &AppHandle, surface_id: usize) {
         let state = app.state::<ManagerState>();
         let lock = state.lock();
@@ -1085,117 +934,32 @@ impl WindowManager {
         );
     }
 
-    /// Retire a popped-out tab's second pane: close its surface and forget it. Returns the
-    /// `(origin_label, tab_id)` the caller announces with [`announce_detached_secondary_closed`]
-    /// once the lock is released (it emits). `None` if `dlabel` isn't a detached window or has
-    /// no live secondary. The scratch shell exiting, or its right-click Close Pane, lands here.
-    pub fn close_detached_secondary(&mut self, dlabel: &str) -> Option<(String, String)> {
-        let ds = self.detached.get_mut(dlabel)?;
-        let s = ds.secondary.take()?;
-        s.close();
-        ds.focused = crate::registry::PaneIdx::Primary;
-        Some((ds.origin_label.clone(), ds.tab_id.clone()))
-    }
-
-    /// Which detached window (by label) holds the surface `surface_id`, and as which pane —
-    /// the `detached` counterpart of `locate_surface`, for signals from a popped-out tab.
-    pub fn locate_detached_surface(
-        &self,
-        surface_id: usize,
-    ) -> Option<(String, crate::registry::PaneIdx)> {
-        self.detached.iter().find_map(|(label, ds)| {
-            if ds.surface.id() == surface_id {
-                Some((label.clone(), crate::registry::PaneIdx::Primary))
-            } else if ds.secondary.as_ref().is_some_and(|s| s.id() == surface_id) {
-                Some((label.clone(), crate::registry::PaneIdx::Block(0)))
-            } else {
-                None
-            }
-        })
-    }
-
-    /// The live surface pane `pane` of tab `tab` shows in window `label`, docked or popped out.
+    /// The live surface pane `pane` of tab `tab` shows in window `label`.
     pub fn pane_surface(
         &self,
         label: &str,
         tab: &str,
         pane: crate::registry::PaneIdx,
     ) -> Option<&GhosttySurface> {
-        if let Some(ds) = self.detached.get(label) {
-            return ds.pane(pane).filter(|_| ds.tab_id == tab);
-        }
         self.windows.get(label)?.registry.shown_surface(tab, pane)
     }
 
     /// Route a surface signal: find the (window-label, tab-id) owning surface `surface_id`, and
-    /// whether that surface is currently **visible** (its window is focused AND
-    /// `Registry::shows_surface`). A visible surface needs no notification — the user is
-    /// already looking at it.
+    /// whether its window puts it on screen (`Registry::shows_surface`) — visible once that window
+    /// is focused too, which the caller asks Tauri.
     pub fn locate_surface(&self, surface_id: usize) -> Option<(String, String, bool)> {
         self.windows.iter().find_map(|(label, ws)| {
             let tab = ws.registry.tab_of_surface(surface_id)?;
-            let focused = ws.window.is_focused().unwrap_or(false);
-            let visible = focused && ws.registry.shows_surface(surface_id);
-            Some((label.clone(), tab.to_string(), visible))
+            let shown = ws.registry.shows_surface(surface_id);
+            Some((label.clone(), tab.to_string(), shown))
         })
     }
 
-    /// The detached window's label for the tab `(origin_label, tab_id)`, if that tab is
-    /// currently popped out. Used to route a click on a detached sidebar row (in the origin
-    /// window) to "raise the popped-out window".
-    pub fn detached_label_for(&self, origin_label: &str, tab_id: &str) -> Option<String> {
-        self.detached
-            .iter()
-            .find(|(_, ds)| ds.origin_label == origin_label && ds.tab_id == tab_id)
-            .map(|(label, _)| label.clone())
-    }
-
-    /// Update a detached window's surface frame — its content hole, reported by
-    /// `detach.html`'s own `set_hole_rect` on load/resize (the detached window is not in
-    /// `windows`, so the ordinary registry path can't reach it). No-op if `label` isn't a
-    /// live detached window.
-    ///
-    /// `hole` is the page's own index for the slice the rect came from — left-to-right
-    /// position, which is all shell-core's detach page knows — resolved to a pane here via
-    /// `PaneIdx::from_hole` under this window's [`DetachedSurface::mirrored`], so a
-    /// left-side split's first hole lands on the SECONDARY. A single-hole detached window's
-    /// page omits `pane` entirely, which `set_hole_rect` reads as hole 0 — the primary, once
-    /// the secondary is gone — so an unsplit pop-out lands here exactly as it did before there
-    /// were panes at all. A rect resolving to `Block(0)` for a window that carries no second
-    /// surface is dropped rather than applied to the primary: it can only mean the page and
-    /// this map disagree about how many panes there are, and re-pointing the one live
-    /// surface at the other hole would move the terminal the user is typing in. (Between
-    /// `close_detached_secondary` taking the secondary and the page's `set_panes` relayout, a
-    /// mirrored window's in-flight hole-0 report resolves to the primary for one frame — the
-    /// relayout's own report corrects it, same as a docked collapse.)
-    ///
-    /// Returns the pane's new size when it is a Rex pane, like `Registry::set_pane_frame`.
-    pub fn set_detached_frame(
-        &mut self,
-        label: &str,
-        hole: usize,
-        rect: PixelRect,
-    ) -> Option<crate::rex::size::PaneSize> {
-        let ds = self.detached.get(label)?;
-        let which = crate::registry::PaneIdx::from_hole(hole, ds.mirrored());
-        let s = ds.pane(which)?;
-        s.set_frame(rect);
-        crate::rex::size::PaneSize::of(ds.rex_key(which)?, s)
-    }
-
-    /// The size of the live Rex pane surface `surface_id` shows, docked or popped out; `None`
-    /// for a plain pane.
+    /// The size of the live Rex pane surface `surface_id` shows; `None` for a plain pane.
     fn rex_size_of_surface(&self, surface_id: usize) -> Option<crate::rex::size::PaneSize> {
-        if let Some(size) = self
-            .windows
+        self.windows
             .values()
             .find_map(|ws| ws.registry.rex_size_of_surface(surface_id))
-        {
-            return Some(size);
-        }
-        let (label, which) = self.locate_detached_surface(surface_id)?;
-        let ds = self.detached.get(&label)?;
-        crate::rex::size::PaneSize::of(ds.rex_key(which)?, ds.pane(which)?)
     }
 
     /// The user turned to a Rex pane ([`SurfaceSignal::UserInput`]): claim its block for
@@ -1213,143 +977,109 @@ impl WindowManager {
         }
     }
 
-    /// Return a popped-out tab's surface to its origin window when the detached window closes
+    /// Return pop-out `label`'s tab to its origin as the pop-out window closes
     /// (`shell_core::detach::wire_return`'s `on_close`, via `main.rs::redock`). Runs on the main
     /// thread under the `ManagerState` lock. Returns what the caller announces once the lock is
-    /// released: the origin label (menu rebuild + refresh) and, when the returning tab was
-    /// dropped, the tab that leaned into view (`Redocked::dropped`); `None` if the detached
-    /// window was already gone (double-close).
+    /// released: the window the tab went home to (menu rebuild + refresh) and, when it came home
+    /// with nothing live or was dropped, the tab the selection leaned to (`Redocked::dropped`);
+    /// `None` if `label` is no pop-out (already returned: a double close).
     ///
-    /// The origin is the open window titled `origin_title` (renamed in place along with it), under
-    /// the label the caller resolved it to (shell-core's `entry_for_title`). Edge cases, in order:
-    /// 1. **Origin still open** — its slot is the `Detached` placeholder; `reparent` moves the
-    ///    view back, `attach` (Detached → Spawned) restores it.
-    /// 2. **Origin closed by the user while detached** — the caller has the `WindowSet` reopen
-    ///    it first (under whatever label its slot now has), and `build_window` stands the
-    ///    still-out tab up as a `Detached` placeholder (`Registry::mark_detached`), so the return
-    ///    is case 1.
-    /// 3. **No window has the origin's title** (it left the config) — the tab has no home, so the
-    ///    surface is dropped (kills its PTY): the one place a live surface is intentionally
-    ///    dropped. A window holding the origin's old label under another title is not its home.
+    /// Home is [`return_target`]'s answer. A closed origin the caller has already reopened
+    /// (`ReturnTarget::Reopen`), so `build_window` stood the tab's placeholder there; with no
+    /// window carrying the origin's title (it left the config) the tab has no home and its
+    /// surfaces close — the one place a live terminal is intentionally ended. So does a tab whose
+    /// placeholder is gone, the origin rebuilt without it: [`Registry::adopt_tab`] refuses it.
     ///
-    /// Every step treats the pair as one unit: both surfaces reparent into the origin, both
-    /// go back through one `attach`, and case 3 drops both. A split returning to a window case 2
-    /// rebuilt from config keeps its second pane — `mark_detached` declared it.
-    ///
-    /// Once home, the tab is reconciled against `last_good` (`reconcile_returned_tab`): every
-    /// config edit or rescan that touched it while it was out was skipped for it, so this is
-    /// where a deleted tab goes, a changed `dir`/`cmd` respawns, and a relabel lands.
-    pub fn redock(&mut self, app: &AppHandle, detached_label: &str) -> Option<Redocked> {
-        let DetachedSurface {
-            focused: _,
-            secondary_left: _,
-            secondary_went_out: _,
-            mut surface,
-            mut secondary,
-            spec: spawned,
-            origin_label,
-            origin_title,
-            tab_id,
-            agent,
-            block,
-        } = self.detached.remove(detached_label)?;
-        let at_home = self
+    /// Once home, the tab is reconciled against `last_good` (`reconcile_returned_tab`), fed the
+    /// spec the moved tab still runs: every config edit or rescan that touched it while it was
+    /// out reached only its placeholder, which `adopt_tab` overwrites, so this is where a deleted
+    /// tab goes, a changed `dir`/`cmd` respawns, and a relabel lands.
+    pub fn redock(&mut self, app: &AppHandle, label: &str) -> Option<Redocked> {
+        self.windows.get(label)?.origin.as_ref()?;
+        let ws = self.windows.remove(label)?;
+        self.sync_popouts(app);
+        let origin = ws.origin?;
+        let mut popped = ws.registry;
+        let open: Vec<(String, String)> = self
             .windows
-            .get(&origin_label)
-            .is_some_and(|ws| ws.title == origin_title);
-
+            .iter()
+            .filter(|(_, w)| w.origin.is_none())
+            .map(|(l, w)| (l.clone(), w.title.clone()))
+            .collect();
+        let pairs: Vec<(&str, &str)> = open.iter().map(|(l, t)| (l.as_str(), t.as_str())).collect();
+        let home = match return_target(&origin, &pairs) {
+            ReturnTarget::Open(l) => l,
+            ReturnTarget::Reopen(_) => origin.label.clone(),
+        };
+        let tab_id = origin.tab_id;
+        let Some(mut moved) = popped.take_tab(&tab_id) else {
+            return Some(Redocked {
+                origin_label: home,
+                dropped: None,
+            });
+        };
+        let Some(ws) = self
+            .windows
+            .get_mut(&home)
+            .filter(|ws| ws.origin.is_none() && ws.title.trim() == origin.title.trim())
+        else {
+            log::info!("tab {tab_id:?}: no window titled {:?}, ended", origin.title);
+            moved.close();
+            return Some(Redocked {
+                origin_label: home,
+                dropped: None,
+            });
+        };
+        let title = ws.title.clone();
         // The tab as `last_good` has it now, plus that window's tab order (a respawn appends).
-        let home = at_home
-            .then(|| self.spec_for(&origin_label, &origin_title))
-            .flatten();
-        let order: Vec<String> = home
+        let config = self.spec_for(&home, &title);
+        let order: Vec<String> = config
             .iter()
             .flat_map(|s| s.tabs.iter().map(|t| t.spec.id.clone()))
             .collect();
-        let plan = home.and_then(|s| s.tabs.into_iter().find(|t| t.spec.id == tab_id));
-
-        let mut dropped = None;
-        match self.windows.get_mut(&origin_label).filter(|_| at_home) {
-            // Case 3: origin gone from config — the tab genuinely ends. Closing the surfaces
-            // ends their PTYs (the only intentional live-surface teardown in the whole flow).
-            None => close_both(surface, secondary),
-            Some(ws) => {
-                if let Ok(nsw) = ws.window.ns_window() {
-                    // reparent only errors before it moves the view, so a failure here leaves
-                    // the surface intact for `attach` below to re-home in the registry. Both
-                    // panes come back — leaving the secondary parented to the window that is
-                    // being destroyed would strand a live PTY with no view on screen.
-                    let _ = surface.reparent(nsw as *mut c_void, INITIAL_RECT);
-                    if let Some(s) = secondary.as_mut() {
-                        let _ = s.reparent(nsw as *mut c_void, INITIAL_RECT);
-                    }
+        let plan = config.and_then(|s| s.tabs.into_iter().find(|t| t.spec.id == tab_id));
+        let spawned = moved.spec().clone();
+        let ws = self.windows.get_mut(&home)?;
+        let live = moved.is_live();
+        let landed = match ws.registry.adopt_tab(moved) {
+            Ok(()) => live,
+            // No placeholder to land in, or a surface that won't move: the tab ends, and comes
+            // home cold where its placeholder still stands, so its row stops reading popped out.
+            Err(mut back) => {
+                log::error!("tab {tab_id:?}: couldn't go home to {home:?}, ended");
+                back.close();
+                let _ = ws.registry.adopt_tab(back);
+                false
+            }
+        };
+        let mut dropped =
+            reconcile_returned_tab(&mut ws.registry, &tab_id, &spawned, plan.as_ref())
+                .map(|new_active| (tab_id.clone(), new_active));
+        ws.registry.reorder(&order);
+        if dropped.is_none() {
+            match ws.registry.active_tab() {
+                // Back with nothing live while it is the selection: lean, as an unload does.
+                Some(a) if a == tab_id && !landed => {
+                    let next = ws.registry.lean_away(&tab_id);
+                    dropped = Some((tab_id.clone(), next));
                 }
-                match ws.registry.attach(
-                    &tab_id,
-                    surface,
-                    secondary,
-                    agent.as_deref(),
-                    block.as_deref(),
-                ) {
-                    // Re-assert the origin's CURRENT selection — NOT the returned tab. The chrome
-                    // owns selection (warden passes no `active`), so force-activating the returned
-                    // tab here would show its terminal while the sidebar still highlights whatever
-                    // was selected: the shown surface and the sidebar diverge, and re-popping the
-                    // now-shown-but-unselected tab leaves an uncovered (transparent) hole.
-                    // `reparent` unhid the returning surface; re-activating the real selection
-                    // re-hides it (activate hides all others). If nothing is active (the selection
-                    // was closed while this tab was out, or was this tab and it respawned), the
-                    // returned tab becomes active — there is nothing else to show. A dropped tab
-                    // already leaned the selection (`reconcile_returned_tab`); if nothing live
-                    // was left, `activate` on its now-unknown id is a no-op.
-                    Ok(()) => {
-                        dropped = reconcile_returned_tab(
-                            &mut ws.registry,
-                            &tab_id,
-                            &spawned,
-                            plan.as_ref(),
-                        )
-                        .map(|new_active| (tab_id.clone(), new_active));
-                        ws.registry.reorder(&order);
-                        let show = ws
-                            .registry
-                            .active_tab()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| tab_id.clone());
-                        let _ = ws.registry.activate(&show);
-                    }
-                    // No slot to land in: the tab left the config while out and the origin was
-                    // rebuilt without it, or a slot it would land in is live. The surfaces end
-                    // (`attach` is all-or-nothing, so both or neither); a tab still here retires
-                    // its placeholders as `end_detached` does, so its row goes cold rather than
-                    // reading as popped out forever.
-                    Err((p, s)) => {
-                        close_both(p, s);
-                        if ws.registry.spec_of(&tab_id).is_some() {
-                            match ws.registry.clear_detached(&tab_id) {
-                                crate::registry::DetachedEnded::Cold(next) => {
-                                    dropped = Some((tab_id.clone(), next));
-                                }
-                                crate::registry::DetachedEnded::SiblingShown => {
-                                    if ws.registry.active_tab() == Some(tab_id.as_str()) {
-                                        if let Err(e) = ws.registry.activate(&tab_id) {
-                                            log::error!(
-                                                "couldn't show an agent of tab {tab_id:?}: {e}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                // Re-assert the origin's CURRENT selection — never force the returned tab: the
+                // chrome owns selection (warden passes no `active`), and showing the returned
+                // tab under another row's highlight leaves the shown surface and the sidebar
+                // apart. With nothing selected, the returned tab is the one to show.
+                Some(a) => {
+                    let a = a.to_owned();
+                    let _ = ws.registry.activate(&a);
                 }
+                None if landed => {
+                    let _ = ws.registry.activate(&tab_id);
+                }
+                None => {}
             }
         }
-
-        self.record_session(app, &origin_label);
-        self.sync_detached(app);
+        self.record_session(app, &home);
         Some(Redocked {
-            origin_label,
+            origin_label: home,
             dropped,
         })
     }
@@ -1359,10 +1089,15 @@ impl WindowManager {
     /// ⌘Q's teardown (and any child exits it provokes) must not overwrite the set being
     /// remembered. A closed window records nothing either, so its last set survives for a reopen.
     pub fn record_session(&mut self, app: &AppHandle, label: &str) {
-        if is_quitting(app) {
-            return;
+        if !is_quitting(app) {
+            self.record(label);
         }
-        let Some(ws) = self.windows.get(label) else {
+    }
+
+    /// [`record_session`](Self::record_session) outside a quit. A pop-out remembers nothing: its
+    /// tab is remembered by its origin, whose placeholder counts as loaded.
+    fn record(&mut self, label: &str) {
+        let Some(ws) = self.windows.get(label).filter(|ws| ws.origin.is_none()) else {
             return;
         };
         let remember = self
@@ -1407,6 +1142,30 @@ impl WindowManager {
         label_of: impl Fn(&str) -> Option<String>,
     ) {
         let ops = tab_ops(recon, &new_config, label_of);
+        // A popped-out tab's live edits — a relabel, a split appearing or going — reach the
+        // pop-out holding it now: its placeholder in the origin is skipped below, and overwritten
+        // on return. A respawn waits for the return (`reconcile_returned_tab`).
+        let forward: Vec<(String, Forward)> = ops
+            .iter()
+            .flat_map(|op| {
+                let meta = op
+                    .set_meta
+                    .iter()
+                    .map(|m| (&m.id, Forward::Meta(m.clone())));
+                let split = op
+                    .split_tabs
+                    .iter()
+                    .map(|t| (&t.spec.id, Forward::Split(t.clone())));
+                let unsplit = op
+                    .unsplit_tabs
+                    .iter()
+                    .map(|id| (id, Forward::Unsplit(id.clone())));
+                meta.chain(split)
+                    .chain(unsplit)
+                    .filter_map(|(id, f)| Some((self.popout_of(&op.label, id)?.to_owned(), f)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         // Windows whose tree sections changed: no tab op carries that, only the refresh's
         // `InitDto.trees` does, so an empty root added or removed must still refresh.
         let trees_changed: HashSet<String> = new_config
@@ -1474,14 +1233,14 @@ impl WindowManager {
                 // chrome-core falls back to the first tab and spawns it if cold (`redock` does
                 // the same for a tab that left the config while out).
                 if let Some(active) = was_active.as_deref() {
-                    if remove_tabs.iter().any(|id| id == active) && !ws.registry.is_detached(active)
+                    if remove_tabs.iter().any(|id| id == active)
+                        && !ws.registry.is_placeholder(active)
                     {
                         let new_active = ws.registry.unload(active);
                         exited.push((label.clone(), active.to_string(), new_active));
                     }
                 }
-                // Add/remove/respawn tabs, skipping any that are currently
-                // popped out (Detached) — see `apply_tab_reconcile`.
+                // Add/remove/respawn tabs, skipping placeholders — see `apply_tab_reconcile`.
                 apply_tab_reconcile(&mut ws.registry, &remove_tabs, &add_tabs, &respawn_tabs);
                 // Apply in-place metadata (group/probe/kill + recomputed
                 // tree/tree_path) without respawning; the warden:refresh below
@@ -1502,7 +1261,7 @@ impl WindowManager {
                 // load_on_open turned on: bring a cold tab up now, as a launch
                 // would. A live tab is untouched, and a popped-out one is live.
                 for id in &spawn_tabs {
-                    if ws.registry.is_detached(id) {
+                    if ws.registry.is_placeholder(id) {
                         continue;
                     }
                     if let Err(e) = ws.registry.ensure_spawned_by_id(id) {
@@ -1524,6 +1283,19 @@ impl WindowManager {
                 refreshed.push(label);
             }
         }
+        for (label, f) in forward {
+            let Some(ws) = self.windows.get_mut(&label) else {
+                continue;
+            };
+            match f {
+                Forward::Meta(m) => ws.registry.set_meta(&m.id, &m.meta, m.tree, m.tree_path),
+                Forward::Split(tp) => apply_split_changes(&mut ws.registry, &[tp], &[]),
+                Forward::Unsplit(id) => apply_split_changes(&mut ws.registry, &[], &[id]),
+            }
+            if !refreshed.contains(&label) {
+                refreshed.push(label);
+            }
+        }
         // Push each updated window's new snapshot so the chrome rebuilds its sidebar.
         // `emit_to(label, …)`, never `Emitter::emit` (a global broadcast in Tauri 2.11.3,
         // whatever the receiver): emitting on the window would fire every sibling's listener.
@@ -1542,11 +1314,18 @@ impl WindowManager {
     }
 }
 
-/// Bring a tab just returned from a pop-out (`redock`, after `attach`) in line with the config
+/// One of a popped-out tab's hot-reload edits, for the pop-out holding it (`WindowManager::apply`).
+enum Forward {
+    Meta(crate::plan::MetaPlan),
+    Split(TabPlan),
+    Unsplit(String),
+}
+
+/// Bring a tab just returned from a pop-out (`redock`, after `adopt_tab`) in line with the config
 /// it comes home to — the reconcile `apply_tab_reconcile` skipped while it was out. `plan` is
 /// the tab in `last_good`'s origin window (`None`: it left the config, or vanished from a
-/// rescanned root); `spawned` is the spec its surface runs (`DetachedSurface::spec`), compared
-/// rather than the registry's, which a rebuilt origin already holds at the new config.
+/// rescanned root); `spawned` is the spec the moved tab's surfaces run, compared rather than the
+/// origin placeholder's, which a hot-reload or a rebuilt origin has moved on.
 ///
 /// - Gone → unloaded, then removed: the unload is what leans the selection to a live neighbour
 ///   when this was the visible tab, exactly as unloading it by hand does. Returns
@@ -1603,11 +1382,11 @@ fn reconcile_returned_tab(
 }
 
 /// Open the second pane of each tab in `split_tabs` beside its running primary, and close it on
-/// each tab in `unsplit_tabs` — skipping a popped-out tab, as `apply_tab_reconcile` does:
-/// `redock` brings it in line once home.
+/// each tab in `unsplit_tabs` — skipping a placeholder, as `apply_tab_reconcile` does: the
+/// pop-out holding the tab takes the change (`WindowManager::apply`'s forward).
 fn apply_split_changes(registry: &mut Registry, split_tabs: &[TabPlan], unsplit_tabs: &[String]) {
     for tp in split_tabs {
-        if registry.is_detached(&tp.spec.id) {
+        if registry.is_placeholder(&tp.spec.id) {
             continue;
         }
         if let Some(split) = &tp.spec.split {
@@ -1615,7 +1394,7 @@ fn apply_split_changes(registry: &mut Registry, split_tabs: &[TabPlan], unsplit_
         }
     }
     for id in unsplit_tabs {
-        if registry.is_detached(id) {
+        if registry.is_placeholder(id) {
             continue;
         }
         registry.unsplit(id);
@@ -1623,21 +1402,21 @@ fn apply_split_changes(registry: &mut Registry, split_tabs: &[TabPlan], unsplit_
 }
 
 /// Apply a hot-reload's tab-set reconcile ops (from the config diff) to one
-/// window's registry — **skipping any tab currently popped out (`Detached`)**.
+/// window's registry — **skipping any placeholder**, a tab moved out to a pop-out.
 ///
 /// `tab_ops` is derived purely from the config diff and knows nothing about
-/// runtime pop-out state, so a config edit to a currently-detached tab would
-/// otherwise clobber its placeholder: `remove`/`respawn`'s `remove` drops the
-/// slot the live surface must return to (→ `redock` finds no slot and closes the
-/// PTY), and `add`/`respawn`'s `add` eagerly spawns a duplicate surface for a tab
-/// already live elsewhere. Guarding each op on `is_detached` leaves `redock` the
-/// sole owner of a detached tab's lifecycle: once the tab is home it reconciles it
+/// runtime pop-out state, so a config edit to a popped-out tab would otherwise
+/// clobber its placeholder: `remove`/`respawn`'s `remove` drops the slot the tab
+/// must return to (→ `adopt_tab` refuses it and its PTYs end), and
+/// `add`/`respawn`'s `add` eagerly spawns a duplicate surface for a tab already
+/// live elsewhere. Guarding each op on `is_placeholder` leaves `redock` the sole
+/// owner of a popped-out tab's lifecycle: once the tab is home it reconciles it
 /// against `last_good` (`reconcile_returned_tab`), which by then carries every edit
 /// made while it was out.
 ///
 /// The skip keys on `Tab::key` (`id`-else-normalized-`dir`) exactly as the
 /// registry keys every entry — `remove_tabs` carries those keys directly, and a
-/// `TabPlan`'s `spec.id` *is* that key. A non-detached tab reconciles unchanged.
+/// `TabPlan`'s `spec.id` *is* that key. Any other tab reconciles unchanged.
 fn apply_tab_reconcile(
     registry: &mut Registry,
     remove_tabs: &[String],
@@ -1645,18 +1424,18 @@ fn apply_tab_reconcile(
     respawn_tabs: &[TabPlan],
 ) {
     for id in remove_tabs {
-        // A popped-out tab's placeholder is redock's to manage — dropping it here
-        // strands the live surface with no slot to return to.
-        if registry.is_detached(id) {
+        // A placeholder is redock's to manage — dropping it here leaves the tab no slot
+        // to return to.
+        if registry.is_placeholder(id) {
             continue;
         }
         registry.remove(id);
     }
     for tp in add_tabs {
-        // An add for a currently-detached key would spawn a duplicate PTY for a
-        // tab the placeholder already represents. (An add normally only fires for a
+        // An add for a popped-out key would spawn a duplicate PTY for a tab the
+        // placeholder already represents. (An add normally only fires for a
         // genuinely new key; this guard is defensive.)
-        if registry.is_detached(&tp.spec.id) {
+        if registry.is_placeholder(&tp.spec.id) {
             continue;
         }
         // A failed eager spawn on hot-reload leaves the tab cold (it retries on
@@ -1670,10 +1449,10 @@ fn apply_tab_reconcile(
     // on next focus; a load_on_open tab respawns eagerly. The previously-active tab is
     // re-activated by the caller so a visible respawn shows its new surface immediately.
     for tp in respawn_tabs {
-        // A detached tab is out on loan: its surface lives in the popped-out
-        // window's registry, so tearing down the placeholder here would clobber the
-        // live PTY. Skip — `redock` reconciles it against the config once it's home.
-        if registry.is_detached(&tp.spec.id) {
+        // A popped-out tab is out on loan: its surfaces live in the pop-out's
+        // registry, so rebuilding the placeholder here would leave it no slot. Skip —
+        // `redock` reconciles it against the config once it's home.
+        if registry.is_placeholder(&tp.spec.id) {
             continue;
         }
         registry.remove(&tp.spec.id);
@@ -1798,53 +1577,53 @@ mod tests {
     }
 
     // `apply` itself needs a live `AppHandle` (Tauri) and a real `GhosttySurface`
-    // (AppKit) — both unconstructable in a unit-test process — so the detached-aware
+    // (AppKit) — both unconstructable in a unit-test process — so the placeholder-aware
     // guard is exercised at its narrowest real layer: `apply_tab_reconcile`, the free
     // function `apply` delegates each `TabOp`'s add/remove/respawn to.
-    // `force_detached` reaches a `Detached` slot without a live surface (see registry.rs).
+    // `stand_placeholder` reaches a placeholder without a live surface.
     #[test]
-    fn reconcile_leaves_a_detached_tabs_placeholder_alone() {
+    fn reconcile_leaves_a_popped_out_tabs_placeholder_alone() {
         // A hot-reload whose config diff removes/respawns a currently popped-out tab
-        // must NOT touch its Detached placeholder: the live surface lives in the
-        // popped-out window's registry and `redock` is its sole owner. Clobbering the
-        // placeholder either strands the surface (remove → redock drops the PTY, silent
-        // data loss) or spawns a duplicate (respawn's/ add's `add`).
+        // must NOT touch its placeholder: the live surfaces live in the pop-out's
+        // registry and `redock` is their sole owner. Clobbering the placeholder either
+        // strands them (remove → the return finds no slot and ends the PTYs, silent data
+        // loss) or spawns a duplicate (respawn's/ add's `add`).
         let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
         let _ = r.add(&tab_spec("t0", "/tmp/old"), false);
         let _ = r.add(&tab_spec("t1", "/tmp/b"), false);
-        r.force_detached("t0");
+        r.stand_placeholder("t0");
 
         // Respawn variant: config changed t0's dir (id stable) → respawn_tabs=[t0]. A
-        // non-detached sibling t1 is genuinely removed to prove the normal path is intact.
+        // sibling t1 here is genuinely removed to prove the normal path is intact.
         let respawn = vec![TabPlan {
             spec: tab_spec("t0", "/tmp/new"),
             load_on_open: false,
         }];
         apply_tab_reconcile(&mut r, &["t1".to_string()], &[], &respawn);
         assert!(
-            r.is_detached("t0"),
-            "detached tab's placeholder must survive a respawn op"
+            r.is_placeholder("t0"),
+            "the placeholder must survive a respawn op"
         );
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(
             ids,
             vec!["t0".to_string()],
-            "t0 kept (detached), t1 removed via the normal path, no duplicate entry"
+            "t0 kept (a placeholder), t1 removed via the normal path, no duplicate entry"
         );
         assert!(
             !r.is_spawned("t0"),
-            "no duplicate surface spawned for the detached tab"
+            "no duplicate surface spawned for the popped-out tab"
         );
 
         // Remove variant: config deleted t0 while it's out → remove_tabs=[t0].
         apply_tab_reconcile(&mut r, &["t0".to_string()], &[], &[]);
         assert!(
-            r.is_detached("t0"),
-            "detached tab's placeholder must survive a remove op (returns on redock)"
+            r.is_placeholder("t0"),
+            "the placeholder must survive a remove op (the tab returns on redock)"
         );
         assert_eq!(r.tab_dtos().len(), 1, "still present, not dropped");
 
-        // Add variant (defensive): an add for a currently-detached key must not append
+        // Add variant (defensive): an add for a popped-out key must not append
         // a duplicate entry — the placeholder already represents it.
         apply_tab_reconcile(
             &mut r,
@@ -1855,16 +1634,16 @@ mod tests {
             }],
             &[],
         );
-        assert!(r.is_detached("t0"));
+        assert!(r.is_placeholder("t0"));
         assert_eq!(
             r.tab_dtos().len(),
             1,
-            "add for a detached key must not create a duplicate entry"
+            "add for a popped-out key must not create a duplicate entry"
         );
     }
 
-    // `redock` runs this after `attach`, so the slot is `Spawned`; a `Cold` slot stands in for
-    // it here (no AppKit) — what matters is that it is not `Detached`, which the reconcile
+    // `redock` runs this after `adopt_tab`, so the entry is the moved tab; a `Cold` one stands in
+    // for it here (no AppKit) — what matters is that it is no placeholder, which the reconcile
     // guards skip.
     fn plan(spec: TabSpec) -> TabPlan {
         TabPlan {
@@ -2036,14 +1815,14 @@ mod tests {
         let mut loses = tab_spec("t1", "/tmp/b");
         loses.split = Some(split.clone());
         let _ = r.add(&loses, false);
-        r.force_detached_pane("t0", crate::registry::PaneIdx::Primary);
-        r.force_detached_pane("t1", crate::registry::PaneIdx::Primary);
+        r.stand_placeholder("t0");
+        r.stand_placeholder("t1");
         gains.split = Some(split);
         apply_split_changes(&mut r, &[plan(gains)], &["t1".to_string()]);
         assert!(!r.is_split("t0"));
         assert_eq!(r.split_side("t0"), None);
-        assert!(r.is_split("t1"));
         assert!(r.split_side("t1").is_some());
+        assert!(r.is_placeholder("t0") && r.is_placeholder("t1"));
     }
 
     #[test]
@@ -2059,6 +1838,97 @@ mod tests {
         assert!(r.tab_has_probe("t0"));
         let ids: Vec<_> = r.tab_dtos().into_iter().map(|d| d.id).collect();
         assert_eq!(ids, vec!["t0".to_string(), "t1".to_string()], "no respawn");
+    }
+
+    fn origin(label: &str, title: &str) -> PopOrigin {
+        PopOrigin {
+            label: label.into(),
+            title: title.into(),
+            tab_id: "/tmp/a".into(),
+        }
+    }
+
+    #[test]
+    fn return_target_prefers_the_open_origin_label() {
+        let open = [("job", "job"), ("work", "work")];
+        assert_eq!(
+            return_target(&origin("work", "work"), &open),
+            ReturnTarget::Open("work".into())
+        );
+    }
+
+    /// Renamed in place (the label stays, `retitle` moved the title), or closed and reopened under
+    /// the label its new title slugs to, while another window took the old label.
+    #[test]
+    fn return_target_finds_a_renamed_origin_by_title() {
+        let open = [("work", "other"), ("job", "job")];
+        assert_eq!(
+            return_target(&origin("work", "job"), &open),
+            ReturnTarget::Open("job".into())
+        );
+    }
+
+    #[test]
+    fn return_target_reopens_a_closed_origin_by_title() {
+        assert_eq!(
+            return_target(&origin("work", "job"), &[("work", "other")]),
+            ReturnTarget::Reopen("job".into())
+        );
+        assert_eq!(
+            return_target(&origin("work", "work"), &[]),
+            ReturnTarget::Reopen("work".into())
+        );
+    }
+
+    #[test]
+    fn popout_should_close_when_nothing_live() {
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        assert!(popout_should_close(&r), "no tab at all");
+        let _ = r.add(&tab_spec("t0", "/tmp/a"), false);
+        assert!(popout_should_close(&r), "its one tab is cold");
+    }
+
+    fn window_state(registry: Registry, origin: Option<PopOrigin>) -> WindowState {
+        WindowState {
+            registry,
+            title: "w".into(),
+            colour: "#000000".into(),
+            open_tabs_section: false,
+            background_tabs_section: false,
+            spawn_error: None,
+            session_key: "w".into(),
+            chrome_ready: false,
+            pending_focus: None,
+            origin,
+        }
+    }
+
+    /// A pop-out's tab is remembered by its origin; the pop-out itself records nothing, even when a
+    /// config window shares its title and remembers tabs.
+    #[test]
+    fn record_session_skips_popouts() {
+        let mut m = WindowManager::new();
+        let c = config("[[window]]\ntitle = \"w\"\nremember_tabs = true\n");
+        m.adopt(c.clone(), c);
+        let mut reg = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = reg.add(&tab_spec("/tmp/a", "/tmp/a"), false);
+        let label = shell_core::detach::detached_label("k");
+        m.windows
+            .insert(label.clone(), window_state(reg, Some(origin("w", "w"))));
+        m.record(&label);
+        assert!(m.session.get("w").is_none());
+        assert!(m.session.get(&label).is_none());
+        assert!(m.session.get("").is_none());
+
+        m.windows.insert(
+            "w".into(),
+            window_state(Registry::new(std::ptr::null_mut(), INITIAL_RECT), None),
+        );
+        m.record("w");
+        assert!(
+            m.session.get("w").is_some(),
+            "a configured window still records"
+        );
     }
 
     fn dto(id: &str) -> TabDto {
@@ -2079,7 +1949,6 @@ mod tests {
             split: false,
             split_layout: None,
             column: None,
-            pop_out_blocked: None,
             agents: false,
             colour: crate::project_colour::project_colour(id, None),
             server: None,

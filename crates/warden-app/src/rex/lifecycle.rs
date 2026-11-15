@@ -1332,44 +1332,34 @@ pub(crate) fn banner(app: &AppHandle, label: &str, message: &str) {
 }
 
 /// Every Rex tab `pick` (tab id, server) chooses lets go of its surfaces (main thread), so no
-/// relay sees its stream die and reads it as an exit: every docked one goes cold, as an unload,
-/// then a popped-out one ends whole, as when its program exits
-/// ([`WindowManager::end_detached`](crate::manager::WindowManager::end_detached)). Returns the tabs, for their lists to repaint.
+/// relay sees its stream die and reads it as an exit: each goes cold, as an unload, and a pop-out
+/// left with nothing live closes, taking its tab home
+/// ([`close_spent_popouts`](crate::manager::close_spent_popouts)). Returns the tabs, for their
+/// lists to repaint.
 pub(super) fn let_go(app: &AppHandle, pick: impl Fn(&str, &str) -> bool) -> Vec<String> {
     let st = app.state::<ManagerState>();
     let mut projects = Vec::new();
     let mut exited = Vec::new();
-    let mut ended = Vec::new();
     {
         let mut m = st.lock();
-        // Docked tabs first: a pop-out ending while its origin still runs a sibling agent shows
-        // that sibling (`DetachedEnded::SiblingShown`), whose open could restart Rex after the
-        // stop. Unloaded first, the origin holds nothing live and the pop-out ends it cold.
         let labels: Vec<String> = m.windows.keys().cloned().collect();
         for l in labels {
             let Some(ws) = m.windows.get_mut(&l) else {
                 continue;
             };
-            for (id, _) in ws
+            let tabs: Vec<String> = ws
                 .registry
                 .rex_tabs()
                 .into_iter()
-                .filter(|(id, s)| pick(id, s))
-            {
+                .filter(|(id, s)| pick(id, s) && ws.registry.holds_tab(id))
+                .map(|(id, _)| id)
+                .collect();
+            for id in tabs {
                 let new_active = ws.registry.unload(&id);
                 exited.push((l.clone(), id.clone(), new_active));
                 projects.push(id);
             }
             m.record_session(app, &l);
-        }
-        let popped: Vec<String> = m
-            .detached
-            .iter()
-            .filter(|(_, d)| d.spec.server.as_deref().is_some_and(|s| pick(&d.tab_id, s)))
-            .map(|(l, _)| l.clone())
-            .collect();
-        for dlabel in popped {
-            ended.extend(m.end_detached(app, &dlabel));
         }
     }
     for (l, id, new_active) in exited {
@@ -1379,9 +1369,7 @@ pub(super) fn let_go(app: &AppHandle, pick: impl Fn(&str, &str) -> bool) -> Vec<
             serde_json::json!({ "label": l, "id": id, "newActive": new_active }),
         );
     }
-    for e in ended {
-        crate::manager::announce_detached_ended(app, e);
-    }
+    crate::manager::close_spent_popouts(app);
     crate::sync_agent_menu(app);
     projects.sort();
     projects.dedup();
@@ -1569,7 +1557,8 @@ pub fn edit(
 }
 
 /// Land an op's answer for project `tab_id` (main thread): every window holding the tab follows
-/// it and repaints; a failure goes to window `label`'s error banner. Then the list. With
+/// it and repaints, and a pop-out it left with nothing live closes; a failure goes to window
+/// `label`'s error banner. Then the list. With
 /// `focus_main` (a new agent tab), window `label`'s main pane takes keyboard focus, so the agent
 /// it shows is typed into whichever pane ⌘T or `+` came from.
 fn land(
@@ -1584,7 +1573,7 @@ fn land(
     let mut refreshed = Vec::new();
     if let Ok(found) = &result {
         for (l, ws) in m.windows.iter_mut() {
-            if ws.registry.spec_of(tab_id).is_none() {
+            if !ws.registry.holds_tab(tab_id) {
                 continue;
             }
             // Before the sync, whose show focuses the pane the tab has focused.
@@ -1608,6 +1597,7 @@ fn land(
     for (l, dto) in dtos {
         let _ = app.emit_to(l.as_str(), "warden:refresh", dto);
     }
+    crate::manager::close_spent_popouts(app);
     if let (Err(message), Some(label)) = (&result, label) {
         log::error!("{label}: {tab_id}: {message}");
         banner(app, label, message);
@@ -1723,7 +1713,7 @@ fn fill_column(
 /// Block `block_id`'s status changed (main thread): track it ([`Attention::observe`]) and, for an
 /// agent tab, re-send its project's list, which carries whether it needs you. A hidden agent tab
 /// moving into a need raises a banner naming it and saying why ([`crate::notify::agent_banner`]);
-/// clicking the banner selects it. A focused pop-out carrying it sees it ([`seen_popped`]).
+/// clicking the banner selects it.
 fn attend(app: &AppHandle, block_id: &str) {
     let (Some(store), Some(hub), Some(attention)) = (
         app.try_state::<Mutex<AgentStore>>(),
@@ -1769,8 +1759,9 @@ fn attend(app: &AppHandle, block_id: &str) {
         let tab = {
             let st = app.state::<ManagerState>();
             let m = st.lock();
-            m.windows.iter().find_map(|(label, ws)| {
-                Some((label.clone(), ws.registry.tab_title(&record.project)?))
+            m.home_of(&record.project).and_then(|label| {
+                let title = m.windows.get(label)?.registry.tab_title(&record.project)?;
+                Some((label.to_owned(), title))
             })
         };
         if let Some((label, title)) = tab {
@@ -1789,7 +1780,6 @@ fn attend(app: &AppHandle, block_id: &str) {
             );
         }
     }
-    seen_popped(app);
     emit_agents(app, &record.project);
 }
 
@@ -1803,8 +1793,8 @@ fn focused_labels(app: &AppHandle) -> Vec<String> {
 }
 
 /// The agent tabs on screen, as `(project, record id)`: each focused window's active tab's
-/// selected agent tab, and each focused pop-out's travelling one. Decides only whether a change
-/// banners; what needs you is the list's ([`attention::needs_you`]).
+/// selected agent tab, a pop-out's among them. Decides only whether a change banners; what needs
+/// you is the list's ([`attention::needs_you`]).
 fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
     let focused = focused_labels(app);
     if focused.is_empty() {
@@ -1812,20 +1802,14 @@ fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
     }
     let st = app.state::<ManagerState>();
     let m = st.lock();
-    let docked = m
-        .windows
+    m.windows
         .iter()
         .filter(|(label, _)| focused.contains(label))
         .filter_map(|(_, ws)| {
             let tab = ws.registry.active_tab()?;
             Some((tab.to_owned(), ws.registry.visible_agent(tab)?.to_owned()))
-        });
-    let popped = m
-        .detached
-        .iter()
-        .filter(|(label, _)| focused.contains(label))
-        .filter_map(|(_, ds)| Some((ds.tab_id.clone(), ds.agent.clone()?)));
-    docked.chain(popped).collect()
+        })
+        .collect()
 }
 
 /// Tab `tab_id`'s agent tab `record_id` was on screen finished at stamp `at`
@@ -1838,43 +1822,6 @@ pub fn seen(app: &AppHandle, tab_id: &str, record_id: &str, at: &str) {
     if lock(&store).set_seen(tab_id, record_id, at) {
         log::info!("tab {tab_id:?}: agent {record_id:?} seen at {at}");
         emit_agents(app, tab_id);
-    }
-}
-
-/// The agent tab each focused pop-out carries is on screen: a finish it hasn't seen is seen
-/// ([`seen`]). A docked one is the page's to report (`agent_seen`), since only it knows what its
-/// list shows. Locks `ManagerState`, so callers must hold none.
-pub fn seen_popped(app: &AppHandle) {
-    let (Some(store), Some(hub)) = (
-        app.try_state::<Mutex<AgentStore>>(),
-        app.try_state::<RexHub>(),
-    ) else {
-        return;
-    };
-    let focused = focused_labels(app);
-    let popped: Vec<(String, String)> = {
-        let st = app.state::<ManagerState>();
-        let m = st.lock();
-        m.detached
-            .iter()
-            .filter(|(label, _)| focused.contains(label))
-            .filter_map(|(_, ds)| Some((ds.tab_id.clone(), ds.agent.clone()?)))
-            .collect()
-    };
-    for (project, id) in popped {
-        let at = {
-            let s = lock(&store);
-            s.records(&project)
-                .into_iter()
-                .find(|r| r.id == id)
-                .and_then(|r| {
-                    let st = hub.block_status(r.block_id.as_deref()?)?;
-                    attention::unseen(st.state, st.at.as_deref(), r.seen.as_deref())
-                })
-        };
-        if let Some(at) = at {
-            seen(app, &project, &id, &at);
-        }
     }
 }
 

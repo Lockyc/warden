@@ -16,11 +16,6 @@ pub const PRESETS: [f64; 4] = [0.25, 1.0 / 3.0, 0.5, 2.0 / 3.0];
 /// ascending.
 pub const PANE_PRESETS: [f64; 6] = [0.10, 0.15, 0.20, 0.25, 1.0 / 3.0, 0.5];
 
-/// Why a popped-out tab's Split is disabled.
-pub const DOCK_TO_SPLIT: &str = "Dock the tab to split";
-/// Why a popped-out tab's size submenus are disabled: its divider is the detach page's, which
-/// keeps no ratio warden can read.
-pub const DOCK_TO_RESIZE: &str = "Dock the tab to resize";
 /// Why a column's lone block has no Pane Height ▸: nothing shares the column with it.
 pub const ONLY_PANE: &str = "only pane in the column";
 
@@ -99,29 +94,6 @@ pub struct PaneMenuCtx {
     /// A scratch block's Pane Height ▸ / Pane Width ▸: `None` on the main pane, `Err` why it is
     /// disabled (shown as Pane Height).
     pub pane_size: Option<Result<PaneSizeState, String>>,
-}
-
-/// The menu for pane `pane` of tab `tab` popped out into window `label`: Copy, Paste and Close
-/// Pane act on its surface (Close Pane on its scratch pane, while `split_shown`); Split and the
-/// size submenus act on a docked tab only.
-pub fn detached_ctx(
-    label: &str,
-    tab: &str,
-    pane: PaneIdx,
-    has_selection: bool,
-    split_shown: bool,
-) -> PaneMenuCtx {
-    let block = split_shown && matches!(pane, PaneIdx::Block(_));
-    PaneMenuCtx {
-        label: label.to_owned(),
-        tab: tab.to_owned(),
-        pane,
-        has_selection,
-        can_split: Err(DOCK_TO_SPLIT.to_owned()),
-        split: split_shown.then(|| Err(DOCK_TO_RESIZE.to_owned())),
-        close_pane: block.then_some(Ok(())),
-        pane_size: block.then(|| Err(DOCK_TO_RESIZE.to_owned())),
-    }
 }
 
 /// One menu entry. `checked` is `Some` for a checkable item; `submenu` names the submenu it
@@ -662,36 +634,6 @@ mod tests {
     }
 
     #[test]
-    fn pop_out_disables_both_with_dock_to_resize() {
-        let m = items(&detached_ctx(
-            "shell-detach:k1",
-            "/tmp/a",
-            PaneIdx::Block(0),
-            false,
-            true,
-        ));
-        assert_eq!(
-            submenus(&m),
-            [
-                (
-                    "Scratch Column Width (Dock the tab to resize)".to_string(),
-                    vec![]
-                ),
-                ("Pane Height (Dock the tab to resize)".to_string(), vec![]),
-            ]
-        );
-        // Its main pane has only the column's.
-        let m = items(&detached_ctx(
-            "shell-detach:k1",
-            "/tmp/a",
-            PaneIdx::Primary,
-            false,
-            true,
-        ));
-        assert!(m.iter().all(|i| op_of(i) != Op::PaneSizeUnavailable));
-    }
-
-    #[test]
     fn close_pane_only_in_the_scratch_column() {
         assert!(items(&sized(0.5, 0.5))
             .iter()
@@ -719,24 +661,6 @@ mod tests {
         let c = find(&m, Op::ClosePane);
         assert!(c.enabled && !c.separator_before);
         assert_eq!(parse(&c.id).unwrap().pane, PaneIdx::Block(1));
-        // A pop-out's scratch pane closes too.
-        let d = items(&detached_ctx(
-            "shell-detach:k1",
-            "/tmp/a",
-            PaneIdx::Block(0),
-            false,
-            true,
-        ));
-        assert!(find(&d, Op::ClosePane).enabled);
-        // Its main pane has none.
-        let d = items(&detached_ctx(
-            "shell-detach:k1",
-            "/tmp/a",
-            PaneIdx::Primary,
-            false,
-            true,
-        ));
-        assert!(d.iter().all(|i| op_of(i) != Op::ClosePane));
     }
 
     /// While the column's open is in flight there is no block to close yet.
@@ -830,33 +754,6 @@ mod tests {
             )
         );
         assert!(sizes(&m).is_empty());
-    }
-
-    #[test]
-    fn pop_out_offers_copy_paste_and_dock_reasons() {
-        let c = detached_ctx("shell-detach:k1", "/tmp/a", PaneIdx::Block(0), false, true);
-        let m = items(&c);
-        assert!(!find(&m, Op::Copy).enabled);
-        assert!(find(&m, Op::Paste).enabled);
-        let split = find(&m, Op::Split);
-        assert_eq!(
-            (split.title.as_str(), split.enabled),
-            ("Split (Dock the tab to split)", false)
-        );
-        let size = find(&m, Op::SizeUnavailable);
-        assert_eq!(
-            (size.title.as_str(), size.enabled),
-            ("Scratch Column Width (Dock the tab to resize)", false)
-        );
-        // An unsplit pop-out has no size submenu at all.
-        let m = items(&detached_ctx(
-            "shell-detach:k1",
-            "/tmp/a",
-            PaneIdx::Primary,
-            true,
-            false,
-        ));
-        assert!(m.iter().all(|i| op_of(i) != Op::SizeUnavailable));
     }
 
     #[test]

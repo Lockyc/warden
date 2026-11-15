@@ -102,20 +102,8 @@ const ALIAS_TITLES: [&str; 2] = ["Previous Agent Tab (⌘K)", "Next Agent Tab (�
 const EVENT_AGENT_CLOSE: &str = "warden:agent-close";
 
 /// Tab ▸ Close Project Tab (⌥⌘W): unloads the active tab whatever ⌘W closes in the focused pane,
-/// so the one chord always works.
+/// so the one chord always works — in a pop-out too, which then closes with nothing left running.
 const MENU_TAB_CLOSE_PROJECT: &str = "warden:close-project-tab";
-/// [`MENU_TAB_CLOSE_PROJECT`]'s title, which [`close_project_item`] appends a reason to.
-const CLOSE_PROJECT_TITLE: &str = "Close Project Tab";
-
-/// Close Project Tab's enabled state and title, given whether the focused window is a pop-out:
-/// a pop-out's main pane docks the tab with ⌘W rather than unloading it, so the item says to dock
-/// first.
-fn close_project_item(popped_out: bool) -> (bool, String) {
-    if popped_out {
-        return (false, format!("{CLOSE_PROJECT_TITLE} (Dock the tab first)"));
-    }
-    (true, CLOSE_PROJECT_TITLE.to_owned())
-}
 
 /// Tab ▸ Focus Left / Right Pane (⌥⌘← / ⌥⌘→): the active tab's pane on that side of the screen,
 /// enabled while there is one ([`registry::Registry::pane_to`]).
@@ -129,8 +117,6 @@ const MENU_SCRATCH_NEW: &str = "warden:scratch-new";
 /// Titles [`sync_agent_menu`] retitles from, appending a reason or naming what the item does in
 /// the focused pane.
 const SPLIT_TITLE: &str = "Split";
-const SUSPEND_TITLE: &str = "Suspend Session";
-const TERMINATE_TITLE: &str = "Terminate Session…";
 const AGENT_NEW_TITLE: &str = "New Agent Tab";
 const SCRATCH_NEW_TITLE: &str = "New Scratch Tab";
 
@@ -141,9 +127,6 @@ const SCRATCH_NEW_TITLE: &str = "New Scratch Tab";
 struct AgentItems {
     /// Split (⌘D), titled for what it does in the focused pane ([`focused_split`]).
     split: tauri::menu::MenuItem<tauri::Wry>,
-    /// Suspend / Terminate Session, disabled in a pop-out, whose page can't end a session.
-    suspend: tauri::menu::MenuItem<tauri::Wry>,
-    terminate: tauri::menu::MenuItem<tauri::Wry>,
     new: tauri::menu::MenuItem<tauri::Wry>,
     sleep: tauri::menu::MenuItem<tauri::Wry>,
     reopen: tauri::menu::MenuItem<tauri::Wry>,
@@ -155,15 +138,10 @@ struct AgentItems {
     /// The spine's Close Tab (⌘W), retitled Close Agent Tab while it closes one
     /// ([`agent_closable`]).
     close_tab: tauri::menu::MenuItem<tauri::Wry>,
-    close_project: tauri::menu::MenuItem<tauri::Wry>,
     fork: tauri::menu::MenuItem<tauri::Wry>,
     pane_left: tauri::menu::MenuItem<tauri::Wry>,
     pane_right: tauri::menu::MenuItem<tauri::Wry>,
     scratch_new: tauri::menu::MenuItem<tauri::Wry>,
-    /// The spine's Pop Out Tab, disabled with its reason while the column is too full to carry.
-    pop_out: tauri::menu::MenuItem<tauri::Wry>,
-    /// `pop_out`'s own title as the spine built it, which the reason is appended to.
-    pop_out_title: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -296,9 +274,8 @@ fn focused_tab_keys(
     Some((label, tab, list))
 }
 
-/// The pane to `side` of the focused pane in the focused window — its active tab's, or a
-/// pop-out's ([`manager::DetachedSurface::pane_to`]) — and, with `focus`, give it keyboard focus.
-/// Whether there is one.
+/// The pane to `side` of the focused pane in the focused window's active tab, and, with `focus`,
+/// give it keyboard focus. Whether there is one.
 #[cfg(target_os = "macos")]
 fn focused_pane_to(app: &tauri::AppHandle, side: registry::Side, focus: bool) -> bool {
     use tauri::Manager;
@@ -307,12 +284,6 @@ fn focused_pane_to(app: &tauri::AppHandle, side: registry::Side, focus: bool) ->
     };
     let st = app.state::<ManagerState>();
     let m = st.lock();
-    if let Some(ds) = m.detached.get(&label) {
-        return match ds.pane_to(side) {
-            Some(pane) => !focus || ds.focus_pane(pane),
-            None => false,
-        };
-    }
     let Some(reg) = m.windows.get(&label).map(|ws| &ws.registry) else {
         return false;
     };
@@ -326,17 +297,13 @@ fn focused_pane_to(app: &tauri::AppHandle, side: registry::Side, focus: bool) ->
 }
 
 /// What the menu bar's Split (⌘D) does in the focused window: `None` with no tab to split there;
-/// `Err` is why it can't, shown on the disabled item — a pop-out never splits, as its right-click
-/// menu says.
+/// `Err` is why it can't, shown on the disabled item.
 #[cfg(target_os = "macos")]
 fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, String>> {
     use tauri::Manager;
     let label = focused_label(app)?;
     let st = app.state::<ManagerState>();
     let m = st.lock();
-    if m.detached.contains_key(&label) {
-        return Some(Err(pane_menu::DOCK_TO_SPLIT.to_owned()));
-    }
     let reg = &m.windows.get(&label)?.registry;
     Some(split_kind(reg, reg.active_tab()?))
 }
@@ -345,9 +312,8 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// holds agent tabs, Sleep Agent Tab while its selected one can sleep, Reopen Last Closed while
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
-/// Tab while it has a Rex scratch column, and Pop Out Tab (titled with the reason) unless the
-/// column is too full to carry; ⌘W is titled for what it closes, and ⌥⌘W enabled unless the window
-/// is a pop-out. Runs on every menu build, window focus, pane focus, tab activation, agent list
+/// Tab while it has a Rex scratch column; ⌘W is titled for what it closes. A pop-out's one tab
+/// answers like any active tab. Runs on every menu build, window focus, pane focus, tab activation, agent list
 /// change and scratch column change (a Rex view landing); locks `ManagerState`, so callers must
 /// not hold it.
 #[cfg(target_os = "macos")]
@@ -363,12 +329,6 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     let list = keys.as_ref().and_then(|k| k.2.as_ref());
     let pane_left = focused_pane_to(app, registry::Side::Left, false);
     let pane_right = focused_pane_to(app, registry::Side::Right, false);
-    // ⌥⌘W unloads a docked tab; a pop-out docks it with ⌘W instead.
-    let popped_out = focused_label(app).is_some_and(|label| {
-        let st = app.state::<ManagerState>();
-        let m = st.lock();
-        m.detached.contains_key(&label)
-    });
     let reopen_window = reopen_target(app).is_some();
     let scratch = focused_scratch_column(app).is_some();
     let scratch_blocked = focused_label(app).and_then(|label| {
@@ -376,12 +336,6 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let m = st.lock();
         let reg = &m.windows.get(&label)?.registry;
         reg.column_change_blocked(reg.active_tab()?)
-    });
-    let pop_out_blocked = focused_label(app).and_then(|label| {
-        let st = app.state::<ManagerState>();
-        let m = st.lock();
-        let reg = &m.windows.get(&label)?.registry;
-        reg.pop_out_blocked(reg.active_tab()?)
     });
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
@@ -393,14 +347,6 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             Some(Err(why)) => format!("{SPLIT_TITLE} ({why})"),
             None => SPLIT_TITLE.to_owned(),
         });
-        for (item, title) in [(&i.suspend, SUSPEND_TITLE), (&i.terminate, TERMINATE_TITLE)] {
-            let _ = item.set_enabled(!popped_out);
-            let _ = item.set_text(if popped_out {
-                format!("{title} (Dock the tab first)")
-            } else {
-                title.to_owned()
-            });
-        }
         let _ = i.new.set_enabled(agent.is_some());
         let _ = i.sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
         let _ = i
@@ -425,9 +371,6 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         } else {
             "Close Tab"
         });
-        let (enabled, title) = close_project_item(popped_out);
-        let _ = i.close_project.set_enabled(enabled);
-        let _ = i.close_project.set_text(title);
         let _ = i
             .fork
             .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
@@ -440,24 +383,19 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             Some(why) => format!("{SCRATCH_NEW_TITLE} ({why})"),
             None => SCRATCH_NEW_TITLE.to_owned(),
         });
-        let _ = i.pop_out.set_enabled(pop_out_blocked.is_none());
-        let _ = i.pop_out.set_text(match &pop_out_blocked {
-            Some(reason) => format!("{} ({reason})", i.pop_out_title),
-            None => i.pop_out_title.clone(),
-        });
     }
 }
 
 /// Whether ⌘W closes an agent tab in this list — the focused window's active tab's
-/// ([`focused_tab_keys`]), whichever of its panes has focus: one is selected. Otherwise ⌘W takes
-/// the spine's route, unloading the tab (docking a pop-out's); a scratch pane closes from its
-/// right-click menu, `exit`, or the strip's ×.
+/// ([`focused_tab_keys`]), a pop-out's included, whichever of its panes has focus: one is
+/// selected. Otherwise ⌘W takes the spine's route, unloading the tab (closing a pop-out, which
+/// docks it); a scratch pane closes from its right-click menu, `exit`, or the strip's ×.
 #[cfg(target_os = "macos")]
 fn agent_closable(list: &rex::lifecycle::AgentListDto) -> bool {
     list.rows.iter().any(|r| r.selected)
 }
 
-/// Close scratch pane `pane` of tab `tab` in window `label` — docked, or a pop-out's — landing as
+/// Close scratch pane `pane` of tab `tab` in window `label` — a pop-out's included — landing as
 /// its program ending does: a Rex block is Rex's to close ([`rex::spawn::close_block`]); a plain
 /// tab's block closes here and the chrome collapses the split (`warden:pane-closed`).
 #[cfg(target_os = "macos")]
@@ -473,23 +411,6 @@ fn close_pane(
     };
     let st = app.state::<ManagerState>();
     let mut m = st.lock();
-    if let Some(ds) = m.detached.get(label) {
-        if ds.tab_id != tab || i != 0 || ds.secondary.is_none() {
-            return Err("this pop-out has no such scratch pane".into());
-        }
-        if let Some(key) = ds.rex_key(pane) {
-            drop(m);
-            rex::spawn::close_block(app, label, key);
-            return Ok(());
-        }
-        let Some((origin, tab_id)) = m.close_detached_secondary(label) else {
-            return Ok(());
-        };
-        drop(m);
-        manager::announce_detached_secondary_closed(app, label, Some(&origin), &tab_id);
-        sync_agent_menu(app);
-        return Ok(());
-    }
     let reg = &mut m.windows.get_mut(label).ok_or("window not found")?.registry;
     match reg.begin_close_block(tab, i) {
         None => Err(format!(
@@ -641,10 +562,10 @@ fn build_app_menu(
     let split_pane_item = MenuItemBuilder::with_id(MENU_TAB_SPLIT, SPLIT_TITLE)
         .accelerator("CmdOrCtrl+D")
         .build(app)?;
-    let suspend_item = MenuItemBuilder::with_id(MENU_TAB_SUSPEND, SUSPEND_TITLE)
+    let suspend_item = MenuItemBuilder::with_id(MENU_TAB_SUSPEND, "Suspend Session")
         .accelerator("Shift+Cmd+KeyS")
         .build(app)?;
-    let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, TERMINATE_TITLE)
+    let terminate_item = MenuItemBuilder::with_id(MENU_TAB_TERMINATE, "Terminate Session…")
         .accelerator("Shift+Cmd+KeyK")
         .build(app)?;
     // Enabled by `sync_agent_menu`, which `rebuild_menu` runs right after this build.
@@ -676,7 +597,9 @@ fn build_app_menu(
         "Move Agent Tab Down",
         "Alt+Shift+Cmd+ArrowDown",
     )?;
-    let close_project_item = disabled(MENU_TAB_CLOSE_PROJECT, CLOSE_PROJECT_TITLE, "Alt+Cmd+KeyW")?;
+    let close_project_item = MenuItemBuilder::with_id(MENU_TAB_CLOSE_PROJECT, "Close Project Tab")
+        .accelerator("Alt+Cmd+KeyW")
+        .build(app)?;
     let agent_fork_item = disabled(MENU_AGENT_FORK, "Fork Agent Tab", "Alt+Cmd+KeyT")?;
     let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
     let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
@@ -759,8 +682,6 @@ fn build_app_menu(
     if let Some(keep) = tauri::Manager::try_state::<AgentMenu>(app) {
         *keep.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(AgentItems {
             split: split_pane_item,
-            suspend: suspend_item,
-            terminate: terminate_item,
             new: agent_new_item,
             sleep: agent_sleep_item,
             reopen: reopen_last,
@@ -769,13 +690,10 @@ fn build_app_menu(
             move_up: agent_up_item,
             move_down: agent_down_item,
             close_tab: spine.close_tab.clone(),
-            close_project: close_project_item,
             fork: agent_fork_item,
             pane_left: pane_left_item,
             pane_right: pane_right_item,
             scratch_new: scratch_new_item,
-            pop_out: spine.pop_out_tab.clone(),
-            pop_out_title: spine.pop_out_tab.text()?,
         });
     }
     if let Some(keep) = tauri::Manager::try_state::<ServerMenu>(app) {
@@ -1056,6 +974,7 @@ fn unload_tab(
         m.record_session(tauri::Manager::app_handle(&window), window.label());
         new_active
     };
+    manager::close_spent_popouts(tauri::Manager::app_handle(&window));
     sync_agent_menu(tauri::Manager::app_handle(&window));
     new_active
 }
@@ -1201,21 +1120,21 @@ fn split_kind(reg: &registry::Registry, id: &str) -> Result<pane_menu::SplitKind
     Ok(pane_menu::SplitKind::Split)
 }
 
-/// Tab `id` of window `label` as the loaded config has it, with its window's title: what a split
-/// write addresses.
+/// Tab `id` of window `label` as the loaded config has it, with its config window's title (a
+/// pop-out's origin's): what a split write addresses.
 #[cfg(target_os = "macos")]
 fn config_tab(
     m: &manager::WindowManager,
     label: &str,
     id: &str,
 ) -> Result<(String, warden_config::Tab), String> {
-    let ws = m.windows.get(label).ok_or("window not found")?;
+    let title = m.config_title(label).ok_or("window not found")?;
     m.last_good
         .windows
         .iter()
-        .find(|w| w.title == ws.title)
+        .find(|w| w.title == title)
         .and_then(|w| w.tabs.iter().find(|t| t.key == id))
-        .map(|t| (ws.title.clone(), t.clone()))
+        .map(|t| (title.to_owned(), t.clone()))
         .ok_or_else(|| format!("no config entry for tab {id:?}"))
 }
 
@@ -1445,7 +1364,7 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
     let from = routed.from_detached.as_deref().and_then(|l| {
         let st = app.state::<ManagerState>();
         let m = st.lock();
-        m.detached.get(l).map(|ds| ds.tab_id.clone())
+        Some(m.windows.get(l)?.origin.as_ref()?.tab_id.clone())
     });
     let emit = |event: &str| {
         let _ = app.emit_to(label, event, serde_json::json!({ "label": label }));
@@ -1473,7 +1392,8 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
         // ⌘W unloads the active tab (kill surface+PTY → cold, respawns on next focus); it does NOT
         // close the window. The chrome owns "which tab is active" + the dot/highlight repaint.
         SpineAction::CloseTab => emit("warden:unload-tab"),
-        // Closing a pop-out docks its tab; closing a window reaps its surfaces, then the
+        // Closing a pop-out docks its tab (⌘W there closes a selected agent tab first — the
+        // menu handler's `agent_closable`); closing a window reaps its surfaces, then the
         // `WindowSet` shows the home surface if it was the last real window — no quit.
         SpineAction::DockPoppedOut | SpineAction::CloseWindow => {
             if let Some(w) = target {
@@ -1513,115 +1433,52 @@ fn focus_pane(
     }
 }
 
-/// A popped-out tab's window opens at this size the FIRST time that tab is popped — a single
-/// terminal needs far less than a full multi-tab window's config-resolved default (1500×1000).
+/// A pop-out's window opens at this size the FIRST time that tab is popped — one tab needs far
+/// less than a full multi-tab window's config-resolved default (1500×1000).
 ///
-/// Only the first time: shell-core's geometry plugin persists a detached window's size and
-/// position keyed on its (deterministic, per-tab) `shell-detach:` label, and restores over this
-/// size inside `open_detached`'s `build()`. So this pair is the no-memory default, never a
-/// description of how big the window will actually be — see the birth-rect comment in
-/// `pop_out_tab`, which is exactly where reading it as the latter goes wrong.
+/// Only the first time: shell-core's geometry plugin persists a pop-out's size and position keyed
+/// on its (deterministic, per-tab) `shell-detach:` label, and restores over this size inside
+/// `open_detached`'s `build()`. So this pair is the no-memory default, never how big the window
+/// will be: the birth rect in `pop_out_tab` is sized from the size `open_detached` hands it.
 #[cfg(target_os = "macos")]
-const DETACHED_DEFAULT_WIDTH: f64 = 900.0;
+const POPOUT_DEFAULT_WIDTH: f64 = 900.0;
 #[cfg(target_os = "macos")]
-const DETACHED_DEFAULT_HEIGHT: f64 = 640.0;
-/// The detached window's banner height (matches `detach.html`'s `#banner`, 2.25rem ≈ 36px).
-/// Only used to size the surface's BIRTH rect so it doesn't flash full-height for one frame
-/// before `detach.html`'s own `set_hole_rect` lands and reports the exact hole.
-#[cfg(target_os = "macos")]
-const DETACHED_BANNER_H: f64 = 36.0;
-/// Width of the drag divider `detach.html` puts between two holes (its `.divider` rule, 6px).
-/// Same standing as `DETACHED_BANNER_H` and used for the same one thing: a birth rect close
-/// enough that a split pop-out doesn't flash mis-sized for the frame before the page's own
-/// `set_hole_rect` reports the exact holes. Never a layout authority — the page is.
-#[cfg(target_os = "macos")]
-const DETACHED_DIVIDER_W: f64 = 6.0;
-/// The divider ratio a split pop-out falls back to when the chrome supplies none (or supplies
-/// a non-finite one): the same even split `detach.html` would lay out unasked.
-#[cfg(target_os = "macos")]
-const DETACHED_DEFAULT_RATIO: f64 = 0.5;
+const POPOUT_DEFAULT_HEIGHT: f64 = 640.0;
 
-/// The divider ratio a split pop-out lays out at, from the chrome's advisory `ratio`
-/// argument: absent or non-finite → the even fallback, otherwise clamped to the
-/// `SPLIT_SIZE_MIN..=SPLIT_SIZE_MAX` band the chrome's own drag and `detach.html`'s drag both
-/// clamp to, so a popped-out split can never open at a width neither would let you drag it to.
+/// Pop tab `id` out of the calling window into a window of its own, terminals (surfaces + PTYs)
+/// intact: a one-tab window under a `shell-detach:` label that serves warden's own page, its
+/// registry holding the whole tab — agents, scratch column and all ([`registry::Registry::take_tab`]).
+/// A placeholder keeps the tab's row in the origin until the pop-out closes, when `redock` (wired
+/// via `shell_core::detach::wire_return`) takes the tab home.
 ///
-/// One home for that decision, called twice on the pop-out path (the payload's `panes`, and
-/// the birth rects) — they must agree, and the second frame would silently paper over it if
-/// they didn't.
-#[cfg(target_os = "macos")]
-fn split_ratio(ratio: Option<f64>) -> f64 {
-    use warden_config::resolve::{SPLIT_SIZE_MAX, SPLIT_SIZE_MIN};
-    match ratio {
-        Some(r) if r.is_finite() => r.clamp(SPLIT_SIZE_MIN, SPLIT_SIZE_MAX),
-        _ => DETACHED_DEFAULT_RATIO,
-    }
-}
-
-/// The two hole ratios a split pop-out asks the detach page for, in the page's own
-/// left-to-right order. `primary` is the PRIMARY's share (what the chrome's `ratio` carries),
-/// and `mirrored` (a `side = "left"` split — `PaneIdx::hole`) puts the secondary's share
-/// first, so the popped-out tab keeps the side its config declared rather than opening
-/// primary-left. The pair sums to the whole hole either way.
-#[cfg(target_os = "macos")]
-fn hole_ratios(primary: f64, mirrored: bool) -> Vec<f64> {
-    if mirrored {
-        vec![1.0 - primary, primary]
-    } else {
-        vec![primary, 1.0 - primary]
-    }
-}
-
-/// Pop tab `id` out of the calling window into its own detached window, preserving the live
-/// terminal(s) (surface + PTY). The tab stays present in the origin's sidebar as a `Detached`
-/// placeholder (rendered with the ⤢ mark) until the detached window closes, at which point
-/// `redock` (wired via `shell_core::detach::wire_return`) moves it back.
+/// A cold tab is brought live first, so the ⤢ on any row works; one with nothing to run once up
+/// (an agent pane whose agents all sleep) stays put. A Rex tab still opening can't move: its open
+/// lands in the window that asked.
 ///
-/// **Pop-out is whole-tab**, so a split tab takes BOTH panes: `detach` hands back the pair,
-/// `DetachSpec.panes` asks the shared detach page for two holes at the origin's own divider
-/// ratio, and each hole's `set_hole_rect` routes to its own surface. `ratio` is that divider
-/// ratio, supplied by the chrome (which owns split geometry — Rust never stores one); it is
-/// advisory, and how many holes the window gets is decided by how many surfaces actually came
-/// back, never by `ratio` or by `is_split`. An unsplit tab is unchanged in every respect: one
-/// surface, `panes: vec![]`, and a payload byte-identical to the pre-panes one.
-///
-/// **Lock discipline (load-bearing):** the `ManagerState` lock is held ONLY to extract the
-/// surface + read the spec inputs (phase 1) and again to store the result (phase 3). The window
-/// build + reparent (phase 2) run with the lock RELEASED — `open_detached` builds a window and
-/// its `birth_content` closure moves the surface in, and holding the lock across that (which can
-/// re-enter Tauri/AppKit) risks deadlock. The surface is threaded through an `Option` so the
-/// closure can borrow it and we can recover it afterward on either outcome.
+/// **Lock discipline (load-bearing):** `ManagerState` is held only to take the tab out (phase 1)
+/// and to register the pop-out (phase 3). `open_detached` builds a window and re-enters AppKit, so
+/// it runs with the lock RELEASED, its `birth_content` moving the tab into a fresh registry.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn pop_out_tab(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
     id: String,
-    ratio: Option<f64>,
 ) -> Result<(), String> {
     use tauri::{Emitter, Manager};
     let app = window.app_handle().clone();
     let origin_label = window.label().to_string();
 
-    // Phase 1 — under the lock: extract the live surface(s) (leaving a Detached placeholder in
-    // each slot) and read the banner spec inputs. Lock dropped at the end of this block.
-    let (surface, secondary, secondary_left, tab_spec, spec, token, agent, block, focused) = {
+    // Phase 1 — under the lock: bring the tab up and take it out, leaving its placeholder.
+    let (moved, spec, origin) = {
         let mut m = state.lock();
         let ws = m
             .windows
             .get_mut(&origin_label)
             .ok_or_else(|| "window not found".to_string())?;
-        // Before the open below: a refused column shouldn't wake a cold tab first.
-        if let Some(reason) = ws.registry.pop_out_blocked(&id) {
-            return Err(reason);
+        if ws.origin.is_some() {
+            return Err("this tab is already popped out".to_string());
         }
-        // Bring a never-opened (cold) tab live first, so popping the ⤢ affordance — which the
-        // sidebar shows on EVERY row, not just loaded ones — works from any tab rather than
-        // erroring on a cold one. Spawning happens in the origin window; `detach` then extracts
-        // the now-live surface and phase 2 reparents it out (all synchronous, so the brief
-        // in-origin overlap never renders). Already-Detached / unknown tabs stay a clean error. A
-        // cold Rex tab can't come live synchronously — its session opens off this thread — so it
-        // starts opening here and the pop-out says to try again once it has.
         ws.registry
             .ensure_spawned_by_id(&id)
             .map_err(|e| format!("could not open the tab to pop it out: {e}"))?;
@@ -1631,206 +1488,99 @@ fn pop_out_tab(
                     .to_string(),
             );
         }
-        // The agent whose surface travels, so its size and exit still name the agent.
-        let agent = ws.registry.selected_agent(&id).map(str::to_string);
-        // Likewise the Rex block whose surface travels, so its size and exit name the block.
-        let block = ws.registry.column_block(&id);
-        // The pane with focus keeps it out there: the surface keeps first responder.
-        let focused = ws
+        let moved = ws
             .registry
-            .focused_pane(&id)
-            .unwrap_or(registry::PaneIdx::Primary);
-        let (surface, secondary) = ws
-            .registry
-            .detach(&id)
+            .take_tab(&id)
             .ok_or_else(|| "tab is not available to pop out".to_string())?;
-        let title = ws.registry.tab_title(&id).unwrap_or_else(|| id.clone());
-        let tab_spec = ws
-            .registry
-            .spec_of(&id)
-            .cloned()
-            .expect("detach found the tab");
-        let colour = ws.colour.clone();
-        // The side is the registry's (config) fact, not the chrome's: the docked chrome
-        // derives `.secondary-left` from the same `split_layout`, so the two agree by
-        // construction.
-        let secondary_left = ws.registry.split_side(&id) == Some(warden_config::SplitSide::Left);
-        // Two holes iff two surfaces actually came back. Keyed on the surfaces, not on
-        // `is_split`: a split tab whose secondary was cold detaches with one surface, and a
-        // second hole with nothing behind it is a transparent leak straight to the desktop.
-        // Hole order is the page's left-to-right order, so a left-side split lists the
-        // secondary's share first (`hole_ratios`) — `secondary_left` alone decides that here
-        // because a secondary is in hand (the same `mirrored` `DetachedSurface` will report).
-        let panes = if secondary.is_some() {
-            hole_ratios(split_ratio(ratio), secondary_left)
-        } else {
-            // The unsplit case, which is every tab that has never been split: empty, so the
-            // page lays out one undivided hole and shell-core omits `panes` from the payload
-            // entirely — byte-identical to the pre-panes emission.
-            vec![]
-        };
+        if !moved.is_live() {
+            // Nothing running to carry: it stays where it was.
+            if let Err(mut back) = ws.registry.adopt_tab(moved) {
+                back.close();
+            }
+            return Err("tab has nothing running to pop out".to_string());
+        }
         let spec = shell_core::detach::DetachSpec {
-            title,
-            colour: Some(colour),
-            width: DETACHED_DEFAULT_WIDTH,
-            height: DETACHED_DEFAULT_HEIGHT,
-            panes,
-            pane_band: Some([
-                warden_config::resolve::SPLIT_SIZE_MIN,
-                warden_config::resolve::SPLIT_SIZE_MAX,
-            ]),
+            title: moved.spec().title.clone(),
+            colour: Some(ws.colour.clone()),
+            width: POPOUT_DEFAULT_WIDTH,
+            height: POPOUT_DEFAULT_HEIGHT,
+            page: Some(tauri::WebviewUrl::App("index.html".into())),
         };
-        let token = crate::plan::detach_window_token(&origin_label, &id);
-        (
-            surface,
-            secondary,
-            secondary_left,
-            tab_spec,
-            spec,
-            token,
-            agent,
-            block,
-            focused,
-        )
+        let origin = manager::PopOrigin {
+            label: origin_label.clone(),
+            title: ws.title.clone(),
+            tab_id: moved.id().to_owned(),
+        };
+        // The moved tab's surfaces still sit in the origin until birth reparents them; a moved
+        // tab is never dropped live, so every path below hands it on or closes it.
+        (Some(moved), spec, origin)
     };
+    let mut moved = moved;
 
-    // Phase 2 — lock RELEASED: build the detached window; birth_content reparents the surface
-    // into it. Birth rect ≈ the hole below the banner (detach.html corrects it on load).
-    //
-    // `size` is the BUILT window's real size, handed in by `open_detached` — never `spec`'s / the
-    // DETACHED_DEFAULT_* constants it was built with. shell-core's geometry plugin restores this
-    // tab's remembered size and position during `build()`, so for every pop-out after the first
-    // those constants are stale by the time this closure runs. It arrives in logical points, which
-    // is what the NSView frame wants.
-    //
-    // BOTH panes move here, and every way out of this closure leaves both surfaces reachable:
-    // a failed primary reparent has moved nothing, and a failed secondary reparent (only
-    // possible for an already-closed surface — the window lookups it shares with the primary
-    // have just succeeded) puts the primary back in the origin before returning, so
-    // `open_detached`'s `window.close()` never takes a live view down with it. `origin_nsw`
-    // is resolved HERE, before the build, because that rollback needs it and the closure has
-    // only the new window; `None` (the origin can't report an NSWindow, which is already a
-    // broken origin) costs the rollback its destination, so the closure refuses up front in
-    // exactly the case that would need one — see its own guard — rather than moving the
-    // primary into a window it could not move it back out of. Either way the surfaces and
-    // their PTYs survive into the registry below, which is the guarantee that matters.
-    let origin_nsw = window.ns_window().ok();
-    let mut surface_opt = Some(surface);
-    let mut secondary_opt = secondary;
+    // Phase 2 — lock RELEASED: build the window; birth_content moves the tab into its registry,
+    // framed at the hole below the page's banner until the page reports its own holes. `size` is
+    // the BUILT window's real size — shell-core's geometry plugin has restored a remembered one by
+    // now — in logical points, which is what the NSView frame wants.
+    let token = crate::plan::detach_window_token(&origin_label, &id);
+    let mut popped: Option<registry::Registry> = None;
     let build = shell_core::detach::open_detached(&app, &token, &spec, "warden", |win, size| {
-        let nsw = win.ns_window()?;
-        let hole_h = (size.height - DETACHED_BANNER_H).max(0.0);
-        // One hole, or the two the page divides by the same ratios `spec.panes` carries —
-        // laid out by HOLE (left-to-right, the page's order) and then handed to the pane each
-        // hole belongs to, so a left-side split's primary is born in the RIGHT hole, the way
-        // the page will report it. Both are corrected by `detach.html`'s own `set_hole_rect`
-        // on load; these only keep the first frame from being visibly wrong.
-        let (primary_rect, secondary_rect) = match secondary_opt.is_some() {
-            false => (
-                crate::surface::PixelRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: size.width,
-                    height: hole_h,
-                },
-                None,
-            ),
-            true => {
-                let ratios = hole_ratios(split_ratio(ratio), secondary_left);
-                let avail = (size.width - DETACHED_DIVIDER_W).max(0.0);
-                let left_w = avail * ratios[0];
-                let hole_rects = [
-                    crate::surface::PixelRect {
-                        x: 0.0,
-                        y: 0.0,
-                        width: left_w,
-                        height: hole_h,
-                    },
-                    crate::surface::PixelRect {
-                        x: left_w + DETACHED_DIVIDER_W,
-                        y: 0.0,
-                        width: avail - left_w,
-                        height: hole_h,
-                    },
-                ];
-                use crate::registry::PaneIdx;
-                (
-                    hole_rects[PaneIdx::Primary.hole(secondary_left)],
-                    Some(hole_rects[PaneIdx::Block(0).hole(secondary_left)]),
-                )
-            }
+        let nsw = win.ns_window()? as *mut std::os::raw::c_void;
+        let hole = shell_core::detach::birth_hole(size);
+        let birth = geometry::web_rect_to_view(
+            WebRect {
+                x: hole.x,
+                y: hole.y,
+                width: hole.width,
+                height: hole.height,
+            },
+            size.height,
+        );
+        let mut reg = registry::Registry::new(nsw, birth);
+        reg.set_rex_opener(rex::spawn::opener(app.clone(), win.label().to_owned()));
+        reg.set_report_socket(rex::reports::socket_path(&app));
+        let Some(tab) = moved.take() else {
+            return Err(std::io::Error::other("the tab is already gone").into());
         };
-        // Refuse BEFORE moving anything when the rollback below has no destination: the
-        // secondary's failure arm needs `origin_nsw` to put the primary back, so with a
-        // secondary in hand and no origin NSWindow the only reachable failure is the one that
-        // strands the primary's view inside a window `open_detached` then closes. Bailing here
-        // costs nothing that isn't already lost (an origin that can't report an NSWindow is
-        // broken, and both surfaces still survive into the rollback registry below), and it
-        // buys the cheap guarantee that no branch past this point moves a view it cannot move
-        // back. Unsplit is untouched — with no secondary there is no second move to fail.
-        if origin_nsw.is_none() && secondary_opt.is_some() {
-            return Err(std::io::Error::other(
-                "origin window has no NSWindow to roll a split pop-out back into",
-            )
-            .into());
-        }
-        surface_opt
-            .as_mut()
-            .expect("surface present during birth")
-            .reparent(nsw as *mut std::os::raw::c_void, primary_rect)
-            .map_err(|e| std::io::Error::other(format!("reparent failed: {e}")))?;
-        if let (Some(s), Some(rect)) = (secondary_opt.as_mut(), secondary_rect) {
-            if let Err(e) = s.reparent(nsw as *mut std::os::raw::c_void, rect) {
-                // Undo the primary's move: this window is about to be closed by
-                // `open_detached`, and a view left inside it would be a live PTY with
-                // nothing on screen. The rect is a placeholder — the `activate` on the
-                // failure path below re-asserts the origin's real hole rects.
-                if let Some(o) = origin_nsw {
-                    let _ = surface_opt
-                        .as_mut()
-                        .expect("surface present during birth")
-                        .reparent(o as *mut std::os::raw::c_void, manager::INITIAL_RECT);
-                }
-                return Err(std::io::Error::other(format!(
-                    "reparent of the second pane failed: {e}"
-                ))
-                .into());
+        match reg.adopt_tab(tab) {
+            Ok(()) => {
+                popped = Some(reg);
+                Ok(())
+            }
+            Err(back) => {
+                moved = Some(back);
+                Err(std::io::Error::other("its terminals won't move").into())
             }
         }
-        Ok(())
     });
 
-    let label = match build {
-        Ok(label) => label,
-        Err(e) => {
-            // The window build / reparent failed. Both surfaces are intact and parented to
-            // the ORIGIN window (reparent only errors before it moves a view, and the
-            // secondary's failure arm above moves the primary back) — so put BOTH back into
-            // the origin's registry slot and the tab stays live, never a permanent Detached
-            // placeholder with no window. A partial restore here would leave a live PTY with
-            // no window, no slot, and no route back. If the origin vanished meanwhile, both
-            // are closed here (the tab genuinely has no home).
-            let surface = surface_opt.take().expect("surface held on build failure");
-            let secondary = secondary_opt.take();
+    let label = match (build, popped) {
+        (Ok(label), Some(reg)) => {
             let mut m = state.lock();
-            if let Some(ws) = m.windows.get_mut(&origin_label) {
-                match ws.registry.attach(
-                    &id,
-                    surface,
-                    secondary,
-                    agent.as_deref(),
-                    block.as_deref(),
-                ) {
-                    // Re-assert the origin's CURRENT selection (not this tab — pop-out can be
-                    // driven on a background tab, and `activate` would move the shown surface
-                    // out from under the sidebar's highlight). This is what re-applies the
-                    // real hole rects over the placeholder ones a rollback reparent used.
-                    Ok(()) => {
-                        if let Some(active) = ws.registry.active_tab().map(str::to_string) {
-                            let _ = ws.registry.activate(&active);
+            m.add_popout(
+                &app,
+                &label,
+                reg,
+                spec.title.clone(),
+                spec.colour.clone().unwrap_or_default(),
+                origin,
+            );
+            label
+        }
+        (build, _) => {
+            // Nothing was built, or the tab wouldn't move: it goes back where it was, live (a
+            // surface that moved went back to the origin hidden — the adopt re-shows it).
+            let e = build
+                .err()
+                .map_or_else(|| "no window".to_owned(), |e| e.to_string());
+            let mut m = state.lock();
+            if let Some(mut tab) = moved.take() {
+                match m.windows.get_mut(&origin_label) {
+                    Some(ws) => {
+                        if let Err(mut back) = ws.registry.adopt_tab(tab) {
+                            back.close();
                         }
                     }
-                    Err((p, s)) => manager::close_both(p, s),
+                    None => tab.close(),
                 }
             }
             m.record_session(&app, &origin_label);
@@ -1840,82 +1590,14 @@ fn pop_out_tab(
     };
     log::info!("tab {:?}: popped out of {origin_label:?}", spec.title);
 
-    // Phase 3 — re-lock to store the (now reparented) surfaces + wire the return.
-    let surface = surface_opt.take().expect("surface reparented on success");
-    let secondary = secondary_opt.take();
-    {
-        let mut m = state.lock();
-        let origin_title = m
-            .windows
-            .get(&origin_label)
-            .map(|ws| ws.title.clone())
-            .unwrap_or_default();
-        m.detached.insert(
-            label.clone(),
-            manager::DetachedSurface {
-                surface,
-                focused: match focused {
-                    registry::PaneIdx::Block(_) if secondary.is_some() => {
-                        registry::PaneIdx::Block(0)
-                    }
-                    _ => registry::PaneIdx::Primary,
-                },
-                secondary_went_out: secondary.is_some(),
-                secondary,
-                secondary_left,
-                spec: tab_spec,
-                origin_label: origin_label.clone(),
-                origin_title,
-                tab_id: id.clone(),
-                agent,
-                block,
-            },
-        );
-    }
     {
         let app2 = app.clone();
         let label2 = label.clone();
-        // wire_return resolves the detached window by label itself (`get_window`, which finds
-        // curator's and lector's multi-webview windows as well as warden's single-webview one),
-        // so the caller passes only the label.
+        // wire_return resolves the window by label itself (`get_window`).
         shell_core::detach::wire_return(&app, &label, move || redock(&app2, &label2));
     }
-    // The popped-out window gaining focus is the user looking at the tab: clear the badge its
-    // bells left on the origin's row (a badge is only ever set while that window is unfocused).
-    if let Some(win) = app.get_window(&label) {
-        let app2 = app.clone();
-        let detached_label = label.clone();
-        win.on_window_event(move |event| {
-            if let tauri::WindowEvent::Focused(true) = event {
-                // Read the origin now, not at pop-out: an origin rebuilt under a new label
-                // repoints `origin_label`, and the badge must clear in the live one.
-                let seen = app2.try_state::<ManagerState>().and_then(|st| {
-                    let m = st.lock();
-                    m.detached
-                        .get(&detached_label)
-                        .map(|d| (d.origin_label.clone(), d.tab_id.clone()))
-                });
-                if let Some((origin, tab)) = seen {
-                    let _ = app2.emit_to(
-                        origin.as_str(),
-                        "warden:tab-seen",
-                        serde_json::json!({ "label": origin, "id": tab }),
-                    );
-                }
-                rex::lifecycle::seen_popped(&app2);
-                sync_agent_menu(&app2);
-            }
-        });
-    }
-
-    // The origin's row now renders detached; refresh it. The `WindowSet` learns the pop-out count
-    // (it keeps the home surface away while one is up); the menu is unchanged (detached windows
-    // aren't in it) but rebuilt for consistency.
-    {
-        let mut m = state.lock();
-        m.record_session(&app, &origin_label);
-        m.sync_detached(&app);
-    }
+    // The origin's row now renders popped out; refresh it.
+    state.lock().record_session(&app, &origin_label);
     let _ = rebuild_menu(&app);
     if let Some(dto) = state.lock().init_dto(&origin_label) {
         let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
@@ -1923,9 +1605,9 @@ fn pop_out_tab(
     Ok(())
 }
 
-/// Raise the detached window hosting tab `id` (popped out of the calling window). The chrome
-/// calls this instead of `activate_tab` when a *detached* row is clicked in the origin sidebar —
-/// there is no local surface to activate, so "select" means "bring its window forward".
+/// Raise the pop-out holding tab `id` (popped out of the calling window). The chrome calls this
+/// instead of `activate_tab` when a popped-out row is clicked in the origin sidebar — there is no
+/// local surface to activate, so "select" means "bring its window forward".
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn raise_popped_window(
@@ -1935,7 +1617,10 @@ fn raise_popped_window(
 ) {
     use tauri::Manager;
     let app = window.app_handle().clone();
-    let label = state.lock().detached_label_for(window.label(), &id);
+    let label = state
+        .lock()
+        .popout_of(window.label(), &id)
+        .map(str::to_owned);
     if let Some(label) = label {
         if let Some(win) = app.get_webview_window(&label) {
             let _ = win.unminimize();
@@ -1944,15 +1629,18 @@ fn raise_popped_window(
     }
 }
 
-/// Dock tab `id` back into its origin window — the ↩ pop-in overlay on a detached row. Closing the
-/// detached window fires its `Destroyed` handler (`redock`), which returns the tab here; this reuses
-/// the exact same return path as the user closing the popped-out window by hand. No-op if `id`
-/// isn't a tab detached from the calling window.
+/// Dock tab `id` back into its origin window — the ↩ pop-in overlay on a popped-out row. Closing
+/// the pop-out fires its `Destroyed` handler (`redock`), which returns the tab here: the same
+/// return path as the user closing the pop-out by hand. No-op if `id` isn't a tab popped out of the
+/// calling window.
 #[tauri::command]
 fn pop_in_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
     use tauri::Manager;
     let app = window.app_handle().clone();
-    let label = state.lock().detached_label_for(window.label(), &id);
+    let label = state
+        .lock()
+        .popout_of(window.label(), &id)
+        .map(str::to_owned);
     if let Some(label) = label {
         if let Some(win) = app.get_webview_window(&label) {
             let _ = win.close();
@@ -1960,66 +1648,64 @@ fn pop_in_tab(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, i
     }
 }
 
-/// Return a popped-out tab to its origin when its detached window closes — the `on_close`
-/// wired by `shell_core::detach::wire_return`. Runs on the main thread (Tauri delivers the
-/// window `Destroyed` event there), so it can lock `ManagerState` and touch AppKit directly.
-/// Captures only the `AppHandle` (Clone) + the detached label; the state is fetched inside.
+/// Return a pop-out's tab to its origin when the pop-out closes — the `on_close` wired by
+/// `shell_core::detach::wire_return`. Runs on the main thread (Tauri delivers `Destroyed` there),
+/// so it can lock `ManagerState` and touch AppKit directly.
 #[cfg(target_os = "macos")]
-fn redock(app: &tauri::AppHandle, detached_label: &str) {
+fn redock(app: &tauri::AppHandle, label: &str) {
     use tauri::{Emitter, Manager};
     // App is quitting (⌘Q, `RunEvent::ExitRequested` fires before every window's `Destroyed`):
-    // don't reopen an origin window or reparent a surface mid-teardown — everything is being torn
-    // down and `GhosttySurface`'s `Drop` frees it. Without this, a detached window whose origin
-    // was already closed would build a fresh window during app termination.
+    // don't reopen an origin window or move a surface mid-teardown — everything is being torn
+    // down and `GhosttySurface`'s `Drop` frees it. Without this, a pop-out whose origin was
+    // already closed would build a fresh window during app termination.
     if manager::is_quitting(app) {
         return;
     }
     let st = app.state::<ManagerState>();
-    // Find the origin by title (`entry_for_title`) — a window renamed in place and then closed
-    // comes back under a new label — and point the tab at that label. Reopen the origin if the
-    // user closed it while the tab was popped out, so the tab has somewhere to return to — while
-    // the tab is still in `detached`, which is how `build_window` knows to stand it up as a
-    // `Detached` placeholder. Reopened after the removal, an eager tab (`load_on_open`,
-    // remembered, or the first shown) would spawn a second live terminal, and `attach` would then
-    // end the returning one. The lock is released: the `WindowSet` builds through `WardenHost`,
-    // which takes it.
-    let set = app.state::<WindowSet>();
-    let entries = set.entries();
-    let closed_origin = {
-        let mut m = st.lock();
-        let Some(d) = m.detached.get_mut(detached_label) else {
-            return; // already redocked (double-close) — nothing to do
+    // A closed origin is reopened first, while the pop-out is still registered: that is how
+    // `build_window` knows to stand the tab's placeholder rather than add it cold — an eager tab
+    // (`load_on_open`, remembered, or the first shown) would otherwise spawn a second live
+    // terminal, and the return would find no slot. The lock is released: the `WindowSet` builds
+    // through `WardenHost`, which takes it.
+    let target = {
+        let m = st.lock();
+        let Some(origin) = m.windows.get(label).and_then(|ws| ws.origin.as_ref()) else {
+            return; // already returned (double close) — nothing to do
         };
-        match shell_core::windows::plan::entry_for_title(&entries, &d.origin_title) {
-            Some(home) => {
-                d.origin_label = home.id.clone();
-                (!home.open).then(|| home.id.clone())
-            }
-            None => None,
-        }
+        let open: Vec<(&str, &str)> = m
+            .windows
+            .iter()
+            .filter(|(_, ws)| ws.origin.is_none())
+            .map(|(l, ws)| (l.as_str(), ws.title.as_str()))
+            .collect();
+        manager::return_target(origin, &open)
     };
-    if let Some(origin) = closed_origin {
-        set.open_or_focus(app, &origin);
+    if let manager::ReturnTarget::Reopen(title) = target {
+        let set = app.state::<WindowSet>();
+        let entries = set.entries();
+        if let Some(home) = shell_core::windows::plan::entry_for_title(&entries, &title) {
+            set.open_or_focus(app, &home.id);
+        }
     }
-    let redocked = st.lock().redock(app, detached_label);
+    let redocked = st.lock().redock(app, label);
     let Some(manager::Redocked {
         origin_label,
         dropped,
     }) = redocked
     else {
-        return; // already redocked (double-close) — nothing to do
+        return;
     };
     log::info!(
-        "{detached_label:?} docked back into {origin_label:?}{}",
+        "{label:?} docked back into {origin_label:?}{}",
         if dropped.is_some() {
-            " (its terminal ended on arrival)"
+            " (nothing running)"
         } else {
             ""
         }
     );
-    // A tab dropped on arrival (it left the config while out) goes through the chrome's unload
-    // tail BEFORE the refresh removes its row, so the selection lands on the neighbour the
-    // registry leaned to rather than chrome-core's first-tab fallback.
+    // A tab that came home with nothing running goes through the chrome's unload tail BEFORE the
+    // refresh, so the selection lands on the neighbour the registry leaned to rather than
+    // chrome-core's first-tab fallback.
     if let Some((id, new_active)) = dropped {
         let _ = app.emit_to(
             origin_label.as_str(),
@@ -2027,16 +1713,16 @@ fn redock(app: &tauri::AppHandle, detached_label: &str) {
             serde_json::json!({ "label": origin_label, "id": id, "newActive": new_active }),
         );
     }
-    // The origin may have been reopened by redock; rebuild the menu so its checkmark/(closed)
-    // tag is right (lock already released — rebuild_menu re-locks).
+    // The origin may have been reopened; rebuild the menu so its checkmark/(closed) tag is right
+    // (lock already released — rebuild_menu re-locks).
     let _ = rebuild_menu(app);
-    // Push a fresh snapshot so the origin's chrome un-detaches the returned tab's row and shows
-    // it active. A no-op emit if the origin is gone (tab had no home).
+    // A fresh snapshot: the origin's chrome shows the returned row docked. A no-op emit if the tab
+    // had no home.
     let dto = st.lock().init_dto(&origin_label);
     if let Some(dto) = dto {
         let _ = app.emit_to(origin_label.as_str(), "warden:refresh", dto);
     }
-    // The tab's session may have changed while popped out — fast-burst the origin's dots.
+    // The tab's session may have changed while out — fast-burst the origin's dots.
     probe::bump(&origin_label);
 }
 
@@ -2762,27 +2448,14 @@ fn set_hole_rect(
         return;
     };
 
-    // None is the single-hole caller (shell-core's detach.html when it declares no panes, and
-    // any older chrome). Docked, an index past the column's blocks names no pane and is ignored
-    // (`from_index`, `Registry::set_pane_frame`); a detached window floors anything past its
-    // second hole to the primary (`from_hole`). Neither is an error.
-    let hole = pane.unwrap_or(0);
-
+    // The chrome's index IS the pane (`reportRect`'s 0 = primary, 1 + i = block i, whichever
+    // side the CSS draws them on); `None` is the primary. An index past the column's blocks names
+    // no pane and is ignored (`from_index`, `Registry::set_pane_frame`), never an error.
+    let which = crate::registry::PaneIdx::from_index(pane.unwrap_or(0));
     let mut m = state.lock();
-    let rex_sizes = if let Some(ws) = m.windows.get_mut(window.label()) {
-        // The docked chrome's index IS the pane (`reportRect`'s 0 = primary, 1 = secondary,
-        // whichever side the CSS draws them on).
-        ws.registry
-            .set_pane_frame(crate::registry::PaneIdx::from_index(hole), view_rect)
-    } else {
-        // A detached (popped-out) window lives outside `windows`; its banner-shell page
-        // (`detach.html`) reports its own hole rect via this same command, so route it to
-        // the detached surface — by HOLE, which that window resolves to a pane itself (a
-        // left-side split's first hole is the secondary). No-op if the label is neither a
-        // real nor a detached window.
-        m.set_detached_frame(window.label(), hole, view_rect)
-            .into_iter()
-            .collect()
+    let rex_sizes = match m.windows.get_mut(window.label()) {
+        Some(ws) => ws.registry.set_pane_frame(which, view_rect),
+        None => Vec::new(),
     };
     drop(m);
     request_rex_sizes(tauri::Manager::app_handle(&window), rex_sizes);
@@ -3368,30 +3041,10 @@ fn main() {
             let origin_of = |l: &str| {
                 let st = app.state::<ManagerState>();
                 let m = st.lock();
-                m.detached.get(l).map(|ds| ds.origin_label.clone())
+                Some(m.windows.get(l)?.origin.as_ref()?.label.clone())
             };
-            // Sleep Server ▸ <server>: the focused window confirms any loss — a pop-out's origin,
-            // raised, since a pop-out has no chrome to ask in.
+            // Sleep Server ▸ <server>: the focused window confirms any loss.
             if let Some(server) = id.strip_prefix(MENU_SLEEP_SERVER) {
-                let label = if shell_core::detach::is_detached_label(&label) {
-                    let Some(origin) = origin_of(&label) else {
-                        return;
-                    };
-                    match app.get_webview_window(&origin) {
-                        Some(w) => {
-                            let _ = w.set_focus();
-                        }
-                        // The origin was closed: bring it back. Its chrome mounts fresh, with
-                        // nothing listening yet for the confirm, so the command ends there.
-                        None => {
-                            open_or_focus_window(app, &origin);
-                            return;
-                        }
-                    }
-                    origin
-                } else {
-                    label
-                };
                 if let Err(message) = rex::lifecycle::sleep_server(app, &label, server, &[]) {
                     let _ = app.emit_to(
                         label.as_str(),
@@ -3776,19 +3429,6 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// ⌥⌘W in a pop-out is disabled with the reason; docked, it is enabled with its plain title.
-    #[test]
-    fn close_project_item_names_why_a_pop_out_disables_it() {
-        assert_eq!(
-            close_project_item(true),
-            (false, "Close Project Tab (Dock the tab first)".to_string())
-        );
-        assert_eq!(
-            close_project_item(false),
-            (true, CLOSE_PROJECT_TITLE.to_string())
-        );
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn toggling_the_digit_mode_seeds_a_missing_config_first() {
@@ -3823,51 +3463,6 @@ mod tests {
         assert_eq!(t("warden://open?x=1"), None);
         assert_eq!(t("warden://close?window=work"), None);
         assert_eq!(t("curator://open?window=work"), None);
-    }
-
-    #[test]
-    fn hole_ratios_put_the_secondary_first_only_when_mirrored() {
-        // Hole order is the detach page's left-to-right order; `primary` is the primary's
-        // share. A right-side split lists it first; a left-side split
-        // lists the secondary's share first, so the popped-out tab keeps its config's side.
-        assert_eq!(hole_ratios(0.3, false), vec![0.3, 0.7]);
-        assert_eq!(hole_ratios(0.3, true), vec![0.7, 0.3]);
-        for mirrored in [false, true] {
-            let v = hole_ratios(0.42, mirrored);
-            assert!(
-                (v[0] + v[1] - 1.0).abs() < 1e-9,
-                "must sum to the whole hole"
-            );
-            // The primary's own hole carries the primary's share, whichever side it sits.
-            use crate::registry::PaneIdx;
-            assert_eq!(v[PaneIdx::Primary.hole(mirrored)], 0.42);
-            assert_eq!(v[PaneIdx::Block(0).hole(mirrored)], 1.0 - 0.42);
-        }
-    }
-
-    #[test]
-    fn split_ratio_falls_back_and_clamps_to_the_draggable_band() {
-        // The chrome's ratio is advisory and arrives over IPC, so every non-answer has to
-        // land somewhere sane: a popped-out split must never open at a width the user could
-        // not have dragged it to, and must never be laid out from a NaN.
-        assert_eq!(split_ratio(None), DETACHED_DEFAULT_RATIO);
-        assert_eq!(split_ratio(Some(f64::NAN)), DETACHED_DEFAULT_RATIO);
-        assert_eq!(split_ratio(Some(f64::INFINITY)), DETACHED_DEFAULT_RATIO);
-        assert_eq!(split_ratio(Some(0.3)), 0.3);
-        assert_eq!(
-            split_ratio(Some(0.0)),
-            0.1,
-            "clamped to the drag's own floor"
-        );
-        assert_eq!(
-            split_ratio(Some(9.0)),
-            0.9,
-            "clamped to the drag's own ceil"
-        );
-        // The pair `pop_out_tab` builds `DetachSpec.panes` from must sum to the whole hole,
-        // or the page lays the panes out at a width neither the ratio nor the window says.
-        let r = split_ratio(Some(0.42));
-        assert!((r + (1.0 - r) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

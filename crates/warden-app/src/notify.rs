@@ -57,9 +57,9 @@ fn dbglog(msg: &str) {
 
 /// A clicked banner: raise the window owning it and ask its chrome to select the tab. Best-effort:
 /// an unknown label (window since closed) raises nothing; a stale/missing tab id leaves the active
-/// tab alone, so the click still lands you in the right window. A tab popped out of `label` is
-/// shown by its detached window, so that window is the one raised, and the origin's selection is
-/// left alone (selecting a popped-out row only raises that same window). `emit_to` leaks to sibling
+/// tab alone, so the click still lands you in the right window. A tab popped out of `label` since
+/// the banner fired is shown by its pop-out, so that window is the one raised
+/// ([`attention_target`]). `emit_to` leaks to sibling
 /// webviews (see CLAUDE.md), so the payload carries the target `label` and the chrome drops events
 /// meant for another window — same guard as every other per-window event. A banner naming an agent
 /// tab (its `context`) selects it first, as the user's own pick, so the tab opens on it.
@@ -71,14 +71,16 @@ fn focus_window_tab(app: &AppHandle, click: &Click) {
 /// [`focus_window_tab`] path. Its chrome must already be listening: one that hasn't mounted
 /// takes the tab through `WindowState::pending_focus` instead.
 pub fn focus_tab(app: &AppHandle, label: &str, id: &str, agent: Option<&str>) {
-    let popped = app
-        .state::<ManagerState>()
-        .lock()
-        .detached_label_for(label, id);
-    if let Some(dlabel) = popped {
-        banner::raise(app, &dlabel);
-        return;
-    }
+    let label = {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        let windows = m
+            .windows
+            .iter()
+            .map(|(l, ws)| (l.as_str(), ws.origin.as_ref(), &ws.registry));
+        attention_target(label, id, windows).to_owned()
+    };
+    let label = label.as_str();
     banner::raise(app, label);
     if let Some(agent) = agent {
         if let Err(e) = crate::rex::lifecycle::select(app, label, id, agent) {
@@ -219,21 +221,116 @@ pub fn agent_banner(label: &str, tab: &str, title: &str, body: &str, agent: &str
     });
 }
 
-/// The `(window label, tab id, visible)` a signal from `surface_id` belongs to. A docked surface is
-/// `WindowManager::locate_surface`'s answer; a popped-out one belongs to its tab's row in the ORIGIN
-/// window (the row a badge lands on and a banner names), and is visible while its detached window
-/// is focused — a popped-out tab is the only thing that window shows.
+/// The `(window label, tab id, visible)` a signal from `surface_id` belongs to: the window whose
+/// registry holds the surface — a pop-out's for a popped-out tab, the row its page shows — and
+/// whether that window is focused with the surface on screen.
 fn locate(app: &AppHandle, surface_id: usize) -> Option<(String, String, bool)> {
-    let state = app.state::<ManagerState>();
-    let m = state.lock();
-    if let Some(found) = m.locate_surface(surface_id) {
-        return Some(found);
-    }
-    let (dlabel, _) = m.locate_detached_surface(surface_id)?;
-    let ds = m.detached.get(&dlabel)?;
-    let visible = app
-        .get_window(&dlabel)
+    let (label, tab, shown) = app
+        .state::<ManagerState>()
+        .lock()
+        .locate_surface(surface_id)?;
+    let focused = app
+        .get_window(&label)
         .and_then(|w| w.is_focused().ok())
         .unwrap_or(false);
-    Some((ds.origin_label.clone(), ds.tab_id.clone(), visible))
+    Some((label, tab, shown && focused))
+}
+
+/// The window a banner for tab `tab` of window `label` raises: `label` while its registry holds
+/// the tab; else the pop-out the tab went out to from `label`, since the banner fired. `windows`
+/// is every open window as `(label, origin when a pop-out, registry)`.
+pub(crate) fn attention_target<'a>(
+    label: &'a str,
+    tab: &str,
+    windows: impl IntoIterator<
+        Item = (
+            &'a str,
+            Option<&'a crate::manager::PopOrigin>,
+            &'a crate::registry::Registry,
+        ),
+    >,
+) -> &'a str {
+    let windows: Vec<_> = windows.into_iter().collect();
+    if windows
+        .iter()
+        .any(|(l, _, reg)| *l == label && reg.holds_tab(tab))
+    {
+        return label;
+    }
+    windows
+        .iter()
+        .find(|(_, o, reg)| o.is_some_and(|o| o.label == label) && reg.holds_tab(tab))
+        .map_or(label, |(l, _, _)| l)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manager::PopOrigin;
+    use crate::registry::Registry;
+    use crate::surface::{PixelRect, TabSpec};
+
+    fn spec(id: &str) -> TabSpec {
+        TabSpec {
+            colour: None,
+            id: id.into(),
+            title: id.into(),
+            dir: std::path::PathBuf::from(id),
+            shell: "sh".into(),
+            startup: None,
+            group: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            tree: false,
+            tree_path: Vec::new(),
+            split: None,
+            server: None,
+            resume: None,
+        }
+    }
+
+    fn registry() -> Registry {
+        Registry::new(
+            std::ptr::null_mut(),
+            PixelRect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+        )
+    }
+
+    /// A banner names the window the tab was in when it fired; once the tab is out, the origin
+    /// holds only its placeholder and the pop-out holding it is the one raised.
+    #[test]
+    fn attention_target_for_a_popped_out_tab_is_the_popout() {
+        let mut origin = registry();
+        let _ = origin.add(&spec("/tmp/a"), false);
+        let _ = origin.add(&spec("/tmp/b"), false);
+        let moved = origin.take_tab("/tmp/a").expect("the tab moves");
+        let mut popout = registry();
+        assert!(popout.adopt_tab(moved).is_ok());
+        let from = PopOrigin {
+            label: "work".into(),
+            title: "work".into(),
+            tab_id: "/tmp/a".into(),
+        };
+        let windows = || {
+            [
+                ("work", None, &origin),
+                ("shell-detach:k", Some(&from), &popout),
+            ]
+        };
+        assert_eq!(
+            attention_target("work", "/tmp/a", windows()),
+            "shell-detach:k"
+        );
+        assert_eq!(attention_target("work", "/tmp/b", windows()), "work");
+        assert_eq!(
+            attention_target("shell-detach:k", "/tmp/a", windows()),
+            "shell-detach:k"
+        );
+    }
 }
