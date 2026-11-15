@@ -216,7 +216,7 @@ pub enum ReturnTarget {
 /// title (renamed in place, or rebuilt under another label); else reopen it by title. A window
 /// that took the origin's label under another title is not its home.
 pub fn return_target(origin: &PopOrigin, open: &[(&str, &str)]) -> ReturnTarget {
-    let titled = |t: &str| t.trim() == origin.title.trim();
+    let titled = |t: &str| same_title(t, &origin.title);
     if open.iter().any(|(l, t)| *l == origin.label && titled(t)) {
         return ReturnTarget::Open(origin.label.clone());
     }
@@ -226,10 +226,17 @@ pub fn return_target(origin: &PopOrigin, open: &[(&str, &str)]) -> ReturnTarget 
     }
 }
 
-/// Whether a pop-out has nothing left to show: its one tab holds no live surface. Its window then
-/// closes and the tab goes home cold ([`close_spent_popouts`]).
+/// Whether two window titles name the same window: equal once trimmed, as `spec_for` and
+/// `retitle` match them. The one rule every pop-out origin lookup uses.
+fn same_title(a: &str, b: &str) -> bool {
+    a.trim() == b.trim()
+}
+
+/// Whether a pop-out has nothing left to show: its one tab is no longer up — no live surface, and
+/// not an agent pane open on sleeping agents, which stays so they can be woken from its list. Its
+/// window then closes and the tab goes home cold ([`close_spent_popouts`]).
 pub fn popout_should_close(reg: &Registry) -> bool {
-    !reg.sole_tab_live()
+    !reg.sole_tab_up()
 }
 
 /// Close every pop-out with nothing left to show ([`popout_should_close`]) — run after a child
@@ -309,7 +316,7 @@ pub fn announce_pane_closed(app: &AppHandle, label: &str, tab_id: &str) {
 /// What `WindowManager::redock` hands its caller to announce with the lock released.
 pub struct Redocked {
     pub origin_label: String,
-    /// `(tab_id, new_active)` when the returning tab came home with nothing live, or was dropped
+    /// `(tab_id, new_active)` when the returning tab came home with nothing up, or was dropped
     /// (it left the config while out): the chrome gets the same `warden:tab-exited` an unload
     /// sends, so its selection follows the neighbour the registry leaned to.
     pub dropped: Option<(String, Option<String>)>,
@@ -479,7 +486,7 @@ impl WindowManager {
             .windows
             .values_mut()
             .filter_map(|ws| ws.origin.as_mut())
-            .filter(|o| o.title == spec.title)
+            .filter(|o| same_title(&o.title, &spec.title))
             .map(|o| {
                 o.label = spec.label.clone();
                 o.tab_id.clone()
@@ -775,7 +782,7 @@ impl WindowManager {
     /// drops the block, or its end drops the column with the same `warden:pane-closed`.
     ///
     /// A pop-out's surface takes the same path in the pop-out's own registry; a pop-out left with
-    /// nothing live then closes, taking its tab home cold ([`close_spent_popouts`]).
+    /// nothing up then closes, taking its tab home cold ([`close_spent_popouts`]).
     ///
     /// **A Rex pane** exits the same way (its relay is the child), and additionally has its Rex
     /// session ended when the program in it finished (`rex::spawn::end_if_exited`, on a worker),
@@ -981,7 +988,7 @@ impl WindowManager {
     /// (`shell_core::detach::wire_return`'s `on_close`, via `main.rs::redock`). Runs on the main
     /// thread under the `ManagerState` lock. Returns what the caller announces once the lock is
     /// released: the window the tab went home to (menu rebuild + refresh) and, when it came home
-    /// with nothing live or was dropped, the tab the selection leaned to (`Redocked::dropped`);
+    /// with nothing up or was dropped, the tab the selection leaned to (`Redocked::dropped`);
     /// `None` if `label` is no pop-out (already returned: a double close).
     ///
     /// Home is [`return_target`]'s answer. A closed origin the caller has already reopened
@@ -1013,6 +1020,11 @@ impl WindowManager {
         };
         let tab_id = origin.tab_id;
         let Some(mut moved) = popped.take_tab(&tab_id) else {
+            // Nothing came back to fill the placeholder: its row goes cold rather than reading
+            // popped out with no pop-out.
+            if let Some(ws) = self.windows.get_mut(&home) {
+                ws.registry.clear_placeholder(&tab_id);
+            }
             return Some(Redocked {
                 origin_label: home,
                 dropped: None,
@@ -1021,7 +1033,7 @@ impl WindowManager {
         let Some(ws) = self
             .windows
             .get_mut(&home)
-            .filter(|ws| ws.origin.is_none() && ws.title.trim() == origin.title.trim())
+            .filter(|ws| ws.origin.is_none() && same_title(&ws.title, &origin.title))
         else {
             log::info!("tab {tab_id:?}: no window titled {:?}, ended", origin.title);
             moved.close();
@@ -1040,9 +1052,9 @@ impl WindowManager {
         let plan = config.and_then(|s| s.tabs.into_iter().find(|t| t.spec.id == tab_id));
         let spawned = moved.spec().clone();
         let ws = self.windows.get_mut(&home)?;
-        let live = moved.is_live();
+        let up = moved.is_up();
         let landed = match ws.registry.adopt_tab(moved) {
-            Ok(()) => live,
+            Ok(()) => up,
             // No placeholder to land in, or a surface that won't move: the tab ends, and comes
             // home cold where its placeholder still stands, so its row stops reading popped out.
             Err(mut back) => {
@@ -1058,7 +1070,7 @@ impl WindowManager {
         ws.registry.reorder(&order);
         if dropped.is_none() {
             match ws.registry.active_tab() {
-                // Back with nothing live while it is the selection: lean, as an unload does.
+                // Back with nothing up while it is the selection: lean, as an unload does.
                 Some(a) if a == tab_id && !landed => {
                     let next = ws.registry.lean_away(&tab_id);
                     dropped = Some((tab_id.clone(), next));
@@ -1288,7 +1300,17 @@ impl WindowManager {
                 continue;
             };
             match f {
-                Forward::Meta(m) => ws.registry.set_meta(&m.id, &m.meta, m.tree, m.tree_path),
+                // The pop-out is titled by its tab: its banner (the refresh below carries
+                // `InitDto.title`) and its native window follow a relabel.
+                Forward::Meta(m) => {
+                    if ws.title != m.meta.title {
+                        ws.title = m.meta.title.clone();
+                        if let Some(w) = app.get_window(&label) {
+                            let _ = w.set_title(&ws.title);
+                        }
+                    }
+                    ws.registry.set_meta(&m.id, &m.meta, m.tree, m.tree_path)
+                }
                 Forward::Split(tp) => apply_split_changes(&mut ws.registry, &[tp], &[]),
                 Forward::Unsplit(id) => apply_split_changes(&mut ws.registry, &[], &[id]),
             }
@@ -1848,9 +1870,11 @@ mod tests {
         }
     }
 
+    /// The origin's own label wins over a title lookup, which would take the first window carrying
+    /// the title.
     #[test]
     fn return_target_prefers_the_open_origin_label() {
-        let open = [("job", "job"), ("work", "work")];
+        let open = [("work-2", " work"), ("work", "work")];
         assert_eq!(
             return_target(&origin("work", "work"), &open),
             ReturnTarget::Open("work".into())

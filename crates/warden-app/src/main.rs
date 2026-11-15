@@ -313,9 +313,9 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
 /// Tab while it has a Rex scratch column; ⌘W is titled for what it closes. A pop-out's one tab
-/// answers like any active tab. Runs on every menu build, window focus, pane focus, tab activation, agent list
-/// change and scratch column change (a Rex view landing); locks `ManagerState`, so callers must
-/// not hold it.
+/// answers like any active tab. Runs on every menu build, window focus, pane focus, tab
+/// activation, agent list change and scratch column change (a Rex view landing); locks
+/// `ManagerState`, so callers must not hold it.
 #[cfg(target_os = "macos")]
 pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
     use rex::lifecycle::{agent_move, agent_step, Step};
@@ -1447,12 +1447,12 @@ const POPOUT_DEFAULT_HEIGHT: f64 = 640.0;
 
 /// Pop tab `id` out of the calling window into a window of its own, terminals (surfaces + PTYs)
 /// intact: a one-tab window under a `shell-detach:` label that serves warden's own page, its
-/// registry holding the whole tab — agents, scratch column and all ([`registry::Registry::take_tab`]).
-/// A placeholder keeps the tab's row in the origin until the pop-out closes, when `redock` (wired
-/// via `shell_core::detach::wire_return`) takes the tab home.
+/// registry holding the whole tab — agents, scratch column and all
+/// ([`registry::Registry::take_tab`]). A placeholder keeps the tab's row in the origin until the
+/// pop-out closes, when `redock` (wired via `shell_core::detach::wire_return`) takes the tab home.
 ///
-/// A cold tab is brought live first, so the ⤢ on any row works; one with nothing to run once up
-/// (an agent pane whose agents all sleep) stays put. A Rex tab whose main pane or scratch column
+/// A cold tab is brought up first, so the ⤢ on any row works — an agent pane whose agents all
+/// sleep goes out open on its list, to be woken there. A Rex tab whose main pane or scratch column
 /// is still waiting on Rex can't move: the answer lands in the window that asked.
 ///
 /// **Lock discipline (load-bearing):** `ManagerState` is held only to take the tab out (phase 1)
@@ -1479,27 +1479,34 @@ fn pop_out_tab(
         if ws.origin.is_some() {
             return Err("this tab is already popped out".to_string());
         }
+        // A Rex open or column change in flight answers the window that asked, so the tab can't
+        // move until it lands. Asked before the tab is brought up, so a refusal wakes nothing it
+        // can already see; and again after, for the open bringing a cold Rex tab up starts.
+        let in_flight = |reg: &registry::Registry| {
+            if reg.is_connecting(&id) {
+                return Some(
+                    "the tab is still connecting to its Rex server — pop it out once it opens"
+                        .to_string(),
+                );
+            }
+            reg.column_change_blocked(&id)
+                .map(|why| format!("{why} — pop the tab out once its scratch column settles"))
+        };
+        if let Some(why) = in_flight(&ws.registry) {
+            return Err(why);
+        }
         ws.registry
             .ensure_spawned_by_id(&id)
             .map_err(|e| format!("could not open the tab to pop it out: {e}"))?;
-        if ws.registry.is_connecting(&id) {
-            return Err(
-                "the tab is still connecting to its Rex server — pop it out once it opens"
-                    .to_string(),
-            );
-        }
-        // Likewise its Rex column: an open or change in flight answers the window that asked.
-        if let Some(why) = ws.registry.column_change_blocked(&id) {
-            return Err(format!(
-                "{why} — pop the tab out once its scratch column settles"
-            ));
+        if let Some(why) = in_flight(&ws.registry) {
+            return Err(why);
         }
         let moved = ws
             .registry
             .take_tab(&id)
             .ok_or_else(|| "tab is not available to pop out".to_string())?;
-        if !moved.is_live() {
-            // Nothing running to carry: it stays where it was.
+        if !moved.is_up() {
+            // Nothing to show once out: it stays where it was.
             if let Err(mut back) = ws.registry.adopt_tab(moved) {
                 back.close();
             }

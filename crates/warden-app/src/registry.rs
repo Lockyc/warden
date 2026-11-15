@@ -730,8 +730,9 @@ impl Column {
 /// tab, its column's Rex pane key, so a reopened split reattaches the same session. The tab's
 /// `server` carries over: a whole project lives on one server.
 ///
-/// Every site that declares the column goes through here. None may re-derive it: two spellings of one spec would drift the second pane's
-/// surface id, and a mismatched id routes its bell, notification and child-exit to nothing.
+/// Every site that declares the column goes through here. None may re-derive it: two spellings
+/// of one spec would drift the second pane's surface id, and a mismatched id routes its bell,
+/// notification and child-exit to nothing.
 fn secondary_spec(primary: &TabSpec, tab_id: &str) -> TabSpec {
     let mut spec = primary.clone();
     spec.id = secondary_id(tab_id);
@@ -755,17 +756,6 @@ const SECONDARY_SUFFIX: &str = "2";
 /// The tab whose second pane `id` is ([`secondary_id`]), or `None` for any other id.
 pub(crate) fn tab_of_secondary(id: &str) -> Option<&str> {
     id.strip_suffix(SECONDARY_SUFFIX)?.strip_suffix("::")
-}
-
-/// The Rex pane key of pane `which` of the tab whose primary runs `primary` — the main pane's
-/// spec id, or for a block its column's ([`secondary_id`]) — or `None` for a plain tab.
-#[cfg(test)]
-fn rex_pane_key(primary: &TabSpec, which: PaneIdx) -> Option<String> {
-    primary.server.as_ref()?;
-    Some(match which {
-        PaneIdx::Primary => primary.id.clone(),
-        PaneIdx::Block(_) => secondary_id(&primary.id),
-    })
 }
 
 /// Whether pane `which` of the tab whose primary runs `primary` holds agent tabs: the main pane of
@@ -980,6 +970,32 @@ impl TabEntry {
         }
     }
 
+    /// Whether this tab is up: a surface is live, or its main pane is an agent pane whose agents
+    /// all sleep — open and blank, waiting on a row's click ([`Pane::holds_column`]'s notion).
+    fn up(&self) -> bool {
+        self.live() || self.primary.holds_column()
+    }
+
+    /// Drop every Rex answer this tab is waiting on — its main pane's and agents' opens, its
+    /// column's open and change. Each answers the window that asked, by label and that
+    /// registry's token, so after a move none can land here: the next activate asks again.
+    fn forget_in_flight(&mut self) {
+        let opening = |rex: &mut RexState| {
+            if rex.opening().is_some() {
+                *rex = RexState::Idle;
+            }
+        };
+        opening(&mut self.primary.rex);
+        self.primary
+            .agents
+            .iter_mut()
+            .for_each(|a| opening(&mut a.rex));
+        if let Some(c) = self.column.as_mut() {
+            opening(&mut c.rex);
+            c.changing = false;
+        }
+    }
+
     /// Whether this is a placeholder for a tab whose surfaces are in another window.
     fn is_placeholder(&self) -> bool {
         matches!(self.primary.slot, TabSlot::Detached)
@@ -1008,9 +1024,10 @@ impl MovedTab {
         &self.entry.primary.spec
     }
 
-    /// Whether any of its surfaces is spawned — a cold tab has nothing to carry.
-    pub fn is_live(&self) -> bool {
-        self.entry.live()
+    /// Whether it is up ([`TabEntry::up`]) — a tab neither live nor an open agent pane has
+    /// nothing for a pop-out to show.
+    pub fn is_up(&self) -> bool {
+        self.entry.up()
     }
 
     /// End the tab: close every surface it carries, leaving it cold. For a tab with no window
@@ -1546,14 +1563,6 @@ impl Registry {
                 });
             }
         }
-    }
-
-    /// The agent tab `id`'s main pane has selected, on screen or not; `None` for a pane holding
-    /// no agents.
-    #[cfg(test)]
-    pub fn selected_agent(&self, id: &str) -> Option<&str> {
-        let pane = &self.tabs.iter().find(|t| t.id == id)?.primary;
-        pane.selected.as_deref().filter(|r| pane.agent(r).is_some())
     }
 
     /// The agent tab `id`'s main pane shows: its selected one, while the tab is the one on screen
@@ -2630,17 +2639,6 @@ impl Registry {
             .any(|t| t.id == id && t.primary.rex.opening().is_some())
     }
 
-    /// The Rex pane key of tab `id`'s pane `which` (the main pane's `TabSpec.id`, a block's
-    /// column's), or `None` when the tab has no such pane or column, or isn't a Rex tab.
-    #[cfg(test)]
-    pub fn rex_pane_key(&self, id: &str, which: PaneIdx) -> Option<String> {
-        let t = self.tabs.iter().find(|t| t.id == id)?;
-        if which != PaneIdx::Primary && t.column.is_none() {
-            return None;
-        }
-        rex_pane_key(&t.primary.spec, which)
-    }
-
     /// `(tab id, server)` for every Rex tab, in sidebar order — whose presence Rex reports.
     pub fn rex_tabs(&self) -> Vec<(String, String)> {
         self.tabs
@@ -2649,7 +2647,7 @@ impl Registry {
             .collect()
     }
 
-    /// Tab `id`, the active one, came home with nothing live: lean to a live neighbour as
+    /// Tab `id`, the active one, came home with nothing up: lean to a live neighbour as
     /// [`unload`](Self::unload) does, returning it. `None` for an unknown tab too.
     pub fn lean_away(&mut self, id: &str) -> Option<String> {
         let idx = self.tabs.iter().position(|t| t.id == id)?;
@@ -2750,6 +2748,7 @@ impl Registry {
                 return Err(tab);
             }
         }
+        tab.entry.forget_in_flight();
         // The holes the tab last reported were the other window's; framing there first and
         // correcting a round trip later is the double resize `Pane::rect` exists to prevent.
         tab.entry.primary.rect = None;
@@ -2768,10 +2767,28 @@ impl Registry {
         Ok(())
     }
 
-    /// Whether this registry's one tab has a live surface — a pop-out's, whose window has nothing
-    /// left to show once it goes cold. `false` for a registry holding any other number of tabs.
-    pub fn sole_tab_live(&self) -> bool {
-        matches!(self.tabs.as_slice(), [t] if t.live())
+    /// Whether this registry's one tab is up ([`TabEntry::up`]) — a pop-out's, whose window has
+    /// nothing left to show once it isn't. `false` for a registry holding any other number of
+    /// tabs.
+    pub fn sole_tab_up(&self) -> bool {
+        matches!(self.tabs.as_slice(), [t] if t.up())
+    }
+
+    /// Turn tab `id`'s placeholder back into a cold entry: the tab it stood for is gone from
+    /// wherever it went, and the row must stop reading popped out. A declared split comes back
+    /// declared, cold. No-op for an unknown tab or one that isn't a placeholder.
+    pub fn clear_placeholder(&mut self, id: &str) {
+        let Some(t) = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id && t.is_placeholder())
+        else {
+            return;
+        };
+        t.primary.slot = TabSlot::Cold;
+        if t.primary.spec.split.is_some() {
+            self.split(id);
+        }
     }
 
     /// Bring tab `id` live in place if it is `Cold`, spawning its surface(s) against this
@@ -3129,6 +3146,36 @@ mod tests {
     use super::*;
     use crate::surface::{PixelRect, TabSpec};
     use std::path::PathBuf;
+
+    /// Reads only the tests need.
+    trait TestReads {
+        /// The agent tab `id`'s main pane has selected, on screen or not; `None` for a pane
+        /// holding no agents.
+        fn selected_agent(&self, id: &str) -> Option<&str>;
+        /// The Rex pane key of tab `id`'s pane `which` (the main pane's `TabSpec.id`, a block's
+        /// column's), or `None` when the tab has no such pane or column, or isn't a Rex tab.
+        fn rex_pane_key(&self, id: &str, which: PaneIdx) -> Option<String>;
+    }
+
+    impl TestReads for Registry {
+        fn selected_agent(&self, id: &str) -> Option<&str> {
+            let pane = &self.tabs.iter().find(|t| t.id == id)?.primary;
+            pane.selected.as_deref().filter(|r| pane.agent(r).is_some())
+        }
+
+        fn rex_pane_key(&self, id: &str, which: PaneIdx) -> Option<String> {
+            let t = self.tabs.iter().find(|t| t.id == id)?;
+            if which != PaneIdx::Primary && t.column.is_none() {
+                return None;
+            }
+            let spec = &t.primary.spec;
+            spec.server.as_ref()?;
+            Some(match which {
+                PaneIdx::Primary => spec.id.clone(),
+                PaneIdx::Block(_) => secondary_id(&spec.id),
+            })
+        }
+    }
 
     fn rect() -> PixelRect {
         PixelRect {
@@ -5224,7 +5271,7 @@ mod tests {
         let moved = r.take_tab("b").expect("b moves");
         assert_eq!(moved.id(), "b");
         assert_eq!(moved.spec().id, "b");
-        assert!(!moved.is_live(), "a cold tab carries nothing live");
+        assert!(!moved.is_up(), "a cold tab is not up");
         assert_eq!(
             rows(&r),
             [("a".into(), false), ("b".into(), true), ("c".into(), false)]
@@ -5265,7 +5312,73 @@ mod tests {
         assert!(out.adopt_tab(moved).is_ok());
         assert_eq!(out.active_tab(), Some("b"));
         assert_eq!(rows(&out), [("b".into(), false)]);
-        assert!(!out.sole_tab_live(), "its one tab is cold");
+        assert!(!out.sole_tab_up(), "its one tab is cold");
+    }
+
+    /// An agent pane whose agents all sleep is up: open on its list, so a pop-out holding it stays
+    /// to wake one from there, and such a tab may pop out.
+    #[test]
+    fn an_agent_pane_asleep_is_up() {
+        let (mut r, _) = rex_registry();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_ready_agents("t", &["r1"], Some("r1"));
+        r.sync_agents("t", AgentsOpened::default()).unwrap();
+        let moved = r.take_tab("t").unwrap();
+        assert!(moved.is_up());
+        let mut out = Registry::new(std::ptr::null_mut(), rect());
+        assert!(out.adopt_tab(moved).is_ok());
+        assert!(out.sole_tab_up());
+    }
+
+    /// A Rex open answers the window that asked, by label and that registry's token, so a tab
+    /// moved while one is in flight must ask again where it lands — or it sits "connecting"
+    /// there for good, refusing pop-out and column changes.
+    #[test]
+    fn adopt_tab_forgets_the_rex_answers_it_was_waiting_on() {
+        let (mut r, asked) = rex_registry();
+        r.add(&split_rex_spec("t", 1), false).unwrap();
+        let _ = r.activate_user("t");
+        assert!(r.is_connecting("t"));
+        let moved = r.take_tab("t").unwrap();
+        let (mut out, asked_out) = rex_registry();
+        assert!(out.adopt_tab(moved).is_ok());
+        assert!(!out.is_connecting("t"), "the main pane's open is forgotten");
+        assert_eq!(out.column_change_blocked("t"), Some(COLUMN_OPENING));
+        let before = asked.lock().unwrap().len();
+        let _ = out.activate_user("t");
+        assert!(out.is_connecting("t"), "the next activate asks again");
+        assert!(!asked_out.lock().unwrap().is_empty(), "of its own window");
+        assert_eq!(asked.lock().unwrap().len(), before, "never of the old one");
+    }
+
+    /// A column change Rex hadn't answered is forgotten by the move too.
+    #[test]
+    fn adopt_tab_forgets_a_column_change_in_flight() {
+        let mut r = landed_column(vec![scratch("w1", &["a"])]);
+        r.begin_column_change("t").expect("a change");
+        let moved = r.take_tab("t").unwrap();
+        let mut out = Registry::new(std::ptr::null_mut(), rect());
+        assert!(out.adopt_tab(moved).is_ok());
+        assert_eq!(out.column_change_blocked("t"), None);
+    }
+
+    #[test]
+    fn clear_placeholder_brings_the_row_back_cold() {
+        let mut r = abc();
+        let _ = r.take_tab("b").unwrap();
+        r.clear_placeholder("b");
+        assert_eq!(
+            rows(&r),
+            [
+                ("a".into(), false),
+                ("b".into(), false),
+                ("c".into(), false)
+            ]
+        );
+        assert!(r.holds_tab("b"));
+        r.clear_placeholder("a");
+        r.clear_placeholder("nope");
+        assert_eq!(rows(&r).len(), 3, "no-op for a held or unknown tab");
     }
 
     #[test]

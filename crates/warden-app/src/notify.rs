@@ -236,9 +236,11 @@ fn locate(app: &AppHandle, surface_id: usize) -> Option<(String, String, bool)> 
     Some((label, tab, shown && focused))
 }
 
-/// The window a banner for tab `tab` of window `label` raises: `label` while its registry holds
-/// the tab; else the pop-out the tab went out to from `label`, since the banner fired. `windows`
-/// is every open window as `(label, origin when a pop-out, registry)`.
+/// The window a banner for tab `tab` of window `label` raises — wherever the tab is when it is
+/// clicked: `label` while its registry holds the tab; else the pop-out the tab went out to from
+/// `label`; else any window holding it now (a pop-out's tab gone home, the pop-out with it).
+/// `label` itself when no window holds the tab. `windows` is every open window as `(label, origin
+/// when a pop-out, registry)`.
 pub(crate) fn attention_target<'a>(
     label: &'a str,
     tab: &str,
@@ -257,9 +259,12 @@ pub(crate) fn attention_target<'a>(
     {
         return label;
     }
+    let holds = |(_, _, reg): &&(&str, _, &crate::registry::Registry)| reg.holds_tab(tab);
     windows
         .iter()
-        .find(|(_, o, reg)| o.is_some_and(|o| o.label == label) && reg.holds_tab(tab))
+        .filter(holds)
+        .find(|(_, o, _)| o.is_some_and(|o| o.label == label))
+        .or_else(|| windows.iter().find(holds))
         .map_or(label, |(l, _, _)| l)
 }
 
@@ -331,6 +336,25 @@ mod tests {
         assert_eq!(
             attention_target("shell-detach:k", "/tmp/a", windows()),
             "shell-detach:k"
+        );
+    }
+
+    /// A banner a pop-out fired, clicked after the pop-out closed and its tab went home, raises the
+    /// window holding the tab now — not the pop-out's dead label.
+    #[test]
+    fn attention_target_for_a_tab_gone_home_is_its_window() {
+        let mut origin = registry();
+        let _ = origin.add(&spec("/tmp/a"), false);
+        let windows = [("work", None, &origin)];
+        assert_eq!(
+            attention_target("shell-detach:k", "/tmp/a", windows),
+            "work"
+        );
+        let windows = [("work", None, &origin)];
+        assert_eq!(
+            attention_target("shell-detach:k", "/tmp/gone", windows),
+            "shell-detach:k",
+            "no window holds it: the label stands"
         );
     }
 }
