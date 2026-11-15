@@ -61,8 +61,8 @@ Each in full, with every key and shortcut: [docs/features.md](docs/features.md).
   conversation, fork into a separate branch, and badge the tab when they need you.
 - **Splits** — a second pane beside a tab's terminal, declared in the config or added with **⌘D**;
   on a Rex tab, a column of scratch shells.
-- **Pop out** a tab (**⌘⇧O**) into its own window with its terminal, scrollback and process
-  intact.
+- **Pop out** a whole tab (**⌘⇧O**) into its own window — terminals, agents and scratch column,
+  with scrollback and processes intact.
 - **Session dots for plain tabs** — a `probe` command (say, `tmux has-session -t {title}`) shows
   whether a tab's session is running, restorable or gone, and the dot restarts it in place.
 - **Clickable links**, screened first: ⌘-click opens web and mail links, asks before a custom
@@ -191,9 +191,8 @@ Everything above hot-reloads on save, except `auto_update` and `notify_debug` (r
 
 ## Limits
 
-Rex is an invite-only beta, and remote Rex servers are untested. A Rex scratch column holding
-more than one shell can't pop out. Ad-hoc ⌘T / ⌘N tabs and windows for plain (non-agent) tabs
-aren't built. All tracked in [docs/FOLLOWUPS.md](docs/FOLLOWUPS.md).
+Rex is an invite-only beta, and remote Rex servers are untested. Ad-hoc ⌘T / ⌘N tabs and
+windows for plain (non-agent) tabs aren't built. All tracked in [docs/FOLLOWUPS.md](docs/FOLLOWUPS.md).
 
 ## Status
 
