@@ -1677,7 +1677,7 @@ fn follow_column(
     for (dto, label) in dtos {
         let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
     }
-    // Pop Out's enabled state follows the column's panes.
+    // Split's and New Scratch Tab's enabled state follow the column's panes.
     if any {
         crate::sync_agent_menu(app);
     }
