@@ -782,14 +782,17 @@ fn session_label(title: &str, which: PaneIdx) -> String {
     title.chars().take(room).chain(suffix.chars()).collect()
 }
 
-/// Hand `req` to `opener` under the next token from `next`, returning that token, or why the
+/// The token the next Rex open carries — process-wide, so no two registries (a re-popped tab's
+/// fresh one under a reused label among them) ever wait on the same token.
+static NEXT_REX_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Hand `req` to `opener` under the next [`NEXT_REX_TOKEN`], returning that token, or why the
 /// open couldn't start (no opener installed, or the opener refused).
-fn start_open(opener: &Option<RexOpener>, next: &mut u64, req: RexOpen) -> Result<u64, String> {
+fn start_open(opener: &Option<RexOpener>, req: RexOpen) -> Result<u64, String> {
     let Some(open) = opener else {
         return Err(format!("Rex server {}: no connection to Rex", req.server));
     };
-    let token = *next;
-    *next += 1;
+    let token = NEXT_REX_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     log::info!("{:?}: opening Rex session on {}", req.label, req.server);
     open(RexOpen { token, ..req })?;
     Ok(token)
@@ -1086,8 +1089,6 @@ pub struct Registry {
     rex_opener: Option<RexOpener>,
     /// The socket Rex panes' relays report to (`rex::reports`); none, they report nowhere.
     report_socket: Option<PathBuf>,
-    /// The token the next Rex open carries.
-    next_rex_token: u64,
 }
 
 // SAFETY: `ns_window` is a raw `NSWindow *` that is only ever read on the main
@@ -1105,7 +1106,6 @@ impl Registry {
             last_rect_blocks: Vec::new(),
             rex_opener: None,
             report_socket: None,
-            next_rex_token: 0,
         }
     }
 
@@ -2107,7 +2107,7 @@ impl Registry {
                     resume: pane.spec.resume.clone(),
                     stack,
                 };
-                match start_open(&self.rex_opener, &mut self.next_rex_token, req) {
+                match start_open(&self.rex_opener, req) {
                     Ok(token) => pane.rex = RexState::Opening { token },
                     Err(reason) => tab.rex_error = Some(reason),
                 }
@@ -2149,7 +2149,7 @@ impl Registry {
                 resume: column.spec.resume.clone(),
                 stack,
             };
-            match start_open(&self.rex_opener, &mut self.next_rex_token, req) {
+            match start_open(&self.rex_opener, req) {
                 Ok(token) => column.rex = RexState::Opening { token },
                 Err(reason) => tab.rex_error = Some(reason),
             }
@@ -4246,6 +4246,19 @@ mod tests {
             1,
             "one open in flight per pane"
         );
+    }
+
+    /// A re-popped tab gets a fresh registry under the same label, so a stale answer must never
+    /// carry a token the new registry has handed out.
+    #[test]
+    fn two_registries_never_hand_out_the_same_token() {
+        let (mut a, asked_a) = rex_registry();
+        let (mut b, asked_b) = rex_registry();
+        a.add(&rex_spec("t", "local"), true).unwrap();
+        b.add(&rex_spec("t", "local"), true).unwrap();
+        let ta = asked_a.lock().unwrap()[0].token;
+        let tb = asked_b.lock().unwrap()[0].token;
+        assert_ne!(ta, tb);
     }
 
     #[test]
