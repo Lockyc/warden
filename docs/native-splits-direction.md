@@ -68,11 +68,7 @@ A split is closed by the column's panes ending — `exit` in one, or the right-c
 resized by dragging the divider, a 1px line in a 5px grab strip that carries no close control.
 ⌘W never closes a pane: from either pane it closes a selected agent tab, else unloads the
 **whole tab** (`main.rs::agent_closable`), and ⌘⇧O (pop-out) acts on the whole tab too — unloading drops
-every pane to cold together, and popping out carries both surfaces
-to the detached window at the tab's current effective ratio
-(`shell_core::detach::DetachSpec.panes`, generic on purpose: a `Vec<f64>` of hole ratios,
-not a `warden` split type, so a future consumer can divide its own hole without learning
-warden's split concept).
+every pane to cold together, and popping out carries every pane with it.
 
 **On a Rex tab the column is one Rex session** — the split pane's (`rex/column.rs`). Each of
 its Rex windows is a **scratch tab** in the `#scratch-tabs` strip (`[1×] [2] [+]`) at the
@@ -100,9 +96,6 @@ vice versa. This replaces agentmux's `[frame]` `left_vertical_split` / `left_top
   reflows, or goes with its last block and the selection leans to a neighbour; the session's
   last block gives way to a fresh scratch tab, so the split stays (`docs/rex.md`, *Lifecycle*). While the
   column's open is in flight, Close Pane is disabled with the reason.
-- **Pop-out carries at most one block** — a fuller column is refused, with Tab ▸ Pop Out Tab
-  disabled and titled with the reason (`Registry::pop_out_blocked`; the unlock is in
-  `docs/FOLLOWUPS.md`).
 
 Plain tabs keep the one-pane column: a stack there needs a warden-owned layout model; unlock: a
 plain-tab workflow that needs more than two panes.
@@ -121,43 +114,30 @@ Read *Traps* below before touching split visibility, routing, or the backstop.
 
 ## Pop-out: session-preserving, whole-tab
 
-A ⤢ on the tab row (chrome-core's `onPopOut`) or **⌘⇧O** pops the active tab into shell-core's
-banner-only detach window. **Session-preserving is the defining property**:
-`GhosttySurface::reparent` moves the live `NSView` onto the new window (re-registers its three
-window-scoped observers, swaps the `window` field, re-seeds display id + focus, reapplies
-geometry) and calls none of `teardown`/`ghostty_surface_free`/`close` — PTY, scrollback and
-process survive both trips. `Registry::detach` takes the `Spawned` surface of every pane and
-leaves `TabSlot::Detached` in each slot; closing the detached window returns the tab via
-`manager.rs::redock` → `Registry::attach` (`Cold`/`Detached` → `Spawned`, both panes or neither),
-reopening the origin window first if it was closed. The origin row shows muted via the forwarded
-`detached` DTO field and clicking it calls `raise_popped_window`. The detached window's geometry
-persists under its `shell-detach:` label, derived by `plan::detach_window_token` from
-`origin_label:tab_key`.
+A ⤢ on the tab row (chrome-core's `onPopOut`) or **⌘⇧O** pops the active tab into a **one-tab
+warden window**: a `WindowState` under a `shell-detach:` label (`plan::detach_window_token`, which
+also keys its saved geometry) whose `origin` is a `PopOrigin`. **Session-preserving is the
+defining property**: `Registry::take_tab` moves the tab's whole entry — agents, scratch column,
+every live surface — and `Registry::adopt_tab` reparents each surface into the new window
+(`GhosttySurface::reparent`, which never tears a surface down), so PTY, scrollback and process
+survive both trips. The origin keeps a `TabSlot::Detached` placeholder at the tab's index: the row
+reads popped out (a click calls `raise_popped_window`), `reconcile` counts the tab present, and a
+hot-reload edit to it is forwarded to the pop-out (`WindowManager::apply`).
+
+The window serves warden's own `ui/index.html` (shell-core's `DetachSpec.page`); in `POPOUT` mode
+the page swaps the sidebar for `#popout-banner` and `#popout-error`, and the rest is the docked
+page. Menu items act in the pop-out, except Suspend / Terminate, disabled there
+(`main.rs::end_session_item`), and the sidebar commands, which `menu::route` sends to the origin.
+A pop-out closes once its tab is no longer up (`manager.rs::popout_should_close`); closing it
+returns the tab: `redock` → `return_target` (the origin by label, else by title, reopened if
+closed) → `adopt_tab` → `reconcile_returned_tab`.
 
 ## Traps
 
-- **Pop-out backend invariants** (`main.rs::pop_out_tab`, `manager.rs::redock`,
-  `registry.rs::detach`/`attach`): `pop_out_tab` extracts the surfaces under the `ManagerState`
-  lock → builds the window + `reparent`s with the lock **released** → re-locks to store and wire
-  the return. `redock` builds no window and reparents under the lock — safe because
-  `becomeFirstResponder` defers its Focused event. The
-  `Detached` placeholder — `detach`'s, or `mark_detached`'s in an origin rebuilt while the tab is
-  out — keeps `reconcile` from touching the tab; `redock` reconciles it against the config once home
-  (`reconcile_returned_tab`); `detached` is counted into the `WindowSet` (`sync_detached`); `is_quitting` stops `redock`
-  resurrecting mid-teardown. **Every failure path restores both panes**
-  — a partial restore strands a live PTY with no window and no route back.
-- **Size the reparented surface's birth rect from the built window** (the `size` `open_detached` hands
-  `pop_out_tab`'s birth closure), never `DETACHED_DEFAULT_*` — the geometry plugin restores the
-  remembered size during `build()`.
-- **A detached window's `pane` index is a hole (left-to-right), never a `PaneIdx`.** Resolve with
-  `PaneIdx::from_hole(i, ds.mirrored())`, emit with `which.hole(ds.mirrored())`. The docked chrome
-  draws a `side = "left"` split with a flex `order`, so the detached layout mirrors on warden's
-  side; `mirrored` keys on the secondary's *presence*. `registry.rs::PaneIdx::hole`,
-  `manager.rs::DetachedSurface::mirrored`.
-- **Surface→tab routing searches every pane and `detached` too**
-  (`Registry::locate_surface`, `manager.rs::locate_detached_surface`, `handle_child_exited`'s
-  detached arms). Missing either, a split tab silently stops badging or a dead shell sits under
-  "Process exited".
+- **Pop-out lock discipline** (`main.rs::pop_out_tab`, `main.rs::redock`): `ManagerState` is
+  released while `open_detached` builds the window and while a closed origin is reopened — both
+  re-enter code that takes it. A `MovedTab` is never dropped live: every failure path adopts it
+  somewhere or closes it (`MovedTab::close`).
 - **Split visibility is the `.split` class on `#terminal-hole`, never `hidden` alone** — `hidden`'s
   UA `display: none` loses to any author `display` rule, so `#pane-divider`/`#pane-secondary`'s
   rule is scoped to `#terminal-hole.split`. **`applySplitShape` is the only writer** of `.split`
@@ -188,19 +168,14 @@ splits are otherwise rendering behaviour, verified only by eye. Each step below 
   col-resize over the few pixels either side of it.
 - Typing `exit` in the scratch (secondary) pane collapses the split; the primary fills the
   whole hole with no uncovered region at any point during the collapse, while the tab stays
-  live — docked, and inside a popped-out window alike (the detached window drops to one hole;
-  the origin forgets the dragged ratio).
-- A popped-out tab whose primary shell exits comes home cold: the detached window closes,
+  live — docked and popped out alike.
+- A popped-out tab whose primary shell exits comes home cold: the pop-out closes,
   the origin row goes hollow (click to respawn), and the sidebar leans to a live neighbour
   exactly as a docked exit does.
-- Popping out an unsplit tab is unchanged — one hole, no `panes` in the detach payload.
-- Popping out a split tab carries both panes into the detached window at the same ratio,
-  with the same divider and focus ring; `exit` in the second pane closes it there too, and
-  clicking either pane moves the ring.
-- Popping out a `side = "left"` split keeps the second pane on the LEFT (same sides as
-  docked — `PaneIdx::hole`); dragging the divider there resizes the pane under the cursor,
-  and `exit` in the left pane collapses the window to the primary alone.
-- Closing the detached window returns both panes to the origin, still live.
+- Popping out a split tab — a `side = "left"` one, a Rex column's scratch tabs and stacked
+  blocks — shows it as docked: same sides, ratio, divider and focus ring; dragging, `exit`
+  and clicking a pane behave there as docked.
+- Closing the pop-out returns the whole tab to the origin, still live.
 - Arrow keys pressed in the second pane stay in it: the cursor, the focus ring and the
   keystroke all remain on the pane you typed in (arrows travel a different AppKit route
   from letters — `WardenHostView::owns_window_keys` in `docs/surface.md`).
@@ -233,7 +208,7 @@ splits are otherwise rendering behaviour, verified only by eye. Each step below 
   the same as `exit`, for a block and a whole tab; ⌘T and ⌘W with focus in a block act on the
   agent list, not the column; closing the last scratch tab leaves a fresh one
   in the configured stack's shape in its place; a split made in Rex.app on the same
-  session appears in warden; Tab ▸ Pop Out Tab on the stacked tab is disabled with its reason.
+  session appears in warden.
 
 Expect no look change to a live terminal: each surface's own render layer is already opaque
 (`#0e1516`, `surface/ghostty.rs::new`), so it is never the pane ground a terminal composites
@@ -270,13 +245,3 @@ into the window title. But tmux's grid has no idea the pixel region is occupied 
 line of text draws straight over the image. So a multiplexer hop cannot own image
 placement across scroll, reflow or redraw, which is why the out-of-band surface has to be
 warden's own rather than a tmux popup.
-
-## Not yet
-
-**A popped-out left-side split's focus ring starts on the wrong hole.** shell-core's detach
-page focuses its FIRST hole on every layout, which for a mirrored (`side = "left"`) pop-out
-is the secondary; the ring is right the moment either pane is clicked (`handle_surface_focused`
-→ `set_focused_hole`, by hole). Unlock: an initial-focus hole index in `DetachSpec`/the detach
-payload (a layout fact, generic enough for shell-core) — an emit from warden right after
-`open_detached` returns can race the page's own listener registration and be lost, so the
-payload is the reliable route. Not done now because it is one click's worth of wrongness.
