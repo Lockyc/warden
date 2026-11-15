@@ -407,8 +407,8 @@ impl Pane {
         !matches!(self.slot, TabSlot::Detached) && (self.live() || self.rex == RexState::Asleep)
     }
 
-    /// Close every live surface of this pane, leaving `Detached` placeholders in place. Returns
-    /// whether one was closed.
+    /// Close every live surface of this pane, leaving its slot `Cold`. Returns whether one was
+    /// closed.
     fn close_live(&mut self) -> bool {
         let mut closed = false;
         let agents = self.agents.iter_mut().map(|a| &mut a.slot);
@@ -651,8 +651,7 @@ impl Column {
         !self.opening() && self.pop_out_load() <= 1
     }
 
-    /// Close every live block, leaving `Detached` placeholders in place. Returns whether one was
-    /// closed.
+    /// Close every live block, leaving its slot `Cold`. Returns whether one was closed.
     fn close_live(&mut self) -> bool {
         let mut closed = false;
         for b in self.slots_mut() {
@@ -1073,7 +1072,7 @@ impl TabEntry {
         self.surfaces().next().is_some()
     }
 
-    /// Close every live surface, leaving `Detached` placeholders. Returns whether one was closed.
+    /// Close every live surface, leaving each slot `Cold`. Returns whether one was closed.
     fn close_live(&mut self) -> bool {
         let primary = self.primary.close_live();
         let column = self.column.as_mut().is_some_and(Column::close_live);
@@ -3076,13 +3075,13 @@ impl Registry {
 
     /// Take in a tab another registry [`took`](Self::take_tab): its live surfaces move into this
     /// window at this window's holes, then the entry fills its placeholder here, or — in a
-    /// registry with no tabs, a fresh pop-out — becomes its one tab, active.
+    /// registry with no tabs, a fresh pop-out — becomes its one tab, active. Each pane forgets the
+    /// hole it last reported, which was the other window's, and frames at this window's.
     ///
-    /// `Err` hands the tab back with nothing moved: when this registry has tabs but no placeholder
-    /// for it (reconcile removed it while it was out), or when a surface won't move, in which case
-    /// every surface already moved goes back to the window it came from. Where to land is decided
-    /// before any surface moves, so a refusal never strands a surface in a window with no row
-    /// for it.
+    /// `Err` hands the tab back: when this registry has tabs but no placeholder for it (reconcile
+    /// removed it while it was out) nothing moves; when a surface won't move, every surface
+    /// already moved goes back to the window it came from, hidden. Where to land is decided before
+    /// any surface moves, so a refusal never strands a surface in a window with no row for it.
     ///
     /// Every pane of the tab ends up shown or hidden as [`show_active`](Self::show_active) says,
     /// since a reparent un-hides each view it moves — a hidden agent's or scratch tab's included.
@@ -3119,7 +3118,9 @@ impl Registry {
                     tab.entry.title
                 );
                 // The rect is a stopgap: whichever registry adopts the tab next frames every
-                // surface it shows ([`show_active`](Self::show_active)).
+                // surface it shows ([`show_active`](Self::show_active)). Hidden, because the
+                // reparent un-hid it and the window it is back in holds only a placeholder for it,
+                // so nothing there would hide it from over that window's own tab.
                 let (from, title) = (tab.from, tab.entry.title.clone());
                 for (i, (_, slot)) in tab.entry.slots_mut().enumerate() {
                     if !moved.contains(&i) {
@@ -3129,10 +3130,17 @@ impl Registry {
                         if let Err(e) = s.reparent(from, rects[i]) {
                             log::error!("tab {title:?}: a surface won't move back: {e}");
                         }
+                        s.hide();
                     }
                 }
                 return Err(tab);
             }
+        }
+        // The holes the tab last reported were the other window's; framing there first and
+        // correcting a round trip later is the double resize `Pane::rect` exists to prevent.
+        tab.entry.primary.rect = None;
+        if let Some(c) = tab.entry.column.as_mut() {
+            c.slots_mut().for_each(|b| b.rect = None);
         }
         let id = tab.entry.id.clone();
         match landing {
@@ -6230,6 +6238,33 @@ mod tests {
         assert_eq!(origin.selected_agent("t"), Some("r2"));
         assert_eq!(column(&origin), col);
         assert_eq!(keys(&origin), ks);
+    }
+
+    #[test]
+    fn adopt_tab_frames_at_the_new_windows_holes() {
+        let at = |w: f64| PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: w,
+            height: 50.0,
+        };
+        let mut origin = landed_column(vec![scratch("w1", &["a"]), scratch("w2", &["b", "c"])]);
+        let _ = origin.activate("t");
+        origin.set_pane_frame(PaneIdx::Primary, at(900.0));
+        origin.set_pane_frame(PaneIdx::Block(0), at(300.0));
+        // A scratch tab not on screen keeps the hole it last had too.
+        origin.tabs[0].column.as_mut().unwrap().tabs[1].blocks[1].rect = Some(at(250.0));
+        let moved = origin.take_tab("t").unwrap();
+
+        let mut out = Registry::new(std::ptr::null_mut(), at(500.0));
+        out.last_rect_blocks = vec![at(120.0)];
+        assert!(out.adopt_tab(moved).is_ok());
+        let t = &out.tabs[0];
+        assert_eq!(t.primary.rect, None);
+        let column = t.column.as_ref().unwrap();
+        assert!(column.slots().all(|b| b.rect.is_none()));
+        assert_eq!(out.tab_rect(t, PaneIdx::Primary), at(500.0));
+        assert_eq!(out.tab_rect(t, PaneIdx::Block(0)), at(120.0));
     }
 
     #[test]
