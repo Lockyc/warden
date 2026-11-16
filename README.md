@@ -58,7 +58,7 @@ Each in full, with every key and shortcut: [docs/features.md](docs/features.md).
   the window or quitting warden only detaches; reopening shows the same live screen.
 - **Agent tabs.** A Rex tab lists its coding agents beside the main pane, with a summary of what
   the selected one is about, has covered so far, was asked, needs from you and last did. Agents sleep and wake with their
-  conversation, fork into a separate branch, and badge the tab when they need you.
+  conversation (asleep ones gather in an Asleep group at the top until they wake), fork into a separate branch, and badge the tab when they need you.
 - **Splits** — a second pane beside a tab's terminal, declared in the config or added with **⌘D**;
   on a Rex tab, a column of scratch shells.
 - **Pop out** a whole tab (**⌘⇧O**) into its own window — terminals, agents and scratch column,
