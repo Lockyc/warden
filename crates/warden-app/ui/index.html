@@ -353,15 +353,17 @@
       #agents-tile .t-name { font-weight: 600; }
       #agents-tile .t-where { opacity: 0.6; font-size: 0.9em; }
       #agents.narrow #agents-tile > div { display: none; }
-      /* The list's text runs a step above the terminal's; its width, dots and buttons scale with it. */
-      :root { --agents-font: calc(var(--term-font) * 1.15); --agents-w: calc(var(--agents-font) * 22.5);
-        --agents-narrow-w: 38px; }
+      /* The list's text runs a step above the terminal's, its rows' a smaller step; its width,
+         dots and buttons scale with `--agents-font`, whatever text they sit in. */
+      :root { --agents-font: calc(var(--term-font) * 1.15); --agents-row-font: calc(var(--term-font) * 1.05);
+        --agents-w: calc(var(--agents-font) * 22.5); --agents-narrow-w: 38px; }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
         flex-direction: column; background: var(--agents-bg); border-right: 1px solid #313640;
         color: #c3ccd8; font-size: var(--agents-font); user-select: none; -webkit-user-select: none;
-        --cc-dot-size: 0.7em; }
-      #agents .cc-presence { width: 1.25em; height: 1.25em; }
-      #agents .cc-attention.cc-lock, #agents .cc-attention.cc-lock svg { min-width: 0.95em; width: 0.95em; height: 0.95em; }
+        --cc-dot-size: calc(var(--agents-font) * 0.7); }
+      #agents .cc-presence { width: calc(var(--agents-font) * 1.25); height: calc(var(--agents-font) * 1.25); }
+      #agents .cc-attention.cc-lock, #agents .cc-attention.cc-lock svg { min-width: calc(var(--agents-font) * 0.95);
+        width: calc(var(--agents-font) * 0.95); height: calc(var(--agents-font) * 0.95); }
       #terminal-hole.agents #agents { display: flex; }
       #terminal-hole.agents #pane-primary { --c-br: 0px; }
       #agents.narrow { flex-basis: var(--agents-narrow-w); }
@@ -370,7 +372,7 @@
         cursor: pointer; padding: 0; }
       #agents button:disabled { cursor: default; opacity: 0.4; }
       .a-row { display: flex; align-items: center; gap: 7px; padding: 4px;
-        border-radius: 5px; cursor: default; }
+        border-radius: 5px; cursor: default; font-size: var(--agents-row-font); }
       .a-row:hover { background: #22272e; }
       .a-row.sel { background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.55); }
       .a-row.asleep .a-text { opacity: 0.5; }
@@ -380,8 +382,8 @@
       .a-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
       .a-name, .a-ctx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-name.untitled { color: #6b7280; font-style: italic; }
-      .a-more { flex: none; width: 1.45em; height: 1.45em; border-radius: 4px; color: #7d8590;
-        line-height: 1.45em; text-align: center; }
+      .a-more { flex: none; width: calc(var(--agents-font) * 1.45); height: calc(var(--agents-font) * 1.45);
+        border-radius: 4px; color: #7d8590; line-height: calc(var(--agents-font) * 1.45); text-align: center; }
       .a-more:hover, .a-row.open .a-more { background: #313640; color: #c3ccd8; }
       .a-rename { font: inherit; color: #ddd; background: rgba(0, 0, 0, 0.35); width: 100%;
         box-sizing: border-box; border: 1px solid #56b4e9; border-radius: 4px; padding: 0 4px;
@@ -414,7 +416,7 @@
       .a-group .cc-attention { margin-left: auto; }
       .a-group .a-count { color: #6b7280; font-weight: 400; }
       /* The Asleep header is a row's height, so it reads and clicks like a tab. */
-      .a-group.asleep-head { min-height: calc(2.5em + 8px); box-sizing: border-box; padding: 4px 8px;
+      .a-group.asleep-head { min-height: calc(var(--agents-row-font) * 2.5 + 8px); box-sizing: border-box; padding: 4px 8px;
         margin-bottom: 4px; gap: 8px; font-size: 1.05em; border-radius: 5px; background: #1c2128; }
       .a-group.asleep-head:hover { background: #22272e; }
       .a-group.asleep-head .a-caret { width: 12px; }
