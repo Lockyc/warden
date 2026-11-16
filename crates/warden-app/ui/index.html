@@ -233,20 +233,21 @@
          (`scratchRender`); a plain tab's column is one block filling the body, no strip. */
       #pane-secondary { flex: 1 1 0; min-width: 0; display: none; flex-direction: column; }
       #terminal-hole.split #pane-secondary { display: flex; }
-      #scratch-tabs { flex: none; display: flex; align-items: center; gap: 3px; height: 26px;
+      /* Sized from the agent list's row text, so the two read as one family. */
+      #scratch-tabs { flex: none; display: flex; align-items: center; gap: 4px; height: 2.4em;
         box-sizing: border-box; padding: 0 6px; background: var(--agents-bg);
-        border-bottom: 1px solid #313640; color: #9aa4b2; font-size: 12px;
+        border-bottom: 1px solid #313640; color: #9aa4b2; font-size: var(--agents-row-font);
         user-select: none; -webkit-user-select: none; }
       #scratch-tabs[hidden] { display: none; }
       #scratch-tabs button { font: inherit; color: inherit; background: transparent; border: 0;
-        cursor: pointer; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 4px; }
+        cursor: pointer; min-width: 1.8em; height: 1.75em; padding: 0 0.5em; border-radius: 4px; }
       #scratch-tabs button:hover:not(:disabled) { background: #22272e; color: #c3ccd8; }
       #scratch-tabs button:disabled { cursor: default; opacity: 0.4; }
       #scratch-tabs button.sel { background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.55);
         color: #e6edf3; }
       /* The selected tab's ×, set against it: no gap, so the pair reads as one tab. */
       #scratch-tabs button.sel:has(+ .close) { border-radius: 4px 0 0 4px; }
-      #scratch-tabs button.close { min-width: 16px; padding: 0 4px; margin-left: -3px;
+      #scratch-tabs button.close { min-width: 1.4em; padding: 0 0.4em; margin-left: -3px;
         border-radius: 0 4px 4px 0; background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.35);
         color: #c3ccd8; }
       #scratch-body { flex: 1 1 0; min-height: 0; position: relative; }
