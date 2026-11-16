@@ -407,6 +407,11 @@
       .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-group .cc-attention { margin-left: auto; }
       .a-group .a-count { color: #6b7280; font-weight: 400; }
+      /* The Asleep header is a row's height, so it reads and clicks like a tab. */
+      .a-group.asleep-head { min-height: calc(2.5em + 8px); box-sizing: border-box; padding: 4px 8px;
+        margin-bottom: 4px; gap: 8px; font-size: 1.05em; border-radius: 5px; background: #1c2128; }
+      .a-group.asleep-head:hover { background: #22272e; }
+      .a-group.asleep-head .a-caret { width: 12px; }
       /* `--a-pad` is the row's left inset, `--a-line` its name line's height: the caret and the
          guides' elbows are placed on that line, not the row's middle. */
       .a-row { --a-pad: 6px; --a-line: 1.4em; position: relative; padding-left: var(--a-pad); }
