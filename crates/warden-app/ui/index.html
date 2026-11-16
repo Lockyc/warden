@@ -345,6 +345,7 @@
          in the project colour against the summary's shade. It belongs at the foot with the
          summary, never in the head band. */
       #agents-tile { flex: none; box-sizing: border-box; height: calc(var(--s-rows) * 1.5em);
+        font-size: var(--term-font); /* the summary's size, so the two stay level */
         margin-top: var(--s-gap);
         background: var(--s-bar); color: var(--s-fg); padding: 0 0.8em; display: flex;
         flex-direction: column; justify-content: center; line-height: 1.5em; text-align: right; }
@@ -352,10 +353,15 @@
       #agents-tile .t-name { font-weight: 600; }
       #agents-tile .t-where { opacity: 0.6; font-size: 0.9em; }
       #agents.narrow #agents-tile > div { display: none; }
-      :root { --agents-w: calc(var(--term-font) * 22.5); --agents-narrow-w: 34px; }
+      /* The list's text runs a step above the terminal's; its width, dots and buttons scale with it. */
+      :root { --agents-font: calc(var(--term-font) * 1.15); --agents-w: calc(var(--agents-font) * 22.5);
+        --agents-narrow-w: 38px; }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
         flex-direction: column; background: var(--agents-bg); border-right: 1px solid #313640;
-        color: #c3ccd8; font-size: var(--term-font); user-select: none; -webkit-user-select: none; }
+        color: #c3ccd8; font-size: var(--agents-font); user-select: none; -webkit-user-select: none;
+        --cc-dot-size: 0.7em; }
+      #agents .cc-presence { width: 1.25em; height: 1.25em; }
+      #agents .cc-attention.cc-lock, #agents .cc-attention.cc-lock svg { min-width: 0.95em; width: 0.95em; height: 0.95em; }
       #terminal-hole.agents #agents { display: flex; }
       #terminal-hole.agents #pane-primary { --c-br: 0px; }
       #agents.narrow { flex-basis: var(--agents-narrow-w); }
@@ -374,8 +380,8 @@
       .a-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
       .a-name, .a-ctx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-name.untitled { color: #6b7280; font-style: italic; }
-      .a-more { flex: none; width: 18px; height: 18px; border-radius: 4px; color: #7d8590;
-        line-height: 18px; text-align: center; }
+      .a-more { flex: none; width: 1.45em; height: 1.45em; border-radius: 4px; color: #7d8590;
+        line-height: 1.45em; text-align: center; }
       .a-more:hover, .a-row.open .a-more { background: #313640; color: #c3ccd8; }
       .a-rename { font: inherit; color: #ddd; background: rgba(0, 0, 0, 0.35); width: 100%;
         box-sizing: border-box; border: 1px solid #56b4e9; border-radius: 4px; padding: 0 4px;
@@ -423,7 +429,7 @@
          straight run past it — and the fork mark before its name. */
       #agents { --fork: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 62);
         --a-guide: hsl(from var(--fork) h s l / 0.45); }
-      .a-row { --a-step: 16px; }
+      .a-row { --a-step: 1.25em; }
       .a-row.nested { padding-left: calc(var(--a-pad) + var(--depth) * var(--a-step)); }
       .a-guide { position: absolute; pointer-events: none; box-sizing: border-box;
         left: calc(var(--a-pad) + 6.5px + (var(--lv) - 1) * var(--a-step)); border-left: 1px solid var(--a-guide); }
@@ -432,11 +438,11 @@
       .a-guide.elbow { top: 0; height: calc(4px + var(--a-line) / 2); width: 18px;
         border-bottom: 1px solid var(--a-guide); border-bottom-left-radius: 5px; }
       .a-row.forked .a-guide.elbow { width: 8px; }
-      .a-fork-mark { width: 12px; height: 12px; margin-right: 4px; vertical-align: -2px; color: var(--fork); }
-      .a-fork-caret { flex: none; align-self: flex-start; width: 14px; height: var(--a-line);
+      .a-fork-mark { width: 0.95em; height: 0.95em; margin-right: 4px; vertical-align: -2px; color: var(--fork); }
+      .a-fork-caret { flex: none; align-self: flex-start; width: 1.1em; height: var(--a-line);
         margin-right: -5px; display: flex; align-items: center; justify-content: center;
         color: #7d8590; border-radius: 4px; }
-      .a-fork-caret svg { width: 8px; height: 8px; transition: transform 120ms ease; }
+      .a-fork-caret svg { width: 0.65em; height: 0.65em; transition: transform 120ms ease; }
       .a-fork-caret.open svg { transform: rotate(90deg); }
       .a-fork-caret:hover { color: #c3ccd8; background: #313640; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
@@ -525,7 +531,7 @@
       #agents.narrow .a-group { justify-content: center; padding: 6px 4px 2px;
         border-top: 1px solid #313640; margin: 4px 4px 0; }
       #agents.narrow .a-group .cc-attention { margin: 0; }
-      /* One mark per row — attention when set, else the session dot — and no confirm in 34px. */
+      /* One mark per row — attention when set, else the session dot — and no confirm in the rail. */
       #agents.narrow .cc-attention + .cc-presence { display: none; }
       #agents.narrow .cc-presence { pointer-events: none; }
       #agents.narrow .a-foot-row { flex-direction: column; }
