@@ -789,6 +789,34 @@ fn init_tabs(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) ->
     Some(dto)
 }
 
+/// `warden://` requests held until `setup` has built the window set. A cold launch by URL gets
+/// `application:openURLs:` before `applicationDidFinishLaunching`, so `RunEvent::Opened` runs
+/// ahead of `setup`; `None` once `setup` has drained it and requests open directly.
+#[cfg(target_os = "macos")]
+struct EarlyOpens(std::sync::Mutex<Option<Vec<shell_core::windows::OpenRequest>>>);
+
+#[cfg(target_os = "macos")]
+impl Default for EarlyOpens {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(Some(Vec::new())))
+    }
+}
+
+/// Open `req` now, or hold it in [`EarlyOpens`] when `setup` hasn't run yet.
+#[cfg(target_os = "macos")]
+fn open_or_hold(app: &tauri::AppHandle, req: shell_core::windows::OpenRequest) {
+    use tauri::Manager;
+    let early = app.state::<EarlyOpens>();
+    let mut held = early.0.lock().unwrap_or_else(|e| e.into_inner());
+    match held.as_mut() {
+        Some(queue) => queue.push(req),
+        None => {
+            drop(held);
+            open_url(app, req);
+        }
+    }
+}
+
 /// `warden://open?window=<title>&tab=<id or title>`: open or focus the window, then select the
 /// tab. An unknown window or tab is named in an alert.
 #[cfg(target_os = "macos")]
@@ -2922,7 +2950,10 @@ fn main() {
     // left at. Only the shared home surface is excluded, structurally inside the plugin itself, so
     // `skip_labels` carries none of warden's windows here.
     let config_path = warden_config::config_path();
-    shell_core::register_plugins(tauri::Builder::default(), Some(&config_path), &[])
+    let builder = shell_core::register_plugins(tauri::Builder::default(), Some(&config_path), &[]);
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(EarlyOpens::default());
+    builder
         // Persistent home: closing the last window shows the home surface rather than quitting
         // (`quit_on_last_close(false)` below), and closing the home surface while nothing else is
         // open quits — "closing the last surface == ⌘Q", whichever state it shows.
@@ -3466,6 +3497,17 @@ fn main() {
                         log::error!("failed to start config watcher (no hot-reload): {e}");
                     }
                 }
+
+                let held = app
+                    .state::<EarlyOpens>()
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_default();
+                for req in held {
+                    open_url(app.handle(), req);
+                }
             }
             Ok(())
         })
@@ -3477,12 +3519,12 @@ fn main() {
                     set.mark_quitting();
                 }
             }
-            // A `warden://` URL (CFBundleURLTypes in Info.plist) — cold launch or warm, macOS
-            // delivers it here after `setup` has materialized the config's windows.
+            // A `warden://` URL (CFBundleURLTypes in Info.plist). On a cold launch it arrives
+            // before `setup`, which opens it once the window set exists (`EarlyOpens`).
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Opened { urls } => {
                 for req in urls.iter().filter_map(|u| open_request(u, "warden")) {
-                    open_url(app, req);
+                    open_or_hold(app, req);
                 }
             }
             _ => {}
