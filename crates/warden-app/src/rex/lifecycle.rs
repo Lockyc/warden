@@ -847,6 +847,9 @@ pub struct AgentRowDto {
     pub folded: bool,
     /// Under a folded tab.
     pub hidden: bool,
+    /// Asleep with nothing awake under it: the list shows it in the Asleep group, not its own
+    /// place.
+    pub asleep_group: bool,
     /// Folded, with a row under it needing you.
     pub amber: bool,
     /// `working`, `blocked`, `done`, `error`, `idle` or `asleep`.
@@ -942,7 +945,8 @@ pub fn agent_step(list: &AgentListDto, step: Step) -> Option<String> {
 /// The selected row moved one place among its siblings, with its forks, as
 /// [`agents::Place::Sibling`] takes it: `(record id, index among its other siblings)`. Its
 /// siblings are its source's other forks, or for a top-level tab its group's other top-level
-/// tabs. `None` at their edge (leaving them is a drag), or with nothing selected.
+/// tabs; a sibling the list shows apart from it (in or out of the Asleep group) is stepped
+/// over. `None` at their edge (leaving them is a drag), or with nothing selected.
 pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, usize)> {
     let sel = list.rows.iter().find(|r| r.selected)?;
     let members: Vec<&AgentRowDto> = list
@@ -951,9 +955,11 @@ pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, usize)> {
         .filter(|r| r.parent == sel.parent && (sel.parent.is_some() || r.group == sel.group))
         .collect();
     let at = members.iter().position(|r| r.id == sel.id)?;
+    // Past the next sibling the list shows beside it: one in the Asleep group sits elsewhere.
+    let beside = |j: &usize| members[*j].asleep_group == sel.asleep_group;
     let to = match step {
-        Step::Prev => at.checked_sub(1)?,
-        Step::Next => Some(at + 1).filter(|&i| i < members.len())?,
+        Step::Prev => (0..at).rev().find(beside)?,
+        Step::Next => (at + 1..members.len()).find(beside)?,
     };
     Some((sel.id.clone(), to))
 }
@@ -1028,6 +1034,7 @@ pub fn agent_list(
             forks: 0,
             folded: r.folded,
             hidden: false,
+            asleep_group: false,
             amber: needs_you,
             state,
             blocked_kind: st.kind.filter(|_| state == "blocked").map(|k| match k {
@@ -1059,11 +1066,13 @@ pub fn agent_list(
     // Rows are depth first, so a row's forks are the rows after it deeper than it. `amber` held
     // each row's own need until here.
     let needs: Vec<bool> = rows.iter().map(|r| r.amber).collect();
+    let asleep: Vec<bool> = rows.iter().map(|r| r.state == "asleep").collect();
     for i in 0..rows.len() {
         let end = (i + 1..rows.len())
             .find(|&j| rows[j].depth <= rows[i].depth)
             .unwrap_or(rows.len());
         let r = &mut rows[i];
+        r.asleep_group = asleep[i..end].iter().all(|&a| a);
         r.forks = (end - i - 1) as u32;
         r.folded &= r.forks > 0;
         r.amber = r.folded && needs[i + 1..end].contains(&true);
@@ -3593,6 +3602,7 @@ mod tests {
                     forks: 0,
                     folded: false,
                     hidden: false,
+                    asleep_group: false,
                     amber: false,
                     state: "idle",
                     blocked_kind: None,
@@ -3795,6 +3805,47 @@ mod tests {
                 ("a1x", Some("a1"), 2, 0, false, true, false),
             ]
         );
+    }
+
+    #[test]
+    fn asleep_group_holds_asleep_rows_with_nothing_awake_under_them() {
+        let a = record("a", RecordState::Asleep, None, None);
+        let mut a1 = record("a1", RecordState::Live, Some("window:1"), None);
+        a1.lineage = vec!["a".into()];
+        let b = record("b", RecordState::Asleep, None, None);
+        let mut b1 = record("b1", RecordState::Asleep, None, None);
+        b1.lineage = vec!["b".into()];
+        let c = record("c", RecordState::Live, Some("window:2"), None);
+        let s = store(vec![a, a1, b, b1, c]);
+        let l = agent_list("t", &s.lock().unwrap(), &Attention::default(), |_| None);
+        let got: Vec<_> = l
+            .rows
+            .iter()
+            .map(|r| (r.id.as_str(), r.asleep_group))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a", false),
+                ("a1", false),
+                ("b", true),
+                ("b1", true),
+                ("c", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_move_steps_over_rows_in_the_asleep_group() {
+        use super::{agent_move, Step};
+        let mut l = list(ROWS, "a", &[]);
+        l.rows
+            .iter_mut()
+            .filter(|r| r.id == "b")
+            .for_each(|r| r.asleep_group = true);
+        assert_eq!(agent_move(&l, Step::Next), Some(("a".into(), 2)));
+        l.rows.iter_mut().for_each(|r| r.selected = r.id == "c");
+        assert_eq!(agent_move(&l, Step::Prev), Some(("c".into(), 0)));
     }
 
     #[test]
