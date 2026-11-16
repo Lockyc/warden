@@ -16,13 +16,13 @@ directory). The library and the resources come from the **same release** — kee
 
 ## This build
 
-- **Source:** `lockyc/libghostty-build` release [`ghostty-0fa3d57`](https://github.com/lockyc/libghostty-build/releases/tag/ghostty-0fa3d57).
-- **Ghostty commit (unmodified upstream):** `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec` (tag
-  `vt-1.0.0`, 2026-11-06 — the libghostty-vt 1.0 release).
-- **Release asset `GhosttyKit.xcframework.zip` sha256:** `392e653ac1e35c3a4fa8113bea5ef8f1f65a8733ab224d93546c4c9a7c8cc79f`.
-- **Release asset `GhosttyResources.zip` sha256:** `b136573cbf3c96d03a9d49337485296a2cf666707a4a475ec501dcf751840659`.
-- **Release asset `libghostty-vt-macos.zip` sha256:** `bc796969a52effe9f4b3b4d88af54a6698224b8531bd2fa55d22a7e18d94f8b7` — Ghostty's standalone VT library (`-Demit-lib-vt`), universal and debug-stripped, vendored to `crates/warden-relay/vendor/libghostty-vt/` (`lib/libghostty-vt.a` sha256 `e642851f782e2a3d345abe75f678adefc5a03ddaac026877ea453d228b9a56b9`, plus `include/ghostty/`).
-- **Committed `macos-arm64_x86_64/libghostty.a` sha256:** `f0b74183c6189dd7af94da6eba298c8ed84c6e2adb1006e17c11d3af08f103f2`.
+- **Source:** `lockyc/libghostty-build` release [`ghostty-108cacb`](https://github.com/lockyc/libghostty-build/releases/tag/ghostty-108cacb).
+- **Ghostty commit (unmodified upstream):** `108cacb17ed8990840cd14abfce43d8ed8503ca1` (tag
+  `vt-1.0.1`, 2026-11-11 — the libghostty-vt 1.0.1 release).
+- **Release asset `GhosttyKit.xcframework.zip` sha256:** `43c07fd62732f3d1aae07b2c9e2ff255e021e9d7057e389f6668b1b83ec70690`.
+- **Release asset `GhosttyResources.zip` sha256:** `264e0d2ed6a13e8720560af655c7a1673d82e04283ee2e808a5a0aa355c29f5d`.
+- **Release asset `libghostty-vt-macos.zip` sha256:** `4503317c924390062c01a862c3aa13369accbc26c0be592ce5374850bc1e5a78` — Ghostty's standalone VT library (`-Demit-lib-vt`), universal and debug-stripped, vendored to `crates/warden-relay/vendor/libghostty-vt/` (`lib/libghostty-vt.a` sha256 `2f24443ca7d6e50cd99b34a4dd573b84a16fa754d091bf48866c0ad9a6cf43c3`, plus `include/ghostty/`).
+- **Committed `macos-arm64_x86_64/libghostty.a` sha256:** `2c4d498407ce8293f46b4a7df4156446c9ee3aab7df9a1329f89eb7b32a001fa`.
 - **Toolchain:** Zig 0.17.0 (Ghostty's `minimum_zig_version` at that commit) on a GitHub `macos-15`
   runner (Sequoia SDK — the SDK the build is verified against). Built via Ghostty's own
   `-Demit-xcframework` target.
