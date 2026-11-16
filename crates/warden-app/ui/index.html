@@ -725,7 +725,8 @@
       let activeLive = false; // …and whether a live surface actually covers the PRIMARY hole for it
       let secondaryLive = false; // …and the SECONDARY hole, when the active tab is split
       // tab id → its unread bell / desktop-notification badge (`warden:notify`), cleared once the
-      // tab is seen.
+      // tab is seen. The backend keeps them across a restart (`unread.rs`): seeded from the init
+      // snapshot's `unread`, and each clear is reported back (`clear_unread`).
       const badges = new Set();
       // A tab row's attention, as chrome-core takes it: a padlock while an agent there waits on a
       // permission, else the dot while one needs you (its agent list's `agentNeedsYou`) or a bell
@@ -739,7 +740,10 @@
         if (sb) sb.setAttention(id, tabAttention(id));
       }
       function clearBadge(id) {
-        if (badges.delete(id)) paintAttention(id);
+        if (badges.delete(id)) {
+          paintAttention(id);
+          invokeSafe("clear_unread", { id });
+        }
       }
       // [min, max] share either pane of a split may take — the backend's `InitDto.split_band`,
       // set from every snapshot before anything can lay a split out.
@@ -1328,7 +1332,7 @@
         const ids = new Set(dto.tabs.map((t) => t.id));
         tabIds = [...ids];
         scheduleMeasure(); // a tab's shape rides the snapshot (agents, split, detached)
-        badges.forEach((id) => { if (!ids.has(id)) badges.delete(id); });
+        badges.forEach((id) => { if (!ids.has(id)) clearBadge(id); });
         session.forEach((_, id) => { if (!ids.has(id)) session.delete(id); });
         secondarySpawnedById.forEach((_, id) => { if (!ids.has(id)) secondarySpawnedById.delete(id); });
         splitById.forEach((_, id) => { if (!ids.has(id)) splitById.delete(id); });
@@ -2387,6 +2391,7 @@
         }
         if (!dto) return; // no managed window for this label yet (race: init_tabs ran before this window's WindowState was inserted)
         myLabel = dto.label;
+        (dto.unread || []).forEach((id) => badges.add(id));
         splitBand = dto.split_band;
         scratchBand = dto.scratch_band;
         applyTermFont(dto);

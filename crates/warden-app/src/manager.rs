@@ -190,6 +190,9 @@ pub struct InitDto {
     /// webview registers its `warden:error` listener, so a pushed event would be
     /// lost — the chrome pulls this with the snapshot instead.
     pub error: Option<String>,
+    /// This window's tabs with an unread bell badge (`unread.rs`). The chrome seeds its badges
+    /// from this on init only; within a run `warden:notify` and `clear_unread` keep them.
+    pub unread: Vec<String>,
 }
 
 /// Where a pop-out's tab came from: the window it returns to — found by `label` while that
@@ -360,6 +363,9 @@ pub struct WindowManager {
     /// Each window's remembered loaded + active tabs (`remember_tabs`): read by `build_window`,
     /// written by `record_session`. In-memory only until `main.rs`'s setup points it at disk.
     pub session: crate::session::SessionStore,
+    /// Unread bell badges, under [`Self::unread_key`]. In-memory only until `main.rs`'s setup
+    /// points it at disk.
+    pub unread: crate::unread::UnreadStore,
 }
 
 impl WindowManager {
@@ -376,6 +382,7 @@ impl WindowManager {
             presence_cache: PresenceCache::default(),
             last_closed: Vec::new(),
             session: Default::default(),
+            unread: Default::default(),
         }
     }
 
@@ -709,6 +716,7 @@ impl WindowManager {
         if let (Some(old_key), Some(new_key)) = (old_key, new_key) {
             if old_key != new_key {
                 self.session.rekey(&old_key, &new_key);
+                self.unread.rekey(&old_key, &new_key);
             }
             if let Some(ws) = self.windows.get_mut(label).filter(|ws| ws.title == old) {
                 ws.session_key = new_key;
@@ -768,10 +776,49 @@ impl WindowManager {
                         .unwrap_or_default(),
                 },
                 active: ws.registry.active_tab().map(str::to_string),
+                unread: tabs
+                    .iter()
+                    .filter(|t| {
+                        self.unread_key(label, &t.id)
+                            .is_some_and(|(k, tab)| self.unread.has(&k, &tab))
+                    })
+                    .map(|t| t.id.clone())
+                    .collect(),
                 tabs,
                 error: ws.spawn_error.clone(),
             }
         })
+    }
+
+    /// Where tab `tab` of window `label` keeps its unread badge: the window's launch label, or
+    /// for a pop-out its origin's (by title, as `return_target` finds a home) and the tab's id
+    /// there. `None` for an unknown window or a pop-out whose origin left the config.
+    pub fn unread_key(&self, label: &str, tab: &str) -> Option<(String, String)> {
+        let ws = self.windows.get(label)?;
+        match &ws.origin {
+            None => Some((ws.session_key.clone(), tab.to_owned())),
+            Some(o) => {
+                let idx = self
+                    .last_good
+                    .windows
+                    .iter()
+                    .position(|w| same_title(&w.title, &o.title))?;
+                let key = crate::plan::launch_label(&self.last_good, idx)?;
+                Some((key, o.tab_id.clone()))
+            }
+        }
+    }
+
+    /// Mark tab `tab` of window `label` unread, or seen.
+    pub fn set_unread(&mut self, label: &str, tab: &str, unread: bool) {
+        let Some((key, tab)) = self.unread_key(label, tab) else {
+            return;
+        };
+        if unread {
+            self.unread.add(&key, &tab);
+        } else {
+            self.unread.clear(&key, &tab);
+        }
     }
 
     /// Re-emit every open window's snapshot as `warden:refresh` so each chrome rebuilds with the
@@ -1982,6 +2029,31 @@ mod tests {
             Some(ReturnTarget::Open("new".into()))
         );
         assert_eq!(m.origin_home("new"), None);
+    }
+
+    /// A popped-out tab's badge lives under its origin's launch label and tab id, so it outlives the
+    /// pop-out, and seeing the tab in its docked window clears it.
+    #[test]
+    fn a_popped_out_tabs_badge_is_kept_under_its_origin() {
+        let mut m = WindowManager::new();
+        let c = config("[[window]]\ntitle = \"w\"\n");
+        m.adopt(c.clone(), c);
+        let key = crate::plan::launch_label(&m.last_good, 0).unwrap();
+        let empty = || Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let pop = shell_core::detach::detached_label("k");
+        m.windows.insert(
+            pop.clone(),
+            window_state(empty(), Some(origin("gone", "w"))),
+        );
+        m.set_unread(&pop, "pop-tab", true);
+        assert!(m.unread.has(&key, "/tmp/a"));
+        let mut docked = window_state(empty(), None);
+        docked.session_key = key.clone();
+        m.windows.insert("w".into(), docked);
+        m.set_unread("w", "/tmp/a", false);
+        assert!(!m.unread.has(&key, "/tmp/a"));
+        m.set_unread("unknown", "/tmp/a", true);
+        assert!(!m.unread.has("unknown", "/tmp/a"), "no window, no badge");
     }
 
     /// A pop-out's tab is remembered by its origin; the pop-out itself records nothing, even when a

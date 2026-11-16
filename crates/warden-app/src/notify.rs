@@ -191,6 +191,9 @@ fn raise(app: &AppHandle, at: &Located, banner: Option<(String, String)>) {
         return; // the user is already looking at this tab
     }
 
+    app.state::<ManagerState>()
+        .lock()
+        .set_unread(label, tab, true);
     // Badge the tab's rows; the chrome marks each unread until seen. emit_to leaks to sibling
     // windows here (see CLAUDE.md), so stamp the target window label into the payload and let the
     // chrome drop events meant for a sibling — same guard as every other per-window event.

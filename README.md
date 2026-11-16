@@ -68,7 +68,8 @@ Each in full, with every key and shortcut: [docs/features.md](docs/features.md).
 - **Clickable links**, screened first: ⌘-click opens web and mail links, asks before a custom
   scheme, and refuses anything that could run code.
 - **Notifications** — a background tab that rings the bell or sends a desktop notification gets an
-  amber badge and, for a notification, a macOS banner.
+  amber badge, kept across a restart until you look at the tab, and, for a notification, a macOS
+  banner.
 - **Sidebar search** (**⌘⇧F**), a collapsible sidebar (**⌃⌘S**), and **⌘1–⌘9** to jump between
   tabs.
 

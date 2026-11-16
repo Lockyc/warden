@@ -31,6 +31,8 @@ mod registry;
 #[cfg(target_os = "macos")]
 mod session;
 mod split_write;
+#[cfg(target_os = "macos")]
+mod unread;
 
 #[cfg(target_os = "macos")]
 mod rex;
@@ -1685,6 +1687,12 @@ fn pop_out_tab(
 /// local surface to activate, so "select" means "bring its window forward".
 #[cfg(target_os = "macos")]
 #[tauri::command]
+fn clear_unread(window: tauri::WebviewWindow, state: tauri::State<ManagerState>, id: String) {
+    state.lock().set_unread(window.label(), &id, false);
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
 fn raise_popped_window(
     window: tauri::WebviewWindow,
     state: tauri::State<ManagerState>,
@@ -3178,6 +3186,7 @@ fn main() {
             scratch_resize,
             save_split_size,
             init_tabs,
+            clear_unread,
             activate_tab,
             unload_tab,
             split_pane,
@@ -3231,6 +3240,9 @@ fn main() {
                 };
                 if let Some(path) = scoped(session::STEM) {
                     mgr.session = session::SessionStore::load(path);
+                }
+                if let Some(path) = scoped(unread::STEM) {
+                    mgr.unread = unread::UnreadStore::load(path);
                 }
                 // The Rex hub connects nothing until a tab with `server` needs a session.
                 let rex_info = rex_client::ClientInfo {

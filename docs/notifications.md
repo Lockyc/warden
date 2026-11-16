@@ -11,7 +11,8 @@ links:
 warden surfaces a terminal's attention signals (bell, OSC 9 / OSC 777 desktop notification) on the
 tab that raised them: an **amber badge** on the tab row, and — for a desktop notification on a tab
 that isn't the visible one — a **native macOS banner**. The path is `libghostty action_cb` → a
-seam-neutral `SurfaceEvent` → `notify.rs::handle` → `raise` → badge (`warden:notify`) +
+seam-neutral `SurfaceEvent` → `notify.rs::handle` → `raise` → badge (`warden:notify`, kept on
+disk by `unread.rs` until seen) +
 shell-core's `banner::fire` (`UNUserNotificationCenter`); a hidden agent tab needing you banners
 through `notify::agent_banner` (`docs/rex.md`). See the module docs in `crates/warden-app/src/notify.rs`.
 
