@@ -233,21 +233,24 @@
          (`scratchRender`); a plain tab's column is one block filling the body, no strip. */
       #pane-secondary { flex: 1 1 0; min-width: 0; display: none; flex-direction: column; }
       #terminal-hole.split #pane-secondary { display: flex; }
-      /* Sized from the agent list's row text, so the two read as one family. */
-      #scratch-tabs { flex: none; display: flex; align-items: center; gap: 4px; height: 2.4em;
-        box-sizing: border-box; padding: 0 6px; background: var(--agents-bg);
+      /* Sized from the agent list's row text, so the two read as one family; a tab is a square
+         chip, its × and the + drawn at the chevrons' size (`agentIcon`). */
+      #scratch-tabs { flex: none; display: flex; align-items: center; gap: 3px; height: 2em;
+        box-sizing: border-box; padding: 0 5px; background: var(--agents-bg);
         border-bottom: 1px solid #313640; color: #9aa4b2; font-size: var(--agents-row-font);
-        user-select: none; -webkit-user-select: none; }
+        font-variant-numeric: tabular-nums; user-select: none; -webkit-user-select: none; }
       #scratch-tabs[hidden] { display: none; }
-      #scratch-tabs button { font: inherit; color: inherit; background: transparent; border: 0;
-        cursor: pointer; min-width: 1.8em; height: 1.75em; padding: 0 0.5em; border-radius: 4px; }
+      #scratch-tabs button { font: inherit; line-height: 1; color: inherit; background: transparent;
+        border: 0; cursor: pointer; min-width: 1.55em; height: 1.55em; padding: 0 0.4em;
+        border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; }
+      #scratch-tabs button svg { width: var(--a-icon); height: var(--a-icon); }
       #scratch-tabs button:hover:not(:disabled) { background: #22272e; color: #c3ccd8; }
       #scratch-tabs button:disabled { cursor: default; opacity: 0.4; }
       #scratch-tabs button.sel { background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.55);
         color: #e6edf3; }
       /* The selected tab's ×, set against it: no gap, so the pair reads as one tab. */
       #scratch-tabs button.sel:has(+ .close) { border-radius: 4px 0 0 4px; }
-      #scratch-tabs button.close { min-width: 1.4em; padding: 0 0.4em; margin-left: -3px;
+      #scratch-tabs button.close { min-width: 1.3em; padding: 0 0.25em; margin-left: -3px;
         border-radius: 0 4px 4px 0; background: hsl(from var(--accent, #6b7280) h calc(max(s, 60)) 30 / 0.35);
         color: #c3ccd8; }
       #scratch-body { flex: 1 1 0; min-height: 0; position: relative; }
@@ -357,7 +360,13 @@
       /* The list's text runs a step above the terminal's, its rows' a smaller step; its width,
          dots and buttons scale with `--agents-font`, whatever text they sit in. */
       :root { --agents-font: calc(var(--term-font) * 1.15); --agents-row-font: calc(var(--term-font) * 1.05);
-        --agents-w: calc(var(--agents-font) * 22.5); --agents-narrow-w: 38px; }
+        --agents-w: calc(var(--agents-font) * 22.5); --agents-narrow-w: 38px;
+        --a-icon: calc(var(--agents-font) * 0.8); }
+      /* Every fold's chevron, the rail button's, and the scratch strip's × and +: one drawn set
+         at one size (`agentIcon`), since ▸ ▾ « » × set as text read too small and unmatched. */
+      .a-icon { flex: none; width: var(--a-icon); height: var(--a-icon); transition: transform 120ms ease; }
+      .a-icon.down { transform: rotate(90deg); }
+      .a-icon.left { transform: rotate(180deg); }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
         flex-direction: column; background: var(--agents-bg); border-right: 1px solid #313640;
         color: #c3ccd8; font-size: var(--agents-font); user-select: none; -webkit-user-select: none;
@@ -406,21 +415,21 @@
       .a-actions label select { flex: 1; }
       .a-newgroup { display: flex; gap: 4px; }
       .a-newgroup input { flex: 1; outline: none; user-select: text; -webkit-user-select: text; }
-      .a-group { display: flex; align-items: center; gap: 5px; padding: 8px 6px 3px;
+      .a-group { display: flex; align-items: center; gap: 6px; padding: 8px 6px 3px;
         font-size: 0.9em; font-weight: 600; color: #9aa4b2; cursor: default; }
       .a-group:hover { color: #c3ccd8; }
       .a-group.amber { color: #f0883e; }
       .a-group.drop-into { box-shadow: inset 0 -2px 0 #56b4e9; }
       .a-group.drop-before { box-shadow: inset 0 2px 0 #56b4e9; }
-      .a-caret { width: 9px; flex: none; }
+      .a-caret { color: #7d8590; }
       .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-group .cc-attention { margin-left: auto; }
       .a-group .a-count { color: #6b7280; font-weight: 400; }
       /* The Asleep header is a row's height, so it reads and clicks like a tab. */
-      .a-group.asleep-head { min-height: calc(var(--agents-row-font) * 2.5 + 8px); box-sizing: border-box; padding: 4px 8px;
-        margin-bottom: 4px; gap: 8px; font-size: 1.05em; border-radius: 5px; background: #1c2128; }
+      .a-group.asleep-head { min-height: calc(var(--agents-row-font) * 2.5 + 8px); box-sizing: border-box;
+        padding: 4px 6px; margin-bottom: 4px; font-size: var(--agents-row-font); border-radius: 5px;
+        background: #1c2128; }
       .a-group.asleep-head:hover { background: #22272e; }
-      .a-group.asleep-head .a-caret { width: 12px; }
       /* `--a-pad` is the row's left inset, `--a-line` its name line's height: the caret and the
          guides' elbows are placed on that line, not the row's middle. */
       .a-row { --a-pad: 6px; --a-line: 1.4em; position: relative; padding-left: var(--a-pad); }
@@ -445,8 +454,6 @@
       .a-fork-caret { flex: none; align-self: flex-start; width: 1.1em; height: var(--a-line);
         margin-right: -5px; display: flex; align-items: center; justify-content: center;
         color: #7d8590; border-radius: 4px; }
-      .a-fork-caret svg { width: 0.65em; height: 0.65em; transition: transform 120ms ease; }
-      .a-fork-caret.open svg { transform: rotate(90deg); }
       .a-fork-caret:hover { color: #c3ccd8; background: #313640; }
       .a-forks { flex: none; color: #7d8590; font-size: 0.9em; }
       /* The row's second line, on every row so they stand one height: its context where it says
@@ -509,8 +516,9 @@
       #agents-new { flex: 1; text-align: left; padding: 4px 6px; border-radius: 5px;
         color: #9aa4b2; }
       #agents-new:hover, #agents-rail:hover, .a-closed-head:hover { background: #22272e; }
-      #agents-rail { flex: none; width: 24px; border-radius: 5px; color: #7d8590; }
-      .a-closed-head { display: flex; align-items: center; gap: 5px; padding: 4px 6px;
+      #agents-rail { flex: none; width: 24px; border-radius: 5px; color: #7d8590; display: flex;
+        align-items: center; justify-content: center; }
+      .a-closed-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px;
         border-radius: 5px; color: #9aa4b2; font-size: 0.9em; font-weight: 600; }
       .a-closed-head .a-count { color: #6b7280; font-weight: 400; }
       .a-closed-head .a-clear { margin-left: auto; font-weight: 400; color: #9aa4b2;
@@ -904,14 +912,14 @@
             if (i !== view.selected) return [b];
             const close = document.createElement("button");
             close.className = "close";
-            close.textContent = "×";
+            close.append(agentIcon("close"));
             close.title = "Close " + name;
             close.setAttribute("aria-label", close.title);
             close.addEventListener("click", () => scratchCloseTab(i));
             return [b, close];
           });
           const add = document.createElement("button");
-          add.textContent = "+";
+          add.append(agentIcon("add"));
           add.disabled = !!view.new_blocked;
           add.title = view.new_blocked || "New scratch tab (⌃⌘T)";
           add.addEventListener("click", scratchNew);
@@ -1773,7 +1781,7 @@
         const narrow = isNarrow() && !agentArmWidened;
         document.getElementById("agents").classList.toggle("narrow", narrow);
         const btn = document.getElementById("agents-rail");
-        btn.textContent = narrow ? "»" : "«";
+        btn.replaceChildren(agentIcon("chevron", narrow ? "" : "left"));
         btn.title = narrow ? "Show names" : "Fold to dots";
         document.getElementById("agents-new").textContent = narrow ? "+" : "+ New tab";
       }
@@ -1873,6 +1881,21 @@
           onClick();
         });
         return b;
+      }
+      // A drawn `.a-icon`: "chevron" (pointing right; `dir` "down" or "left" turns it), "close" or "add".
+      const AGENT_ICON_PATHS = { chevron: "M3.75 1.75 7 5l-3.25 3.25", close: "M2.5 2.5l5 5m0-5-5 5", add: "M5 1.75v6.5M1.75 5h6.5" };
+      function agentIcon(kind, dir) {
+        const t = document.createElement("template");
+        t.innerHTML = `<svg class="a-icon${dir ? " " + dir : ""}" viewBox="0 0 10 10" fill="none" ` +
+          `stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">` +
+          `<path d="${AGENT_ICON_PATHS[kind]}"/></svg>`;
+        return t.content.firstChild;
+      }
+      // A fold header's caret: down while open.
+      function agentCaret(open) {
+        const c = agentIcon("chevron", open ? "down" : "");
+        c.classList.add("a-caret");
+        return c;
       }
       // The fork mark before a fork's name: a drawn branch, since a font's ⑂ renders too small to read.
       function agentForkMark() {
@@ -2059,9 +2082,7 @@
           const n = r.forks === 1 ? "1 fork" : `${r.forks} forks`;
           const caret = agentButton("", () =>
             agentCall("agent_fold_family", { tabId: tab, recordId: r.id, folded: !r.folded }), "a-fork-caret");
-          caret.classList.toggle("open", !r.folded);
-          caret.innerHTML = '<svg viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.5" ' +
-            'stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 1 5.5 4 2.5 7"/></svg>';
+          caret.append(agentIcon("chevron", r.folded ? "" : "down"));
           caret.title = (r.folded ? "Show " : "Fold ") + n;
           row.append(caret);
         } else row.append(agentEl("span", "a-fork-caret"));
@@ -2174,7 +2195,7 @@
         const h = agentEl("div", "a-group asleep-head");
         h.classList.toggle("folded", folded);
         h.title = folded ? "Show asleep tabs" : "Fold asleep tabs";
-        h.append(agentEl("span", "a-caret", folded ? "▸" : "▾"), agentEl("span", "a-gname", "Asleep"),
+        h.append(agentCaret(!folded), agentEl("span", "a-gname", "Asleep"),
           agentEl("span", "a-count", String(n)));
         h.addEventListener("click", () => {
           if (folded) asleepFolded.delete(tab);
@@ -2190,7 +2211,7 @@
         h.classList.toggle("amber", g.folded && g.amber);
         h.dataset.group = g.name;
         h.title = g.name;
-        h.append(agentEl("span", "a-caret", g.folded ? "▸" : "▾"), agentEl("span", "a-gname", g.name));
+        h.append(agentCaret(!g.folded), agentEl("span", "a-gname", g.name));
         if (g.folded && g.amber) h.append(agentControls.attention(true));
         h.addEventListener("click", () =>
           agentCall("agent_fold", { tabId: tab, group: g.name, folded: !g.folded }));
@@ -2205,7 +2226,7 @@
         const n = dto.closed.length;
         const head = agentEl("div", "a-closed-head");
         head.title = "Closed tabs";
-        head.append(agentEl("span", "a-caret", open ? "▾" : "▸"), agentEl("span", "a-label", "Closed"), agentEl("span", "a-count", String(n)));
+        head.append(agentCaret(open), agentEl("span", "a-label", "Closed"), agentEl("span", "a-count", String(n)));
         const clear = agentButton("Clear", () => agentCall("agent_clear_closed", { tabId: tab, recordId: null }), "a-clear");
         clear.disabled = n === 0;
         clear.title = n ? "Forget every closed tab" : "Nothing closed";
