@@ -920,10 +920,14 @@ fn visible_rows(list: &AgentListDto) -> Vec<&AgentRowDto> {
         .collect()
 }
 
-/// The record id of the shown row before or after the selected one, wrapping at the ends, as
-/// Next / Previous Tab do; `None` with fewer than two shown rows or none of them selected.
+/// The record id of the shown live row before or after the selected one, wrapping at the ends,
+/// as Next / Previous Tab do: an asleep row is skipped, as the sidebar's cycle skips a cold tab,
+/// since selecting it would wake it. `None` with fewer than two such rows or none selected.
 pub fn agent_step(list: &AgentListDto, step: Step) -> Option<String> {
-    let rows = visible_rows(list);
+    let rows: Vec<_> = visible_rows(list)
+        .into_iter()
+        .filter(|r| r.selected || r.state != "asleep")
+        .collect();
     if rows.len() < 2 {
         return None;
     }
@@ -3655,6 +3659,23 @@ mod tests {
             agent_step(&list(ROWS, "a", &["g"]), Step::Prev).as_deref(),
             Some("c")
         );
+    }
+
+    #[test]
+    fn step_skips_asleep_rows() {
+        use super::{agent_step, Step};
+        let mut l = list(ROWS, "a", &[]);
+        for r in &mut l.rows {
+            if r.id == "b" || r.id == "e" {
+                r.state = "asleep";
+            }
+        }
+        assert_eq!(agent_step(&l, Step::Next).as_deref(), Some("c"));
+        assert_eq!(agent_step(&l, Step::Prev).as_deref(), Some("d"));
+        for r in &mut l.rows {
+            r.state = if r.id == "a" { "idle" } else { "asleep" };
+        }
+        assert_eq!(agent_step(&l, Step::Next), None, "nothing live to step to");
     }
 
     #[test]
