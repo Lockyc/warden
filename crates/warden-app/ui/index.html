@@ -1581,6 +1581,10 @@
         };
       }
       const closedOpen = new Set(); // tab ids whose Closed fold is open
+      // Each tab's list scroll offset, and the tab whose rows the list holds: one #agents-list
+      // serves every tab, so a repaint would otherwise reset it.
+      const agentScroll = new Map();
+      let agentScrollTab = null;
       // Below this hole width the list folds to a rail of dots, leaving the agent ~480px. The fold
       // button overrides it per window (`railKey`); choosing what the width would pick clears that.
       const NARROW_HOLE = 700;
@@ -1926,6 +1930,8 @@
         summarySync(); // the selected row's words
         const list = document.getElementById("agents-list");
         const closedBox = document.getElementById("agents-closed");
+        if (agentScrollTab !== null) agentScroll.set(agentScrollTab, list.scrollTop);
+        agentScrollTab = null;
         list.textContent = "";
         closedBox.textContent = "";
         document.getElementById("agents-tally").textContent = "";
@@ -1949,6 +1955,8 @@
           if (!g.folded) members.forEach((r) => list.append(...agentRow(tab, dto, r, true)));
         });
         if (!dto.rows.length) list.append(agentEl("div", "a-empty", "No agent tabs"));
+        list.scrollTop = agentScroll.get(tab) || 0;
+        agentScrollTab = tab;
         renderClosed(tab, dto);
         renderTally(tab, dto);
       }
