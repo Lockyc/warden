@@ -357,8 +357,9 @@
       #agents-tile .t-name { font-weight: 600; }
       #agents-tile .t-where { opacity: 0.6; font-size: 0.9em; }
       #agents.narrow #agents-tile > div { display: none; }
-      /* The list's text runs a step above the terminal's, its rows' a smaller step; its width,
-         dots and buttons scale with `--agents-font`, whatever text they sit in. */
+      /* The list's text runs a step above the terminal's, its rows' a smaller step; its width
+         and buttons scale with `--agents-font`. Its dots and padlock are chrome-core's, at the
+         sidebar's density size — never resized here. */
       :root { --agents-font: calc(var(--term-font) * 1.15); --agents-row-font: calc(var(--term-font) * 1.05);
         --agents-w: calc(var(--agents-font) * 22.5); --agents-narrow-w: 38px;
         --a-icon: calc(var(--agents-font) * 0.8); }
@@ -369,11 +370,7 @@
       .a-icon.left { transform: rotate(180deg); }
       #agents { display: none; flex: 0 0 var(--agents-w); box-sizing: border-box; min-width: 0;
         flex-direction: column; background: var(--agents-bg); border-right: 1px solid #313640;
-        color: #c3ccd8; font-size: var(--agents-font); user-select: none; -webkit-user-select: none;
-        --cc-dot-size: calc(var(--agents-font) * 0.7); }
-      #agents .cc-presence { width: calc(var(--agents-font) * 1.25); height: calc(var(--agents-font) * 1.25); }
-      #agents .cc-attention.cc-lock, #agents .cc-attention.cc-lock svg { min-width: calc(var(--agents-font) * 0.95);
-        width: calc(var(--agents-font) * 0.95); height: calc(var(--agents-font) * 0.95); }
+        color: #c3ccd8; font-size: var(--agents-font); user-select: none; -webkit-user-select: none; }
       #terminal-hole.agents #agents { display: flex; }
       #terminal-hole.agents #pane-primary { --c-br: 0px; }
       #agents.narrow { flex-basis: var(--agents-narrow-w); }
