@@ -87,6 +87,10 @@ Ghostty.app needs ⇧⌘. When a link misbehaves, check in this order:
    is `FORCE_HYPERLINK=1` in the shell Rex starts when `$TERM_PROGRAM` is `rex`. The same name
    costs plain-click opening: Claude Code opens a link on a bare click only under
    `TERM_PROGRAM=ghostty`, so that shell also re-exports it as `ghostty`.
+4. **An OSC 8 target over 2 KB is no link at all.** libghostty captures OSC 8 in its fixed
+   `Parser.MAX_BUF` (`src/terminal/osc.zig`) and discards an overflowing sequence whole, so the
+   program's link styling shows over text that clicks to nothing — the same in Ghostty.app. The
+   fix is a shorter target from the program that emits it.
 
 ## Child exit
 
