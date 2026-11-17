@@ -494,8 +494,15 @@
       .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
         color: #7d8590; font-size: 0.9em; }
       .a-newdrop.over { border-color: #56b4e9; color: #c3ccd8; }
-      /* A row's dots and its confirm are chrome-core's (`agentControls`); armed, ⋯ steps aside. */
+      /* A row's dots and its confirm are chrome-core's (`agentControls`). Armed, nothing in the row
+         moves: ⏻ takes the dot's slot, ↩ the ⋯'s, and ☠ sits left of them over the text's tail
+         (its negative margin is its own width plus the row's gap), masked by the row's red; an
+         attention mark keeps its slot, hidden. */
       .a-row.confirming .a-more { display: none; }
+      #agents .a-row.confirming .cc-attention { display: inline-flex; visibility: hidden; }
+      .a-row.confirming .cc-confirm-cancel { width: calc(var(--agents-font) * 1.45); }
+      .a-row.confirming .cc-confirm-destroy { position: relative; z-index: 1; margin-left: -23px;
+        align-self: stretch; height: auto; background: #5a1f1f; box-shadow: -7px 0 0 #5a1f1f; }
       /* The head: the tally over `+` and the fold, at the band's foot, so the first row starts where the
          sidebar's first section does. The band's height is the sidebar's Search box bottom
          (`--agents-head-h`, `syncAgentsHead`); what it leaves above the controls drags the window. */
