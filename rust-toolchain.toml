@@ -9,5 +9,5 @@
 # pin only governs developing config-core standalone. Bump all four together (the
 # natural moment is when you bump config-core's pinned rev).
 [toolchain]
-channel = "1.96.0"
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]
