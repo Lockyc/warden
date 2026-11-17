@@ -377,7 +377,7 @@ dependencies = [
 [[package]]
 name = "chrome-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/chrome-core?rev=d526d54d507e16bf8082efcf0a49b8d4d1463b2b#d526d54d507e16bf8082efcf0a49b8d4d1463b2b"
+source = "git+https://github.com/Lockyc/chrome-core?rev=d33c3f75e61f16593f38c1729065ee9bde071fdd#d33c3f75e61f16593f38c1729065ee9bde071fdd"
 
 [[package]]
 name = "chrono"
@@ -404,7 +404,7 @@ dependencies = [
 [[package]]
 name = "config-core"
 version = "0.1.0"
-source = "git+https://github.com/Lockyc/config-core?rev=20865a472871ef938b69aa5c7da86e28a24c39e9#20865a472871ef938b69aa5c7da86e28a24c39e9"
+source = "git+https://github.com/Lockyc/config-core?rev=551c3187cd30fa585c5e1f879bc864edb2578306#551c3187cd30fa585c5e1f879bc864edb2578306"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -3489,7 +3489,7 @@ dependencies = [
 [[package]]
 name = "shell-core"
 version = "0.6.0"
-source = "git+https://github.com/Lockyc/shell-core?rev=bbe1fc76201f0c7ccc6637f98739fca4a9b4ec70#bbe1fc76201f0c7ccc6637f98739fca4a9b4ec70"
+source = "git+https://github.com/Lockyc/shell-core?rev=b32aa2fa150949795fa63e4fe338887e1921b905#b32aa2fa150949795fa63e4fe338887e1921b905"
 dependencies = [
  "block2",
  "getrandom 0.2.17",
