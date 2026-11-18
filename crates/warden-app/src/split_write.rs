@@ -228,7 +228,7 @@ pub fn stored_size(s: f64) -> f64 {
 
 /// The column's shares as the file keeps them, each within the band a pane `size` validates to
 /// — Rex lets a pane sit narrower (or wider) than a config pane may — with what that adds taken
-/// from the largest, so the shares still sum to 1 and none normalises below `PANE_SIZE_MIN`.
+/// from the largest, so none normalises below `PANE_SIZE_MIN`.
 fn pane_sizes(sizes: &[f64]) -> Vec<f64> {
     let mut v: Vec<f64> = sizes
         .iter()
@@ -829,5 +829,144 @@ server = "s"
         std::fs::write(&p, &broken).unwrap();
         assert!(write_split(&p, &raw, "W", &tab, SplitEdit::Enable).is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), broken);
+    }
+
+    /// Any column Rex can hold saves sizes in the pane band to a config that loads, and resolves
+    /// to a stack summing to 1 with no share under the floor — on the tab's own stack and through a discovered project's override,
+    /// whose root keeps its own stack.
+    mod banded_columns {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A column of `ratios.len() + 1` panes as Rex nests one top down: each split holds one
+        /// pane and the rest, at a ratio inside [`crate::rex::layout::RATIO_BAND`].
+        fn column() -> impl Strategy<Value = Vec<f64>> {
+            let [lo, hi] = crate::rex::layout::RATIO_BAND;
+            let ratio = prop_oneof![lo..lo + 0.02, hi - 0.02..hi, lo..hi];
+            proptest::collection::vec(ratio, 1..6).prop_map(|ratios| {
+                let mut rest = 1.0;
+                let mut shares: Vec<f64> = ratios
+                    .iter()
+                    .map(|r| {
+                        let s = rest * r;
+                        rest -= s;
+                        s
+                    })
+                    .collect();
+                shares.push(rest);
+                shares
+            })
+        }
+
+        fn stack(prefix: &str, n: usize) -> String {
+            (0..n)
+                .map(|i| {
+                    format!(
+                        "\n[[{prefix}.split.pane]]\ncmd = \"c{i}\"\nsize = {}\n",
+                        1.0 / n as f64
+                    )
+                })
+                .collect()
+        }
+
+        /// What the file keeps: every `size` within the band a pane `size` validates to.
+        fn assert_stored(split: Option<&RawSplit>) {
+            let Some(RawSplit::On(t)) = split else {
+                panic!("no stack saved")
+            };
+            let sizes: Vec<f64> = t.panes.iter().flatten().map(|p| p.size.unwrap()).collect();
+            for s in &sizes {
+                assert!(
+                    (PANE_SIZE_MIN..=PANE_SIZE_MAX).contains(s),
+                    "a stored size outside the pane band: {sizes:?}"
+                );
+            }
+        }
+
+        /// What the stack resolves to: shares summing to 1, none below `PANE_SIZE_MIN`.
+        fn assert_resolved(sizes: &[f64]) {
+            let sum: f64 = sizes.iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-9,
+                "the shares sum to {sum}: {sizes:?}"
+            );
+            assert!(
+                sizes.iter().all(|s| *s >= PANE_SIZE_MIN - 1e-9),
+                "a share under the floor: {sizes:?}"
+            );
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: std::env::var("PROPTEST_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(64),
+                failure_persistence: None,
+                ..ProptestConfig::default()
+            })]
+
+            #[test]
+            fn any_banded_column_saves_a_loadable_stack(shares in column()) {
+                let n = shares.len();
+                let toml = format!(
+                    "[[window]]\ntitle = \"W\"\n\n[[window.tab]]\ndir = \"/tmp/a\"\ntitle = \"A\"\nserver = \"s\"\n{}",
+                    stack("window.tab", n)
+                );
+                let (_d, p) = setup(&toml);
+                run_sizes(&p, "A", &shares).unwrap();
+                let c = warden_config::load(&p).expect("the saved config loads");
+                let sizes: Vec<f64> = panes(&c.config, "A").into_iter().map(|p| p.0).collect();
+                assert_resolved(&sizes);
+                let raw = warden_config::raw::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+                assert_stored(raw.windows[0].extra.tabs[0].split.as_ref());
+            }
+
+            #[test]
+            fn any_banded_column_saves_through_a_root_override(shares in column()) {
+                let n = shares.len();
+                let d = tempfile::tempdir().unwrap();
+                let root = d.path().join("proj");
+                std::fs::create_dir_all(root.join("p1")).unwrap();
+                let toml = format!(
+                    "[[window]]\ntitle = \"W\"\n\n[[window.root]]\nname = \"R\"\ndir = \"{}\"\nserver = \"s\"\n{}",
+                    root.display(),
+                    stack("window.root", n)
+                );
+                let p = d.path().join("config.toml");
+                std::fs::write(&p, &toml).unwrap();
+                let raw = warden_config::raw::parse(&toml).unwrap();
+                let w = &raw.windows[0];
+                let split = cascade_split_over(&raw, w, &[w.extra.roots[0].split.as_ref()])
+                    .unwrap()
+                    .unwrap();
+                let root_before = split.panes.clone();
+                let tab = Tab {
+                    dir: root.join("p1"),
+                    key: normalize_dir_key(&root.join("p1")),
+                    group: Some("R".into()),
+                    split: Some(split),
+                    ..bare_tab()
+                };
+                write_pane_sizes(&p, &raw, "W", &tab, &shares).unwrap();
+                warden_config::load(&p).expect("the saved config loads");
+                let raw = warden_config::raw::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+                let w = &raw.windows[0];
+                let root = &w.extra.roots[0];
+                let resolved = |near: &[Option<&RawSplit>]| -> Vec<f64> {
+                    cascade_split_over(&raw, w, near)
+                        .unwrap()
+                        .unwrap()
+                        .panes
+                        .iter()
+                        .map(|p| p.size)
+                        .collect()
+                };
+                assert_stored(root.tabs[0].split.as_ref());
+                assert_resolved(&resolved(&[root.tabs[0].split.as_ref(), root.split.as_ref()]));
+                let root_after = cascade_split_over(&raw, w, &[root.split.as_ref()])
+                    .unwrap()
+                    .unwrap()
+                    .panes;
+                assert_eq!(root_after, root_before, "the root's own stack is unchanged");
+            }
+        }
     }
 }
