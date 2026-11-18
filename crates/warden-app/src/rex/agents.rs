@@ -561,13 +561,15 @@ pub fn depth_of(records: &[AgentRecord], r: &AgentRecord) -> u32 {
 
 /// `records` (one project's) in list order: top-level tabs ungrouped above the groups, groups
 /// ordered by their first record's position, each by position; every tab's forks directly
-/// under it ([`parent_of`]), depth first, each family by position.
+/// under it ([`parent_of`]), depth first, each family by position. A closed record never orders
+/// a group: it shows in the closed fold, not the group, so a group only it holds is one no row
+/// holds, which [`AgentStore::place`] puts after the others.
 pub fn in_list_order(records: &[AgentRecord]) -> Vec<AgentRecord> {
     let parents: Vec<Option<String>> = records.iter().map(|r| parent_of(records, r)).collect();
     let first = |g: &str| {
         records
             .iter()
-            .filter(|r| r.group.as_deref() == Some(g))
+            .filter(|r| r.group.as_deref() == Some(g) && r.state != RecordState::Closed)
             .map(|r| r.position)
             .min()
     };
@@ -1326,5 +1328,27 @@ mod tests {
         assert_eq!(AgentStore::load(path.clone()).records("p"), vec![b]);
         std::fs::write(&path, b"not json").unwrap();
         assert!(AgentStore::load(path).records("p").is_empty());
+    }
+
+    /// A group only a closed record holds is one no row holds: a tab placed into it lands after
+    /// every other group, and the list shows it there.
+    #[test]
+    fn a_group_only_closed_records_hold_lists_after_the_others() {
+        let mut s = AgentStore::default();
+        let mut c = fam("c", 1, &[]);
+        c.group = Some("g".into());
+        c.state = RecordState::Closed;
+        let mut d = fam("d", 2, &[]);
+        d.group = Some("h".into());
+        for r in [fam("a", 0, &[]), c, d, fam("b", 3, &[])] {
+            s.upsert(r);
+        }
+        assert!(put(&mut s, "b", Some("g"), None));
+        let shown: Vec<String> = in_list_order(&s.records("p"))
+            .into_iter()
+            .filter(|r| r.state != RecordState::Closed)
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(shown, ["a", "d", "b"]);
     }
 }
