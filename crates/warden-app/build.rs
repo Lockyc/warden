@@ -21,6 +21,8 @@ fn main() {
     // generated chrome-core.{css,js} into ui/.
     println!("cargo:rerun-if-changed=ui/index.html");
     println!("cargo:rerun-if-changed=ui/scratch-run.js");
+    println!("cargo:rerun-if-changed=ui/route.js");
+    println!("cargo:rerun-if-changed=ui/agent-list.js");
 
     // Derive the libghostty action-tag discriminants from the vendored header instead of
     // hand-transcribing them. `ghostty_action_tag_e` is a plain C enum with no explicit values, so

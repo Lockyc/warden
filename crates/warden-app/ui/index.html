@@ -677,6 +677,8 @@
     </div>
     <script src="chrome-core.js"></script>
     <script src="scratch-run.js"></script>
+    <script src="route.js"></script>
+    <script src="agent-list.js"></script>
     <script>
       // warden's chrome controller: binds chrome-core's ChromeSidebar (the view) to warden's Tauri
       // backend + libghostty native surface. The sidebar rendering lives in chrome-core; this maps
@@ -732,13 +734,9 @@
       // tab is seen. The backend keeps them across a restart (`unread.rs`): seeded from the init
       // snapshot's `unread`, and each clear is reported back (`clear_unread`).
       const badges = new Set();
-      // A tab row's attention, as chrome-core takes it: a padlock while an agent there waits on a
-      // permission, else the dot while one needs you (its agent list's `agentNeedsYou`) or a bell
-      // is unread.
+      // A tab row's attention, as chrome-core takes it (`agentTabAttention`).
       function tabAttention(id) {
-        const needy = (agentLists.get(id)?.rows ?? []).filter(agentNeedsYou);
-        if (needy.some((r) => r.state === "blocked" && r.blockedKind === "permission")) return "lock";
-        return needy.length || badges.has(id) ? true : null;
+        return agentTabAttention(agentLists.get(id)?.rows ?? [], badges.has(id));
       }
       function paintAttention(id) {
         if (sb) sb.setAttention(id, tabAttention(id));
@@ -824,26 +822,18 @@
       // sb.checkForUpdateNow(). warden keeps its own updater *identity* — endpoint, pubkey, plugin
       // registration — in tauri.conf.json / Rust.
 
-      // Before init_tabs answers, this window has no label to match, so nothing is for it.
-      const forMe = (e) => myLabel !== null && !(e.payload && e.payload.label && e.payload.label !== myLabel);
+      const forMe = (e) => routeForMe(myLabel, e);
 
-      // Whether the error bar holds a global (config) error, the one kind `warden:error-clear`
-      // clears. Every per-window error goes through `setWindowError`, which replaces it.
-      // In a pop-out that global error is the config's load error (`shell-detach:error`).
-      let globalErrorShown = false;
-      function setWindowError(msg) {
-        globalErrorShown = false;
+      // The error bar (`routeErrorBar`). Every per-window error goes through `setWindowError`. In
+      // a pop-out the global error is the config's load error (`shell-detach:error`).
+      const errorBar = routeErrorBar((msg) => {
         if (POPOUT) popoutSetError(msg);
-        else if (sb) sb.setError(msg);
-      }
+        else if (sb) msg === null ? sb.clearError() : sb.setError(msg);
+      });
+      const setWindowError = (msg) => errorBar.window(msg);
       function popoutLoadError(error) {
-        if (error) {
-          popoutSetError("⚠ " + error);
-          globalErrorShown = true;
-        } else if (globalErrorShown) {
-          popoutSetError(null);
-          globalErrorShown = false;
-        }
+        if (error) errorBar.global("⚠ " + error);
+        else errorBar.clearGlobal();
       }
       if (POPOUT) {
         popoutLoadError(popoutPayload.loadError);
@@ -1593,7 +1583,6 @@
       // and not yet seen) — a padlock while it waits on a permission — cyan for its session — pulsing while it works, the ghost while asleep.
       // An asleep row is a project row's cold ghost: selecting the row wakes it, and its dot arms
       // the confirm, so the dot means the same in both lists.
-      const agentNeedsYou = (r) => r.state === "blocked" || !!r.unseen;
       function agentControlRecord(r) {
         const reason = r.canSleep ? null : r.sleepReason;
         const asleep = r.state === "asleep";
@@ -1655,11 +1644,6 @@
       // `TabDto.colour`.
       // Shown by the same `.agents` class as the column; runs on every column sync, list render,
       // `warden:agents`, `warden:session-state` and snapshot.
-      // An agent's title, in its row and the summary alike: a name the user gave it, else the
-      // conversation's topic, else its window's name (the terminal title the program set).
-      function agentTitle(r) {
-        return r.renamed ? r.name : r.topic || r.name;
-      }
       function summarySync() {
         const tab = agentsTab();
         const s = summaryById.get(tab);
@@ -2333,39 +2317,14 @@
         if (hit.closest(".a-row[data-asleep], .asleep-head")) return null;
         const row = hit.closest(".a-row");
         if (row) {
-          const dto = agentLists.get(drag.tab);
-          // A drop's index counts its siblings in the store, Asleep-group ones too, though they
-          // are drawn apart.
-          const sibs = (pred) => dto.rows.filter((x) => x.id !== drag.id && pred(x)).map((x) => x.id);
-          const parentOf = (id) => dto.rows.find((x) => x.id === id)?.parent ?? null;
-          // `id`'s parents, nearest first; bounded, as a tampered lineage can loop.
-          const ancestors = (id) => {
-            const up = [];
-            for (let p = parentOf(id); p && up.length < dto.rows.length; p = parentOf(p)) up.push(p);
-            return up;
-          };
-          const rootOf = (id) => ancestors(id).pop() ?? id;
-          if (row.dataset.id === drag.id || ancestors(row.dataset.id).includes(drag.id)) return null;
-          const rows = [...document.querySelectorAll("#agents-list .a-row:not([data-asleep])")].filter((x) => x.dataset.id !== drag.id);
-          // A drop after a row lands after its forks too, so the mark goes under the last of them.
-          const lastOf = (el) => rows.filter((x) => x === el || ancestors(x.dataset.id).includes(el.dataset.id)).pop();
+          const drawn = [...document.querySelectorAll("#agents-list .a-row:not([data-asleep])")];
           const r = row.getBoundingClientRect();
           const after = y > r.top + r.height / 2;
-          const mark = (el) => (after ? { el: lastOf(el), cls: "drop-after" } : { el, cls: "drop-before" });
-          // Among its own source's other forks: a reorder in the family.
-          const parent = parentOf(drag.id);
-          if (parent && row.dataset.parent === parent) {
-            const peers = sibs((x) => x.parent === parent);
-            return { reorder: true, index: peers.indexOf(row.dataset.id) + (after ? 1 : 0), ...mark(row) };
-          }
-          // Anywhere else it lands as a top-level tab, before or after a whole family: on a fork,
-          // after that fork's family.
-          const root = rows.find((x) => x.dataset.id === rootOf(row.dataset.id));
-          if (!root) return null; // the list changed under the drag
-          const group = row.dataset.group || null;
-          const peers = sibs((x) => !x.parent && (x.group || null) === group);
-          if (row === root) return { group, index: peers.indexOf(row.dataset.id) + (after ? 1 : 0), ...mark(row) };
-          return { group, index: peers.indexOf(root.dataset.id) + 1, el: lastOf(root), cls: "drop-after" };
+          const ids = drawn.map((x) => x.dataset.id);
+          const t = agentDropOnRow(agentLists.get(drag.tab).rows, drag.id, row.dataset.id, after, ids);
+          if (!t) return null;
+          const { mark, ...drop } = t;
+          return { ...drop, el: drawn.find((x) => x.dataset.id === mark) };
         }
         const h = hit.closest(".a-group");
         if (!h) return null;
@@ -2568,20 +2527,13 @@
       // stays until dismissed or replaced. A pop-out shows its own; its global one is
       // `shell-detach:error`'s.
       listen("warden:error", (e) => {
-        const p = e.payload;
-        if (myLabel === null) return;
-        if (p && typeof p === "object" && p.label && p.label !== myLabel) return;
-        if (p && typeof p === "object" && p.label) {
-          setWindowError("⚠ " + p.message);
-        } else if (sb) {
-          sb.setError("⚠ " + (p && typeof p === "object" ? p.message : p));
-          globalErrorShown = true;
-        }
+        const err = routeError(myLabel, e.payload);
+        if (!err) return;
+        if (err.scope === "window") setWindowError(err.message);
+        else if (sb) errorBar.global(err.message);
       });
       listen("warden:error-clear", () => {
-        if (!sb || !globalErrorShown) return;
-        sb.clearError();
-        globalErrorShown = false;
+        if (sb) errorBar.clearGlobal();
       });
       // Menu "Check for Updates…" → chrome-core checks now + announces (up-to-date / error / banner).
       // emit_to leaks → forMe filter, else one menu click checks in every open window.
