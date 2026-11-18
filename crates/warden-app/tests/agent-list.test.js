@@ -79,6 +79,7 @@ test("a fork dropped among its source's other forks reorders in the family", () 
 test("no drop on itself, its own forks, or a row the list no longer holds", () => {
   assert.strictEqual(agentDropOnRow(fam, "a", "a", true, shown), null);
   assert.strictEqual(agentDropOnRow(fam, "a", "a1x", true, shown), null);
+  assert.strictEqual(agentDropOnRow(fam, "a1", "a1x", true, shown), null, "a fork onto its own fork");
   assert.strictEqual(agentDropOnRow(fam, "b", "gone", true, shown), null);
   assert.strictEqual(agentDropOnRow(fam, "b", "a1", true, ["b", "a1"]), null, "its root isn't drawn");
 });
