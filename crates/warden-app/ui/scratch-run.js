@@ -121,19 +121,23 @@ function scratchResized(view, di, ratio) {
   for (let n = 0; n < view.dividers.length; n++) {
     const i = v.dividers.findIndex(out);
     if (i < 0) break;
-    v = scratchMoved(v, i, Math.min(hi, Math.max(lo, v.dividers[i].ratio)));
+    const edge = Math.min(hi, Math.max(lo, v.dividers[i].ratio));
+    const moved = scratchMoved(v, i, edge);
+    // Beside a run too short to keep each item its share, the edge is still what Rex will take.
+    v = out(moved.dividers[i], i) ? scratchMoved(v, i, edge, 0) : moved;
   }
   return v;
 }
-// `scratchResized`'s one move, its re-derived ratios as they fall.
-function scratchMoved(view, di, ratio) {
+// `scratchResized`'s one move, its re-derived ratios as they fall; each moved item keeps at least
+// `keepShare` of the run.
+function scratchMoved(view, di, ratio, keepShare = scratchBand[0]) {
   const d = view.dividers[di];
   const { vert, c0, c1, start: runStart, end: runEnd, bounds } = scratchRun(view, d);
   const b0 = scratchBoundary(d);
   const prev = Math.max(runStart, ...bounds.filter((b) => b < b0 - SCRATCH_EPS));
   const next = Math.min(runEnd, ...bounds.filter((b) => b > b0 + SCRATCH_EPS));
   const [ds, de] = scratchAxis(d.rect, vert);
-  const keep = scratchBand[0] * (runEnd - runStart);
+  const keep = keepShare * (runEnd - runStart);
   let b1 = ds + ratio * (de - ds);
   b1 = prev + keep <= next - keep ? Math.min(next - keep, Math.max(prev + keep, b1)) : b0;
   // A position along the axis, moved: [prev, b0] onto [prev, b1], [b0, next] onto [b1, next].

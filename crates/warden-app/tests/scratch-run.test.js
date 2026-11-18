@@ -112,3 +112,60 @@ test("a re-derived ratio outside the band moves to its edge, as the backend clam
   const s2 = v.dividers.find((d) => d.split_id === "s2");
   assert.strictEqual(r4(s2.ratio), 0.9375);
 });
+
+// A seeded PRNG (mulberry32), so a failing case replays from its seed.
+function prng(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// A stack of `n` panes nested top down as Rex builds one: each split holds one pane and the rest,
+// at a ratio inside the band, often at its edge, where a drag re-derives a neighbour out of it.
+function randomStack(rand, n) {
+  const ratio = () => {
+    const p = rand();
+    if (p < 0.3) return 0.05 + rand() * 0.02;
+    if (p < 0.6) return 0.95 - rand() * 0.02;
+    return 0.05 + rand() * 0.9;
+  };
+  const tiles = [];
+  const dividers = [];
+  let y = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const rest = 1 - y;
+    const d = V("s" + i, y, rest, ratio());
+    dividers.push(d);
+    tiles.push(T("b" + i, y, rest * d.ratio));
+    y += rest * d.ratio;
+  }
+  tiles.push(T("b" + (n - 1), y, 1 - y));
+  return { tiles, dividers };
+}
+
+test("every ratio a drag or a pane preset sends is finite and inside the band", () => {
+  for (let seed = 1; seed <= 500; seed++) {
+    const rand = prng(seed);
+    const view = randomStack(rand, 2 + Math.floor(rand() * 5));
+    const di = Math.floor(rand() * view.dividers.length);
+    const ti = Math.floor(rand() * view.tiles.length);
+    const results = [
+      ["drag", scratchResized(view, di, 0.05 + rand() * 0.9)],
+      ["preset", scratchPaneResized(view, ti, rand())],
+    ];
+    for (const [how, v] of results) {
+      for (const d of v.dividers) {
+        assert.ok(Number.isFinite(d.ratio), `seed ${seed}: ${how} gave ${d.split_id} ratio ${d.ratio}`);
+        assert.ok(
+          d.ratio >= 0.05 - 1e-6 && d.ratio <= 0.95 + 1e-6,
+          `seed ${seed}: ${how} left ${d.split_id} at ${d.ratio}, outside the band`,
+        );
+      }
+      const total = v.tiles.reduce((a, t) => a + t.rect.h, 0);
+      assert.ok(Math.abs(total - 1) < 1e-6, `seed ${seed}: ${how} panes sum to ${total}`);
+    }
+  }
+});
