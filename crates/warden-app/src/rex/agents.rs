@@ -1351,4 +1351,269 @@ mod tests {
             .collect();
         assert_eq!(shown, ["a", "d", "b"]);
     }
+
+    /// A generated sequence of the list's operations on one project's records, checked against
+    /// the list-order invariants after every step.
+    mod agent_store_model {
+        use super::*;
+        use proptest::prelude::*;
+
+        const GROUPS: [Option<&str>; 3] = [None, Some("g"), Some("h")];
+
+        #[derive(Debug, Clone)]
+        enum Op {
+            /// A new top-level tab, as an unknown window's reconcile appends one.
+            New,
+            /// Fork the `n`th record (mod len), as `lifecycle`'s fork writes it.
+            Fork(usize),
+            Sibling(usize, usize),
+            Root(usize, usize, Option<usize>),
+            Close(usize),
+            Reopen(usize),
+            Clear(usize),
+            /// Reconcile against the windows of the live records `mask` keeps, the session alive
+            /// or dead.
+            Reconcile(u32, bool),
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            let n = 0usize..16;
+            prop_oneof![
+                Just(Op::New),
+                n.clone().prop_map(Op::Fork),
+                (n.clone(), 0usize..6).prop_map(|(i, k)| Op::Sibling(i, k)),
+                (n.clone(), 0usize..3, proptest::option::of(0usize..6))
+                    .prop_map(|(i, g, k)| Op::Root(i, g, k)),
+                n.clone().prop_map(Op::Close),
+                n.clone().prop_map(Op::Reopen),
+                n.prop_map(Op::Clear),
+                (any::<u32>(), any::<bool>()).prop_map(|(m, a)| Op::Reconcile(m, a)),
+            ]
+        }
+
+        fn nth(s: &AgentStore, i: usize) -> Option<AgentRecord> {
+            let v = s.records("p");
+            (!v.is_empty()).then(|| v[i % v.len()].clone())
+        }
+
+        fn add(s: &mut AgentStore, mut r: AgentRecord) {
+            r.window_id = Some(r.id.clone());
+            r.block_id = Some(format!("b-{}", r.id));
+            r.resume = Some("claude --resume x".into());
+            s.upsert(r);
+        }
+
+        fn apply(s: &mut AgentStore, op: &Op, made: &mut u32) {
+            let fresh = |made: &mut u32| {
+                *made += 1;
+                format!("n{made}")
+            };
+            match *op {
+                Op::New => {
+                    let next = s.records("p").iter().map(|r| r.position + 1).max();
+                    let mut r = rec(&fresh(made), RecordState::Live, None, None);
+                    r.position = next.unwrap_or(0);
+                    add(s, r);
+                }
+                Op::Fork(i) => {
+                    let Some(src) = nth(s, i).filter(|r| r.state != RecordState::Closed) else {
+                        return;
+                    };
+                    let mut records = s.records("p");
+                    for r in records.iter_mut().filter(|r| r.position > src.position) {
+                        r.position += 1;
+                    }
+                    let mut r = rec(&fresh(made), RecordState::Live, None, None);
+                    r.group = src.group.clone();
+                    r.position = src.position + 1;
+                    r.lineage = std::iter::once(src.id.clone())
+                        .chain(src.lineage.iter().cloned())
+                        .collect();
+                    s.set_project("p", records);
+                    add(s, r);
+                }
+                Op::Sibling(i, k) => {
+                    if let Some(r) = nth(s, i) {
+                        assert!(s.place("p", &r.id, Place::Sibling(k)));
+                        positions_follow_list_order(s);
+                    }
+                }
+                Op::Root(i, g, k) => {
+                    let Some(r) = nth(s, i) else { return };
+                    let group = GROUPS[g].map(str::to_string);
+                    let shown_top = parent_of(&s.records("p"), &r).is_none();
+                    assert!(s.place(
+                        "p",
+                        &r.id,
+                        Place::Root {
+                            group: group.clone(),
+                            index: k,
+                        }
+                    ));
+                    positions_follow_list_order(s);
+                    let after = s.records("p").into_iter().find(|x| x.id == r.id).unwrap();
+                    if shown_top && r.group == group {
+                        assert_eq!(
+                            after.lineage, r.lineage,
+                            "a top-level place within its own group keeps the chain"
+                        );
+                    } else {
+                        assert!(after.lineage.is_empty(), "a tab placed elsewhere leaves");
+                    }
+                }
+                Op::Close(i) => {
+                    if let Some(mut r) = nth(s, i).filter(|r| r.state != RecordState::Closed) {
+                        r.state = RecordState::Closed;
+                        r.closed_at = Some(1);
+                        r.window_id = None;
+                        r.block_id = None;
+                        s.upsert(r);
+                    }
+                }
+                Op::Reopen(i) => {
+                    if let Some(mut r) = nth(s, i).filter(|r| r.state == RecordState::Closed) {
+                        r.state = RecordState::Live;
+                        r.closed_at = None;
+                        r.window_id = Some(r.id.clone());
+                        s.upsert(r);
+                    }
+                }
+                Op::Clear(i) => {
+                    if let Some(r) = nth(s, i) {
+                        s.clear_closed("p", Some(&r.id));
+                    }
+                }
+                Op::Reconcile(mask, alive) => {
+                    let records = s.records("p");
+                    let windows: Vec<AgentWindow> = records
+                        .iter()
+                        .enumerate()
+                        .filter(|(k, r)| {
+                            r.state == RecordState::Live && mask & (1 << (k % 32)) != 0
+                        })
+                        .filter_map(|(_, r)| Some(win(r.window_id.as_deref()?, &r.name)))
+                        .collect();
+                    s.set_project("p", reconcile("p", &records, &windows, alive, 2));
+                }
+            }
+        }
+
+        /// After a place, the list shows its rows (closed ones aside, which sit in their own
+        /// fold) in the order the place numbered them.
+        fn positions_follow_list_order(s: &AgentStore) {
+            let records = s.records("p");
+            let open = |r: &AgentRecord| r.state != RecordState::Closed;
+            let listed: Vec<String> = in_list_order(&records)
+                .into_iter()
+                .filter(open)
+                .map(|r| r.id)
+                .collect();
+            let by_position: Vec<String> = records.into_iter().filter(open).map(|r| r.id).collect();
+            assert_eq!(listed, by_position, "a place leaves the list in its order");
+        }
+
+        fn check(s: &AgentStore) {
+            let records = s.records("p");
+            let listed = in_list_order(&records);
+            // Every record appears exactly once.
+            let mut a: Vec<&str> = listed.iter().map(|r| r.id.as_str()).collect();
+            let mut b: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "in_list_order lists each record once");
+            // No parent chain cycles, so depth terminates below the record count.
+            for r in &records {
+                let mut seen = vec![r.id.clone()];
+                let mut at = parent_of(&records, r);
+                while let Some(id) = at {
+                    assert!(!seen.contains(&id), "a lineage cycle through {id}");
+                    seen.push(id.clone());
+                    at = records
+                        .iter()
+                        .find(|o| o.id == id)
+                        .and_then(|p| parent_of(&records, p));
+                }
+                assert_eq!(depth_of(&records, r) as usize, seen.len() - 1);
+            }
+            // Each family is contiguous: a record's descendants follow it directly.
+            let descends = |d: &AgentRecord, of: &str| {
+                let mut at = parent_of(&records, d);
+                while let Some(id) = at {
+                    if id == of {
+                        return true;
+                    }
+                    at = records
+                        .iter()
+                        .find(|o| o.id == id)
+                        .and_then(|p| parent_of(&records, p));
+                }
+                false
+            };
+            for (i, r) in listed.iter().enumerate() {
+                let n = listed[i + 1..]
+                    .iter()
+                    .take_while(|d| descends(d, &r.id))
+                    .count();
+                assert!(
+                    !listed[i + 1 + n..].iter().any(|d| descends(d, &r.id)),
+                    "{}'s family is split",
+                    r.id
+                );
+            }
+            // Ungrouped top-level tabs come above every group.
+            let tops: Vec<&AgentRecord> = listed
+                .iter()
+                .filter(|r| parent_of(&records, r).is_none())
+                .collect();
+            let first_grouped = tops.iter().position(|r| r.group.is_some());
+            if let Some(k) = first_grouped {
+                assert!(tops[k..].iter().all(|r| r.group.is_some()));
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: std::env::var("PROPTEST_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(64),
+                failure_persistence: None,
+                ..ProptestConfig::default()
+            })]
+
+            #[test]
+            fn agent_store_order_model(ops in proptest::collection::vec(op(), 1..40)) {
+                let mut s = AgentStore::default();
+                let mut made = 0;
+                for op in &ops {
+                    apply(&mut s, op, &mut made);
+                    check(&s);
+                }
+            }
+
+            /// Any lineage at all, a tampered file's included, still lists every record once and
+            /// gives every depth.
+            #[test]
+            fn any_lineage_lists_every_record_once(
+                lineages in proptest::collection::vec(proptest::collection::vec(0usize..6, 0..4), 1..6)
+            ) {
+                let n = lineages.len();
+                let recs: Vec<AgentRecord> = lineages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        let mut r = rec(&format!("r{i}"), RecordState::Live, None, None);
+                        r.position = i as u32;
+                        r.lineage = l.iter().map(|j| format!("r{}", j % n)).collect();
+                        r
+                    })
+                    .collect();
+                let mut ids: Vec<String> = in_list_order(&recs).into_iter().map(|r| r.id).collect();
+                ids.sort();
+                let mut want: Vec<String> = recs.iter().map(|r| r.id.clone()).collect();
+                want.sort();
+                prop_assert_eq!(ids, want);
+                for r in &recs {
+                    prop_assert!((depth_of(&recs, r) as usize) <= n);
+                }
+            }
+        }
+    }
 }
