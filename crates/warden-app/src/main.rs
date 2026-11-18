@@ -1411,9 +1411,7 @@ fn on_spine_action(app: &tauri::AppHandle, routed: shell_core::menu::Routed) {
     let target = app.get_webview_window(label);
     if routed.from_detached.is_some() {
         match &target {
-            Some(w) => {
-                let _ = w.set_focus();
-            }
+            Some(w) => shell_core::focus::bring_forward(w),
             // The pop-out's origin was closed: bring it back. Its chrome mounts fresh, with nothing
             // listening yet for this command, so the command ends there.
             None => {
@@ -1706,8 +1704,7 @@ fn raise_popped_window(
         .map(str::to_owned);
     if let Some(label) = label {
         if let Some(win) = app.get_webview_window(&label) {
-            let _ = win.unminimize();
-            let _ = win.set_focus();
+            shell_core::focus::bring_forward(&win);
         }
     }
 }
@@ -3135,7 +3132,7 @@ fn main() {
                 let label = match home {
                     Some(manager::ReturnTarget::Open(origin)) => {
                         if let Some(w) = app.get_webview_window(&origin) {
-                            let _ = w.set_focus();
+                            shell_core::focus::bring_forward(&w);
                         }
                         origin
                     }

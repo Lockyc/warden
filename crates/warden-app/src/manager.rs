@@ -483,6 +483,7 @@ impl WindowManager {
                 // only the in-app banner names the window.
                 .hidden_title(true)
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .focused(shell_core::focus::focused())
                 .build()?;
         log::info!(
             "window {:?} opened ({} tab(s))",
