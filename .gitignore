@@ -32,5 +32,8 @@ examples/projects/**/.git/
 /latest.json
 .DS_Store
 
+# cargo-mutants results (`just mutants` / `just mutants-diff`)
+/mutants.out*/
+
 # Staged by scripts/stage-relay.sh; bundled into Contents/MacOS by tauri.conf.json
 /crates/warden-app/binaries/

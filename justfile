@@ -81,6 +81,22 @@ gate:
 bench:
     cargo test -p warden-app --release probe_qos_bench -- --ignored --nocapture
 
+# Occasional, never in `gate`: each mutant rebuilds warden-app and reruns its tests. A surviving
+# mutant is code no test asserts on; results land in mutants.out/ (git-ignored).
+# Mutation-test warden-app's lines changed since `base` (cargo-mutants --in-diff)
+[group("mutants")]
+mutants-diff base="main":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    diff=$(mktemp); trap 'rm -f "$diff"' EXIT
+    git diff "{{base}}" > "$diff"
+    cargo mutants -p warden-app --in-diff "$diff"
+
+# Mutation-test one warden-app source file, e.g. crates/warden-app/src/registry.rs
+[group("mutants")]
+mutants file:
+    cargo mutants -p warden-app -f "{{file}}"
+
 # ── shared-core dev loops (require the sibling ../<core> ghq checkout) ──
 # Every <core>-dev / <core>-pin wraps shell-core's scripts/core-patch.sh; the cores and the manifest
 # each one is pinned in are scripts/tooling.env's CORES.
