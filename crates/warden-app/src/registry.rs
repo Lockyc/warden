@@ -5525,4 +5525,403 @@ mod tests {
         let walked: Vec<PaneIdx> = r.tabs[0].slots_mut().map(|(w, _)| w).collect();
         assert_eq!(walked, named);
     }
+
+    /// A generated interleaving of the pop-out lifecycle over two registries — the origin window
+    /// and the one-tab pop-out its Rex tab moves to — checked against the invariants the pop-out
+    /// docblocks state, after every step rather than in one hand-picked order.
+    mod registry_model {
+        use super::*;
+        use proptest::prelude::*;
+
+        type Asked = std::sync::Arc<std::sync::Mutex<Vec<RexOpen>>>;
+
+        const RECORDS: [&str; 3] = ["r0", "r1", "r2"];
+
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Reg {
+            Origin,
+            Out,
+        }
+
+        #[derive(Debug, Clone)]
+        enum Op {
+            Take,
+            Adopt,
+            Activate(Reg, bool),
+            EnsureColumn(Reg),
+            ForceAgents(Reg, u8, Option<u8>),
+            CloseAgent(Reg, u8),
+            Sync(Reg, u8, Option<u8>),
+            Unload(Reg),
+            /// Answer `t`'s main-pane open in `Reg` with the latest token log `usize` handed out
+            /// (every registry ever made, in order), `Some(mask)` of live agents or a refusal.
+            AnswerMain(Reg, usize, Option<u8>),
+            AnswerColumn(Reg, usize, bool),
+            BeginChange(Reg),
+            EndChange(Reg),
+        }
+
+        fn reg() -> impl Strategy<Value = Reg> {
+            prop_oneof![Just(Reg::Origin), Just(Reg::Out)]
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            let mask = 0u8..8;
+            let pick = proptest::option::of(0u8..3);
+            let moves = prop_oneof![Just(Op::Take), Just(Op::Adopt)];
+            let opens = prop_oneof![
+                (reg(), any::<bool>()).prop_map(|(r, u)| Op::Activate(r, u)),
+                reg().prop_map(Op::EnsureColumn),
+                (reg(), 0usize..4, proptest::option::of(mask.clone()))
+                    .prop_map(|(r, l, a)| Op::AnswerMain(r, l, a)),
+                (reg(), 0usize..4, any::<bool>()).prop_map(|(r, l, ok)| Op::AnswerColumn(r, l, ok)),
+                reg().prop_map(Op::BeginChange),
+                reg().prop_map(Op::EndChange),
+            ];
+            let agents = prop_oneof![
+                (reg(), mask.clone(), pick.clone()).prop_map(|(r, m, s)| Op::ForceAgents(r, m, s)),
+                (reg(), 0u8..3).prop_map(|(r, i)| Op::CloseAgent(r, i)),
+                (reg(), mask, pick).prop_map(|(r, m, s)| Op::Sync(r, m, s)),
+                reg().prop_map(Op::Unload),
+            ];
+            prop_oneof![2 => moves, 3 => opens, 3 => agents]
+        }
+
+        fn records(mask: u8) -> Vec<&'static str> {
+            (0..3)
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| RECORDS[i])
+                .collect()
+        }
+
+        /// Where tab `t`'s entry is: home, between windows, or in the pop-out.
+        enum Where {
+            Origin,
+            Transit(Reg, MovedTab),
+            Out,
+        }
+
+        struct World {
+            origin: Registry,
+            /// The pop-out's registry while `t` is in it; it closes as the tab leaves.
+            out: Option<Registry>,
+            at: Where,
+            /// Each registry's Rex open log, every one ever made, in order; `[0]` is the origin's.
+            logs: Vec<Asked>,
+            /// Which log the live pop-out's opener writes to.
+            out_log: usize,
+        }
+
+        impl World {
+            fn new() -> World {
+                let (mut origin, asked) = rex_registry();
+                origin.add(&spec("a", "/tmp/a"), false).unwrap();
+                origin.add(&split_rex_spec("t", 2), false).unwrap();
+                World {
+                    origin,
+                    out: None,
+                    at: Where::Origin,
+                    logs: vec![asked],
+                    out_log: 0,
+                }
+            }
+
+            fn reg(&mut self, which: Reg) -> Option<&mut Registry> {
+                match which {
+                    Reg::Origin => Some(&mut self.origin),
+                    Reg::Out => self.out.as_mut(),
+                }
+            }
+
+            fn latest_token(&self, log: usize, column: bool) -> Option<u64> {
+                let log = self.logs.get(log % self.logs.len())?.lock().unwrap();
+                log.iter()
+                    .rev()
+                    .find(|q| tab_of_secondary(&q.pane_key).is_some() == column)
+                    .map(|q| q.token)
+            }
+
+            /// Every pending open token in `r`, by pane.
+            fn opening_tokens(r: &Registry) -> Vec<u64> {
+                r.tabs.iter().flat_map(entry_tokens).collect()
+            }
+
+            fn apply(&mut self, op: &Op) {
+                match op.clone() {
+                    Op::Take => {
+                        let (from, moved) = match self.at {
+                            Where::Origin => (Reg::Origin, self.origin.take_tab("t")),
+                            Where::Out => (Reg::Out, self.out.as_mut().unwrap().take_tab("t")),
+                            Where::Transit(..) => return,
+                        };
+                        let moved = moved.expect("a tab that is here moves");
+                        if from == Reg::Out {
+                            // The pop-out window closes behind its one tab.
+                            self.out = None;
+                        }
+                        self.at = Where::Transit(from, moved);
+                    }
+                    Op::Adopt => {
+                        if !matches!(self.at, Where::Transit(..)) {
+                            return;
+                        }
+                        let Where::Transit(from, moved) =
+                            std::mem::replace(&mut self.at, Where::Origin)
+                        else {
+                            unreachable!()
+                        };
+                        match from {
+                            Reg::Origin => {
+                                let (mut out, asked) = rex_registry();
+                                assert!(out.adopt_tab(moved).is_ok(), "a fresh pop-out adopts");
+                                self.logs.push(asked);
+                                self.out_log = self.logs.len() - 1;
+                                self.out = Some(out);
+                                self.at = Where::Out;
+                            }
+                            Reg::Out => {
+                                assert!(
+                                    self.origin.adopt_tab(moved).is_ok(),
+                                    "the origin's placeholder takes the tab home"
+                                );
+                                self.at = Where::Origin;
+                            }
+                        }
+                    }
+                    Op::Activate(w, user) => {
+                        if let Some(r) = self.reg(w) {
+                            let _ = if user {
+                                r.activate_user("t")
+                            } else {
+                                r.activate("t")
+                            };
+                        }
+                    }
+                    Op::EnsureColumn(w) => {
+                        if let Some(r) = self.reg(w) {
+                            if let Some(i) = r.tabs.iter().position(|t| t.id == "t") {
+                                let _ = r.ensure_spawned(i, PaneIdx::Block(0), false);
+                            }
+                        }
+                    }
+                    Op::ForceAgents(w, mask, sel) => {
+                        if let Some(r) = self.reg(w) {
+                            // The test hook writes straight into an entry; a placeholder's agents
+                            // are the pop-out's, so it is never given any.
+                            if !r.is_placeholder("t") {
+                                r.force_ready_agents(
+                                    "t",
+                                    &records(mask),
+                                    sel.map(|i| RECORDS[i as usize]),
+                                );
+                            }
+                        }
+                    }
+                    Op::CloseAgent(w, i) => {
+                        if let Some(r) = self.reg(w) {
+                            let _ = r.close_agent("t", RECORDS[i as usize]);
+                        }
+                    }
+                    Op::Sync(w, mask, sel) => {
+                        if let Some(r) = self.reg(w) {
+                            let found = AgentsOpened {
+                                agents: records(mask)
+                                    .into_iter()
+                                    .map(|rec| (rec.to_string(), target(&format!("block:{rec}"))))
+                                    .collect(),
+                                selected: sel.map(|i| RECORDS[i as usize].to_string()),
+                            };
+                            let _ = r.sync_agents("t", found);
+                        }
+                    }
+                    Op::Unload(w) => {
+                        if let Some(r) = self.reg(w) {
+                            r.unload("t");
+                        }
+                    }
+                    Op::AnswerMain(w, log, agents) => {
+                        let log = log % self.logs.len();
+                        let Some(token) = self.latest_token(log, false) else {
+                            return;
+                        };
+                        let own = match w {
+                            Reg::Origin => 0,
+                            Reg::Out => self.out_log,
+                        };
+                        let answer = match agents {
+                            Some(mask) => Ok(RexAnswer::Agents(AgentsOpened {
+                                agents: records(mask)
+                                    .into_iter()
+                                    .map(|rec| (rec.to_string(), target(&format!("block:{rec}"))))
+                                    .collect(),
+                                selected: records(mask).first().map(|s| s.to_string()),
+                            })),
+                            None => Err("refused".into()),
+                        };
+                        let Some(r) = self.reg(w) else { return };
+                        let landed = r.rex_opened("t", token, answer);
+                        if log != own || (w == Reg::Out && self.out.is_none()) {
+                            assert!(
+                                matches!(landed, RexLanded::Stale),
+                                "an answer to another registry's open never lands"
+                            );
+                        }
+                    }
+                    Op::AnswerColumn(w, log, ok) => {
+                        let log = log % self.logs.len();
+                        let Some(token) = self.latest_token(log, true) else {
+                            return;
+                        };
+                        let own = match w {
+                            Reg::Origin => 0,
+                            Reg::Out => self.out_log,
+                        };
+                        let answer = match ok {
+                            true => Ok(RexAnswer::Column(opened(vec![scratch("w1", &["a"])]))),
+                            false => Err("refused".into()),
+                        };
+                        let Some(r) = self.reg(w) else { return };
+                        let landed = r.rex_opened(&secondary_id("t"), token, answer);
+                        if log != own {
+                            assert!(
+                                matches!(landed, RexLanded::Stale),
+                                "an answer to another registry's column open never lands"
+                            );
+                        }
+                    }
+                    Op::BeginChange(w) => {
+                        if let Some(r) = self.reg(w) {
+                            let _ = r.begin_column_change("t");
+                        }
+                    }
+                    Op::EndChange(w) => {
+                        if let Some(r) = self.reg(w) {
+                            r.end_column_change("t");
+                        }
+                    }
+                }
+            }
+
+            fn check(&self) {
+                let t = |r: &Registry| {
+                    r.tabs
+                        .iter()
+                        .find(|e| e.id == "t")
+                        .map(|e| e.is_placeholder())
+                };
+                // (a) `t` is live in exactly one place, and the origin holds its placeholder
+                // while it is anywhere else.
+                match &self.at {
+                    Where::Origin => {
+                        assert_eq!(t(&self.origin), Some(false), "home: the origin holds t");
+                        assert!(self.out.is_none());
+                    }
+                    Where::Transit(..) => {
+                        assert_eq!(t(&self.origin), Some(true), "in transit: a placeholder");
+                        assert!(self.out.is_none());
+                    }
+                    Where::Out => {
+                        assert_eq!(t(&self.origin), Some(true), "out: a placeholder");
+                        let out = self.out.as_ref().unwrap();
+                        assert_eq!(out.tabs.len(), 1, "a pop-out holds one tab");
+                        assert_eq!(t(out), Some(false), "the pop-out holds t itself");
+                    }
+                }
+                // (b) A placeholder stays a bare placeholder whatever is done to it, and only a
+                // main pane is ever Detached.
+                for r in std::iter::once(&self.origin).chain(self.out.as_ref()) {
+                    for e in &r.tabs {
+                        if e.is_placeholder() {
+                            assert!(e.primary.agents.is_empty(), "a placeholder holds no agents");
+                            assert!(e.column.is_none(), "a placeholder holds no column");
+                            assert_eq!(e.primary.rex, RexState::Idle, "nothing opens for it");
+                            assert_eq!(e.primary.selected, None);
+                        }
+                        let detached_below_main = e
+                            .slots_mut_free()
+                            .skip(1)
+                            .any(|s| matches!(s, TabSlot::Detached));
+                        assert!(!detached_below_main, "only a main pane is ever Detached");
+                    }
+                }
+                // (c) No two pending opens anywhere share a token.
+                let mut all: Vec<u64> = Self::opening_tokens(&self.origin);
+                if let Some(out) = &self.out {
+                    all.extend(Self::opening_tokens(out));
+                }
+                if let Where::Transit(_, moved) = &self.at {
+                    all.extend(entry_tokens(&moved.entry));
+                }
+                let mut dedup = all.clone();
+                dedup.sort_unstable();
+                dedup.dedup();
+                assert_eq!(dedup.len(), all.len(), "two pending opens share a token");
+                // (d) A registry waits only on tokens its own opener handed out, so an answer
+                // meant for it can land; and a column is in flight only while one is pending.
+                let own = |r: &Registry, log: &Asked| {
+                    let log = log.lock().unwrap();
+                    for tok in Self::opening_tokens(r) {
+                        assert!(
+                            log.iter().any(|q| q.token == tok),
+                            "a pending open carries a token this registry never handed out"
+                        );
+                    }
+                };
+                own(&self.origin, &self.logs[0]);
+                if let Some(out) = &self.out {
+                    own(out, &self.logs[self.out_log]);
+                }
+                for r in std::iter::once(&self.origin).chain(self.out.as_ref()) {
+                    for e in &r.tabs {
+                        let pending = e
+                            .column
+                            .as_ref()
+                            .is_some_and(|c| c.rex.opening().is_some() || c.changing);
+                        assert_eq!(r.column_in_flight(&e.id).is_some(), pending);
+                    }
+                }
+            }
+        }
+
+        /// Every pending open token of one tab entry: its main pane's, its agents', its column's.
+        fn entry_tokens(e: &TabEntry) -> Vec<u64> {
+            std::iter::once(&e.primary.rex)
+                .chain(e.primary.agents.iter().map(|a| &a.rex))
+                .chain(e.column.iter().map(|c| &c.rex))
+                .filter_map(RexState::opening)
+                .collect()
+        }
+
+        impl TabEntry {
+            /// [`slots_mut`](TabEntry::slots_mut)'s slots, read-only: the main pane's first.
+            fn slots_mut_free(&self) -> impl Iterator<Item = &TabSlot> {
+                self.keyed().map(|(_, _, s)| s)
+            }
+        }
+
+        fn cases() -> u32 {
+            std::env::var("PROPTEST_CASES")
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(64)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: cases(),
+                failure_persistence: None,
+                ..ProptestConfig::default()
+            })]
+
+            #[test]
+            fn pop_out_lifecycle_model(ops in proptest::collection::vec(op(), 1..40)) {
+                let mut w = World::new();
+                w.check();
+                for op in &ops {
+                    w.apply(op);
+                    w.check();
+                }
+            }
+        }
+    }
 }

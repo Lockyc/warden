@@ -35,6 +35,11 @@ test:
     cargo test --workspace
     node --test crates/warden-app/tests/*.test.js
 
+# Run the proptest state-machine models (`*_model`) at many more cases than `test` does
+[group("check")]
+soak cases="4096":
+    PROPTEST_CASES={{cases}} cargo test --workspace _model
+
 # Type-check the workspace without producing binaries
 [group("check")]
 check:
