@@ -23,8 +23,9 @@ running when warden quits, and Rex is optional: a tab without one is a plain ter
 to `/Applications`. Releases are signed and notarized, and run natively on Apple Silicon and
 Intel.
 
-**Or build from source** into `~/.warden` (needs the Xcode Command Line Tools and a Rust
-toolchain from [rustup](https://rustup.rs); the installer adds the Tauri CLI). It also seeds
+**Or build from source** (needs the Xcode Command Line Tools and a Rust toolchain from
+[rustup](https://rustup.rs); the installer adds the Tauri CLI). The installer keeps its source
+clone in `~/.warden`, installs `/Applications/warden.app`, seeds
 `~/.config/warden/config.toml` and copies the agent hook to `~/.local/share/warden/agent-hooks/`;
 re-run it to update:
 
