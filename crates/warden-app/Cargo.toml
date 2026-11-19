@@ -7,7 +7,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 # The shared sidebar chrome, embedded as string consts; build.rs writes them into ui/ (the
 # frontendDist Tauri embeds). Pinned by rev — bump in lockstep with config-core + the toolchain.
-chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "6028d8acf414b40e0ae39486e03ed7e17fdff0f5" }
+chrome-core = { git = "https://github.com/Lockyc/chrome-core", rev = "eb6a2f5366babb745ca8cf23abaf78a421ffc8d7" }
 # Shared release tooling + build_stamp. build.rs materializes scripts/*.sh (git-ignored) and stamps
 # BUILD_GIT_SHA/BUILD_DATE. default-features=false keeps the build-dep zero-tauri (resolver 2 keeps
 # it separate from the runtime-featured [dependencies] entry below). Pinned by rev.
