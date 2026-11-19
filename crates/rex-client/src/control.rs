@@ -725,13 +725,13 @@ mod tests {
     }
 
     #[test]
-    fn connect_sends_hello_rev7_and_reads_client_id() {
+    fn connect_sends_hello_at_api_revision_and_reads_client_id() {
         let fake = FakeServer::start();
         let c = ControlClient::connect(&fake.endpoint(), &info()).expect("connect");
         let hellos = fake.hellos();
         assert_eq!(hellos.len(), 1);
         let h = &hellos[0];
-        assert_eq!(h["api_revision"], 7);
+        assert_eq!(h["api_revision"], API_REVISION);
         assert_eq!(h["client"]["kind"], "app");
         assert_eq!(h["client"]["name"], "warden-test");
         assert_eq!(h["client"]["version"], "0.0.1");

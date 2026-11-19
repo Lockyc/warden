@@ -19,7 +19,7 @@ pub const CONTROL_PROTOCOL: &str = "rex.control.v1";
 /// The terminal data stream's WebSocket subprotocol.
 pub const DATA_PROTOCOL: &str = "rex.data.terminal.v1";
 /// The control API revision this client speaks.
-pub const API_REVISION: u64 = 7;
+pub const API_REVISION: u64 = 14;
 
 /// How often the server pings every connection, control and data alike.
 const SERVER_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(120);
