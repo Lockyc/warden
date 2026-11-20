@@ -17,14 +17,13 @@ impl Watcher {
     /// an error if the directory is absent, so callers must ensure the config directory exists
     /// before constructing a `Watcher`. The watcher does not create or retry the directory.
     ///
-    /// # Known Limitations
+    /// # Settling
     ///
-    /// The watcher invokes the callback for every filesystem event matching the config file name,
-    /// with **no debounce or coalescing**. Editors that write in place (rather than atomic
-    /// temp-file + rename) can therefore produce a transient `load()` parse error (a partial
-    /// read mid-write) and/or multiple callbacks per save. Debouncing and coalescing are
-    /// left to the consumer, which owns the reload UX (deferred — `docs/FOLLOWUPS.md`).
-    /// Atomic-save editors (e.g., vim, VSCode) are unaffected.
+    /// An editor that saves in place truncates the file, then writes it: a read between the two
+    /// sees an empty or cut-short file that may still parse (an empty config has no windows, and
+    /// applying it closes every one). So each event waits for the file to settle ([`settled`])
+    /// before loading, and the callback only ever sees a file two reads [`SETTLE`] apart agree
+    /// on. One save can still fire the callback more than once.
     pub fn new(
         path: PathBuf,
         on_change: impl Fn(Result<Loaded, LoadError>) + Send + 'static,
@@ -70,6 +69,7 @@ impl Watcher {
                     .iter()
                     .any(|p| p.file_name().is_some_and(|n| names.iter().any(|w| w == n)))
                 {
+                    settled(&target);
                     on_change(load_with(&target, &default_shell));
                 }
             }
@@ -82,6 +82,23 @@ impl Watcher {
             inner.watch(dir, RecursiveMode::NonRecursive)?;
         }
         Ok(Watcher { _inner: inner })
+    }
+}
+
+/// The gap between the two reads that must agree before a changed config is loaded.
+pub const SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Blocks until two reads of `path`, [`SETTLE`] apart, return the same bytes (a missing file
+/// counts as its own state), giving up after a second so a file rewritten continuously still loads.
+fn settled(path: &Path) {
+    let mut last = std::fs::read(path).ok();
+    for _ in 0..10 {
+        std::thread::sleep(SETTLE);
+        let now = std::fs::read(path).ok();
+        if now == last {
+            return;
+        }
+        last = now;
     }
 }
 
@@ -140,6 +157,49 @@ mod tests {
             }
         };
         assert_eq!(got.unwrap(), "b");
+    }
+
+    #[test]
+    fn an_in_place_save_is_loaded_only_once_it_settles() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        write(&path, "[[window]]\ntitle=\"a\"\ncolour=\"#000000\"\n");
+
+        let (tx, rx) = mpsc::channel();
+        let _w = Watcher::new(path.clone(), move |res| {
+            let _ = tx.send(res.map(|l| l.config.windows.len()));
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+
+        // Truncate, pause shorter than SETTLE, then write the whole file: an editor saving in place.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        f.sync_all().unwrap();
+        std::thread::sleep(SETTLE / 3);
+        f.write_all(b"[[window]]\ntitle=\"b\"\ncolour=\"#000000\"\n")
+            .unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut seen = Vec::new();
+        while let Ok(v) =
+            rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            seen.push(v.as_ref().ok().copied());
+            if seen.len() >= 3 {
+                break;
+            }
+        }
+        assert!(!seen.is_empty(), "the save fired no callback");
+        assert!(
+            seen.iter().all(|n| *n == Some(1)),
+            "a callback saw the half-written file: {seen:?}"
+        );
     }
 
     #[test]
