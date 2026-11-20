@@ -703,17 +703,13 @@ fn set_mouse_shape(surface: ffi::ghostty_surface_t, shape: u32) {
 /// have no AppKit equivalent — those fall back to the arrow rather than approximating. The two that
 /// actually matter in a terminal: `TEXT` over cells (I-beam) and `POINTER` over a link (hand).
 fn cursor_for_shape(shape: u32) -> Retained<NSCursor> {
-    // ghostty.h `ghostty_action_mouse_shape_e`, 0-based in declaration order.
-    const POINTER: u32 = 3;
-    const CROSSHAIR: u32 = 7;
-    const TEXT: u32 = 8;
-    const ALIAS: u32 = 10;
-    const COPY: u32 = 11;
-    const NOT_ALLOWED: u32 = 14;
-    const GRAB: u32 = 15;
-    const GRABBING: u32 = 16;
-    const COL_RESIZE: u32 = 18;
-    const ROW_RESIZE: u32 = 19;
+    use ffi::{
+        GHOSTTY_MOUSE_SHAPE_ALIAS as ALIAS, GHOSTTY_MOUSE_SHAPE_COL_RESIZE as COL_RESIZE,
+        GHOSTTY_MOUSE_SHAPE_COPY as COPY, GHOSTTY_MOUSE_SHAPE_CROSSHAIR as CROSSHAIR,
+        GHOSTTY_MOUSE_SHAPE_GRAB as GRAB, GHOSTTY_MOUSE_SHAPE_GRABBING as GRABBING,
+        GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED as NOT_ALLOWED, GHOSTTY_MOUSE_SHAPE_POINTER as POINTER,
+        GHOSTTY_MOUSE_SHAPE_ROW_RESIZE as ROW_RESIZE, GHOSTTY_MOUSE_SHAPE_TEXT as TEXT,
+    };
     {
         match shape {
             POINTER => NSCursor::pointingHandCursor(),
@@ -878,16 +874,16 @@ define_class!(
             self.user_input();
             // A held key is a repeat, not a fresh press — Kitty event-type reporting tells them apart.
             let action = if event.isARepeat() {
-                ffi::ghostty_input_action_e::GHOSTTY_ACTION_REPEAT
+                ffi::GHOSTTY_ACTION_REPEAT
             } else {
-                ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS
+                ffi::GHOSTTY_ACTION_PRESS
             };
             unsafe { forward_key(self, event, action) };
         }
 
         #[unsafe(method(keyUp:))]
         fn key_up(&self, event: &NSEvent) {
-            unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE) };
+            unsafe { forward_key(self, event, ffi::GHOSTTY_ACTION_RELEASE) };
         }
 
         // A modifier pressed or released alone arrives here, never at keyDown:/keyUp:. Without it
@@ -976,7 +972,7 @@ define_class!(
             // Arrows, F-keys and ⌘-chords the menu didn't take are typing too.
             self.user_input();
             let consumed =
-                unsafe { forward_key(self, event, ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS) };
+                unsafe { forward_key(self, event, ffi::GHOSTTY_ACTION_PRESS) };
             objc2::runtime::Bool::new(consumed)
         }
 
@@ -1065,7 +1061,6 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
             // ⌃-click is the Mac's right-click: warden's menu, never a selection start.
             let ctrl = event.modifierFlags().0 & NS_FLAG_CONTROL != 0;
@@ -1075,14 +1070,13 @@ define_class!(
                 begin_press(&self.ivars().menu_press, Button::Left, Route::Program)
             };
             if forward {
-                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT) };
+                unsafe { forward_mouse_button(self, event, ffi::GHOSTTY_MOUSE_PRESS, ffi::GHOSTTY_MOUSE_LEFT) };
             }
         }
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
-            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             if end_press(&self.ivars().menu_press, Button::Left) {
-                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT) };
+                unsafe { forward_mouse_button(self, event, ffi::GHOSTTY_MOUSE_RELEASE, ffi::GHOSTTY_MOUSE_LEFT) };
             }
         }
         #[unsafe(method(mouseDragged:))]
@@ -1091,17 +1085,15 @@ define_class!(
         }
         #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down(&self, event: &NSEvent) {
-            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
             if self.route_menu_press(event, Button::Right) {
-                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) };
+                unsafe { forward_mouse_button(self, event, ffi::GHOSTTY_MOUSE_PRESS, ffi::GHOSTTY_MOUSE_RIGHT) };
             }
         }
         #[unsafe(method(rightMouseUp:))]
         fn right_mouse_up(&self, event: &NSEvent) {
-            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             if end_press(&self.ivars().menu_press, Button::Right) {
-                unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) };
+                unsafe { forward_mouse_button(self, event, ffi::GHOSTTY_MOUSE_RELEASE, ffi::GHOSTTY_MOUSE_RIGHT) };
             }
         }
         #[unsafe(method(rightMouseDragged:))]
@@ -1110,14 +1102,12 @@ define_class!(
         }
         #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) {
-            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
             self.user_input();
-            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE) };
+            unsafe { forward_mouse_button(self, event, ffi::GHOSTTY_MOUSE_PRESS, ffi::GHOSTTY_MOUSE_MIDDLE) };
         }
         #[unsafe(method(otherMouseUp:))]
         fn other_mouse_up(&self, event: &NSEvent) {
-            use ffi::{ghostty_input_mouse_button_e::*, ghostty_input_mouse_state_e::*};
-            unsafe { forward_mouse_button(self, event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE) };
+            unsafe { forward_mouse_button(self, event, ffi::GHOSTTY_MOUSE_RELEASE, ffi::GHOSTTY_MOUSE_MIDDLE) };
         }
         #[unsafe(method(otherMouseDragged:))]
         fn other_mouse_dragged(&self, event: &NSEvent) {
@@ -1665,9 +1655,9 @@ unsafe fn forward_modifier(view: &WardenHostView, event: &NSEvent) {
     };
     let mods = mods_from_event(event);
     let action = if mods & bit != 0 {
-        ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS
+        ffi::GHOSTTY_ACTION_PRESS
     } else {
-        ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE
+        ffi::GHOSTTY_ACTION_RELEASE
     };
     let key = ffi::ghostty_input_key_s {
         action,
@@ -1888,7 +1878,7 @@ impl GhosttySurface {
             // no surface handle (`close_surface_cb`); it outlives the surface (dropped with this
             // struct, after `ghostty_surface_free`), so the pointer is valid for every callback.
             cfg.userdata = Retained::as_ptr(&host_view) as *mut c_void;
-            cfg.platform_tag = ffi::ghostty_platform_e::GHOSTTY_PLATFORM_MACOS;
+            cfg.platform_tag = ffi::GHOSTTY_PLATFORM_MACOS;
             cfg.platform = ffi::ghostty_platform_u {
                 macos: ffi::ghostty_platform_macos_s {
                     nsview: Retained::as_ptr(&host_view) as *mut c_void,
@@ -2108,14 +2098,8 @@ impl TerminalSurface for GhosttySurface {
                 unshifted_codepoint: 0x0d, // CR — what the Return key reports
                 composing: false,
             };
-            ffi::ghostty_surface_key(
-                self.surface,
-                enter(ffi::ghostty_input_action_e::GHOSTTY_ACTION_PRESS),
-            );
-            ffi::ghostty_surface_key(
-                self.surface,
-                enter(ffi::ghostty_input_action_e::GHOSTTY_ACTION_RELEASE),
-            );
+            ffi::ghostty_surface_key(self.surface, enter(ffi::GHOSTTY_ACTION_PRESS));
+            ffi::ghostty_surface_key(self.surface, enter(ffi::GHOSTTY_ACTION_RELEASE));
         }
     }
 

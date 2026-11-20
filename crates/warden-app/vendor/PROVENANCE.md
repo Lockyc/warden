@@ -66,8 +66,8 @@ static archive embeds build paths/timestamps), so a revendor then churns the com
 `libghostty.a` for no functional change. Re-run the build only to change the pin or the packaging —
 not to "refresh" it. **libghostty's embedding C API is
 officially unstable** — after a version jump, diff `Headers/ghostty.h` against `crates/warden-app/src/ffi/mod.rs`
-(the `size_of!` guards in `ffi/mod.rs` fail the build on struct-size drift; enum discriminants are not
-guarded — eyeball the action tags). libghostty-vt is the opposite: its C ABI is semver-stable from
+(the `size_of!` guards in `ffi/mod.rs` fail the build on struct-size drift and `build.rs` derives every
+enum value (`DECODED`); diff the callback signatures by hand — `docs/surface.md` § version jump). libghostty-vt is the opposite: its C ABI is semver-stable from
 1.0, so within `vt-1.x` the hand-written declarations in `warden-relay/src/vt.rs` hold, and only a
 major bump needs them re-checked against `include/ghostty/vt/`.
 
