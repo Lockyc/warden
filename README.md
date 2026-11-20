@@ -34,7 +34,9 @@ curl -fsSL https://raw.githubusercontent.com/lockyc/warden/main/install.sh | bas
 ```
 
 **Agent tabs' sleep, fork and summary** need that hook wired into Claude Code. Add it to
-`~/.claude/settings.json` (and any other Claude Code profile's) under `"hooks"`; it needs `jq`:
+`~/.claude/settings.json` (and any other Claude Code profile's) under `"hooks"`; it needs `jq`.
+After each turn it also runs a short `claude -p --model haiku` digest, a paid call on your account,
+to write the summary rows; `WARDEN_DIGEST=0` in Claude Code's environment turns that off:
 
 ```json
 "SessionStart":     [{ "hooks": [{ "type": "command", "command": "~/.local/share/warden/agent-hooks/claude-hook.sh" }] }],
