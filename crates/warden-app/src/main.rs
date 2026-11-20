@@ -2929,16 +2929,18 @@ fn main() {
     // libghostty must be initialised once before any app/surface is created.
     #[cfg(target_os = "macos")]
     {
-        use std::ffi::CString;
         use std::os::raw::c_char;
 
-        let args: Vec<CString> = std::env::args()
-            .map(|a| CString::new(a).unwrap_or_else(|_| CString::new("").unwrap()))
-            .collect();
-        let mut c_argv: Vec<*mut c_char> = args.iter().map(|a| a.as_ptr() as *mut c_char).collect();
-        c_argv.push(std::ptr::null_mut());
+        // A fixed argv, never warden's own: forwarding std::env::args() would let any ghostty CLI
+        // flag ride in through warden's command line. Leaked, so the owned, mutable buffers live
+        // as long as libghostty may hold the `char**`.
+        let argv0: &'static mut [u8; 7] = Box::leak(Box::new(*b"warden\0"));
+        let argv: &'static mut [*mut c_char; 2] = Box::leak(Box::new([
+            argv0.as_mut_ptr().cast::<c_char>(),
+            std::ptr::null_mut(),
+        ]));
 
-        let ret = unsafe { ffi::ghostty_init(args.len(), c_argv.as_mut_ptr()) };
+        let ret = unsafe { ffi::ghostty_init(1, argv.as_mut_ptr()) };
         if ret != 0 {
             log::warn!("ghostty_init returned {ret} (non-fatal)");
         }

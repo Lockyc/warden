@@ -46,7 +46,7 @@ Four crates, all built:
   - **Splits and pop-out**: a primary + optional scratch column per tab (config `split` or ⌘D) — one pane on a plain tab; on a Rex tab one Rex session of scratch tabs (`#scratch-tabs`) and stacked blocks (`Registry`'s `Column`, `PaneIdx::Block`) — and whole-tab, session-preserving pop-out: a one-tab window drawing `ui/index.html` (`Registry::take_tab`/`adopt_tab`, `WindowState.origin`). Mechanism and traps: [`docs/native-splits-direction.md`](docs/native-splits-direction.md).
   - **Rex tabs**: a tab with a `server` keeps each pane in a Rex session; its surface runs `warden-relay`. `rex/`: `RexHub` (one control connection per server), `store.rs` (pane key → session), `spawn.rs` (off-main-thread open), `size.rs` (size claims), `unclaimed.rs` (`Rex · <server>` rows), `windows.rs` (each session's windows and block statuses), `layout.rs` (a window's split tree as tiles and dividers; a config stack as a new session's layout), `column.rs` (the split pane's scratch column session), `reports.rs` (the relays' resume-report socket), `agents.rs` (agent records + the resume-shape allowlist), `agent_open.rs` (a main pane's open; only a user open wakes), `lifecycle.rs` (the agent tab list's ops, Sleep Server), `attention.rs` (which agents need you; banners). Unload detaches, ☠ destroys, a program exit destroys a session it was the last block of; the dot comes from Rex, not `probe`. [`docs/rex.md`](docs/rex.md).
 
-Deferred: ad-hoc `⌘T`/`⌘N` tabs, seam/FFI/IPC hardening, watcher debounce, argv passthrough — see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
+Deferred: ad-hoc `⌘T`/`⌘N` tabs, seam/FFI/IPC hardening — see [`docs/FOLLOWUPS.md`](docs/FOLLOWUPS.md).
 
 ## Intended architecture
 
