@@ -226,11 +226,7 @@ impl RexHub {
                     .filter(|_| was_live)
                     .find(|r| r.id == *id && r.state != RecordState::Closed);
                 if let Some(r) = open {
-                    r.window_id = None;
-                    r.block_id = None;
-                    r.state = RecordState::Closed;
-                    r.closed_at = Some(now);
-                    if r.resume.is_none() {
+                    if r.exit(now) {
                         drop = Some(r.id.clone());
                     }
                 }
@@ -1849,9 +1845,10 @@ fn refresh(app: &AppHandle, project: String) {
     }
 }
 
-/// Run `op`, one Rex has already made happen, on `project`'s agent pane and land it, if a window
-/// holds the tab. Worker only: it waits on the pane's hold and on Rex. A failure is logged, since
-/// no window asked for it.
+/// Run `op`, one Rex has already made happen, on `project`'s agent pane and land it. With no
+/// window holding the tab, an exit still reaches its record ([`AgentStore::exited`]); any other
+/// op waits for the next open. Worker only: it waits on the pane's hold and on Rex. A failure is
+/// logged, since no window asked for it.
 pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
     let req = {
         let st = app.state::<ManagerState>();
@@ -1860,11 +1857,19 @@ pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
             .values()
             .find_map(|ws| ws.registry.agent_request(project))
     };
-    let (Some(req), Some(hub), Some(store)) = (
-        req,
-        app.try_state::<RexHub>(),
-        app.try_state::<Mutex<AgentStore>>(),
-    ) else {
+    let Some(store) = app.try_state::<Mutex<AgentStore>>() else {
+        return;
+    };
+    let Some(req) = req else {
+        if let AgentOp::Exited(id) = op {
+            let changed = lock(&store).exited(id, unix_now());
+            if let Some(project) = changed {
+                emit_agents(app, &project);
+            }
+        }
+        return;
+    };
+    let Some(hub) = app.try_state::<RexHub>() else {
         return;
     };
     let result = hub.agent_op(&store, &req, op, unix_now());

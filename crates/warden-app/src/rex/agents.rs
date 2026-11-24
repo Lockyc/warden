@@ -59,6 +59,18 @@ pub struct AgentRecord {
     pub seen: Option<String>,
 }
 
+impl AgentRecord {
+    /// Its program exited: closed at `now`, holding no window. Returns whether it drops instead,
+    /// having no `resume` to reopen it.
+    pub fn exit(&mut self, now: u64) -> bool {
+        self.window_id = None;
+        self.block_id = None;
+        self.state = RecordState::Closed;
+        self.closed_at = Some(now);
+        self.resume.is_none()
+    }
+}
+
 /// A fresh record id: wall-clock nanoseconds plus a process-wide counter, in hex. Unique within
 /// a process by the counter and across runs by the clock; ids are opaque and never parsed.
 pub fn new_id() -> String {
@@ -361,6 +373,23 @@ impl AgentStore {
             self.save();
         }
         cleared
+    }
+
+    /// Live record `id`'s program exited and no window holds its tab to run the op
+    /// (`lifecycle::follow`): it closes, or drops ([`AgentRecord::exit`]). A record not stored
+    /// live is left alone. Returns its project when it changed.
+    pub fn exited(&mut self, id: &str, now: u64) -> Option<String> {
+        let r = self
+            .records
+            .iter_mut()
+            .find(|r| r.id == id && r.state == RecordState::Live)?;
+        let project = r.project.clone();
+        if r.exit(now) {
+            self.records.retain(|r| r.id != id);
+            self.drop_orphan_folds();
+        }
+        self.save();
+        Some(project)
     }
 
     /// `project`'s sessions ended (☠): every resumable record goes to the closed fold, stamped
@@ -1300,6 +1329,37 @@ mod tests {
         let mut ids: Vec<String> = in_list_order(&recs).into_iter().map(|r| r.id).collect();
         ids.sort();
         assert_eq!(ids, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn an_exit_no_window_holds_closes_the_record_in_the_store() {
+        let mut s = AgentStore::default();
+        s.upsert(rec(
+            "a",
+            RecordState::Live,
+            Some("w1"),
+            Some("claude --resume a"),
+        ));
+        s.upsert(rec("b", RecordState::Live, Some("w2"), None));
+        s.upsert(rec(
+            "c",
+            RecordState::Asleep,
+            None,
+            Some("claude --resume c"),
+        ));
+        assert_eq!(s.exited("a", 9), Some("p".into()));
+        let a = &s.records("p")[0];
+        assert_eq!(a.state, RecordState::Closed);
+        assert_eq!(a.closed_at, Some(9));
+        assert_eq!(
+            (a.window_id.as_deref(), a.block_id.as_deref()),
+            (None, None)
+        );
+        assert_eq!(s.exited("b", 9), Some("p".into()), "no resume: it drops");
+        assert!(s.project_of_record("b").is_none());
+        assert_eq!(s.exited("c", 9), None, "an asleep record stays asleep");
+        assert_eq!(s.exited("a", 10), None, "already closed");
+        assert_eq!(s.exited("gone", 9), None);
     }
 
     #[test]
