@@ -1805,7 +1805,7 @@ impl Registry {
                 has_cmd: start_cmd(&t.primary.spec).is_some(),
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
-                detached: matches!(t.primary.slot, TabSlot::Detached),
+                detached: t.is_placeholder(),
                 // Read straight off the `TabEntry` already in hand: re-finding `t` in `self.tabs`
                 // by id for every row would turn this map into an O(n²) pass.
                 secondary_spawned: t.column.as_ref().is_some_and(Column::live),
