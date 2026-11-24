@@ -11,8 +11,8 @@ use warden_config::{discover_projects, Root, RootDir, Tab};
 /// Discover the root's projects (via config-core's `discover_projects`) and turn each into a
 /// synthetic `Tab`. Identity is the absolute project path (unique even across same-named
 /// projects); the display title is the basename. `group` = the root's name so the existing
-/// group-sectioning places these rows under a labelled section. Cascade values
-/// (shell/cmd/probe/kill) come from the root.
+/// group-sectioning places these rows under a labelled section. Every cascaded value comes
+/// from the root, or from its `[[window.root.tab]]` override for that project.
 pub fn synthesize_tabs(root: &Root) -> Vec<Tab> {
     let root_dir = RootDir {
         name: root.name.clone(),
