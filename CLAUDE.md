@@ -84,7 +84,7 @@ Formatting and colour live in config-core, re-exported at the crate root (`forma
 - **`cmd` is typed *into* the shell, not exec'd** — it's libghostty `initial_input`, so a shell *function* like `amux` resolves and the shell survives the command exiting. Don't pass it as libghostty's `command`.
 - **Tab identity is `id`-else-normalized-`dir`, never the title** (`Tab::key`); `title` is a repeatable display label. Curated and discovered tabs share the scheme, so a curated tab shadows a same-dir discovered project.
 - **Groups add no cascade level; roots add one** (root → window → global). Both flatten to the single ordered `Tab` list with a `group` tag — the only downstream shape.
-- **Resolution collapses the cascade** (`shell`/`cmd`/`probe`/`kill`/`suspend`/`split`, nearest level wins, `""` / `split = false` opts a level out); the app never sees levels. `density`/`tab_digit_keys` are global-only; `open_tabs_section` and `background_tabs_section` cascade global → window only, so they reach live windows as an ordinary `WindowUpdate`.
+- **Resolution collapses the cascade**: the nearest level wins, `""` / `split = false` opts a level out, and the app never sees levels. Which keys cascade, and at which levels: [`docs/config.md`](docs/config.md).
 - **Validation reports, never panics**; a missing `dir` is a warning, and the tab still opens.
 
 ## Build / test / run
