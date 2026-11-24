@@ -20,13 +20,10 @@ pub struct UnreadStore {
 }
 
 impl UnreadStore {
-    /// Load from `path`. A missing or unreadable file is an empty store: the worst case is a
-    /// badge lost, as it would be without this store.
+    /// Load from `path` (`session::read_json`). An empty store costs a badge lost, as it would
+    /// be without this store.
     pub fn load(path: PathBuf) -> Self {
-        let tabs = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let tabs = crate::session::read_json(&path);
         UnreadStore {
             path: Some(path),
             tabs,
@@ -132,6 +129,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("u.json");
         std::fs::write(&path, b"not json").unwrap();
-        assert!(!UnreadStore::load(path).has("w", "a"));
+        assert!(!UnreadStore::load(path.clone()).has("w", "a"));
+        assert_eq!(
+            crate::session::tests::set_aside(&path),
+            vec![b"not json".to_vec()]
+        );
     }
 }

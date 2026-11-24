@@ -58,13 +58,10 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
-    /// Load from `path`. A missing or unreadable file is an empty store, never an error — the
-    /// worst case of losing it is a window opening the way it would without `remember_tabs`.
+    /// Load from `path` (`read_json`). An empty store costs a window opening the way it would
+    /// without `remember_tabs`.
     pub fn load(path: PathBuf) -> Self {
-        let records = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let records = read_json(&path);
         SessionStore {
             path: Some(path),
             records,
@@ -113,8 +110,32 @@ pub(crate) fn write_atomic(path: &Path, value: &impl serde::Serialize) -> std::i
     std::fs::rename(&tmp, path)
 }
 
+/// Read `path` as JSON. A missing file is `T::default()`. A file that exists but can't be read
+/// or parsed is also `T::default()`, after an error log and a rename to `<name>.bad-<unix secs>`,
+/// so the store's next save can't overwrite what it held. Shared by every store beside this one.
+pub(crate) fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    let err = match std::fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(value) => return value,
+            Err(e) => e.to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
+        Err(e) => e.to_string(),
+    };
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut bad = path.as_os_str().to_owned();
+    bad.push(format!(".bad-{secs}"));
+    match std::fs::rename(path, &bad) {
+        Ok(()) => log::error!("couldn't read {path:?} ({err}); set it aside as {bad:?}"),
+        Err(e) => log::error!("couldn't read {path:?} ({err}), nor set it aside ({e})"),
+    }
+    T::default()
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn rec(loaded: &[&str], active: Option<&str>) -> WindowRecord {
@@ -172,11 +193,33 @@ mod tests {
     }
 
     #[test]
-    fn garbage_file_is_an_empty_store() {
+    fn garbage_file_is_an_empty_store_and_kept_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.json");
         std::fs::write(&path, b"not json").unwrap();
-        assert!(SessionStore::load(path).get("w").is_none());
+        let mut s = SessionStore::load(path.clone());
+        assert!(s.get("w").is_none());
+        s.set("w", Some(rec(&["a"], None)));
+        assert_eq!(set_aside(&path), vec![b"not json".to_vec()]);
+    }
+
+    #[test]
+    fn missing_file_sets_nothing_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.json");
+        assert!(SessionStore::load(path.clone()).get("w").is_none());
+        assert!(set_aside(&path).is_empty());
+    }
+
+    /// The contents of every `<name>.bad-*` copy `read_json` set aside beside `path`.
+    pub(crate) fn set_aside(path: &Path) -> Vec<Vec<u8>> {
+        let prefix = format!("{}.bad-", path.file_name().unwrap().to_string_lossy());
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|e| std::fs::read(e.path()).unwrap())
+            .collect()
     }
 
     #[test]

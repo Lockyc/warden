@@ -33,13 +33,10 @@ pub struct RexStore {
 }
 
 impl RexStore {
-    /// Load from `path`. A missing or unreadable file is an empty store: the cost of losing it is
-    /// each pane creating a fresh session, and the old ones showing as unclaimed.
+    /// Load from `path` (`session::read_json`). An empty store costs each pane creating a fresh
+    /// session, and the old ones showing as unclaimed.
     pub fn load(path: PathBuf) -> Self {
-        let records = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let records = crate::session::read_json(&path);
         RexStore {
             path: Some(path),
             records,
@@ -115,6 +112,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rex.json");
         std::fs::write(&path, b"not json").unwrap();
-        assert!(RexStore::load(path).get("t").is_none());
+        assert!(RexStore::load(path.clone()).get("t").is_none());
+        assert_eq!(
+            crate::session::tests::set_aside(&path),
+            vec![b"not json".to_vec()]
+        );
     }
 }

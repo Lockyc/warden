@@ -162,17 +162,14 @@ pub struct AgentStore {
 }
 
 impl AgentStore {
-    /// Load from `path`. A missing or unreadable file is an empty store. A `resume` must pass the
-    /// report check, so a tampered file can't bypass the gate: a live record failing it keeps
-    /// running without one, and an asleep or closed record, which only `resume` can wake, drops.
+    /// Load from `path` (`session::read_json`). A `resume` must pass the report check, so a
+    /// tampered file can't bypass the gate: a live record failing it keeps running without one,
+    /// and an asleep or closed record, which only `resume` can wake, drops.
     pub fn load(path: PathBuf) -> Self {
         let Saved {
             mut records,
             folded,
-        } = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        } = crate::session::read_json(&path);
         for r in &mut records {
             if r.resume.as_deref().is_some_and(|c| !resume_is_safe(c)) {
                 r.resume = None;
@@ -1327,7 +1324,14 @@ mod tests {
         s.remove("a");
         assert_eq!(AgentStore::load(path.clone()).records("p"), vec![b]);
         std::fs::write(&path, b"not json").unwrap();
-        assert!(AgentStore::load(path).records("p").is_empty());
+        let mut s = AgentStore::load(path.clone());
+        assert!(s.records("p").is_empty());
+        s.upsert(rec("c", RecordState::Live, Some("w1"), None));
+        assert_eq!(
+            crate::session::tests::set_aside(&path),
+            vec![b"not json".to_vec()],
+            "an unreadable file is kept aside, not overwritten by the next save"
+        );
     }
 
     /// A group only a closed record holds is one no row holds: a tab placed into it lands after
