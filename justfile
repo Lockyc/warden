@@ -53,7 +53,7 @@ fmt:
 # Lint with clippy (warnings as errors)
 [group("check")]
 clippy:
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 # `core.hooksPath` is per-clone local config that the repo can't carry, so a fresh clone has NEITHER
 # hook until this runs — no docgraph pre-push gate, no active-[patch] pre-commit guard.
@@ -68,7 +68,7 @@ hooks:
 [group("check")]
 gate:
     cargo fmt --all --check
-    cargo clippy --workspace -- -D warnings
+    @{{ just_executable() }} clippy
     @{{ just_executable() }} _core-patch guard # after clippy, whose build.rs generates core-patch.sh on a fresh clone
     cargo test --workspace
     node --test crates/warden-app/tests/*.test.js
