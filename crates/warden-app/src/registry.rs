@@ -180,10 +180,10 @@ pub struct TabDto {
     pub spawned: bool, // surface is live (load_on_open or already focused) vs cold/declared
     pub group: Option<String>, // [[window.group]] membership; None = loose (headerless)
     pub has_probe: bool, // a session-probe command is configured for this tab
-    pub has_kill: bool, // a session-kill (destroy) command is configured for this tab
-    pub has_suspend: bool, // a session-suspend command is configured for this tab
-    pub has_cmd: bool, // a startup command is configured (→ presence dot can offer restart)
-    pub tree: bool,    // row belongs to a project-tree (root) section
+    pub has_kill: bool, // ending the session by destroying it does something (`Registry::end_target`)
+    pub has_suspend: bool, // ending the session by suspending it does something (`Registry::end_target`)
+    pub has_cmd: bool,     // a startup command is configured (→ presence dot can offer restart)
+    pub tree: bool,        // row belongs to a project-tree (root) section
     #[serde(rename = "treePath")]
     pub tree_path: Vec<String>, // folder segments between root and project
     /// The tab has moved to a pop-out's registry ([`Registry::take_tab`]) — it is present here as
@@ -1003,6 +1003,31 @@ impl TabEntry {
     fn is_placeholder(&self) -> bool {
         matches!(self.primary.slot, TabSlot::Detached)
     }
+
+    /// How to end this tab's session the `how` way, else `None` (a plain tab without that
+    /// command). Any Rex tab ends through Rex: a destroy is its panes' Rex sessions — both pane
+    /// keys, mapped or not, since a split's session outlives the split — and a suspend sleeps
+    /// them. A plain tab runs its `kill` or `suspend` command. Independent of the surface being
+    /// live — a session can exist while warden's surface is cold. The chrome's ☠ / ⏻ follow it
+    /// (`TabDto::has_kill` / `has_suspend`).
+    fn end_target(&self, how: EndSession) -> Option<EndTarget> {
+        let spec = &self.primary.spec;
+        if let Some(server) = &spec.server {
+            let panes = vec![spec.id.clone(), secondary_id(&self.id)];
+            return Some(match how {
+                EndSession::Destroy => EndTarget::Rex(panes),
+                EndSession::Suspend => EndTarget::RexSleep {
+                    server: server.clone(),
+                    panes,
+                },
+            });
+        }
+        let cmd = match how {
+            EndSession::Suspend => suspend_cmd(spec),
+            EndSession::Destroy => spec.kill.as_ref(),
+        };
+        cmd.map(|c| EndTarget::Command(spec.dir.clone(), self.title.clone(), c.clone()))
+    }
 }
 
 /// One whole tab in transit between two windows' registries ([`Registry::take_tab`] →
@@ -1775,9 +1800,8 @@ impl Registry {
                 spawned: t.live(),
                 group: t.primary.spec.group.clone(),
                 has_probe: t.primary.spec.probe.is_some() || t.primary.spec.server.is_some(),
-                has_kill: t.primary.spec.kill.is_some() || t.primary.spec.server.is_some(),
-                has_suspend: suspend_cmd(&t.primary.spec).is_some()
-                    || t.primary.spec.server.is_some(),
+                has_kill: t.end_target(EndSession::Destroy).is_some(),
+                has_suspend: t.end_target(EndSession::Suspend).is_some(),
                 has_cmd: start_cmd(&t.primary.spec).is_some(),
                 tree: t.primary.spec.tree,
                 tree_path: t.primary.spec.tree_path.clone(),
@@ -1824,29 +1848,10 @@ impl Registry {
             .collect()
     }
 
-    /// How to end tab `id`'s session the `how` way — its `suspend` or `kill` command — else `None`
-    /// (unknown tab, that command isn't set, or a suspend on a remote Rex tab — `suspend_cmd`).
-    /// A Rex tab's destroy is its panes' Rex sessions —
-    /// both pane keys, mapped or not, since a split's session outlives the split. Independent of
-    /// the surface being live — a session can exist while warden's surface is cold.
+    /// How to end tab `id`'s session the `how` way ([`TabEntry::end_target`]), else `None` for an
+    /// unknown tab too.
     pub fn end_target(&self, id: &str, how: EndSession) -> Option<EndTarget> {
-        let t = self.tabs.iter().find(|t| t.id == id)?;
-        let spec = &t.primary.spec;
-        if let Some(server) = &spec.server {
-            let panes = vec![spec.id.clone(), secondary_id(id)];
-            return Some(match how {
-                EndSession::Destroy => EndTarget::Rex(panes),
-                EndSession::Suspend => EndTarget::RexSleep {
-                    server: server.clone(),
-                    panes,
-                },
-            });
-        }
-        let cmd = match how {
-            EndSession::Suspend => suspend_cmd(spec),
-            EndSession::Destroy => spec.kill.as_ref(),
-        };
-        cmd.map(|c| EndTarget::Command(spec.dir.clone(), t.title.clone(), c.clone()))
+        self.tabs.iter().find(|t| t.id == id)?.end_target(how)
     }
 
     /// Restart tab `id`'s session by typing its startup command into the **live** shell and
