@@ -1455,7 +1455,6 @@
         secondarySpawnedById.set(id, false);
         ratioOverride.delete(id);
         forgetAgentView(id);
-        sb?.setLive(id, false);
         if (newActive) {
           sb?.setActive(newActive);
           clearBadge(newActive); // now visible
@@ -1469,6 +1468,9 @@
         // unloaded was the active one, so a null here means either "nothing live left" (above) or
         // "selection was never involved" — and blanking on the latter would drop the highlight off
         // the tab the user is still using. Leave the selection alone.
+        // After the selection moves: chrome-core paints the active tab's dot live whatever its
+        // record says (`dotLive`), so a cold paint while `id` is still active stays green.
+        sb?.setLive(id, false);
         reportRect();
       }
 
