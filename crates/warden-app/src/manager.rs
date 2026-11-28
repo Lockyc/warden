@@ -9,6 +9,7 @@ use crate::registry::{ProbeTarget, Registry, TabDto};
 use crate::surface::ghostty::GhosttySurface;
 use crate::surface::{PixelRect, TabSpec};
 use crate::ManagerState;
+use shell_core::spaces::ShellWindow as _;
 use shell_core::windows::WindowSet;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -483,7 +484,7 @@ impl WindowManager {
                 // only the in-app banner names the window.
                 .hidden_title(true)
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
-                .focused(shell_core::focus::focused())
+                .shell_window()
                 .build()?;
         log::info!(
             "window {:?} opened ({} tab(s))",
