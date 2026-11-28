@@ -90,8 +90,8 @@ pub struct RawConfig {
     // list. Cascades global -> window (no tab level: it's a whole-sidebar section,
     // and a sidebar belongs to a window). Optional; unset at both levels -> false.
     pub open_tabs_section: Option<bool>,
-    // Whether the sidebar pins an All Agents row listing every awake agent tab across the
-    // window's Rex projects. Cascades global -> window like `open_tabs_section`. Optional;
+    // Whether the sidebar pins an All Agents row listing every awake agent tab across every
+    // open window's Rex projects. Cascades global -> window like `open_tabs_section`. Optional;
     // unset at both levels -> false.
     pub agents_tab: Option<bool>,
     // Whether the sidebar pins a section of the unloaded tabs whose session is

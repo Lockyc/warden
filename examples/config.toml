@@ -40,8 +40,9 @@ open_tabs_section = true
 # asleep, collapsed until you open it from its header. Default on; cascades like open_tabs_section.
 background_tabs_section = true
 
-# Pin an "All Agents" row first: one agent list holding every awake agent tab across the Rex
-# projects, grouped by project, each workable in place. Default off; cascades like open_tabs_section.
+# Pin an "All Agents" row first: one agent list holding every awake agent tab across every open
+# window's Rex projects, grouped by project, each workable in place. Default off; cascades like
+# open_tabs_section.
 agents_tab = true
 
 # Bring each window back the way it was left: the tabs that had a terminal open reopen when the

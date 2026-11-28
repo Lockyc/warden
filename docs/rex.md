@@ -101,13 +101,15 @@ site omits it.
   one waiting on you with work in the background. So the hook writes `warden/background` at Stop
   from the payload's `background_tasks` and clears it on any prompt, and while it stands the
   block reads done (`windows.rs::Tracked::status`): the row, its needs, the tally and attention
-  all follow. The row shows the count on its second line. Beside it sits `warden/cache`, the epoch second the prompt cache
-  goes cold (the hook's `cache`), as a countdown chip there and on the summary's title row.
+  all follow. The row shows the count on its second line. Beside it sits `warden/cache`, the
+  epoch second the prompt cache goes cold (the hook's `cache`), as a countdown chip there and on
+  the summary's title row.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane's session windows are its
   scratch tabs, each showing every block of its split tree (`docs/native-splits-direction.md`).
   The All Agents tab holds its own surface per selected agent, on that agent's block, and the
-  size goes to whichever surface is on screen. An unclaimed row shows one block: the first terminal block of its session's first window.
+  size goes to whichever surface is on screen. An unclaimed row shows one block: the first
+  terminal block of its session's first window.
 - **`cmd` and each split pane's `cmd` are typed once, when warden creates the session**
   (`initial_input`); a woken agent's window types its resume command instead. Reattaching types
   nothing (`spawn::effective_spec` clears `startup`).

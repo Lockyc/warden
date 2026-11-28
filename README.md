@@ -62,6 +62,8 @@ Each in full, with every key and shortcut: [docs/features.md](docs/features.md).
 - **Agent tabs.** A Rex tab lists its coding agents beside the main pane, with a summary of what
   the selected one is about, has covered so far, was asked, needs from you and last did. Agents sleep and wake with their
   conversation (asleep ones gather in an Asleep group at the top until they wake, and ones whose prompt cache has gone cold in a Cold Cache group below it), fork into a separate branch, and badge the tab when they need you.
+- **All Agents** — one row (`agents_tab = true`) lists every awake agent across your open
+  windows' Rex projects, grouped by project, and shows the one you select in place.
 - **Splits** — a second pane beside a tab's terminal, declared in the config or added with **⌘D**;
   on a Rex tab, a column of scratch shells.
 - **Pop out** a whole tab (**⌘⇧O**) into its own window — terminals, agents and scratch column,
@@ -138,7 +140,7 @@ cmd    = "claude"            # the agent each tab starts (+ New tab starts anoth
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
 | `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
 | `sidebar_drag` | `true` | The non-interactive sidebar chrome doubles as a window-move drag handle. |
-| `agents_tab` | `false` | Pin an **All Agents** row listing every awake agent tab across the window's Rex projects. Cascades global → window. |
+| `agents_tab` | `false` | Pin an **All Agents** row listing every awake agent tab across every open window's Rex projects. Cascades global → window. |
 | `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. The section grows to 2/5 of the window, then scrolls on its own, independent of the main list. While the section is expanded, the main list below it is dimmed until you hover it; its header collapses it. Cascades global → window. |
 | `background_tabs_section` | `true` | Pin a **Background** section, below **Open**, mirroring every unloaded tab whose `probe` reports a running (cyan dot) or restorable (ghost dot) session. Collapsed until you open it from its header; each window remembers which way you left it. Opening a tab from it reattaches or restores the session and moves the tab to **Open**. Cascades global → window. |
 | `remember_tabs` | `false` | Each window comes back the way you left it: the tabs that had a terminal open respawn when it opens (a Rex tab reattaches its sessions; a plain tab's `cmd` re-runs), and the tab you were on is selected. Applies at launch and when you reopen a closed window. Cascades global → window. |

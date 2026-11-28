@@ -85,7 +85,8 @@ pub struct Window {
     /// sees the levels.
     pub open_tabs_section: bool,
     /// Whether THIS window's sidebar pins an All Agents row listing every awake agent
-    /// tab across its Rex projects. Resolved window-else-global, defaulting to false.
+    /// tab across every open window's Rex projects. Resolved window-else-global,
+    /// defaulting to false.
     pub agents_tab: bool,
     /// Whether THIS window's sidebar pins a section listing its unloaded tabs whose
     /// session is running or recoverable. Resolved window-else-global, defaulting to true.
