@@ -68,6 +68,7 @@ pub struct WindowSpec {
     pub height: f64,    // inner height in logical pixels
     pub open_tabs_section: bool, // this window's sidebar pins an "Open" section (cascade collapsed)
     pub background_tabs_section: bool, // ... and a "Background" section (cascade collapsed)
+    pub agents_tab: bool, // ... and the All Agents row first (cascade collapsed)
     pub remember_tabs: bool, // restore this window's remembered loaded + active tabs at build
     pub tabs: Vec<TabPlan>,
 }
@@ -108,6 +109,7 @@ pub fn window_to_spec(p: &Window, label: String) -> WindowSpec {
         height: p.height as f64,
         open_tabs_section: p.open_tabs_section,
         background_tabs_section: p.background_tabs_section,
+        agents_tab: p.agents_tab,
         remember_tabs: p.remember_tabs,
         tabs,
     }
@@ -170,6 +172,8 @@ pub struct TabOp {
     // surface touched.
     pub open_tabs_section: Option<bool>,
     pub background_tabs_section: Option<bool>,
+    // The window's All Agents row turned on or off.
+    pub agents_tab: Option<bool>,
     pub add_tabs: Vec<TabPlan>,
     pub remove_tabs: Vec<String>, // tab ids (= Tab::key)
     pub order: Vec<String>,       // full new tab id order
@@ -249,6 +253,7 @@ pub fn tab_ops(
                 label,
                 open_tabs_section: u.open_tabs_section,
                 background_tabs_section: u.background_tabs_section,
+                agents_tab: u.agents_tab,
                 add_tabs: plans(&u.add_tabs),
                 remove_tabs: u.remove_tabs.clone(),
                 order: u.tab_order.clone(),
@@ -546,6 +551,20 @@ colour = "#0f8a8a"
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].background_tabs_section, Some(false));
         assert_eq!(ops[0].open_tabs_section, None);
+    }
+
+    #[test]
+    fn agents_tab_reaches_spec_and_tab_op() {
+        let base = "[[window]]\ntitle = \"work\"\n{R}\n";
+        let old = cfg(&base.replace("{R}", ""));
+        let spec = |c: &Config| window_to_spec(&c.windows[0], "work".into());
+        assert!(!spec(&old).agents_tab, "default off");
+        let new = cfg(&base.replace("{R}", "agents_tab = true"));
+        assert!(spec(&new).agents_tab);
+        let ops = tab_ops(&reconcile(&old, &new), &new, |t| Some(t.to_string()));
+        assert_eq!(ops[0].agents_tab, Some(true));
+        let back = tab_ops(&reconcile(&new, &old), &old, |t| Some(t.to_string()));
+        assert_eq!(back[0].agents_tab, Some(false));
     }
 
     #[test]

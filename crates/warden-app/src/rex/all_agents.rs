@@ -1,18 +1,20 @@
 //! The All Agents list: every Rex project's awake agent tabs in one list, grouped by project.
 
+use std::sync::Mutex;
+
+use tauri::{AppHandle, Emitter, Manager};
+
 use super::agents::{self, AgentStore};
 use super::attention::Attention;
 use super::lifecycle::{self, AgentListDto, AgentRowDto, AllAgentsGroupDto};
 use super::spawn::unix_now;
 use super::windows::BlockStatus;
+use super::{lock, RexHub};
 use crate::registry::{agent_key, ALL_AGENTS_ID};
+use crate::ManagerState;
 
 /// A project tab the All Agents list draws from, with the title and colour its group shows.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the All Agents tab is wired next")
-)]
 pub struct ProjectRef {
     pub id: String,
     pub title: String,
@@ -23,10 +25,6 @@ pub struct ProjectRef {
 /// list's order: a row's `id` and `parent` are pane keys ([`agent_key`]), a fork nests under its
 /// nearest awake ancestor, and a row is `amber` when it needs you. It has no Asleep or Cold Cache
 /// group, no named groups and no closed fold, and selects nothing: the page owns its selection.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the All Agents tab is wired next")
-)]
 pub fn all_agents_list(
     projects: &[ProjectRef],
     store: &AgentStore,
@@ -87,12 +85,87 @@ pub fn all_agents_list(
 }
 
 /// The pane key of every row in `list`: in the All Agents list, each awake agent tab's.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the All Agents tab is wired next")
-)]
 pub fn awake_keys(list: &AgentListDto) -> Vec<String> {
     list.rows.iter().map(|r| r.id.clone()).collect()
+}
+
+/// Why an All Agents row can't show: its agent has no terminal bound in Rex.
+const NOT_AWAKE: &str = "that agent tab isn't awake";
+
+/// The All Agents list as it stands, over every open window's projects
+/// ([`WindowManager::rex_projects`](crate::manager::WindowManager::rex_projects)): what
+/// `warden:agents` carries for [`ALL_AGENTS_ID`], and what the chrome pulls (`all_agents_init`).
+/// Locks `ManagerState`, so callers must hold none.
+pub fn current_list(app: &AppHandle) -> Option<AgentListDto> {
+    let projects = app.state::<ManagerState>().lock().rex_projects();
+    let store = app.try_state::<Mutex<AgentStore>>()?;
+    let hub = app.try_state::<RexHub>()?;
+    let attention = app.try_state::<Mutex<Attention>>()?;
+    let dto = all_agents_list(&projects, &lock(&store), &lock(&attention), |b| {
+        hub.block_status(b)
+    });
+    Some(dto)
+}
+
+/// Send the All Agents list (`warden:agents`) to every window, when one shows the row, and have
+/// each All Agents tab drop the agents no longer awake
+/// ([`WindowManager::retain_all_agents`](crate::manager::WindowManager::retain_all_agents)): a
+/// window whose shown agent went selects the neighbour that answers, else blanks its pane. The
+/// surfaces change on the main thread. Locks `ManagerState`, so callers must hold none.
+pub fn emit_all_agents(app: &AppHandle) {
+    if !app.state::<ManagerState>().lock().has_all_agents() {
+        return;
+    }
+    let Some(list) = current_list(app) else {
+        return;
+    };
+    let _ = app.emit("warden:agents", &list);
+    let awake = awake_keys(&list);
+    let main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let moved = main
+            .state::<ManagerState>()
+            .lock()
+            .retain_all_agents(&awake);
+        for (label, next) in moved {
+            match next.map(|key| select(&main, &label, &key)) {
+                Some(Ok(())) => {}
+                Some(Err(e)) => {
+                    log::warn!("{label}: All Agents couldn't lean to a neighbour: {e}");
+                    refresh(&main, &label);
+                }
+                None => refresh(&main, &label),
+            }
+        }
+    });
+}
+
+/// Show agent `key` ([`agent_key`]) in window `label`'s All Agents tab, on the block the hub
+/// bound it to ([`RexHub::agent_target`]), and repaint that window (main thread). `Err` when the
+/// agent has no bound block, the window has no All Agents tab, or the surface failed to spawn.
+pub fn select(app: &AppHandle, label: &str, key: &str) -> Result<(), String> {
+    let target = app
+        .try_state::<RexHub>()
+        .and_then(|hub| hub.agent_target(key))
+        .ok_or(NOT_AWAKE)?;
+    let shown = {
+        let st = app.state::<ManagerState>();
+        let mut m = st.lock();
+        let ws = m.windows.get_mut(label).ok_or("window not found")?;
+        let shown = ws.registry.select_all_agent(key, target);
+        m.record_session(app, label);
+        shown
+    };
+    refresh(app, label);
+    shown
+}
+
+/// Push window `label`'s snapshot (`warden:refresh`, label-stamped).
+fn refresh(app: &AppHandle, label: &str) {
+    let dto = app.state::<ManagerState>().lock().init_dto(label);
+    if let Some(dto) = dto {
+        let _ = app.emit_to(label, "warden:refresh", dto);
+    }
 }
 
 #[cfg(test)]

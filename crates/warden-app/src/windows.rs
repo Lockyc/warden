@@ -28,10 +28,12 @@ impl WindowHost for WardenHost {
         m.build_window(app, &spec, key)
     }
 
+    /// Its projects leave the All Agents list with it.
     fn closed(&self, app: &AppHandle, label: &str) {
         app.state::<ManagerState>().lock().closed(label);
         // During ⌘Q every window is being destroyed and the menu dies with the app.
         if !crate::manager::is_quitting(app) {
+            crate::rex::all_agents::emit_all_agents(app);
             let _ = crate::rebuild_menu(app);
         }
     }

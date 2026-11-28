@@ -72,16 +72,18 @@ pub enum RexAnswer {
 pub const ALL_AGENTS_ID: &str = "warden:all-agents";
 
 /// The All Agents tab's row title.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the All Agents tab is wired next")
-)]
 const ALL_AGENTS_TITLE: &str = "All Agents";
 
 /// The Rex pane key and surface id of agent `record_id` in tab `tab_id`'s main pane. The one
 /// spelling: the registry, the hub's per-agent bindings and size claims all use it.
 pub(crate) fn agent_key(tab_id: &str, record_id: &str) -> String {
     format!("{tab_id}::agent:{record_id}")
+}
+
+/// The `(tab, record)` an [`agent_key`] names, or `None` for any other key. A record id never
+/// holds the separator, so the last one splits it.
+pub(crate) fn split_agent_key(key: &str) -> Option<(&str, &str)> {
+    key.rsplit_once("::agent:")
 }
 
 /// The Rex pane key an agent slot of tab `tab_id` sizes and exit-checks: [`agent_key`] for a
@@ -1048,6 +1050,11 @@ impl TabEntry {
         self.id == ALL_AGENTS_ID
     }
 
+    /// The colour its row and its All Agents group show (`TabDto.colour`).
+    fn colour(&self) -> crate::project_colour::ProjectColour {
+        crate::project_colour::project_colour(&self.title, self.primary.spec.colour)
+    }
+
     /// How to end this tab's session the `how` way, else `None` (a plain tab without that
     /// command). Any Rex tab ends through Rex: a destroy is its panes' Rex sessions — both pane
     /// keys, mapped or not, since a split's session outlives the split — and a suspend sleeps
@@ -1160,10 +1167,6 @@ pub struct Registry {
     report_socket: Option<PathBuf>,
     /// The awake agent keys the last [`retain_all_agents`](Self::retain_all_agents) kept, in the
     /// combined list's order: where an agent that leaves had its neighbours.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the All Agents tab is wired next")
-    )]
     all_agents_order: Vec<String>,
 }
 
@@ -1247,10 +1250,6 @@ impl Registry {
     /// shown there ([`select_all_agent`](Self::select_all_agent)) and its spec is a stand-in —
     /// no `server`, no commands, `/` as its dir — so every per-project path (probes, ☠ / ⏻, Rex
     /// opens, a split, the dir check) finds nothing to do for it. Idempotent.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the All Agents tab is wired next")
-    )]
     pub fn add_all_agents(&mut self) {
         if self.tabs.iter().any(TabEntry::is_all_agents) {
             return;
@@ -1286,10 +1285,6 @@ impl Registry {
     }
 
     /// Take the All Agents tab away, closing its surfaces. Idempotent.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the All Agents tab is wired next")
-    )]
     pub fn remove_all_agents(&mut self) {
         self.remove(ALL_AGENTS_ID);
         self.all_agents_order.clear();
@@ -1300,10 +1295,6 @@ impl Registry {
     /// untouched. The first time, or when the agent has moved to another block, the slot takes
     /// `target`; on screen its surface spawns if cold, else the choice waits for `activate`.
     /// `Err` when this window has no All Agents tab, or the surface failed to spawn.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the All Agents tab is wired next")
-    )]
     pub fn select_all_agent(&mut self, key: &str, target: PaneTarget) -> Result<(), String> {
         let idx = self
             .tabs
@@ -1340,10 +1331,6 @@ impl Registry {
     /// select instead comes back: the next agent after it in the list, else the one before, else
     /// the list's first. `None` when nothing shown went, nothing is awake, or there is no All
     /// Agents tab.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the All Agents tab is wired next")
-    )]
     pub fn retain_all_agents(&mut self, awake: &[String]) -> Option<String> {
         let idx = self.tabs.iter().position(TabEntry::is_all_agents)?;
         let order = std::mem::replace(&mut self.all_agents_order, awake.to_vec());
@@ -1373,6 +1360,12 @@ impl Registry {
             .or_else(|| order[..at].iter().rev().find(still))
             .or(awake.first())
             .cloned()
+    }
+
+    /// The agent key the All Agents tab shows, on screen or not (`TabDto.agents_selected`).
+    pub fn all_agents_selected(&self) -> Option<&str> {
+        let t = self.tabs.iter().find(|t| t.is_all_agents())?;
+        t.primary.selected.as_deref()
     }
 
     /// Whether tab `id` currently has a second pane. Unknown tab = false.
@@ -1861,6 +1854,30 @@ impl Registry {
             .collect()
     }
 
+    /// Every tab here whose main pane holds agent tabs, in sidebar order: the projects the All
+    /// Agents list draws from.
+    pub fn rex_projects(&self) -> Vec<crate::rex::all_agents::ProjectRef> {
+        self.tabs
+            .iter()
+            .filter(|t| self.agent_request(&t.id).is_some())
+            .map(|t| crate::rex::all_agents::ProjectRef {
+                id: t.id.clone(),
+                title: t.title.clone(),
+                colour: t.colour().bar_bg,
+            })
+            .collect()
+    }
+
+    /// The configured tabs' ids in sidebar order: every tab but the pinned All Agents one, which
+    /// no config order names.
+    pub fn tab_order(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|t| !t.is_all_agents())
+            .map(|t| t.id.clone())
+            .collect()
+    }
+
     /// The active tab when its main pane holds agent tabs — where ⌘T, ⌘⇧T and Sleep Agent Tab act.
     pub fn active_agent_tab(&self) -> Option<&str> {
         let id = self.active.as_deref()?;
@@ -2027,7 +2044,7 @@ impl Registry {
                 }),
                 column: t.column.as_ref().map(Column::dto),
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
-                colour: crate::project_colour::project_colour(&t.title, t.primary.spec.colour),
+                colour: t.colour(),
                 server: t.primary.spec.server.clone(),
                 all_agents: t.is_all_agents(),
                 agents_selected: t
@@ -6016,6 +6033,39 @@ mod tests {
         assert!(!sends_size("p", "p::agent:k1", false, &shown));
         assert!(sends_size("p", "p::agent:k1", true, &shown));
         assert!(sends_size("p", "p::agent:k2", true, &shown));
+    }
+
+    #[test]
+    fn rex_projects_are_the_held_agent_tabs_with_their_row_colour() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("plain", "/tmp"), false).unwrap();
+        r.add(&rex_spec("b", "local"), false).unwrap();
+        r.add(&rex_spec("out", "local"), false).unwrap();
+        r.add(&rex_spec("a", "local"), false).unwrap();
+        r.stand_placeholder("out");
+        r.add_all_agents();
+        let projects = r.rex_projects();
+        let ids: Vec<&str> = projects.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["b", "a"], "sidebar order, held tabs only");
+        let dto = r.tab_dtos().into_iter().find(|d| d.id == "b").unwrap();
+        assert_eq!(projects[0].title, dto.title);
+        assert_eq!(projects[0].colour, dto.colour.bar_bg);
+    }
+
+    #[test]
+    fn split_agent_key_inverts_agent_key() {
+        let key = agent_key("/work/my::proj", "a1");
+        assert_eq!(split_agent_key(&key), Some(("/work/my::proj", "a1")));
+        assert_eq!(split_agent_key("/work/proj"), None);
+    }
+
+    #[test]
+    fn tab_order_leaves_out_the_pinned_entry() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp"), false).unwrap();
+        r.add(&spec("b", "/tmp"), false).unwrap();
+        r.add_all_agents();
+        assert_eq!(r.tab_order(), ["a", "b"]);
     }
 
     /// A generated interleaving of the pop-out lifecycle over two registries — the origin window

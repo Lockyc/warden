@@ -1162,11 +1162,14 @@ pub(super) fn nest(rows: &mut [AgentRowDto], now: u64) {
 }
 
 /// Send project `tab_id`'s list (`warden:agents`) to every window. The list is the same in any
-/// window holding the tab, and a window without it ignores it, so it goes unaddressed.
+/// window holding the tab, and a window without it ignores it, so it goes unaddressed. The All
+/// Agents list, which shows the project's awake agents too, follows
+/// ([`super::all_agents::emit_all_agents`]).
 pub fn emit_agents(app: &AppHandle, tab_id: &str) {
     if let Some(dto) = current_list(app, tab_id) {
         let _ = app.emit("warden:agents", dto);
     }
+    super::all_agents::emit_all_agents(app);
     crate::sync_agent_menu(app);
 }
 
@@ -1500,9 +1503,11 @@ fn stop_server(
     }
 }
 
-/// Run `op` on tab `tab_id`'s agent pane for window `label` (main thread). A refusal answers at
-/// once; the Rex work runs on a worker and lands through [`land`]. A live agent sleeping or
-/// closing lets its surface go first, so its window closing never reads as the agent exiting.
+/// Run `op` on project `tab_id`'s agent pane for window `label` (main thread), wherever the tab
+/// lives ([`WindowManager::agent_request`](crate::manager::WindowManager::agent_request)): an
+/// All Agents row's op runs on its project. A refusal answers at once; the Rex work runs on a
+/// worker and lands through [`land`]. A live agent sleeping or closing lets its surfaces go
+/// first, in every window, so its window closing never reads as the agent exiting.
 pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<(), String> {
     let store = app
         .try_state::<Mutex<AgentStore>>()
@@ -1510,17 +1515,15 @@ pub fn run(app: &AppHandle, label: &str, tab_id: &str, op: AgentOp) -> Result<()
     let req = {
         let st = app.state::<ManagerState>();
         let mut m = st.lock();
-        let ws = m.windows.get_mut(label).ok_or("window not found")?;
-        let req = ws
-            .registry
-            .agent_request(tab_id)
+        let req = m
+            .agent_request(Some(label), tab_id)
             .ok_or("this tab has no agent tabs")?;
         if let Some(why) = refusal(&op, &lock(&store).records(tab_id)) {
             return Err(why.to_owned());
         }
         log::info!("tab {tab_id:?}: agent {op:?}");
         if let AgentOp::Sleep(id) | AgentOp::Close { id, .. } = &op {
-            ws.registry.release_agent(tab_id, id);
+            m.release_agent(tab_id, id);
         }
         req
     };
@@ -1868,8 +1871,8 @@ fn focused_labels(app: &AppHandle) -> Vec<String> {
 }
 
 /// The agent tabs on screen, as `(project, record id)`: each focused window's active tab's
-/// selected agent tab, a pop-out's among them. Decides only whether a change banners; what needs
-/// you is the list's ([`attention::needs_you`]).
+/// selected agent tab, a pop-out's and an All Agents tab's among them. Decides only whether a
+/// change banners; what needs you is the list's ([`attention::needs_you`]).
 fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
     let focused = focused_labels(app);
     if focused.is_empty() {
@@ -1882,7 +1885,12 @@ fn visible_agents(app: &AppHandle) -> Vec<(String, String)> {
         .filter(|(label, _)| focused.contains(label))
         .filter_map(|(_, ws)| {
             let tab = ws.registry.active_tab()?;
-            Some((tab.to_owned(), ws.registry.visible_agent(tab)?.to_owned()))
+            let shown = ws.registry.visible_agent(tab)?;
+            let (project, record) = match tab {
+                crate::registry::ALL_AGENTS_ID => crate::registry::split_agent_key(shown)?,
+                _ => (tab, shown),
+            };
+            Some((project.to_owned(), record.to_owned()))
         })
         .collect()
 }
@@ -1914,8 +1922,11 @@ fn refresh(app: &AppHandle, project: String) {
 /// Follow every Rex project tab an open window holds and the hub doesn't follow yet
 /// ([`RexHub::watch_project`]), each then reconciled and landed as a window change there is
 /// ([`follow`]), so its agent tabs are known before its tab opens. One worker per server, which
-/// gives up on that server once it is unreachable; a failure is logged, never bannered.
+/// gives up on that server once it is unreachable; a failure is logged, never bannered. Runs
+/// wherever the open windows' projects may have changed, so the All Agents list goes out again
+/// over the new set first ([`super::all_agents::emit_all_agents`]).
 pub fn watch_projects(app: &AppHandle) {
+    super::all_agents::emit_all_agents(app);
     let Some(hub) = app.try_state::<RexHub>() else {
         return;
     };
@@ -1979,13 +1990,10 @@ pub fn watch_projects(app: &AppHandle) {
 /// op waits for the next open. Worker only: it waits on the pane's hold and on Rex. A failure is
 /// logged, since no window asked for it.
 pub(super) fn follow(app: &AppHandle, project: &str, op: &AgentOp) {
-    let req = {
-        let st = app.state::<ManagerState>();
-        let m = st.lock();
-        m.windows
-            .values()
-            .find_map(|ws| ws.registry.agent_request(project))
-    };
+    let req = app
+        .state::<ManagerState>()
+        .lock()
+        .agent_request(None, project);
     let Some(store) = app.try_state::<Mutex<AgentStore>>() else {
         return;
     };

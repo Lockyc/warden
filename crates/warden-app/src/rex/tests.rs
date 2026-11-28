@@ -3028,3 +3028,173 @@ fn a_watched_projects_refresh_never_starts_rex() {
         "a Rex the user quit stays quit"
     );
 }
+
+/// The All Agents tab's wiring across windows: which windows' projects it lists, where a row's
+/// op runs, and what its combined surfaces follow.
+mod all_agents_wiring {
+    use super::super::agent_open::tests::{fake, hub, map, record, state_of, store};
+    use super::super::agents::RecordState;
+    use super::super::all_agents::{all_agents_list, awake_keys};
+    use super::super::attention::Attention;
+    use super::super::lifecycle::AgentOp;
+    use crate::manager::{WindowManager, WindowState, INITIAL_RECT};
+    use crate::registry::{agent_key, Registry, ALL_AGENTS_ID};
+    use crate::rex::{PaneTarget, RexHub};
+    use crate::surface::TabSpec;
+
+    fn rex_tab(id: &str) -> TabSpec {
+        TabSpec {
+            colour: None,
+            id: id.into(),
+            title: id.into(),
+            dir: std::path::PathBuf::from("/work").join(id),
+            shell: "sh".into(),
+            startup: Some("agent".into()),
+            group: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            tree: false,
+            tree_path: Vec::new(),
+            split: None,
+            server: Some("local".into()),
+            resume: None,
+        }
+    }
+
+    fn registry(tabs: &[&str]) -> Registry {
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        for t in tabs {
+            r.add(&rex_tab(t), false).unwrap();
+        }
+        r
+    }
+
+    fn window(title: &str, registry: Registry) -> WindowState {
+        WindowState {
+            registry,
+            title: title.into(),
+            colour: "#000000".into(),
+            open_tabs_section: false,
+            background_tabs_section: false,
+            spawn_error: None,
+            session_key: title.into(),
+            chrome_ready: false,
+            pending_focus: None,
+            origin: None,
+        }
+    }
+
+    fn manager(windows: Vec<(&str, Registry)>) -> WindowManager {
+        let mut m = WindowManager::new();
+        let src: String = windows
+            .iter()
+            .map(|(t, _)| format!("[[window]]\ntitle = \"{t}\"\n"))
+            .collect();
+        let c = warden_config::resolve::resolve(warden_config::raw::parse(&src).unwrap())
+            .unwrap()
+            .0;
+        m.adopt(c.clone(), c);
+        for (t, r) in windows {
+            m.windows.insert(t.into(), window(t, r));
+        }
+        m
+    }
+
+    fn target(block: &str) -> PaneTarget {
+        PaneTarget {
+            endpoint: rex_client::Endpoint::Unix("/x.sock".into()),
+            session_id: "session:s".into(),
+            block_id: block.into(),
+        }
+    }
+
+    /// The agent window `label`'s All Agents tab shows.
+    fn shown(m: &WindowManager, label: &str) -> Option<String> {
+        let dtos = m.windows[label].registry.tab_dtos();
+        dtos.into_iter().find(|d| d.all_agents)?.agents_selected
+    }
+
+    #[test]
+    fn an_op_from_a_window_not_holding_the_project_runs_on_it() {
+        let f = fake(Some("session:old"), vec![("window:1", "block:1", "a")]);
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _): (RexHub, _) = hub(f.endpoint(), &dir);
+        let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
+        let m = manager(vec![("A", registry(&["t"])), ("B", registry(&[]))]);
+
+        let req = m.agent_request(Some("B"), "t").expect("found in window A");
+        assert_eq!(req.pane_key, "t");
+        hub.agent_op(&s, &req, &AgentOp::Rename("a".into(), "review".into()), 7)
+            .expect("rename");
+        assert_eq!(state_of(&s, "a").unwrap().name, "review");
+        assert_eq!(m.agent_request(Some("B"), "missing"), None);
+    }
+
+    #[test]
+    fn sleeping_from_all_agents_releases_the_combined_surface_too() {
+        let mut project = registry(&["t"]);
+        project.force_ready_agents("t", &["a", "b"], Some("a"));
+        let mut combined = registry(&[]);
+        combined.add_all_agents();
+        let (a, b) = (agent_key("t", "a"), agent_key("t", "b"));
+        combined.retain_all_agents(&[a.clone(), b.clone()]);
+        combined.select_all_agent(&a, target("block:a")).unwrap();
+        let mut m = manager(vec![("A", project), ("B", combined)]);
+
+        m.release_agent("t", "a");
+        let ws = |m: &WindowManager, l: &str| m.windows[l].registry.is_spawned("t");
+        assert!(!ws(&m, "A"), "the project's surface is let go");
+        assert!(!m.windows["B"].registry.is_spawned(ALL_AGENTS_ID));
+        assert_eq!(
+            shown(&m, "B"),
+            Some(a.clone()),
+            "its slot stays for the list to drop"
+        );
+        // The list without `a` drops its combined slot and leans to `b`.
+        assert_eq!(
+            m.retain_all_agents(std::slice::from_ref(&b)),
+            [("B".to_string(), Some(b))]
+        );
+    }
+
+    #[test]
+    fn removing_a_project_from_the_config_drops_its_rows() {
+        let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
+        let mut reg = registry(&["t"]);
+        reg.add_all_agents();
+        let a = agent_key("t", "a");
+        reg.select_all_agent(&a, target("block:1")).unwrap();
+        let mut m = manager(vec![("A", reg)]);
+        let list = |m: &WindowManager| {
+            all_agents_list(
+                &m.rex_projects(),
+                &s.lock().unwrap(),
+                &Attention::default(),
+                |_| None,
+            )
+        };
+        assert_eq!(awake_keys(&list(&m)), std::slice::from_ref(&a));
+
+        // The hot-reload's reconcile removes `t` from the window.
+        m.windows.get_mut("A").unwrap().registry.remove("t");
+        let after = list(&m);
+        assert!(after.rows.is_empty() && after.projects.is_empty());
+        assert_eq!(
+            m.retain_all_agents(&awake_keys(&after)),
+            [("A".to_string(), None)]
+        );
+        assert_eq!(shown(&m, "A"), None);
+    }
+
+    #[test]
+    fn projects_come_from_every_window_once_in_window_order() {
+        let m = manager(vec![
+            ("one", registry(&["p", "q"])),
+            ("two", registry(&["q", "r"])),
+        ]);
+        let ids: Vec<String> = m.rex_projects().into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["p", "q", "r"]);
+    }
+}

@@ -67,6 +67,21 @@ impl RexHub {
         self.inner.lock().agent_panes.contains(pane_key)
     }
 
+    /// The terminal agent `agent_key` ([`agent_key`]) runs in: the block an open or op bound it
+    /// to, in its main pane's session. `None` for an agent no open bound (asleep, closed, or its
+    /// project never followed) or a server not connected.
+    pub fn agent_target(&self, agent_key: &str) -> Option<PaneTarget> {
+        let st = self.inner.lock();
+        let block_id = st.blocks.get(agent_key)?.clone();
+        let rec = st.record(agent_key)?;
+        let endpoint = st.conns.get(&rec.server)?.endpoint.clone();
+        Some(PaneTarget {
+            endpoint,
+            session_id: rec.session_id.clone(),
+            block_id,
+        })
+    }
+
     /// Let agent `agent_key` go if its program has finished ([`RexHub::block_exited`]): close its
     /// window, or, when that window was the session's last, end the session as a plain pane's
     /// exit does ([`RexHub::destroy_if_exited`]). Returns whether the agent was let go: false
@@ -711,6 +726,33 @@ pub(super) mod tests {
         let ids: Vec<&str> = left.iter().map(|w| w.window_id.as_str()).collect();
         assert_eq!(ids, ["window:1"]);
         assert!(!hub.block_exited(&b), "let go of");
+    }
+
+    #[test]
+    fn an_agent_key_finds_its_bound_block() {
+        let f = fake(Some("session:old"), vec![("window:2", "block:2", "b")]);
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "session:old");
+        let (hub, _) = hub(f.endpoint(), &dir);
+        let s = store(vec![
+            record("a", RecordState::Asleep, None, Some("claude --resume aaa")),
+            record("b", RecordState::Live, Some("window:2"), None),
+        ]);
+        assert_eq!(
+            hub.agent_target(&agent_key("t", "b")),
+            None,
+            "not bound yet"
+        );
+        hub.open_agents(&s, &open(None), 7).expect("open");
+        assert_eq!(
+            hub.agent_target(&agent_key("t", "b")),
+            Some(crate::rex::PaneTarget {
+                endpoint: f.endpoint(),
+                session_id: "session:old".into(),
+                block_id: "block:2".into(),
+            })
+        );
+        assert_eq!(hub.agent_target(&agent_key("t", "a")), None, "asleep");
     }
 
     #[test]

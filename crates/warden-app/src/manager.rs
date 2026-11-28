@@ -5,7 +5,8 @@
 
 use crate::plan::{tab_ops, window_to_spec, TabPlan, WindowSpec};
 use crate::probe::Presence;
-use crate::registry::{ProbeTarget, Registry, TabDto};
+use crate::registry::{agent_key, ProbeTarget, Registry, RexOpen, TabDto, ALL_AGENTS_ID};
+use crate::rex::all_agents::ProjectRef;
 use crate::surface::ghostty::GhosttySurface;
 use crate::surface::{PixelRect, TabSpec};
 use crate::ManagerState;
@@ -418,6 +419,79 @@ impl WindowManager {
             .map(|(l, _)| l.as_str())
     }
 
+    /// What a lifecycle op on project `tab_id`'s agent tabs needs ([`Registry::agent_request`]),
+    /// from window `prefer` when it holds the tab, else from any window holding it: an All Agents
+    /// row's op runs on its project wherever that tab lives.
+    pub fn agent_request(&self, prefer: Option<&str>, tab_id: &str) -> Option<RexOpen> {
+        prefer
+            .and_then(|l| self.windows.get(l)?.registry.agent_request(tab_id))
+            .or_else(|| {
+                self.windows
+                    .values()
+                    .find_map(|ws| ws.registry.agent_request(tab_id))
+            })
+    }
+
+    /// The open windows' labels in config order, each configured window before its pop-outs.
+    fn labels_in_order(&self) -> Vec<&String> {
+        let at = |l: &String| {
+            let title = self.config_title(l).unwrap_or_default();
+            let i = self.last_good.windows.iter().position(|w| w.title == title);
+            (i.unwrap_or(usize::MAX), Self::is_popout(l))
+        };
+        let mut labels: Vec<&String> = self.windows.keys().collect();
+        labels.sort_by(|a, b| at(a).cmp(&at(b)).then(a.cmp(b)));
+        labels
+    }
+
+    /// The projects the All Agents list draws from: every open window's
+    /// [`Registry::rex_projects`], each once, in window order.
+    pub fn rex_projects(&self) -> Vec<ProjectRef> {
+        let mut projects: Vec<ProjectRef> = Vec::new();
+        for l in self.labels_in_order() {
+            for p in self.windows[l].registry.rex_projects() {
+                if !projects.iter().any(|q| q.id == p.id) {
+                    projects.push(p);
+                }
+            }
+        }
+        projects
+    }
+
+    /// Whether any open window shows the All Agents row.
+    pub fn has_all_agents(&self) -> bool {
+        self.windows
+            .values()
+            .any(|ws| ws.registry.holds_tab(ALL_AGENTS_ID))
+    }
+
+    /// Let go of project `tab_id`'s agent `record_id` in every window ahead of its window closing
+    /// (sleep or close): its surface in each window holding the tab, and each All Agents tab's
+    /// ([`Registry::release_agent`]).
+    pub fn release_agent(&mut self, tab_id: &str, record_id: &str) {
+        let key = agent_key(tab_id, record_id);
+        for ws in self.windows.values_mut() {
+            ws.registry.release_agent(tab_id, record_id);
+            ws.registry.release_agent(ALL_AGENTS_ID, &key);
+        }
+    }
+
+    /// Have every All Agents tab follow the combined list's `awake` keys
+    /// ([`Registry::retain_all_agents`]). Returns each window whose shown agent went, with the
+    /// one to select instead, `None` leaving its pane blank.
+    pub fn retain_all_agents(&mut self, awake: &[String]) -> Vec<(String, Option<String>)> {
+        let mut moved = Vec::new();
+        for (label, ws) in self.windows.iter_mut() {
+            let before = ws.registry.all_agents_selected().map(str::to_owned);
+            let next = ws.registry.retain_all_agents(awake);
+            if before.is_some_and(|b| !awake.contains(&b)) {
+                moved.push((label.clone(), next));
+            }
+        }
+        moved.sort();
+        moved
+    }
+
     /// The config window title `label`'s tabs live under: its own, or for a pop-out its origin's.
     pub fn config_title(&self, label: &str) -> Option<&str> {
         let ws = self.windows.get(label)?;
@@ -537,6 +611,9 @@ impl WindowManager {
         }
         for id in &out {
             registry.stand_placeholder(id);
+        }
+        if spec.agents_tab {
+            registry.add_all_agents();
         }
         // The first tab shown is one with a terminal to show here — never a placeholder, whose
         // hole in this window would sit empty.
@@ -895,7 +972,7 @@ impl WindowManager {
             // its block) ends too if its program did.
             let rex_key = ws.registry.rex_key_of_surface(surface_id);
             if let Some(key) = &rex_key {
-                let owner = agent.clone().map(|r| (tab_id.clone(), r));
+                let owner = agent.clone().and_then(|r| exit_owner(&tab_id, r));
                 crate::rex::spawn::end_if_exited(app, key.clone(), owner);
             }
             let new_active = match (which, agent) {
@@ -1187,9 +1264,14 @@ impl WindowManager {
             .windows
             .iter()
             .any(|w| w.title == ws.title && w.remember_tabs);
+        // The All Agents row is never the tab a window reopens on: it is no configured tab.
         let record = remember.then(|| crate::session::WindowRecord {
             loaded: ws.registry.loaded_ids(),
-            active: ws.registry.active_tab().map(str::to_string),
+            active: ws
+                .registry
+                .active_tab()
+                .filter(|id| *id != ALL_AGENTS_ID)
+                .map(str::to_string),
         });
         self.session.set(&ws.session_key, record);
     }
@@ -1278,6 +1360,7 @@ impl WindowManager {
                 spawn_tabs,
                 open_tabs_section,
                 background_tabs_section,
+                agents_tab,
             } = op;
             if let Some(ws) = self.windows.get_mut(&label) {
                 // Captured before any mutation below, so a respawn that hits the
@@ -1288,11 +1371,11 @@ impl WindowManager {
                 // visible). `order` still carries the unchanged tab sequence; a
                 // metadata change always carries `set_meta`, so it is never
                 // mistaken for a no-op.
-                let current_order: Vec<String> =
-                    ws.registry.tab_dtos().into_iter().map(|t| t.id).collect();
+                let current_order = ws.registry.tab_order();
                 if !trees_changed.contains(&ws.title)
                     && open_tabs_section.is_none()
                     && background_tabs_section.is_none()
+                    && agents_tab.is_none()
                     && add_tabs.is_empty()
                     && remove_tabs.is_empty()
                     && order == current_order
@@ -1309,6 +1392,9 @@ impl WindowManager {
                 }
                 if let Some(o) = background_tabs_section {
                     ws.background_tabs_section = o;
+                }
+                if let Some(new_active) = apply_agents_tab(&mut ws.registry, agents_tab) {
+                    exited.push((label.clone(), ALL_AGENTS_ID.to_owned(), new_active));
                 }
                 // Removing the visible tab: unload it first so the selection leans to a live
                 // neighbour, and tell the chrome before the refresh drops its row — otherwise
@@ -1402,6 +1488,34 @@ impl WindowManager {
             if let Some(dto) = self.init_dto(&label) {
                 let _ = app.emit_to(label.as_str(), "warden:refresh", dto);
             }
+        }
+    }
+}
+
+/// The `(project, record)` an agent surface of tab `tab_id` exits as: its own, or for the All
+/// Agents tab, whose `record` is the agent's full key, the project and record that key names.
+fn exit_owner(tab_id: &str, record: String) -> Option<(String, String)> {
+    if tab_id != ALL_AGENTS_ID {
+        return Some((tab_id.to_owned(), record));
+    }
+    let (project, record) = crate::registry::split_agent_key(&record)?;
+    Some((project.to_owned(), record.to_owned()))
+}
+
+/// Pin or take away window `registry`'s All Agents row as its `agents_tab` flipped (`None`: it
+/// didn't). Taken away while shown, it unloads first so the selection leans as an unload does,
+/// and `Some(new_active)` comes back for the chrome; otherwise `None`.
+fn apply_agents_tab(registry: &mut Registry, agents_tab: Option<bool>) -> Option<Option<String>> {
+    match agents_tab? {
+        true => {
+            registry.add_all_agents();
+            None
+        }
+        false => {
+            let lean = (registry.active_tab() == Some(ALL_AGENTS_ID))
+                .then(|| registry.unload(ALL_AGENTS_ID));
+            registry.remove_all_agents();
+            lean
         }
     }
 }
@@ -2084,6 +2198,58 @@ mod tests {
         assert!(
             m.session.get("w").is_some(),
             "a configured window still records"
+        );
+    }
+
+    #[test]
+    fn agents_tab_flip_adds_and_removes_the_entry() {
+        use crate::registry::ALL_AGENTS_ID;
+        let mut r = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = r.add(&tab_spec("t0", "/tmp/a"), false);
+        let ids =
+            |r: &Registry| -> Vec<String> { r.tab_dtos().into_iter().map(|d| d.id).collect() };
+        assert_eq!(apply_agents_tab(&mut r, None), None);
+        assert_eq!(ids(&r), ["t0"]);
+        assert_eq!(apply_agents_tab(&mut r, Some(true)), None);
+        assert_eq!(ids(&r), [ALL_AGENTS_ID, "t0"]);
+        // Taken away while shown: the selection leans as an unload does.
+        r.activate(ALL_AGENTS_ID).unwrap();
+        assert_eq!(apply_agents_tab(&mut r, Some(false)), Some(None));
+        assert_eq!(ids(&r), ["t0"]);
+        assert_ne!(r.active_tab(), Some(ALL_AGENTS_ID));
+        // Hidden, it just goes.
+        apply_agents_tab(&mut r, Some(true));
+        assert_eq!(apply_agents_tab(&mut r, Some(false)), None);
+        assert_eq!(ids(&r), ["t0"]);
+    }
+
+    #[test]
+    fn the_all_agents_tab_is_never_remembered_active() {
+        use crate::registry::ALL_AGENTS_ID;
+        let mut m = WindowManager::new();
+        let c = config("[[window]]\ntitle = \"w\"\nremember_tabs = true\n");
+        m.adopt(c.clone(), c);
+        let mut reg = Registry::new(std::ptr::null_mut(), INITIAL_RECT);
+        let _ = reg.add(&tab_spec("/tmp/a", "/tmp/a"), false);
+        reg.add_all_agents();
+        reg.activate(ALL_AGENTS_ID).unwrap();
+        m.windows.insert("w".into(), window_state(reg, None));
+        m.record("w");
+        let saved = m.session.get("w").expect("recorded");
+        assert_eq!(saved.active, None);
+        assert!(!saved.loaded.iter().any(|id| id == ALL_AGENTS_ID));
+    }
+
+    #[test]
+    fn a_combined_surface_exits_as_its_projects_agent() {
+        use crate::registry::{agent_key, ALL_AGENTS_ID};
+        assert_eq!(
+            exit_owner("p", "a1".into()),
+            Some(("p".to_string(), "a1".to_string()))
+        );
+        assert_eq!(
+            exit_owner(ALL_AGENTS_ID, agent_key("p", "a1")),
+            Some(("p".to_string(), "a1".to_string()))
         );
     }
 

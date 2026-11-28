@@ -124,16 +124,30 @@ const SCRATCH_NEW_TITLE: &str = "New Scratch Tab";
 const SUSPEND_TITLE: &str = "Suspend Session";
 const TERMINATE_TITLE: &str = "Terminate Session…";
 
+const AGENT_SLEEP_TITLE: &str = "Sleep Agent Tab";
+const AGENT_PREV_TITLE: &str = "Previous Agent Tab";
+const AGENT_NEXT_TITLE: &str = "Next Agent Tab";
+const AGENT_MOVE_UP_TITLE: &str = "Move Agent Tab Up";
+const AGENT_MOVE_DOWN_TITLE: &str = "Move Agent Tab Down";
+const AGENT_FORK_TITLE: &str = "Fork Agent Tab";
+
 /// Why Suspend / Terminate Session can't act in the focused window, if they can't: both run
 /// through the sidebar row's confirm, which a pop-out has none of.
 const END_SESSION_POPOUT: &str = "dock the tab to end its session";
 
-/// Suspend or Terminate Session's enabled state and title: `title` as is, or disabled with
-/// `why` beside it.
-fn end_session_item(title: &str, why: Option<&str>) -> (bool, String) {
+/// Why the agent items can't act while All Agents is the active tab: each acts on one project's
+/// list.
+const ALL_AGENTS_MENU: &str = "Open the agent's project for this";
+
+/// Why Pop Out Tab can't act while All Agents is the active tab.
+const ALL_AGENTS_POP_OUT: &str = "All Agents can't pop out";
+
+/// A menu item's enabled state and title: `enabled` under `title`, or disabled with `why`
+/// beside it.
+fn item_state(title: &str, enabled: bool, why: Option<&str>) -> (bool, String) {
     match why {
         Some(why) => (false, format!("{title} ({why})")),
-        None => (true, title.to_owned()),
+        None => (enabled, title.to_owned()),
     }
 }
 
@@ -155,6 +169,10 @@ struct AgentItems {
     /// The spine's Close Tab (⌘W), retitled Close Agent Tab while it closes one
     /// ([`agent_closable`]).
     close_tab: tauri::menu::MenuItem<tauri::Wry>,
+    /// The spine's Pop Out Tab, under the title the spine gave it, disabled with the reason
+    /// while All Agents is the active tab ([`ALL_AGENTS_POP_OUT`]).
+    pop_out: tauri::menu::MenuItem<tauri::Wry>,
+    pop_out_title: String,
     fork: tauri::menu::MenuItem<tauri::Wry>,
     pane_left: tauri::menu::MenuItem<tauri::Wry>,
     pane_right: tauri::menu::MenuItem<tauri::Wry>,
@@ -334,7 +352,8 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
 /// Tab while it has a Rex scratch column, Suspend / Terminate Session outside a pop-out; ⌘W is
-/// titled for what it closes. A pop-out's one tab answers like any active tab. Runs on every menu
+/// titled for what it closes. With All Agents active the agent items and Pop Out Tab are disabled
+/// with their reasons. A pop-out's one tab answers like any active tab. Runs on every menu
 /// build, window focus, pane focus, tab activation, agent list change and scratch column change
 /// (a Rex view landing); locks `ManagerState`, so callers must not hold it.
 #[cfg(target_os = "macos")]
@@ -364,43 +383,51 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         m.windows.get(&label).is_some_and(|ws| ws.origin.is_some())
     });
     let end_why = popped.then_some(END_SESSION_POPOUT);
+    let all_agents = keys
+        .as_ref()
+        .is_some_and(|k| k.1 == registry::ALL_AGENTS_ID);
+    let agent_why = all_agents.then_some(ALL_AGENTS_MENU);
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
     let items = menu.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(i) = items {
+        let set = |item: &tauri::menu::MenuItem<tauri::Wry>, title: &str, on: bool, why| {
+            let (enabled, text) = item_state(title, on, why);
+            let _ = item.set_enabled(enabled);
+            let _ = item.set_text(text);
+        };
         let _ = i.split.set_enabled(!matches!(split, Some(Err(_))));
         let _ = i.split.set_text(match &split {
             Some(Ok(kind)) => pane_menu::split_title(*kind).to_owned(),
             Some(Err(why)) => format!("{SPLIT_TITLE} ({why})"),
             None => SPLIT_TITLE.to_owned(),
         });
-        let _ = i.new.set_enabled(agent.is_some());
-        let _ = i.sleep.set_enabled(agent.as_ref().is_some_and(|a| a.2));
+        set(&i.new, AGENT_NEW_TITLE, agent.is_some(), agent_why);
+        let sleep = agent.as_ref().is_some_and(|a| a.2);
+        set(&i.sleep, AGENT_SLEEP_TITLE, sleep, agent_why);
         let _ = i
             .reopen
             .set_enabled(agent.as_ref().is_some_and(|a| a.3) || reopen_window);
         let prev = list.is_some_and(|l| agent_step(l, Step::Prev).is_some());
         let next = list.is_some_and(|l| agent_step(l, Step::Next).is_some());
-        for item in &i.prev {
-            let _ = item.set_enabled(prev);
-        }
-        for item in &i.next {
-            let _ = item.set_enabled(next);
-        }
-        let _ = i
-            .move_up
-            .set_enabled(list.is_some_and(|l| agent_move(l, Step::Prev).is_some()));
-        let _ = i
-            .move_down
-            .set_enabled(list.is_some_and(|l| agent_move(l, Step::Next).is_some()));
+        set(&i.prev[0], AGENT_PREV_TITLE, prev, agent_why);
+        set(&i.next[0], AGENT_NEXT_TITLE, next, agent_why);
+        // The aliases stay under their own titles: `hide_alias_items` finds them by those.
+        let _ = i.prev[1].set_enabled(prev);
+        let _ = i.next[1].set_enabled(next);
+        let up = list.is_some_and(|l| agent_move(l, Step::Prev).is_some());
+        let down = list.is_some_and(|l| agent_move(l, Step::Next).is_some());
+        set(&i.move_up, AGENT_MOVE_UP_TITLE, up, agent_why);
+        set(&i.move_down, AGENT_MOVE_DOWN_TITLE, down, agent_why);
         let _ = i.close_tab.set_text(if list.is_some_and(agent_closable) {
             "Close Agent Tab"
         } else {
             "Close Tab"
         });
-        let _ = i
-            .fork
-            .set_enabled(list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork)));
+        let fork = list.is_some_and(|l| l.rows.iter().any(|r| r.selected && r.can_fork));
+        set(&i.fork, AGENT_FORK_TITLE, fork, agent_why);
+        let pop_why = all_agents.then_some(ALL_AGENTS_POP_OUT);
+        set(&i.pop_out, &i.pop_out_title, true, pop_why);
         let _ = i.pane_left.set_enabled(pane_left);
         let _ = i.pane_right.set_enabled(pane_right);
         let _ = i
@@ -411,9 +438,7 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
             None => SCRATCH_NEW_TITLE.to_owned(),
         });
         for (item, title) in [(&i.suspend, SUSPEND_TITLE), (&i.terminate, TERMINATE_TITLE)] {
-            let (enabled, text) = end_session_item(title, end_why);
-            let _ = item.set_enabled(enabled);
-            let _ = item.set_text(text);
+            set(item, title, true, end_why);
         }
     }
 }
@@ -605,7 +630,7 @@ fn build_app_menu(
         .accelerator("CmdOrCtrl+KeyT")
         .enabled(false)
         .build(app)?;
-    let agent_sleep_item = MenuItemBuilder::with_id(MENU_AGENT_SLEEP, "Sleep Agent Tab")
+    let agent_sleep_item = MenuItemBuilder::with_id(MENU_AGENT_SLEEP, AGENT_SLEEP_TITLE)
         .accelerator("Alt+Cmd+KeyS")
         .enabled(false)
         .build(app)?;
@@ -615,24 +640,24 @@ fn build_app_menu(
             .enabled(false)
             .build(app)
     };
-    let agent_prev_item = disabled(MENU_AGENT_PREV, "Previous Agent Tab", "Cmd+ArrowUp")?;
-    let agent_next_item = disabled(MENU_AGENT_NEXT, "Next Agent Tab", "Cmd+ArrowDown")?;
+    let agent_prev_item = disabled(MENU_AGENT_PREV, AGENT_PREV_TITLE, "Cmd+ArrowUp")?;
+    let agent_next_item = disabled(MENU_AGENT_NEXT, AGENT_NEXT_TITLE, "Cmd+ArrowDown")?;
     let agent_prev_alias = disabled(MENU_AGENT_PREV_ALIAS, ALIAS_TITLES[0], "Cmd+KeyK")?;
     let agent_next_alias = disabled(MENU_AGENT_NEXT_ALIAS, ALIAS_TITLES[1], "Cmd+KeyJ")?;
     let agent_up_item = disabled(
         MENU_AGENT_MOVE_UP,
-        "Move Agent Tab Up",
+        AGENT_MOVE_UP_TITLE,
         "Alt+Shift+Cmd+ArrowUp",
     )?;
     let agent_down_item = disabled(
         MENU_AGENT_MOVE_DOWN,
-        "Move Agent Tab Down",
+        AGENT_MOVE_DOWN_TITLE,
         "Alt+Shift+Cmd+ArrowDown",
     )?;
     let close_project_item = MenuItemBuilder::with_id(MENU_TAB_CLOSE_PROJECT, "Close Project Tab")
         .accelerator("Alt+Cmd+KeyW")
         .build(app)?;
-    let agent_fork_item = disabled(MENU_AGENT_FORK, "Fork Agent Tab", "Alt+Cmd+KeyT")?;
+    let agent_fork_item = disabled(MENU_AGENT_FORK, AGENT_FORK_TITLE, "Alt+Cmd+KeyT")?;
     let pane_left_item = disabled(MENU_PANE_LEFT, "Focus Left Pane", "Alt+Cmd+ArrowLeft")?;
     let pane_right_item = disabled(MENU_PANE_RIGHT, "Focus Right Pane", "Alt+Cmd+ArrowRight")?;
     let scratch_new_item = disabled(MENU_SCRATCH_NEW, SCRATCH_NEW_TITLE, "Ctrl+Cmd+KeyT")?;
@@ -722,6 +747,8 @@ fn build_app_menu(
             move_up: agent_up_item,
             move_down: agent_down_item,
             close_tab: spine.close_tab.clone(),
+            pop_out_title: spine.pop_out_tab.text()?,
+            pop_out: spine.pop_out_tab.clone(),
             fork: agent_fork_item,
             pane_left: pane_left_item,
             pane_right: pane_right_item,
@@ -1927,6 +1954,24 @@ fn agent_new(window: tauri::WebviewWindow, tab_id: String) -> Result<(), String>
         &tab_id,
         rex::lifecycle::AgentOp::New,
     )
+}
+
+/// The All Agents list as it stands, for a chrome that has none yet; every change after this
+/// arrives as `warden:agents` for `registry::ALL_AGENTS_ID`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn all_agents_init(window: tauri::WebviewWindow) -> Option<rex::lifecycle::AgentListDto> {
+    use tauri::Manager;
+    rex::all_agents::current_list(window.app_handle())
+}
+
+/// Show agent `key` (an All Agents row's id) in the calling window's All Agents tab; the agent's
+/// project tab is untouched. Refused when the agent has no terminal in Rex.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn all_agents_select(window: tauri::WebviewWindow, key: String) -> Result<(), String> {
+    use tauri::Manager;
+    rex::all_agents::select(window.app_handle(), window.label(), &key)
 }
 
 /// Show agent tab `record_id`, waking it when it is asleep.
@@ -3210,6 +3255,8 @@ fn main() {
             pane_menu,
             probe_now,
             agents_init,
+            all_agents_init,
+            all_agents_select,
             agent_seen,
             agent_new,
             agent_select,
@@ -3556,15 +3603,34 @@ mod tests {
     #[test]
     fn end_session_items_disable_with_their_reason_in_a_popout() {
         assert_eq!(
-            end_session_item(SUSPEND_TITLE, None),
+            item_state(SUSPEND_TITLE, true, None),
             (true, "Suspend Session".to_owned())
         );
         assert_eq!(
-            end_session_item(TERMINATE_TITLE, Some(END_SESSION_POPOUT)),
+            item_state(TERMINATE_TITLE, true, Some(END_SESSION_POPOUT)),
             (
                 false,
                 "Terminate Session… (dock the tab to end its session)".to_owned()
             )
+        );
+    }
+
+    #[test]
+    fn all_agents_items_disable_with_their_reason() {
+        assert_eq!(
+            item_state(AGENT_FORK_TITLE, false, None),
+            (false, "Fork Agent Tab".to_owned())
+        );
+        assert_eq!(
+            item_state(AGENT_SLEEP_TITLE, true, Some(ALL_AGENTS_MENU)),
+            (
+                false,
+                "Sleep Agent Tab (Open the agent's project for this)".to_owned()
+            )
+        );
+        assert_eq!(
+            item_state("Pop Out Tab", true, Some(ALL_AGENTS_POP_OUT)),
+            (false, "Pop Out Tab (All Agents can't pop out)".to_owned())
         );
     }
 
