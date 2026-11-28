@@ -53,7 +53,7 @@ Deferred: ad-hoc `⌘T`/`⌘N` tabs, seam/FFI/IPC hardening — see [`docs/FOLLO
 - **Tauri**, one app, one dock icon; per-window identity is the in-app banner, not separate bundles.
 - **Windows = native macOS windows** (`cmd+\`` cycles them); **tabs = projects** within a window.
 - **Terminal = embedded libghostty** behind the `TerminalSurface` seam — a per-OS native shim (NSView today). Its embedding C API is unstable, so it is pinned (see [`docs/surface.md`](docs/surface.md)). A non-libghostty fallback could sit behind the same seam.
-- **Splits are warden's to grow, not a multiplexer's to provide.** Direction and what it unlocks: [`docs/native-splits-direction.md`](docs/native-splits-direction.md). The Superlogical research lives once, in agentmux's `docs/multiplexer-direction.md` — read it before researching that from the web, and append news there.
+- **Splits are warden's to grow, not a multiplexer's to provide.** Direction and what it unlocks: [`docs/native-splits-direction.md`](docs/native-splits-direction.md). Rex and its upstream (Superlogical, libghostty, OSC 7501/7577) are watched in [`docs/multiplexer-direction.md`](docs/multiplexer-direction.md), the research ledger — read it before researching any of them from the web, and append news there.
 
 ## Workspace layout
 

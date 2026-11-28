@@ -14,7 +14,7 @@ split has to come from tmux.
 
 The external evidence — Superlogical's published architecture, transcribed because its
 primary sources cannot be fetched by agent tooling — lives once, in
-[agentmux's `docs/multiplexer-direction.md`](https://github.com/lockyc/agentmux/blob/main/docs/multiplexer-direction.md).
+[`multiplexer-direction.md`](multiplexer-direction.md).
 Facts here are as of 2026-09-04 and cover only what falls to warden.
 
 ## warden is already the shape the direction is heading toward
@@ -31,7 +31,7 @@ need to become a multiplexer, it needs to stop delegating to one.
 An `amux --frame` tab is two (frame + agent); an unframed one is one. Native splits — a
 second surface beside a tab's primary, a shell beside the agent — remove the frame layer
 for local use and take that count to one. The destination is zero: warden as the client of
-Rex sessions (`docs/rex.md`), with tmux and agentmux retired (agentmux's `docs/multiplexer-direction.md`
+Rex sessions (`docs/rex.md`), with tmux and agentmux retired ([`multiplexer-direction.md`](multiplexer-direction.md)
 maps where each agentmux capability goes).
 
 What that buys beyond one less parse: native scrollback and selection in the second
