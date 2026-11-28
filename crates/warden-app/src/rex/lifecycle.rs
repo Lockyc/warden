@@ -14,6 +14,7 @@ use rex_client::{Endpoint, RexError};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::{self, AgentRecord, AgentStore, RecordState};
+use super::all_agents::AllAgentsGroupDto;
 use super::attention::{self, Attention};
 use super::spawn::unix_now;
 use super::windows::{AgentState, BlockStatus, BlockedKind};
@@ -823,6 +824,8 @@ pub struct AgentListDto {
     pub groups: Vec<AgentGroupDto>,
     /// The closed fold, most recently closed first.
     pub closed: Vec<ClosedAgentDto>,
+    /// The All Agents list's project groups holding a row, in list order; empty in a project's.
+    pub projects: Vec<AllAgentsGroupDto>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -886,6 +889,8 @@ pub struct AgentRowDto {
     /// The stamp of a finish not yet seen ([`attention::unseen`]): what `agent_seen` sends back
     /// once the row is on screen.
     pub unseen: Option<String>,
+    /// The project tab it belongs to, in the All Agents list; `None` in a project's.
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -987,6 +992,38 @@ fn agent_list_at(
     status: impl Fn(&str) -> Option<BlockStatus>,
     now: u64,
 ) -> AgentListDto {
+    let (records, mut rows, groups) = agent_rows(tab_id, store, attention, status);
+    nest(&mut rows, now);
+    let mut closed: Vec<&AgentRecord> = records
+        .iter()
+        .filter(|r| r.state == RecordState::Closed)
+        .collect();
+    closed.sort_by_key(|r| std::cmp::Reverse(r.closed_at));
+    AgentListDto {
+        tab_id: tab_id.to_owned(),
+        rows,
+        groups,
+        closed: closed
+            .into_iter()
+            .map(|r| ClosedAgentDto {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                closed_at: r.closed_at.unwrap_or(0),
+            })
+            .collect(),
+        projects: Vec::new(),
+    }
+}
+
+/// Project `tab_id`'s records in list order, a row for each not closed with `amber` its own need
+/// ([`attention::needs_you`]) and its place for [`nest`] still to fill, and the groups holding a
+/// row.
+pub(super) fn agent_rows(
+    tab_id: &str,
+    store: &AgentStore,
+    attention: &Attention,
+    status: impl Fn(&str) -> Option<BlockStatus>,
+) -> (Vec<AgentRecord>, Vec<AgentRowDto>, Vec<AgentGroupDto>) {
     let records = agents::in_list_order(&store.records(tab_id));
     let folded = store.folded(tab_id);
     let mut rows = Vec::new();
@@ -1076,10 +1113,17 @@ fn agent_list_at(
             can_fork: fork_reason.is_none(),
             fork_reason: fork_reason.map(str::to_owned),
             unseen,
+            project: None,
         });
     }
-    // Rows are depth first, so a row's forks are the rows after it deeper than it. `amber` held
-    // each row's own need until here.
+    (records, rows, groups)
+}
+
+/// Fill each of `rows`' (depth first, `amber` its own need) place as it stands at `now`, in Unix
+/// seconds: its forks, fold and hiding, `amber` when folded over a row needing you, and whether
+/// it shows in the Asleep or Cold Cache group. A cache expiring at or before `now` is cold.
+pub(super) fn nest(rows: &mut [AgentRowDto], now: u64) {
+    // A row's forks are the rows after it deeper than it.
     let needs: Vec<bool> = rows.iter().map(|r| r.amber).collect();
     let asleep: Vec<bool> = rows.iter().map(|r| r.state == "asleep").collect();
     // `cache` is only set while the agent isn't working, so a working row is never cold.
@@ -1100,24 +1144,6 @@ fn agent_list_at(
         if r.folded {
             rows[i + 1..end].iter_mut().for_each(|k| k.hidden = true);
         }
-    }
-    let mut closed: Vec<&AgentRecord> = records
-        .iter()
-        .filter(|r| r.state == RecordState::Closed)
-        .collect();
-    closed.sort_by_key(|r| std::cmp::Reverse(r.closed_at));
-    AgentListDto {
-        tab_id: tab_id.to_owned(),
-        rows,
-        groups,
-        closed: closed
-            .into_iter()
-            .map(|r| ClosedAgentDto {
-                id: r.id.clone(),
-                name: r.name.clone(),
-                closed_at: r.closed_at.unwrap_or(0),
-            })
-            .collect(),
     }
 }
 
@@ -3653,10 +3679,12 @@ mod tests {
                     can_fork: true,
                     fork_reason: None,
                     unseen: None,
+                    project: None,
                 })
                 .collect(),
             groups,
             closed: vec![],
+            projects: vec![],
         }
     }
 

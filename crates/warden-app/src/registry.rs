@@ -68,6 +68,13 @@ pub enum RexAnswer {
     Column(ColumnOpened),
 }
 
+/// The id of the All Agents tab, a window's one row listing every project's awake agent tabs.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the All Agents tab is wired next")
+)]
+pub const ALL_AGENTS_ID: &str = "warden:all-agents";
+
 /// The Rex pane key and surface id of agent `record_id` in tab `tab_id`'s main pane. The one
 /// spelling: the registry, the hub's per-agent bindings and size claims all use it.
 pub(crate) fn agent_key(tab_id: &str, record_id: &str) -> String {

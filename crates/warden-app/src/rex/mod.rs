@@ -24,6 +24,7 @@
 
 pub mod agent_open;
 pub mod agents;
+pub mod all_agents;
 pub mod attention;
 pub mod column;
 pub mod layout;
