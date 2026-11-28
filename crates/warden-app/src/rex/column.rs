@@ -345,7 +345,7 @@ impl RexHub {
         deadline: Instant,
     ) -> Result<ColumnOpened, RexError> {
         let (key, server) = (req.pane_key.as_str(), req.server.as_str());
-        let session_id = match self.find_session_until(key, server, deadline)? {
+        let session_id = match self.find_session_until(key, server, deadline, true)? {
             Some((_, sid)) => {
                 if self.is_restored(key) {
                     if let Err(e) = self.retype_stack(req, &sid, deadline) {

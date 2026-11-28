@@ -2995,3 +2995,36 @@ fn a_watched_cold_tab_stays_cold_after_refresh() {
     assert!(r.agent_keys("t").is_empty(), "no agent slot to spawn");
     assert!(r.is_connecting("t"));
 }
+
+static FOLLOW_AUTOSTARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn counting_follow_autostart(_: Duration) -> Result<(), RexError> {
+    FOLLOW_AUTOSTARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+#[test]
+fn a_watched_projects_refresh_never_starts_rex() {
+    use super::agent_open::tests::{fake, map, open, store};
+    use super::lifecycle::AgentOp;
+    use std::sync::atomic::Ordering;
+    let f = fake(Some("s1"), vec![("window:1", "block:1", "a")]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rex-sessions.json");
+    map(&path, "s1");
+    let hub = RexHub::for_test_autostart(path, info(), f.endpoint(), counting_follow_autostart);
+    let rx = hub.subscribe();
+    let req = open(None);
+    assert_eq!(hub.watch_project(&req), Ok(true));
+
+    // The user quits Rex before the watch's Refresh runs.
+    drop(f);
+    next_event(&rx, |e| matches!(e, HubEvent::Disconnected { .. }));
+    let s = store(vec![]);
+    assert!(hub.agent_op(&s, &req, &AgentOp::Refresh, 7).is_err());
+    assert_eq!(
+        FOLLOW_AUTOSTARTS.load(Ordering::SeqCst),
+        0,
+        "a Rex the user quit stays quit"
+    );
+}

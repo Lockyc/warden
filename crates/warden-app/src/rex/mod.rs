@@ -202,6 +202,14 @@ struct State {
 }
 
 impl State {
+    /// The session the store maps `pane_key` to on `server`, if it maps one there.
+    fn stored_session(&self, pane_key: &str, server: &str) -> Option<String> {
+        self.store
+            .get(pane_key)
+            .filter(|r| r.server == server)
+            .map(|r| r.session_id.clone())
+    }
+
     /// Where `pane_key`'s session lives: its stored mapping, else its adoption; for an agent key,
     /// its main pane's; for a column block's key, its column's.
     fn record(&self, pane_key: &str) -> Option<&PaneRecord> {

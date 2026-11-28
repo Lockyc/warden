@@ -46,31 +46,19 @@ impl RexHub {
     pub fn watch_project(&self, req: &RexOpen) -> Result<bool, RexError> {
         let deadline = Instant::now() + OPEN_BUDGET;
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
-        let stored = |hub: &Self| {
-            let st = hub.inner.lock();
-            st.store
-                .get(project)
-                .filter(|r| r.server == server)
-                .map(|r| r.session_id.clone())
-        };
-        if stored(self).is_none() {
+        if self.inner.lock().stored_session(project, server).is_none() {
             return Ok(false);
         }
         let _held = self.inner.hold_pane(project, Some(deadline))?;
-        let watched = (|| {
-            let (client, _) = self.inner.conn_with(server, deadline, false)?;
-            let Some(sid) = stored(self).filter(|_| !self.is_restored(project)) else {
-                return Ok(false);
-            };
-            match self.inner.attach(server, &client, &sid, Some(deadline)) {
-                Ok(_) => {}
-                Err(RexError::Api { code, .. }) if code == "session_not_found" => return Ok(false),
-                Err(e) => return Err(e),
-            }
-            self.inner.lock().agent_panes.insert(project.to_owned());
-            Ok(true)
-        })();
-        budgeted(deadline, watched)
+        let found = budgeted(
+            deadline,
+            self.find_session_until(project, server, deadline, false),
+        )?;
+        if found.is_none() || self.is_restored(project) {
+            return Ok(false);
+        }
+        self.inner.lock().agent_panes.insert(project.to_owned());
+        Ok(true)
     }
 
     /// Whether `pane_key` is followed as an agent pane ([`RexHub::agent_panes`]): opened, or
@@ -126,7 +114,7 @@ impl RexHub {
         deadline: Instant,
     ) -> Result<AgentsOpened, RexError> {
         let (project, server) = (req.pane_key.as_str(), req.server.as_str());
-        let mut session = self.find_session_until(project, server, deadline)?;
+        let mut session = self.find_session_until(project, server, deadline, true)?;
         if let Some((_, sid)) = session.as_ref().filter(|_| self.is_restored(project)) {
             if self.retire_restored(store, project, server, &sid.clone(), now, deadline)? {
                 session = None;
@@ -279,23 +267,21 @@ impl RexHub {
     }
 
     /// `pane_key`'s mapped session on `server` if it still exists there — attached, so its
-    /// windows are current — else `None`. Never creates one.
+    /// windows are current — else `None`. Never creates one. `start`: whether a stopped local
+    /// Rex may be started for it ([`super::Inner::conn_with`]).
     pub(super) fn find_session_until(
         &self,
         pane_key: &str,
         server: &str,
         deadline: Instant,
+        start: bool,
     ) -> Result<Option<(Endpoint, String)>, RexError> {
-        let (client, endpoint) = self.inner.conn_until(server, deadline)?;
-        let mapped = self.inner.lock().store.get(pane_key).cloned();
-        let Some(rec) = mapped.filter(|r| r.server == server) else {
+        let (client, endpoint) = self.inner.conn_with(server, deadline, start)?;
+        let Some(sid) = self.inner.lock().stored_session(pane_key, server) else {
             return Ok(None);
         };
-        match self
-            .inner
-            .attach(server, &client, &rec.session_id, Some(deadline))
-        {
-            Ok(_) => Ok(Some((endpoint, rec.session_id))),
+        match self.inner.attach(server, &client, &sid, Some(deadline)) {
+            Ok(_) => Ok(Some((endpoint, sid))),
             Err(RexError::Api { code, .. }) if code == "session_not_found" => Ok(None),
             Err(e) => Err(e),
         }

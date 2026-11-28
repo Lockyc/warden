@@ -2498,6 +2498,7 @@ fn rescan_root(window: tauri::WebviewWindow, state: tauri::State<ManagerState>) 
     } // release the ManagerState lock before the lock-free bump
       // New discovered tabs may carry probes — fast-burst every window so their dots populate now.
     probe::bump_all(&app);
+    rex::lifecycle::watch_projects(&app);
 }
 
 /// Update the calling window's pane frame from a web-coordinate rect. `pane` is the hole's
@@ -2718,6 +2719,7 @@ fn reopen_target(app: &tauri::AppHandle) -> Option<String> {
 fn open_or_focus_window(app: &tauri::AppHandle, label: &str) {
     use tauri::Manager;
     app.state::<WindowSet>().open_or_focus(app, label);
+    rex::lifecycle::watch_projects(app);
     let _ = rebuild_menu(app);
 }
 
@@ -2731,6 +2733,7 @@ fn reopen_by_title(app: &tauri::AppHandle, title: &str) {
     let entries = set.entries();
     if let Some(home) = shell_core::windows::plan::entry_for_title(&entries, title) {
         set.open_or_focus(app, &home.id);
+        rex::lifecycle::watch_projects(app);
     }
 }
 

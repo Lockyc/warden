@@ -5217,6 +5217,27 @@ mod tests {
         );
     }
 
+    /// An agent pane open and blank on screen takes an agent made elsewhere from an answer no
+    /// window here asked for (a window change in Rex), and spawns it.
+    #[test]
+    fn a_blank_pane_on_screen_follows_an_unasked_answer() {
+        let (mut r, _) = rex_registry();
+        r.add(&rex_spec("t", "local"), false).unwrap();
+        r.force_ready_agents("t", &["r1"], Some("r1"));
+        r.sync_agents("t", AgentsOpened::default(), true).unwrap();
+        r.active = Some("t".into());
+        let found = AgentsOpened {
+            agents: vec![("r2".into(), target("block:r2"))],
+            selected: Some("r2".into()),
+        };
+        // Headless, the spawn it tries has no window to host it.
+        assert!(matches!(
+            r.sync_agents("t", found, false),
+            Err(SurfaceError::SurfaceCreateFailed)
+        ));
+        assert_eq!(r.agent_keys("t"), ["t::agent:r2"]);
+    }
+
     #[test]
     fn agent_request_names_the_main_pane() {
         let mut r = Registry::new(std::ptr::null_mut(), rect());

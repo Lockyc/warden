@@ -53,6 +53,14 @@ pub enum AgentOp {
     Exited(String),
 }
 
+impl AgentOp {
+    /// Whether this op follows something Rex already made happen ([`follow`]) rather than asking
+    /// for a change: such an op never starts a stopped Rex, so a Rex the user quit stays quit.
+    fn follows_rex(&self) -> bool {
+        matches!(self, AgentOp::Refresh | AgentOp::Exited(_))
+    }
+}
+
 /// Why `op` can't run on `records`: sleeping, closing unconfirmed or forking an agent that never
 /// reported its resume command ([`NO_RESUME`]); forking one whose harness can't fork
 /// ([`agents::CANT_FORK`]) or a tab the list doesn't show ([`NO_AGENT`]).
@@ -186,7 +194,7 @@ impl RexHub {
         if let Some(why) = refusal(op, &held) {
             return Err(Failed::Refused(why));
         }
-        let mut session = self.current_session(project, server, deadline)?;
+        let mut session = self.current_session(project, server, deadline, !op.follows_rex())?;
         // A restored session is retired here as an open retires it, so an op never adds an agent
         // to bare shells a later open would close along with it.
         if let Some((_, sid)) = session.as_ref().filter(|_| self.is_restored(project)) {
@@ -447,27 +455,23 @@ impl RexHub {
     }
 
     /// `project`'s session on `server`: the one the hub already follows, read without a call,
-    /// else found ([`RexHub::find_session_until`]). `None` once it is gone.
+    /// else found ([`RexHub::find_session_until`], starting a stopped local Rex when `start`).
+    /// `None` once it is gone.
     fn current_session(
         &self,
         project: &str,
         server: &str,
         deadline: Instant,
+        start: bool,
     ) -> Result<Option<(Endpoint, String)>, RexError> {
-        let mapped = self
-            .inner
-            .lock()
-            .store
-            .get(project)
-            .filter(|r| r.server == server)
-            .map(|r| r.session_id.clone());
+        let mapped = self.inner.lock().stored_session(project, server);
         if let Some(sid) = mapped {
             let followed = self.inner.watching(server, &sid) && self.session_alive(project);
             if let Some((_, endpoint)) = self.inner.current(server).filter(|_| followed) {
                 return Ok(Some((endpoint, sid)));
             }
         }
-        self.find_session_until(project, server, deadline)
+        self.find_session_until(project, server, deadline, start)
     }
 
     /// Close `record`'s window, if it has one in `session`, and unhook the record from it.
