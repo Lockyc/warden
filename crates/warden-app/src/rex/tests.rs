@@ -3038,7 +3038,7 @@ mod all_agents_wiring {
     use super::super::attention::Attention;
     use super::super::lifecycle::AgentOp;
     use crate::manager::{WindowManager, WindowState, INITIAL_RECT};
-    use crate::registry::{agent_key, Registry, ALL_AGENTS_ID};
+    use crate::registry::{agent_key, Registry};
     use crate::rex::{PaneTarget, RexHub};
     use crate::surface::TabSpec;
 
@@ -3133,7 +3133,7 @@ mod all_agents_wiring {
     }
 
     #[test]
-    fn sleeping_from_all_agents_releases_the_combined_surface_too() {
+    fn a_released_combined_slot_stays_until_the_list_drops_it_and_leans() {
         let mut project = registry(&["t"]);
         project.force_ready_agents("t", &["a", "b"], Some("a"));
         let mut combined = registry(&[]);
@@ -3143,10 +3143,8 @@ mod all_agents_wiring {
         combined.select_all_agent(&a, target("block:a")).unwrap();
         let mut m = manager(vec![("A", project), ("B", combined)]);
 
+        // A spawned surface closing can't be seen here: the null test window never spawns one.
         m.release_agent("t", "a");
-        let ws = |m: &WindowManager, l: &str| m.windows[l].registry.is_spawned("t");
-        assert!(!ws(&m, "A"), "the project's surface is let go");
-        assert!(!m.windows["B"].registry.is_spawned(ALL_AGENTS_ID));
         assert_eq!(
             shown(&m, "B"),
             Some(a.clone()),
