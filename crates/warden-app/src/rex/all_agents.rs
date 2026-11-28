@@ -1,8 +1,9 @@
 //! The All Agents list: every Rex project's awake agent tabs in one list, grouped by project.
 
-use super::agents::AgentStore;
+use super::agents::{self, AgentStore};
 use super::attention::Attention;
-use super::lifecycle::{self, AgentListDto, AgentRowDto};
+use super::lifecycle::{self, AgentListDto, AgentRowDto, AllAgentsGroupDto};
+use super::spawn::unix_now;
 use super::windows::BlockStatus;
 use crate::registry::{agent_key, ALL_AGENTS_ID};
 
@@ -16,17 +17,6 @@ pub struct ProjectRef {
     pub id: String,
     pub title: String,
     pub colour: String,
-}
-
-/// A project's group in the All Agents list.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AllAgentsGroupDto {
-    pub project: String,
-    pub title: String,
-    pub colour: String,
-    /// A row in it needs you.
-    pub amber: bool,
 }
 
 /// The awake agent tabs of every project in `projects`, in that order, each project's in its own
@@ -43,23 +33,19 @@ pub fn all_agents_list(
     attention: &Attention,
     status: impl Fn(&str) -> Option<BlockStatus>,
 ) -> AgentListDto {
+    let now = unix_now();
     let mut rows = Vec::new();
     let mut groups = Vec::new();
     for p in projects {
-        let (_, all, _) = lifecycle::agent_rows(&p.id, store, attention, &status);
+        let (records, all, _) = lifecycle::agent_rows(&p.id, store, attention, &status);
         let awake = |id: &str| all.iter().any(|r| r.id == id && r.state != "asleep");
-        let parent = |id: &str| all.iter().find(|r| r.id == id)?.parent.clone();
         let mut kept: Vec<AgentRowDto> = Vec::new();
         for r in all.iter().filter(|r| r.state != "asleep") {
-            let mut up = r.parent.clone();
-            // Bounded: only a tampered file could make a cycle.
-            for _ in 0..all.len() {
-                match up {
-                    Some(ref id) if !awake(id) => up = parent(id),
-                    _ => break,
-                }
-            }
-            let up = up.map(|id| agent_key(&p.id, &id));
+            let up = records
+                .iter()
+                .find(|rec| rec.id == r.id)
+                .and_then(|rec| agents::nearest_ancestor(rec, awake))
+                .map(|id| agent_key(&p.id, &id));
             let depth = up
                 .as_ref()
                 .and_then(|k| kept.iter().find(|o| o.id == *k))
@@ -83,10 +69,10 @@ pub fn all_agents_list(
             colour: p.colour.clone(),
             amber: needs.contains(&true),
         });
-        lifecycle::nest(&mut kept, 0);
+        lifecycle::nest(&mut kept, now);
+        // No row is asleep, so none is in the Asleep group; a cold one stays in its project.
         for (r, need) in kept.iter_mut().zip(needs) {
             r.amber |= need;
-            r.asleep_group = false;
             r.cold_group = false;
         }
         rows.extend(kept);
@@ -116,6 +102,7 @@ mod tests {
     use crate::rex::agent_open::tests::{record, store};
     use crate::rex::agents::{AgentRecord, RecordState};
     use crate::rex::attention::Attention;
+    use crate::rex::lifecycle::agent_list;
     use crate::rex::windows::{AgentState, BlockStatus};
 
     fn in_project(project: &str, mut r: AgentRecord) -> AgentRecord {
@@ -346,6 +333,11 @@ mod tests {
                 ..status(AgentState::Idle, None)
             })
         };
+        let own = agent_list("p", &s.lock().unwrap(), &Attention::default(), cold);
+        assert!(
+            own.rows.iter().all(|r| r.cold_group),
+            "the project's own list puts them in Cold Cache"
+        );
         let list = all_agents_list(
             &[project("p")],
             &s.lock().unwrap(),
@@ -356,6 +348,39 @@ mod tests {
         for r in &list.rows {
             assert!(!r.cold_group && !r.asleep_group && !r.selected, "{}", r.id);
         }
+    }
+
+    #[test]
+    fn a_project_whose_only_needy_row_is_folded_away_is_amber() {
+        let mut parent = in_project("p", record("a", RecordState::Live, Some("window:1"), None));
+        parent.folded = true;
+        let mut fork = in_project("p", record("a1", RecordState::Live, Some("window:2"), None));
+        fork.lineage = vec!["a".into()];
+        let s = store(vec![parent, fork]);
+        let st = |block: &str| match block {
+            "block:2" => Some(status(AgentState::Blocked, None)),
+            _ => Some(status(AgentState::Idle, None)),
+        };
+        let list = all_agents_list(
+            &[project("p")],
+            &s.lock().unwrap(),
+            &Attention::default(),
+            st,
+        );
+        let rows: Vec<(String, bool, bool)> = list
+            .rows
+            .iter()
+            .map(|r| (r.id.clone(), r.hidden, r.amber))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (agent_key("p", "a"), false, true),
+                (agent_key("p", "a1"), true, true)
+            ],
+            "the fork is folded away; its parent shows its need"
+        );
+        assert!(list.projects[0].amber);
     }
 
     #[test]

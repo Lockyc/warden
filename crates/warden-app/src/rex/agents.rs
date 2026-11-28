@@ -560,14 +560,16 @@ fn merge_fields(current: &mut AgentRecord, before: &AgentRecord, after: &AgentRe
 /// The id of `r`'s parent among `records` (one project's): the nearest of its lineage still
 /// listed and not closed. `None` for a top-level tab.
 pub fn parent_of(records: &[AgentRecord], r: &AgentRecord) -> Option<String> {
-    r.lineage
-        .iter()
-        .find(|id| {
-            records
-                .iter()
-                .any(|o| o.id == **id && o.state != RecordState::Closed)
-        })
-        .cloned()
+    nearest_ancestor(r, |id| {
+        records
+            .iter()
+            .any(|o| o.id == id && o.state != RecordState::Closed)
+    })
+}
+
+/// The id of the nearest of `r`'s lineage that `kept` takes.
+pub fn nearest_ancestor(r: &AgentRecord, kept: impl Fn(&str) -> bool) -> Option<String> {
+    r.lineage.iter().find(|id| kept(id)).cloned()
 }
 
 /// How many parents up `r` sits from a top-level tab.

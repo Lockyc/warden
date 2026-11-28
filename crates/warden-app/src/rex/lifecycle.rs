@@ -14,7 +14,6 @@ use rex_client::{Endpoint, RexError};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::agents::{self, AgentRecord, AgentStore, RecordState};
-use super::all_agents::AllAgentsGroupDto;
 use super::attention::{self, Attention};
 use super::spawn::unix_now;
 use super::windows::{AgentState, BlockStatus, BlockedKind};
@@ -826,6 +825,17 @@ pub struct AgentListDto {
     pub closed: Vec<ClosedAgentDto>,
     /// The All Agents list's project groups holding a row, in list order; empty in a project's.
     pub projects: Vec<AllAgentsGroupDto>,
+}
+
+/// A project's group in the All Agents list.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllAgentsGroupDto {
+    pub project: String,
+    pub title: String,
+    pub colour: String,
+    /// A row in it needs you.
+    pub amber: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
