@@ -87,6 +87,14 @@ pub fn request(app: &AppHandle, ask: SizeAsk, size: PaneSize) {
     }
 }
 
+/// Queue each of `sizes` [`SizeAsk::IfOwner`]: a Rex pane's block takes a new grid only while
+/// warden owns it.
+pub fn request_if_owner(app: &AppHandle, sizes: Vec<PaneSize>) {
+    for size in sizes {
+        request(app, SizeAsk::IfOwner, size);
+    }
+}
+
 fn run(hub: &RexHub, job: &SizeJob) {
     let s = &job.size;
     let r = match job.ask {

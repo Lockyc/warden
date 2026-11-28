@@ -1394,6 +1394,11 @@ impl WindowManager {
                     ws.background_tabs_section = o;
                 }
                 if let Some(new_active) = apply_agents_tab(&mut ws.registry, agents_tab) {
+                    // The lean shows a project tab's Rex panes: their sizes go back, as a
+                    // switch's do.
+                    if new_active.is_some() {
+                        crate::rex::size::request_if_owner(app, ws.registry.shown_rex_sizes());
+                    }
                     exited.push((label.clone(), ALL_AGENTS_ID.to_owned(), new_active));
                 }
                 // Removing the visible tab: unload it first so the selection leans to a live

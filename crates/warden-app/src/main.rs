@@ -1007,7 +1007,7 @@ fn activate_tab(
         m.record_session(tauri::Manager::app_handle(&window), window.label());
         out
     };
-    request_rex_sizes(tauri::Manager::app_handle(&window), rex_sizes);
+    rex::size::request_if_owner(tauri::Manager::app_handle(&window), rex_sizes);
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
     // empty-state placeholder over the uncovered hole) instead of panicking. The chrome is
     // listening now, so push the reason to the banner.
@@ -1061,7 +1061,8 @@ fn activate_tab(
 
 /// Kill tab `id`'s terminal (surface + PTY) in the calling window; it goes cold and
 /// respawns fresh on next focus. Returns the id of the tab that became active if the
-/// killed one was visible (so the chrome moves its highlight there), else `None`.
+/// killed one was visible (so the chrome moves its highlight there), else `None`; that lean
+/// resends the newly shown Rex panes' sizes, as a switch does.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn unload_tab(
@@ -1069,15 +1070,24 @@ fn unload_tab(
     state: tauri::State<ManagerState>,
     id: String,
 ) -> Option<String> {
-    let new_active = {
+    let (new_active, rex_sizes) = {
         let mut m = state.lock();
-        let new_active = m
+        let out = m
             .windows
             .get_mut(window.label())
-            .and_then(|ws| ws.registry.unload(&id));
+            .map_or((None, Vec::new()), |ws| {
+                let new_active = ws.registry.unload(&id);
+                let sizes = if new_active.is_some() {
+                    ws.registry.shown_rex_sizes()
+                } else {
+                    Vec::new()
+                };
+                (new_active, sizes)
+            });
         m.record_session(tauri::Manager::app_handle(&window), window.label());
-        new_active
+        out
     };
+    rex::size::request_if_owner(tauri::Manager::app_handle(&window), rex_sizes);
     manager::close_spent_popouts(tauri::Manager::app_handle(&window));
     sync_agent_menu(tauri::Manager::app_handle(&window));
     new_active
@@ -2200,7 +2210,7 @@ fn scratch_select(
         let _ = window.emit("warden:refresh", dto);
     }
     let app = tauri::Manager::app_handle(&window);
-    request_rex_sizes(app, sizes);
+    rex::size::request_if_owner(app, sizes);
     sync_agent_menu(app);
     true
 }
@@ -2508,7 +2518,7 @@ fn scratch_landed(
     if let Some(dto) = dto {
         let _ = app.emit_to(label, "warden:refresh", dto);
     }
-    request_rex_sizes(app, sizes);
+    rex::size::request_if_owner(app, sizes);
     sync_agent_menu(app);
 }
 
@@ -2591,7 +2601,7 @@ fn set_hole_rect(
         None => Vec::new(),
     };
     drop(m);
-    request_rex_sizes(tauri::Manager::app_handle(&window), rex_sizes);
+    rex::size::request_if_owner(tauri::Manager::app_handle(&window), rex_sizes);
 }
 
 /// The page's measure of each hidden tab's holes (`measureTabs` in `ui/index.html`), keyed by
@@ -2624,7 +2634,7 @@ fn set_tab_rects(
         rects.len(),
         rex_sizes.len()
     );
-    request_rex_sizes(tauri::Manager::app_handle(&window), rex_sizes);
+    rex::size::request_if_owner(tauri::Manager::app_handle(&window), rex_sizes);
 }
 
 #[derive(serde::Deserialize)]
@@ -2632,14 +2642,6 @@ struct TabRectsArg {
     primary: RectArg,
     /// One per block of the tab's column's selected scratch tab, in layout order.
     blocks: Vec<RectArg>,
-}
-
-/// A Rex pane's block takes a new grid only while warden owns it.
-#[cfg(target_os = "macos")]
-fn request_rex_sizes(app: &tauri::AppHandle, sizes: Vec<rex::size::PaneSize>) {
-    for size in sizes {
-        rex::size::request(app, rex::size::SizeAsk::IfOwner, size);
-    }
 }
 
 /// A web-coordinate rect from the page as the view rect a surface frames at; `None` for a
