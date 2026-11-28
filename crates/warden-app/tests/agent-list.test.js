@@ -109,3 +109,55 @@ test("a list goes stale once a row's cache passes after the list was built", () 
   assert.strictEqual(agentColdDue(rows, 100, 150), false, "a was already cold when the list was built");
   assert.strictEqual(agentColdDue(rows, 100, 200), true, "c went cold");
 });
+
+// The All Agents list: rows keyed `<project>::agent:<record>`, each naming its project.
+const all = {
+  tabId: "warden:all-agents",
+  groups: [],
+  projects: [
+    { project: "p2", title: "Two", colour: "#222", amber: false },
+    { project: "p1", title: "One", colour: "#111", amber: true },
+  ],
+  rows: [
+    row("p2::agent:x", null, "mine", { project: "p2" }),
+    row("p1::agent:a", null, null, { project: "p1" }),
+    row("p1::agent:a1", "p1::agent:a", null, { project: "p1" }),
+  ],
+};
+const project = { tabId: "p1", groups: [], projects: [], rows: [row("a", null, null, { project: null })] };
+
+test("the All Agents list groups its rows under their projects, in the projects' order", () => {
+  const { agentGroupsForAll } = vm.runInContext("({ agentGroupsForAll })", ctx);
+  assert.deepStrictEqual(plain(agentGroupsForAll(all)).map((g) => [g.project, g.title, g.colour, g.amber, g.rows.map((r) => r.id)]), [
+    ["p2", "Two", "#222", false, ["p2::agent:x"]],
+    ["p1", "One", "#111", true, ["p1::agent:a", "p1::agent:a1"]],
+  ]);
+});
+
+test("the All Agents list neither drags nor opens new agents, and says why", () => {
+  const { agentAllowsDrag, agentDragReason, agentNewReason } =
+    vm.runInContext("({ agentAllowsDrag, agentDragReason, agentNewReason })", ctx);
+  assert.strictEqual(agentAllowsDrag(all), false);
+  assert.strictEqual(agentAllowsDrag(project), true);
+  assert.strictEqual(agentDragReason(all), "Reorder agents in their project");
+  assert.strictEqual(agentDragReason(project), null);
+  assert.strictEqual(agentNewReason(all), "New agents open in a project");
+  assert.strictEqual(agentNewReason(project), null);
+});
+
+test("a row's op runs on its own project's agent tab", () => {
+  const { agentOpTarget } = vm.runInContext("({ agentOpTarget })", ctx);
+  assert.deepStrictEqual(plain(agentOpTarget(all, all.rows[1])), { tabId: "p1", recordId: "a" });
+  assert.deepStrictEqual(plain(agentOpTarget(project, project.rows[0])), { tabId: "p1", recordId: "a" });
+  // The last separator splits it, as `split_agent_key` does.
+  const odd = row("/x::agent:y/p::agent:r", null, null, { project: "/x::agent:y/p" });
+  assert.deepStrictEqual(plain(agentOpTarget(all, odd)), { tabId: "/x::agent:y/p", recordId: "r" });
+});
+
+test("the All Agents row's badge counts the agents needing you", () => {
+  const { agentAllAttention } = vm.runInContext("({ agentAllAttention })", ctx);
+  const needy = row("p1::agent:b", null, null, { state: "blocked", blockedKind: "permission" });
+  const unseen = row("p1::agent:c", null, null, { unseen: "t" });
+  assert.strictEqual(agentAllAttention([row("a"), needy, unseen]), 2);
+  assert.strictEqual(agentAllAttention([row("a")]), null);
+});

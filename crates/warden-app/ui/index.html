@@ -494,6 +494,9 @@
       .a-newdrop { margin: 6px 2px 0; padding: 5px 6px; border: 1px dashed #3d444d; border-radius: 5px;
         color: #7d8590; font-size: 0.9em; }
       .a-newdrop.over { border-color: #56b4e9; color: #c3ccd8; }
+      /* In place of the New group target where a list can't be dragged: why. */
+      .a-newdrop.off { border-style: solid; cursor: not-allowed; }
+      .a-swatch { flex: none; width: 9px; height: 9px; border-radius: 2px; }
       /* A row's dots and its confirm are chrome-core's (`agentControls`). Armed, nothing in the row
          moves: ⏻ takes the dot's slot, ↩ the ⋯'s, and ☠ sits left of them over the text's tail
          (its negative margin is its own width plus the row's gap), masked by the row's red; an
@@ -519,7 +522,7 @@
       .a-foot-row { display: flex; gap: 4px; }
       #agents-new { flex: 1; text-align: left; padding: 4px 6px; border-radius: 5px;
         color: #9aa4b2; }
-      #agents-new:hover, #agents-rail:hover, .a-closed-head:hover { background: #22272e; }
+      #agents-new:hover:not(:disabled), #agents-rail:hover, .a-closed-head:hover { background: #22272e; }
       #agents-rail { flex: none; width: 24px; border-radius: 5px; color: #7d8590; display: flex;
         align-items: center; justify-content: center; }
       .a-closed-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px;
@@ -606,7 +609,7 @@
           <div id="agents-head" data-tauri-drag-region>
             <div id="agents-tally"></div>
             <div class="a-foot-row">
-              <button id="agents-new" title="New agent tab (⌘T)">+ New tab</button>
+              <button id="agents-new" data-title="New agent tab (⌘T)">+ New tab</button>
               <button id="agents-rail"></button>
             </div>
           </div>
@@ -733,9 +736,11 @@
       // tab is seen. The backend keeps them across a restart (`unread.rs`): seeded from the init
       // snapshot's `unread`, and each clear is reported back (`clear_unread`).
       const badges = new Set();
-      // A tab row's attention, as chrome-core takes it (`agentTabAttention`).
+      // A tab row's attention, as chrome-core takes it (`agentTabAttention`; the All Agents row's
+      // `agentAllAttention`).
       function tabAttention(id) {
-        return agentTabAttention(agentLists.get(id)?.rows ?? [], badges.has(id));
+        const rows = agentLists.get(id)?.rows ?? [];
+        return id === AGENT_ALL_ID ? agentAllAttention(rows) : agentTabAttention(rows, badges.has(id));
       }
       function paintAttention(id) {
         if (sb) sb.setAttention(id, tabAttention(id));
@@ -1323,7 +1328,9 @@
         splitLayoutById.forEach((_, id) => { if (!ids.has(id)) splitLayoutById.delete(id); });
         ratioOverride.forEach((_, id) => { if (!ids.has(id)) ratioOverride.delete(id); });
         agentsById.clear();
-        dto.tabs.forEach((t) => { if (t.agents) agentsById.set(t.id, true); });
+        dto.tabs.forEach((t) => { if (t.agents || t.all_agents) agentsById.set(t.id, true); });
+        const all = dto.tabs.find((t) => t.all_agents);
+        agentShowAll(all ? all.agents_selected ?? null : null);
         columnById.clear();
         dto.tabs.forEach((t) => { if (t.column) columnById.set(t.id, t.column); });
         // A drag in progress goes on showing its own layout; a released one until the snapshot
@@ -1390,6 +1397,8 @@
             // the row with the ⤢ detached mark and the app treats a click on it as "raise that
             // window". Invisible until forwarded here (the "tree rendered flat" footgun class).
             detached: !!t.detached,
+            // The pinned All Agents row (always first): a view of every project's awake agents.
+            allAgents: !!t.all_agents,
             // The tab is open while any of its terminals runs: a Rex tab's main pane holds none
             // once its last agent tab closes, while its scratch column runs on.
             live: t.spawned || !!t.secondary_spawned,
@@ -1552,12 +1561,11 @@
       const agentControls = new ChromeRowControls({
         rowsFor: (id) => [...document.querySelectorAll("#agents-list .a-row")].filter((r) => r.dataset.id === id),
         tabOf: (id) => {
-          const dto = agentLists.get(agentsTab());
-          const r = dto && dto.rows.find((x) => x.id === id);
+          const r = agentShownRow(id);
           return r ? agentControlRecord(r) : undefined;
         },
-        onDestroy: (id) => agentCall("agent_close", { tabId: agentsTab(), recordId: id, confirmed: true }),
-        onSuspend: (id) => agentCall("agent_sleep", { tabId: agentsTab(), recordId: id }),
+        onDestroy: (id) => agentShownOp("agent_close", id, { confirmed: true }),
+        onSuspend: (id) => agentShownOp("agent_sleep", id),
         onDisarm: () => {
           clearTimeout(agentArmLapse);
           if (agentArmWidened) {
@@ -1566,6 +1574,12 @@
           }
         },
       });
+      // Row `id` of the list on screen, and an op on it.
+      const agentShownRow = (id) => agentLists.get(agentsTab())?.rows.find((x) => x.id === id);
+      function agentShownOp(cmd, id, args) {
+        const r = agentShownRow(id);
+        if (r) agentOp(agentsTab(), cmd, r, args);
+      }
       // An armed row needs its names-wide column for ☠ ⏻ ↩, so arming widens a folded rail until
       // it disarms; a keyboard arm lapses, since the terminal keeps Escape and clicks from the page.
       let agentArmWidened = false;
@@ -1640,9 +1654,13 @@
       // `TabDto.colour`.
       // Shown by the same `.agents` class as the column; runs on every column sync, list render,
       // `warden:agents`, `warden:session-state` and snapshot.
+      // In All Agents the tile is the selected agent's project, when this window holds it.
       function summarySync() {
         const tab = agentsTab();
-        const s = summaryById.get(tab);
+        const dto = agentLists.get(tab);
+        const sel = dto && dto.rows.find((r) => r.selected);
+        const home = sel && sel.project && summaryById.has(sel.project) ? sel.project : tab;
+        const s = summaryById.get(home);
         if (!s) return;
         const col = document.getElementById("main-col");
         col.style.setProperty("--s-bar", s.colour.bar_bg);
@@ -1651,12 +1669,10 @@
         const tile = document.getElementById("agents-tile");
         tile.title = s.title;
         tile.querySelector(".t-name").textContent = s.title;
-        const state = TILE_STATE[session.get(tab) ?? s.presence];
+        const state = TILE_STATE[session.get(home) ?? s.presence];
         const where = s.server === "local" ? "this Mac" : s.server;
         tile.querySelector(".t-where").textContent = [where, state].filter(Boolean).join(" · ");
         const el = document.getElementById("summary");
-        const dto = agentLists.get(tab);
-        const sel = dto && dto.rows.find((r) => r.selected);
         const words = {
           title: sel && agentTitle(sel),
           story: sel && sel.story,
@@ -1712,6 +1728,21 @@
       function setAgentList(tab, dto) {
         agentLists.set(tab, dto);
         agentListAt.set(tab, Date.now() / 1000);
+        if (tab === AGENT_ALL_ID) agentMarkAll();
+      }
+      // The agent key the All Agents tab shows (`TabDto.agents_selected`, or a click's at once):
+      // its rows arrive selecting none, so the page marks this one.
+      let agentAllSelected = null;
+      function agentMarkAll() {
+        agentLists.get(AGENT_ALL_ID)?.rows.forEach((r) => { r.selected = r.id === agentAllSelected; });
+      }
+      // The All Agents tab shows `key` (a snapshot's `agents_selected`): mark it, and repaint when
+      // it moved — to the neighbour the backend leant to when the shown agent went.
+      function agentShowAll(key) {
+        if (key === agentAllSelected) return;
+        agentAllSelected = key;
+        agentMarkAll();
+        if (agentLists.has(AGENT_ALL_ID)) agentsLanded(AGENT_ALL_ID);
       }
       // Pull tab `tab`'s agent list: once, for a tab that has none yet, or `again` to replace a
       // stale one.
@@ -1719,13 +1750,13 @@
         if ((!again && agentLists.has(tab)) || agentPulls.has(tab)) return;
         agentPulls.add(tab);
         const held = agentLists.get(tab);
-        invoke("agents_init", { tabId: tab })
+        (tab === AGENT_ALL_ID ? invoke("all_agents_init") : invoke("agents_init", { tabId: tab }))
           .then((dto) => {
             if (!dto || agentLists.get(tab) !== held) return; // a `warden:agents` landed first — it's newer
             setAgentList(tab, dto);
             agentsLanded(tab);
           })
-          .catch((err) => console.error("warden: IPC agents_init failed", err))
+          .catch((err) => console.error("warden: IPC agent list pull failed", err))
           .finally(() => agentPulls.delete(tab));
       }
       // Tab `tab`'s list changed: its row's badge, and the list and summary when it's shown.
@@ -1741,8 +1772,9 @@
       // focused, so the window regaining focus (`warden:tab-seen`) asks again.
       function agentAck() {
         const tab = agentsTab();
-        const r = tab !== null && agentLists.get(tab)?.rows.find((x) => x.selected);
-        if (r && r.unseen) invokeSafe("agent_seen", { tabId: tab, recordId: r.id, at: r.unseen });
+        const dto = tab !== null && agentLists.get(tab);
+        const r = dto && dto.rows.find((x) => x.selected);
+        if (r && r.unseen) invokeSafe("agent_seen", { ...agentOpTarget(dto, r), at: r.unseen });
       }
 
       // The head band ends where the sidebar's Search box does (0 with the sidebar collapsed: its
@@ -1799,11 +1831,24 @@
           setWindowError("⚠ " + err);
         });
       }
+      // An All Agents row shows in the All Agents tab (`all_agents_select`), leaving its project's
+      // own selection be.
       function agentSelect(tab, id) {
+        if (tab === AGENT_ALL_ID) {
+          agentAllSelected = id;
+          agentMarkAll(); // highlight at once
+          renderAgents();
+          return agentCall("all_agents_select", { key: id });
+        }
         const dto = agentLists.get(tab);
         if (dto) dto.rows.forEach((r) => { r.selected = r.id === id; }); // highlight at once
         renderAgents();
         agentCall("agent_select", { tabId: tab, recordId: id });
+      }
+      // Run op `cmd` with `args` on row `r` of tab `tab`'s list, as its own project's (`agentOpTarget`).
+      function agentOp(tab, cmd, r, args = {}) {
+        const dto = agentLists.get(tab);
+        if (dto) agentCall(cmd, { ...agentOpTarget(dto, r), ...args });
       }
       // Arm row `id`'s confirm (☠ Close, ⏻ Sleep), as its dot does; `lapse` for a keyboard arm.
       function agentArm(id, lapse) {
@@ -1827,10 +1872,10 @@
       // ⌘W: close at once when the agent can come back from Closed; one that can't (it never
       // reported how to resume) arms its confirm, where ☠ — or ⌘W again — ends it for good.
       function agentClose(tab, r) {
-        if (!r.sleepReason) return agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: false });
+        if (!r.sleepReason) return agentOp(tab, "agent_close", r, { confirmed: false });
         if (agentControls.armed !== r.id) return agentArm(r.id, true);
         agentControls.disarm();
-        agentCall("agent_close", { tabId: tab, recordId: r.id, confirmed: true });
+        agentOp(tab, "agent_close", r, { confirmed: true });
       }
       function agentGroup(tab, id, group, index) {
         agentUi.open = agentUi.newGroupFor = null;
@@ -1908,7 +1953,8 @@
           '<path d="M4 4.7V6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V4.7M8 8v3.3"/></svg>';
         return t.content.firstChild;
       }
-      // A row's tree guides, by its shown level (depth capped at 2) among the rows shown with it:
+      // A row's tree guides, by its shown level (depth capped at 2) among the rows shown with it
+      // (in its group, or in All Agents its project):
       // per level it's nested through, an elbow at its own (├ when a sibling follows, └ on the
       // last) or a run past it while that level goes on below; and a stem down from an open caret.
       function agentGuides(dto, r) {
@@ -1919,7 +1965,8 @@
           out.push(g);
         };
         const lvOf = (x) => Math.min(x.depth, 2);
-        const shown = dto.rows.filter((x) => (x.group ?? null) === (r.group ?? null) && !x.hidden && !agentApart(x));
+        const lane = (x) => (agentIsAll(dto) ? x.project : x.group ?? null);
+        const shown = dto.rows.filter((x) => lane(x) === lane(r) && !x.hidden && !agentApart(x));
         const below = shown.slice(shown.findIndex((x) => x.id === r.id) + 1);
         const own = lvOf(r);
         for (let lv = 1; lv <= own; lv++) {
@@ -1985,6 +2032,10 @@
         if (tab === null) return agentControls.disarm();
         const dto = agentLists.get(tab);
         if (!dto) return; // `agents_init` in flight
+        const add = document.getElementById("agents-new");
+        const noNew = agentNewReason(dto);
+        add.disabled = !!noNew;
+        add.title = noNew || add.dataset.title;
         if (agentUi.tab !== tab) {
           Object.assign(agentUi, { tab, open: null, renaming: null, newGroupFor: null });
           agentControls.disarm();
@@ -2008,21 +2059,30 @@
         apart(dto.rows.filter((r) => r.asleepGroup), "Asleep", asleepFolded);
         apart(dto.rows.filter((r) => r.coldGroup), "Cold Cache", coldFolded);
         const inPlace = (r) => !r.hidden && !agentApart(r);
-        dto.rows.filter((r) => !r.group && inPlace(r)).forEach((r) => list.append(...agentRow(tab, dto, r, false)));
-        dto.groups.forEach((g) => {
-          const members = dto.rows.filter((r) => r.group === g.name && inPlace(r));
-          list.append(groupHeader(tab, g));
-          if (!g.folded) members.forEach((r) => list.append(...agentRow(tab, dto, r, true)));
-        });
+        if (agentIsAll(dto)) {
+          // Each project's rows under its heading, in its colour.
+          agentGroupsForAll(dto).forEach((p) => {
+            list.append(agentProjectHeader(p));
+            p.rows.filter(inPlace).forEach((r) => list.append(...agentRow(tab, dto, r, true)));
+          });
+        } else {
+          dto.rows.filter((r) => !r.group && inPlace(r)).forEach((r) => list.append(...agentRow(tab, dto, r, false)));
+          dto.groups.forEach((g) => {
+            const members = dto.rows.filter((r) => r.group === g.name && inPlace(r));
+            list.append(groupHeader(tab, g));
+            if (!g.folded) members.forEach((r) => list.append(...agentRow(tab, dto, r, true)));
+          });
+        }
         if (!dto.rows.length) list.append(agentEl("div", "a-empty", "No agent tabs"));
         list.scrollTop = agentScroll.get(tab) || 0;
         agentScrollTab = tab;
-        renderClosed(tab, dto);
+        if (!agentIsAll(dto)) renderClosed(tab, dto);
         renderTally(tab, dto);
       }
 
-      // The rows in list order: ungrouped first, then each group's, folded or not.
-      const agentOrder = (dto) => [
+      // The rows in list order: ungrouped first, then each group's, folded or not; All Agents'
+      // arrive in theirs.
+      const agentOrder = (dto) => agentIsAll(dto) ? dto.rows : [
         ...dto.rows.filter((r) => !r.group),
         ...dto.groups.flatMap((g) => dto.rows.filter((r) => r.group === g.name)),
       ];
@@ -2086,7 +2146,7 @@
         if (r.forks) {
           const n = r.forks === 1 ? "1 fork" : `${r.forks} forks`;
           const caret = agentButton("", () =>
-            agentCall("agent_fold_family", { tabId: tab, recordId: r.id, folded: !r.folded }), "a-fork-caret");
+            agentOp(tab, "agent_fold_family", r, { folded: !r.folded }), "a-fork-caret");
           caret.append(agentIcon("chevron", r.folded ? "" : "down"));
           caret.title = (r.folded ? "Show " : "Fold ") + n;
           row.append(caret);
@@ -2100,7 +2160,7 @@
             stop();
             const name = v.trim();
             if (r.renamed ? name !== r.name : name && name !== title) {
-              agentCall("agent_rename", { tabId: tab, recordId: r.id, name });
+              agentOp(tab, "agent_rename", r, { name });
             }
           }, stop));
         } else {
@@ -2155,14 +2215,14 @@
         const fork = agentButton("Fork", () => {
           agentUi.open = null;
           renderAgents();
-          agentCall("agent_fork", { tabId: tab, recordId: r.id });
+          agentOp(tab, "agent_fork", r);
         });
         fork.disabled = !r.canFork;
         fork.title = r.forkReason || "Fork (⌥⌘T)";
         const reset = agentButton("Reset Name", () => {
           agentUi.open = null;
           renderAgents();
-          agentCall("agent_rename", { tabId: tab, recordId: r.id, name: "" });
+          agentOp(tab, "agent_rename", r, { name: "" });
         });
         reset.disabled = !r.renamed;
         reset.title = r.renamed ? "Show the conversation's topic" : "Not renamed";
@@ -2181,7 +2241,18 @@
         pick.addEventListener("change", () => agentGroup(tab, r.id, pick.value || null));
         label.append(pick);
         box.append(label);
-        if (agentUi.newGroupFor === r.id) {
+        // All Agents groups by project: the picker and New group… stay, disabled with the reason.
+        const noGroup = agentDragReason(dto);
+        if (noGroup) {
+          pick.disabled = true;
+          label.title = noGroup;
+          const ng = agentEl("div", "a-btns");
+          const b = agentButton("New group…", () => {});
+          b.disabled = true;
+          b.title = noGroup;
+          ng.append(b);
+          box.append(ng, agentEl("div", "a-reason", noGroup));
+        } else if (agentUi.newGroupFor === r.id) {
           const row = agentEl("div", "a-newgroup");
           const cancel = () => { agentUi.newGroupFor = null; renderAgents(); };
           row.append(textInput("", "", "New group name", (v) => (v ? agentGroup(tab, r.id, v) : cancel()), cancel));
@@ -2211,6 +2282,18 @@
         return h;
       }
 
+      // An All Agents project heading (`agentGroupsForAll`): its title on its colour's swatch, and
+      // the amber dot while an agent in it needs you.
+      function agentProjectHeader(p) {
+        const h = agentEl("div", "a-group");
+        h.classList.toggle("amber", p.amber);
+        h.title = p.title;
+        const swatch = agentEl("span", "a-swatch");
+        swatch.style.background = p.colour;
+        h.append(swatch, agentEl("span", "a-gname", p.title));
+        if (p.amber) h.append(agentControls.attention(true));
+        return h;
+      }
       function groupHeader(tab, g) {
         const h = agentEl("div", "a-group");
         h.classList.toggle("folded", g.folded);
@@ -2283,9 +2366,16 @@
         if (!drag.moved) {
           if (Math.abs(e.clientY - drag.startY) < 4) return;
           drag.moved = true;
+          const dto = agentLists.get(drag.tab);
+          if (dto && !agentAllowsDrag(dto)) {
+            drag.why = true; // nothing drops: the list's foot says why
+            document.getElementById("agents-list").append(agentEl("div", "a-newdrop off", agentDragReason(dto)));
+            return;
+          }
           drag.row.classList.add("dragging");
           document.getElementById("agents-list").append(agentEl("div", "a-newdrop", "+ New group"));
         }
+        if (drag.why) return;
         drag.drop = dropAt(e.clientX, e.clientY);
         document.querySelectorAll("#agents .drop-before, #agents .drop-after, #agents .drop-into, #agents .over")
           .forEach((x) => x.classList.remove("drop-before", "drop-after", "drop-into", "over"));
@@ -2923,7 +3013,7 @@
         if (!forMe(e) || !e.payload.tabId) return;
         const dto = agentLists.get(e.payload.tabId);
         const r = dto && dto.rows.find((r) => r.selected);
-        if (r) agentCall("agent_sleep", { tabId: e.payload.tabId, recordId: r.id });
+        if (r) agentOp(e.payload.tabId, "agent_sleep", r);
       });
       // ⌘W in a tab with agent tabs: the selected agent tab's own Close, so one with nothing to resume asks first.
       listen("warden:agent-close", (e) => {
