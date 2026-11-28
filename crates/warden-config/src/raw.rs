@@ -90,6 +90,10 @@ pub struct RawConfig {
     // list. Cascades global -> window (no tab level: it's a whole-sidebar section,
     // and a sidebar belongs to a window). Optional; unset at both levels -> false.
     pub open_tabs_section: Option<bool>,
+    // Whether the sidebar pins an All Agents row listing every awake agent tab across the
+    // window's Rex projects. Cascades global -> window like `open_tabs_section`. Optional;
+    // unset at both levels -> false.
+    pub agents_tab: Option<bool>,
     // Whether the sidebar pins a section of the unloaded tabs whose session is
     // running or recoverable. Cascades global -> window like `open_tabs_section`. Optional;
     // unset at both levels -> true.
@@ -123,6 +127,8 @@ pub type RawWindow = config_core::Window<RawTab, RawWindowExtras>;
 pub struct RawWindowExtras {
     // Overrides the global `open_tabs_section` for THIS window's sidebar.
     pub open_tabs_section: Option<bool>,
+    // Overrides the global `agents_tab` for THIS window's sidebar.
+    pub agents_tab: Option<bool>,
     // Overrides the global `background_tabs_section` for THIS window's sidebar.
     pub background_tabs_section: Option<bool>,
     // Overrides the global `remember_tabs` for THIS window.

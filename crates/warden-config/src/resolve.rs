@@ -429,6 +429,10 @@ pub fn resolve_with(
         resume: raw.resume.as_deref(),
         server: raw.server.as_deref(),
         split: global_split.as_ref(),
+        open_tabs_section: raw.open_tabs_section,
+        agents_tab: raw.agents_tab,
+        background_tabs_section: raw.background_tabs_section,
+        remember_tabs: raw.remember_tabs,
         base,
     };
     let mut warnings = Vec::new();
@@ -440,15 +444,7 @@ pub fn resolve_with(
     config_core::validate_windows(&raw.windows)?;
 
     for rp in &raw.windows {
-        windows.push(resolve_window(
-            rp,
-            default_shell,
-            &globals,
-            raw.open_tabs_section,
-            raw.background_tabs_section,
-            raw.remember_tabs,
-            &mut warnings,
-        )?);
+        windows.push(resolve_window(rp, default_shell, &globals, &mut warnings)?);
     }
     Ok((
         Config {
@@ -477,6 +473,10 @@ struct Globals<'a> {
     resume: Option<&'a str>,
     server: Option<&'a str>,
     split: Option<&'a SplitLevel>,
+    open_tabs_section: Option<bool>,
+    agents_tab: Option<bool>,
+    background_tabs_section: Option<bool>,
+    remember_tabs: Option<bool>,
     /// The directory a relative local `dir` resolves against ([`anchor`]).
     base: &'a Path,
 }
@@ -496,9 +496,6 @@ fn resolve_window(
     rp: &RawWindow,
     default_shell: &str,
     globals: &Globals,
-    global_open_tabs_section: Option<bool>,
-    global_background_tabs_section: Option<bool>,
-    global_remember_tabs: Option<bool>,
     warnings: &mut Vec<Warning>,
 ) -> Result<Window, ResolveError> {
     let x = &rp.extra;
@@ -513,13 +510,14 @@ fn resolve_window(
     // (the string cascades' escape hatch): `false` at either level IS the opt-out.
     let open_tabs_section = x
         .open_tabs_section
-        .or(global_open_tabs_section)
+        .or(globals.open_tabs_section)
         .unwrap_or(false);
+    let agents_tab = x.agents_tab.or(globals.agents_tab).unwrap_or(false);
     let background_tabs_section = x
         .background_tabs_section
-        .or(global_background_tabs_section)
+        .or(globals.background_tabs_section)
         .unwrap_or(true);
-    let remember_tabs = x.remember_tabs.or(global_remember_tabs).unwrap_or(false);
+    let remember_tabs = x.remember_tabs.or(globals.remember_tabs).unwrap_or(false);
     // Flatten loose tabs + each group's tabs into one ordered list: loose first
     // (ungrouped, headerless), then each `[[window.group]]` in file order, tabs
     // within a group keeping file order. Groups add no cascade level — they're
@@ -596,6 +594,7 @@ fn resolve_window(
         height: rp.height,
         open_on_start: rp.open_on_start,
         open_tabs_section,
+        agents_tab,
         background_tabs_section,
         remember_tabs,
         tabs,
@@ -1260,6 +1259,38 @@ colour = "#0f8a8a"
         )
         .unwrap();
         assert!(!cfg.sidebar_drag);
+    }
+
+    #[test]
+    fn agents_tab_defaults_to_off() {
+        let (cfg, _) = resolve_str(
+            r##"
+[[window]]
+title = "w"
+colour = "#0f8a8a"
+"##,
+        )
+        .unwrap();
+        assert!(!cfg.windows[0].agents_tab);
+    }
+
+    #[test]
+    fn agents_tab_cascades_global_to_window() {
+        let (cfg, _) = resolve_str(
+            r##"
+agents_tab = true
+[[window]]
+title = "inherits"
+colour = "#0f8a8a"
+[[window]]
+title = "opts out"
+colour = "#0f8a8a"
+agents_tab = false
+"##,
+        )
+        .unwrap();
+        assert!(cfg.windows[0].agents_tab, "inherits the global");
+        assert!(!cfg.windows[1].agents_tab, "window false wins");
     }
 
     #[test]

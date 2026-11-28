@@ -1791,6 +1791,7 @@ mod tests {
                 height: 1000,
                 open_on_start: true,
                 open_tabs_section: false,
+                agents_tab: false,
                 background_tabs_section: false,
                 remember_tabs: false,
                 tabs: vec![curated],

@@ -138,6 +138,7 @@ cmd    = "claude"            # the agent each tab starts (+ New tab starts anoth
 | `density` | `"comfortable"` | Chrome sizing. `"compact"` scales type + spacing down proportionally for denser tab lists. |
 | `tab_digit_keys` | `"jump"` | ⌘1–⌘9 jump to a tab position. `"cycle"` makes ⌘1 / ⌘2 cycle next/prev instead, shifting jumps to ⌘3–⌘9. |
 | `sidebar_drag` | `true` | The non-interactive sidebar chrome doubles as a window-move drag handle. |
+| `agents_tab` | `false` | Pin an **All Agents** row listing every awake agent tab across the window's Rex projects. Cascades global → window. |
 | `open_tabs_section` | `false` | Pin an **Open** section above the main list, mirroring every tab that currently has a terminal open (including one popped out into its own window). Mirrored tabs keep their row in their own group or tree, so the main list never shuffles as terminals come and go; ⌘1–⌘9 and tab cycling ignore the mirrors. The section grows to 2/5 of the window, then scrolls on its own, independent of the main list. While the section is expanded, the main list below it is dimmed until you hover it; its header collapses it. Cascades global → window. |
 | `background_tabs_section` | `true` | Pin a **Background** section, below **Open**, mirroring every unloaded tab whose `probe` reports a running (cyan dot) or restorable (ghost dot) session. Collapsed until you open it from its header; each window remembers which way you left it. Opening a tab from it reattaches or restores the session and moves the tab to **Open**. Cascades global → window. |
 | `remember_tabs` | `false` | Each window comes back the way you left it: the tabs that had a terminal open respawn when it opens (a Rex tab reattaches its sessions; a plain tab's `cmd` re-runs), and the tab you were on is selected. Applies at launch and when you reopen a closed window. Cascades global → window. |
@@ -153,6 +154,7 @@ cmd    = "claude"            # the agent each tab starts (+ New tab starts anoth
 | `colour` | neutral | Banner accent, `#rgb` or `#rrggbb`. |
 | `width` / `height` | `1500` / `1000` | Initial size in px; the window's saved size/position wins after the first launch. |
 | `open_on_start` | `true` | Materialize this window at launch. `false` = configured but closed — open it from the home surface or the **Window** menu, or script it with `open 'warden://open?window=<title>'` (add `&tab=<id or title>` to select a tab). |
+| `agents_tab` | inherited from global | Whether THIS window's sidebar pins the **All Agents** row. |
 | `open_tabs_section` | inherited from global | Whether THIS window's sidebar pins the **Open** section. Set it per window to show the section in a busy window and not a quiet one. |
 | `background_tabs_section` | inherited from global | Whether THIS window's sidebar pins the **Background** section. |
 | `remember_tabs` | inherited from global | Whether THIS window restores its loaded tabs and selection. |

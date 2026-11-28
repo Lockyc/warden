@@ -124,6 +124,8 @@ pub struct WindowUpdate {
     /// restyles: no surface is touched. A GLOBAL edit reaches a window through here too,
     /// since the cascade is already collapsed into `Window::open_tabs_section`.
     pub open_tabs_section: Option<bool>,
+    /// The window's `agents_tab` flipped — chrome-only, exactly like `open_tabs_section`.
+    pub agents_tab: Option<bool>,
     /// The window's `background_tabs_section` flipped — chrome-only, exactly like
     /// `open_tabs_section`.
     pub background_tabs_section: Option<bool>,
@@ -165,7 +167,7 @@ fn root_dir<'a>(w: &'a Window, t: &Tab) -> Option<&'a Path> {
 /// **What IS detected:**
 /// - Windows opened/closed, matched by `title`.
 /// - For a kept window (a `WindowUpdate`, emitted when any of these is non-empty):
-///   - `colour`, `open_tabs_section` and `background_tabs_section` (chrome-only) changes.
+///   - `colour`, `open_tabs_section`, `agents_tab` and `background_tabs_section` (chrome-only) changes.
 ///   - The window's tree sections (`Window::tree_names`) changing — chrome-only, and an update
 ///     even when the added or removed root discovers no tab; the consumer re-sends them.
 ///   - `add_tabs`/`remove_tabs`, matched by `Tab::key` — `id`-else-normalized-`dir` for a
@@ -219,6 +221,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 let colour = (op.colour != np.colour).then_some(np.colour);
                 let open_tabs_section =
                     (op.open_tabs_section != np.open_tabs_section).then_some(np.open_tabs_section);
+                let agents_tab = (op.agents_tab != np.agents_tab).then_some(np.agents_tab);
                 let background_tabs_section = (op.background_tabs_section
                     != np.background_tabs_section)
                     .then_some(np.background_tabs_section);
@@ -309,6 +312,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                 if colour.is_some()
                     || op.tree_names() != np.tree_names()
                     || open_tabs_section.is_some()
+                    || agents_tab.is_some()
                     || background_tabs_section.is_some()
                     || !add_tabs.is_empty()
                     || !remove_tabs.is_empty()
@@ -323,6 +327,7 @@ pub fn reconcile(old: &Config, new: &Config) -> Reconciliation {
                         title: np.title.clone(),
                         colour,
                         open_tabs_section,
+                        agents_tab,
                         background_tabs_section,
                         add_tabs,
                         remove_tabs,
@@ -431,6 +436,20 @@ colour = "#0f8a8a"
         assert_eq!(r.update.len(), 1);
         assert_eq!(r.update[0].open_tabs_section, Some(true));
         // Chrome-only: nothing about the window's terminals changed.
+        assert!(r.update[0].colour.is_none());
+        assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
+        assert!(r.update[0].set_meta.is_empty() && r.update[0].respawn_tabs.is_empty());
+    }
+
+    #[test]
+    fn agents_tab_change_emits_update_and_touches_no_tab() {
+        let new = cfg(&BASE.replace(
+            "colour = \"#0f8a8a\"",
+            "colour = \"#0f8a8a\"\nagents_tab = true",
+        ));
+        let r = reconcile(&cfg(BASE), &new);
+        assert_eq!(r.update.len(), 1);
+        assert_eq!(r.update[0].agents_tab, Some(true));
         assert!(r.update[0].colour.is_none());
         assert!(r.update[0].add_tabs.is_empty() && r.update[0].remove_tabs.is_empty());
         assert!(r.update[0].set_meta.is_empty() && r.update[0].respawn_tabs.is_empty());
