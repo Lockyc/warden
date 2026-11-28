@@ -110,21 +110,29 @@ test("a list goes stale once a row's cache passes after the list was built", () 
   assert.strictEqual(agentColdDue(rows, 100, 200), true, "c went cold");
 });
 
-// The All Agents list: rows keyed `<project>::agent:<record>`, each naming its project.
+// The All Agents list: each row names its project and its record there.
 const all = {
   tabId: "warden:all-agents",
+  allAgents: true,
   groups: [],
   projects: [
     { project: "p2", title: "Two", colour: "#222", amber: false },
     { project: "p1", title: "One", colour: "#111", amber: true },
   ],
   rows: [
-    row("p2::agent:x", null, "mine", { project: "p2" }),
-    row("p1::agent:a", null, null, { project: "p1" }),
-    row("p1::agent:a1", "p1::agent:a", null, { project: "p1" }),
+    row("p2::agent:x", null, "mine", { project: "p2", record: "x" }),
+    row("p1::agent:a", null, null, { project: "p1", record: "a" }),
+    row("p1::agent:a1", "p1::agent:a", null, { project: "p1", record: "a1" }),
   ],
 };
-const project = { tabId: "p1", groups: [], projects: [], rows: [row("a", null, null, { project: null })] };
+const empty = { ...all, projects: [], rows: [] };
+const project = {
+  tabId: "p1",
+  allAgents: false,
+  groups: [],
+  projects: [],
+  rows: [row("a", null, null, { project: null, record: null })],
+};
 
 test("the All Agents list groups its rows under their projects, in the projects' order", () => {
   const { agentGroupsForAll } = vm.runInContext("({ agentGroupsForAll })", ctx);
@@ -134,14 +142,18 @@ test("the All Agents list groups its rows under their projects, in the projects'
   ]);
 });
 
-test("the All Agents list neither drags nor opens new agents, and says why", () => {
-  const { agentAllowsDrag, agentDragReason, agentNewReason } =
-    vm.runInContext("({ agentAllowsDrag, agentDragReason, agentNewReason })", ctx);
-  assert.strictEqual(agentAllowsDrag(all), false);
+test("the All Agents list, empty or not, neither drags, regroups nor opens new agents, and says why", () => {
+  const { agentAllowsDrag, agentDragReason, agentGroupReason, agentNewReason } =
+    vm.runInContext("({ agentAllowsDrag, agentDragReason, agentGroupReason, agentNewReason })", ctx);
+  for (const dto of [all, empty]) {
+    assert.strictEqual(agentAllowsDrag(dto), false);
+    assert.strictEqual(agentDragReason(dto), "Reorder agents in their project");
+    assert.strictEqual(agentGroupReason(dto), "Open the agent's project for this");
+    assert.strictEqual(agentNewReason(dto), "New agents open in a project");
+  }
   assert.strictEqual(agentAllowsDrag(project), true);
-  assert.strictEqual(agentDragReason(all), "Reorder agents in their project");
   assert.strictEqual(agentDragReason(project), null);
-  assert.strictEqual(agentNewReason(all), "New agents open in a project");
+  assert.strictEqual(agentGroupReason(project), null);
   assert.strictEqual(agentNewReason(project), null);
 });
 
@@ -149,9 +161,6 @@ test("a row's op runs on its own project's agent tab", () => {
   const { agentOpTarget } = vm.runInContext("({ agentOpTarget })", ctx);
   assert.deepStrictEqual(plain(agentOpTarget(all, all.rows[1])), { tabId: "p1", recordId: "a" });
   assert.deepStrictEqual(plain(agentOpTarget(project, project.rows[0])), { tabId: "p1", recordId: "a" });
-  // The last separator splits it, as `split_agent_key` does.
-  const odd = row("/x::agent:y/p::agent:r", null, null, { project: "/x::agent:y/p" });
-  assert.deepStrictEqual(plain(agentOpTarget(all, odd)), { tabId: "/x::agent:y/p", recordId: "r" });
 });
 
 test("the All Agents row's badge counts the agents needing you", () => {
@@ -160,4 +169,29 @@ test("the All Agents row's badge counts the agents needing you", () => {
   const unseen = row("p1::agent:c", null, null, { unseen: "t" });
   assert.strictEqual(agentAllAttention([row("a"), needy, unseen]), 2);
   assert.strictEqual(agentAllAttention([row("a")]), null);
+});
+
+test("the All Agents selection: a click holds until its select answers", () => {
+  const { agentAllSelInit: init, agentAllSelStep: step } = vm.runInContext("({ agentAllSelInit, agentAllSelStep })", ctx);
+  const snap = (key) => ({ kind: "snapshot", key });
+  let s = step(init, snap("a"));
+  assert.strictEqual(s.shown, "a");
+  s = step(s, { kind: "select", key: "b" });
+  assert.strictEqual(s.shown, "b", "highlights at once");
+  s = step(s, snap("a"));
+  assert.strictEqual(s.shown, "b", "a snapshot sent before the click moves nothing");
+  s = step(s, snap("b"));
+  assert.deepStrictEqual(plain(s), { shown: "b", snap: "b", pending: null }, "its own snapshot ends the hold");
+  s = step(s, snap("c"));
+  assert.strictEqual(s.shown, "c", "a lean to a neighbour shows");
+
+  // Refused: back to the snapshot's key.
+  s = step(step(s, { kind: "select", key: "d" }), { kind: "settled", key: "d", ok: false });
+  assert.deepStrictEqual(plain(s), { shown: "c", snap: "c", pending: null });
+  // Answered before its snapshot: the hold ends, the highlight stays.
+  s = step(step(s, { kind: "select", key: "e" }), { kind: "settled", key: "e", ok: true });
+  assert.deepStrictEqual(plain(s), { shown: "e", snap: "c", pending: null });
+  // An older click's answer after a newer click leaves the newer one pending.
+  s = step(step(s, { kind: "select", key: "f" }), { kind: "settled", key: "e", ok: false });
+  assert.strictEqual(s.pending, "f");
 });

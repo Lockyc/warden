@@ -54,6 +54,7 @@ pub fn all_agents_list(
                 depth,
                 selected: false,
                 project: Some(p.id.clone()),
+                record: Some(r.id.clone()),
                 ..r.clone()
             });
         }
@@ -81,6 +82,7 @@ pub fn all_agents_list(
         groups: Vec::new(),
         closed: Vec::new(),
         projects: groups,
+        all_agents: true,
     }
 }
 
@@ -234,13 +236,20 @@ mod tests {
             idle,
         );
         assert_eq!(list.tab_id, ALL_AGENTS_ID);
-        let rows: Vec<(&str, Option<&str>)> = list
+        assert!(list.all_agents);
+        let rows: Vec<(&str, Option<&str>, Option<&str>)> = list
             .rows
             .iter()
-            .map(|r| (r.id.as_str(), r.project.as_deref()))
+            .map(|r| (r.id.as_str(), r.project.as_deref(), r.record.as_deref()))
             .collect();
         let (a, d) = (agent_key("p1", "a"), agent_key("p2", "d"));
-        assert_eq!(rows, [(a.as_str(), Some("p1")), (d.as_str(), Some("p2"))]);
+        assert_eq!(
+            rows,
+            [
+                (a.as_str(), Some("p1"), Some("a")),
+                (d.as_str(), Some("p2"), Some("d"))
+            ]
+        );
         assert_eq!(awake_keys(&list), [a, d]);
         let groups: Vec<(&str, &str, &str, bool)> = list
             .projects
@@ -411,6 +420,11 @@ mod tests {
             own.rows.iter().all(|r| r.cold_group),
             "the project's own list puts them in Cold Cache"
         );
+        assert!(!own.all_agents);
+        assert!(own
+            .rows
+            .iter()
+            .all(|r| r.project.is_none() && r.record.is_none()));
         let list = all_agents_list(
             &[project("p")],
             &s.lock().unwrap(),

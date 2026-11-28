@@ -6,30 +6,45 @@
 // Whether row `r` needs you: blocked, or with a finish you haven't seen.
 const agentNeedsYou = (r) => r.state === "blocked" || !!r.unseen;
 
-// The All Agents tab's id (`registry::ALL_AGENTS_ID`): its list's `tabId`. Each of its rows is
-// `<project>::agent:<record>` (`registry::agent_key`) and names its `project`.
-const AGENT_ALL_ID = "warden:all-agents";
-const AGENT_KEY_SEP = "::agent:";
-const agentIsAll = (dto) => dto.tabId === AGENT_ALL_ID;
+// Whether list `dto` is the All Agents list (`AgentListDto.allAgents`), whose rows each name their
+// `project` and `record`.
+const agentIsAll = (dto) => !!dto.allAgents;
 
 // The All Agents list's project headings, in its `projects` order, each with its rows.
 function agentGroupsForAll(dto) {
   return dto.projects.map((p) => ({ ...p, rows: dto.rows.filter((r) => r.project === p.project) }));
 }
 
-// The tab and record an op on row `r` of list `dto` acts on: an All Agents row's own project's
-// agent tab — the record id after the key's last separator, as `split_agent_key` splits it.
+// The tab and record an op on row `r` of list `dto` acts on: an All Agents row's own project's.
 function agentOpTarget(dto, r) {
-  if (!agentIsAll(dto)) return { tabId: dto.tabId, recordId: r.id };
-  return { tabId: r.project, recordId: r.id.slice(r.id.lastIndexOf(AGENT_KEY_SEP) + AGENT_KEY_SEP.length) };
+  return r.project != null ? { tabId: r.project, recordId: r.record } : { tabId: dto.tabId, recordId: r.id };
 }
 
 // Why list `dto`'s rows can't be dragged, else `null`: All Agents orders each project as its own list.
 const agentDragReason = (dto) => (agentIsAll(dto) ? "Reorder agents in their project" : null);
 const agentAllowsDrag = (dto) => agentDragReason(dto) === null;
 
+// Why a row of list `dto` can't change group, else `null`: groups are each project's own.
+const agentGroupReason = (dto) => (agentIsAll(dto) ? "Open the agent's project for this" : null);
+
 // Why list `dto`'s `+` can't open an agent tab, else `null`.
 const agentNewReason = (dto) => (agentIsAll(dto) ? "New agents open in a project" : null);
+
+// The All Agents selection: `shown` is highlighted, `snap` is the latest snapshot's
+// `agents_selected`, and `pending` a clicked key whose `all_agents_select` hasn't answered. While
+// one is pending, a snapshot naming another key (one sent before the click landed) moves nothing;
+// a refused select falls back to the snapshot's key.
+const agentAllSelInit = { shown: null, snap: null, pending: null };
+function agentAllSelStep(s, ev) {
+  if (ev.kind === "snapshot") {
+    if (s.pending !== null && ev.key !== s.pending) return { ...s, snap: ev.key };
+    return { shown: ev.key, snap: ev.key, pending: null };
+  }
+  if (ev.kind === "select") return { ...s, shown: ev.key, pending: ev.key };
+  // "settled": `ev.ok` is whether the select for `ev.key` went through.
+  if (s.pending !== ev.key) return s;
+  return ev.ok ? { ...s, pending: null } : { ...s, shown: s.snap, pending: null };
+}
 
 // The All Agents row's attention, as chrome-core takes it: how many agents need you, else none.
 function agentAllAttention(rows) {

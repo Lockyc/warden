@@ -1555,6 +1555,9 @@ fn pop_out_tab(
     id: String,
 ) -> Result<(), String> {
     use tauri::{Emitter, Manager};
+    if id == registry::ALL_AGENTS_ID {
+        return Err(ALL_AGENTS_POP_OUT.to_owned());
+    }
     let app = window.app_handle().clone();
     let origin_label = window.label().to_string();
 

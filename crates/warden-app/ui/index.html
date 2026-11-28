@@ -609,7 +609,7 @@
           <div id="agents-head" data-tauri-drag-region>
             <div id="agents-tally"></div>
             <div class="a-foot-row">
-              <button id="agents-new" data-title="New agent tab (⌘T)">+ New tab</button>
+              <button id="agents-new" title="New agent tab (⌘T)">+ New tab</button>
               <button id="agents-rail"></button>
             </div>
           </div>
@@ -740,7 +740,7 @@
       // `agentAllAttention`).
       function tabAttention(id) {
         const rows = agentLists.get(id)?.rows ?? [];
-        return id === AGENT_ALL_ID ? agentAllAttention(rows) : agentTabAttention(rows, badges.has(id));
+        return id === agentAllId ? agentAllAttention(rows) : agentTabAttention(rows, badges.has(id));
       }
       function paintAttention(id) {
         if (sb) sb.setAttention(id, tabAttention(id));
@@ -1330,6 +1330,7 @@
         agentsById.clear();
         dto.tabs.forEach((t) => { if (t.agents || t.all_agents) agentsById.set(t.id, true); });
         const all = dto.tabs.find((t) => t.all_agents);
+        agentAllId = all ? all.id : null;
         agentShowAll(all ? all.agents_selected ?? null : null);
         columnById.clear();
         dto.tabs.forEach((t) => { if (t.column) columnById.set(t.id, t.column); });
@@ -1397,8 +1398,6 @@
             // the row with the ⤢ detached mark and the app treats a click on it as "raise that
             // window". Invisible until forwarded here (the "tree rendered flat" footgun class).
             detached: !!t.detached,
-            // The pinned All Agents row (always first): a view of every project's awake agents.
-            allAgents: !!t.all_agents,
             // The tab is open while any of its terminals runs: a Rex tab's main pane holds none
             // once its last agent tab closes, while its scratch column runs on.
             live: t.spawned || !!t.secondary_spawned,
@@ -1728,29 +1727,33 @@
       function setAgentList(tab, dto) {
         agentLists.set(tab, dto);
         agentListAt.set(tab, Date.now() / 1000);
-        if (tab === AGENT_ALL_ID) agentMarkAll();
+        if (tab === agentAllId) agentMarkAll();
       }
-      // The agent key the All Agents tab shows (`TabDto.agents_selected`, or a click's at once):
-      // its rows arrive selecting none, so the page marks this one.
-      let agentAllSelected = null;
+      // The All Agents tab's id (the snapshot's `all_agents` tab), and which of its rows is
+      // highlighted (`agentAllSelStep`): its rows arrive selecting none, so the page marks one.
+      let agentAllId = null;
+      let agentAllSel = agentAllSelInit;
       function agentMarkAll() {
-        agentLists.get(AGENT_ALL_ID)?.rows.forEach((r) => { r.selected = r.id === agentAllSelected; });
+        agentLists.get(agentAllId)?.rows.forEach((r) => { r.selected = r.id === agentAllSel.shown; });
       }
-      // The All Agents tab shows `key` (a snapshot's `agents_selected`): mark it, and repaint when
-      // it moved — to the neighbour the backend leant to when the shown agent went.
-      function agentShowAll(key) {
-        if (key === agentAllSelected) return;
-        agentAllSelected = key;
+      // Step the All Agents selection with `ev`, and mark and repaint the list where the highlight moved.
+      function agentAllStep(ev) {
+        const was = agentAllSel.shown;
+        agentAllSel = agentAllSelStep(agentAllSel, ev);
+        if (agentAllSel.shown === was) return;
         agentMarkAll();
-        if (agentLists.has(AGENT_ALL_ID)) agentsLanded(AGENT_ALL_ID);
+        if (agentLists.has(agentAllId)) agentsLanded(agentAllId);
       }
+      // The All Agents tab shows `key` (a snapshot's `agents_selected`) — after a click, or the
+      // neighbour the backend leant to when the shown agent went.
+      const agentShowAll = (key) => agentAllStep({ kind: "snapshot", key });
       // Pull tab `tab`'s agent list: once, for a tab that has none yet, or `again` to replace a
       // stale one.
       function pullAgents(tab, again = false) {
         if ((!again && agentLists.has(tab)) || agentPulls.has(tab)) return;
         agentPulls.add(tab);
         const held = agentLists.get(tab);
-        (tab === AGENT_ALL_ID ? invoke("all_agents_init") : invoke("agents_init", { tabId: tab }))
+        (tab === agentAllId ? invoke("all_agents_init") : invoke("agents_init", { tabId: tab }))
           .then((dto) => {
             if (!dto || agentLists.get(tab) !== held) return; // a `warden:agents` landed first — it's newer
             setAgentList(tab, dto);
@@ -1834,11 +1837,14 @@
       // An All Agents row shows in the All Agents tab (`all_agents_select`), leaving its project's
       // own selection be.
       function agentSelect(tab, id) {
-        if (tab === AGENT_ALL_ID) {
-          agentAllSelected = id;
-          agentMarkAll(); // highlight at once
-          renderAgents();
-          return agentCall("all_agents_select", { key: id });
+        if (tab === agentAllId) {
+          agentAllStep({ kind: "select", key: id }); // highlight at once
+          const settled = (ok) => agentAllStep({ kind: "settled", key: id, ok });
+          return invoke("all_agents_select", { key: id }).then(() => settled(true), (err) => {
+            console.error("warden: IPC all_agents_select failed", err);
+            setWindowError("⚠ " + err);
+            settled(false);
+          });
         }
         const dto = agentLists.get(tab);
         if (dto) dto.rows.forEach((r) => { r.selected = r.id === id; }); // highlight at once
@@ -2034,6 +2040,7 @@
         if (!dto) return; // `agents_init` in flight
         const add = document.getElementById("agents-new");
         const noNew = agentNewReason(dto);
+        add.dataset.title ??= add.title; // the markup's own
         add.disabled = !!noNew;
         add.title = noNew || add.dataset.title;
         if (agentUi.tab !== tab) {
@@ -2242,7 +2249,7 @@
         label.append(pick);
         box.append(label);
         // All Agents groups by project: the picker and New group… stay, disabled with the reason.
-        const noGroup = agentDragReason(dto);
+        const noGroup = agentGroupReason(dto);
         if (noGroup) {
           pick.disabled = true;
           label.title = noGroup;

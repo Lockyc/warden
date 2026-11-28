@@ -829,6 +829,8 @@ pub struct AgentListDto {
     pub closed: Vec<ClosedAgentDto>,
     /// The All Agents list's project groups holding a row, in list order; empty in a project's.
     pub projects: Vec<AllAgentsGroupDto>,
+    /// This is the All Agents list, empty or not.
+    pub all_agents: bool,
 }
 
 /// A project's group in the All Agents list.
@@ -905,6 +907,9 @@ pub struct AgentRowDto {
     pub unseen: Option<String>,
     /// The project tab it belongs to, in the All Agents list; `None` in a project's.
     pub project: Option<String>,
+    /// Its record id in that project, which the row's ops name, in the All Agents list (where
+    /// `id` is the pane key); `None` in a project's.
+    pub record: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -1026,6 +1031,7 @@ fn agent_list_at(
             })
             .collect(),
         projects: Vec::new(),
+        all_agents: false,
     }
 }
 
@@ -1128,6 +1134,7 @@ pub(super) fn agent_rows(
             fork_reason: fork_reason.map(str::to_owned),
             unseen,
             project: None,
+            record: None,
         });
     }
     (records, rows, groups)
@@ -3766,11 +3773,13 @@ mod tests {
                     fork_reason: None,
                     unseen: None,
                     project: None,
+                    record: None,
                 })
                 .collect(),
             groups,
             closed: vec![],
             projects: vec![],
+            all_agents: false,
         }
     }
 
