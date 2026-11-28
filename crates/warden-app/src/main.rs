@@ -935,7 +935,7 @@ fn activate_tab(
     // decide whether to arm a session-start await below. `split`/`focused` are this tab's OWN
     // layout, read under the SAME lock so they can't race a concurrent split/close. Both read
     // under the one lock.
-    let (spawned_fresh, has_probe, err, live, split, focused) = {
+    let (spawned_fresh, has_probe, err, live, split, focused, rex_sizes) = {
         let mut m = state.lock();
         let out = match m.windows.get_mut(window.label()) {
             Some(ws) => {
@@ -959,13 +959,15 @@ fn activate_tab(
                 } else {
                     0
                 };
-                (fresh, has_probe, err, live, split, focused)
+                let rex_sizes = ws.registry.shown_rex_sizes();
+                (fresh, has_probe, err, live, split, focused, rex_sizes)
             }
-            None => (false, false, None, false, false, 0),
+            None => (false, false, None, false, false, 0, Vec::new()),
         };
         m.record_session(tauri::Manager::app_handle(&window), window.label());
         out
     };
+    request_rex_sizes(tauri::Manager::app_handle(&window), rex_sizes);
     // A lazy spawn failed on click: the tab stays cold (and selected — the chrome paints its
     // empty-state placeholder over the uncovered hole) instead of panicking. The chrome is
     // listening now, so push the reason to the banner.

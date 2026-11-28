@@ -1337,15 +1337,16 @@ impl Registry {
 
     /// Follow the combined list's awake agents, `awake` in its order: close every All Agents slot
     /// whose key isn't there. When the one shown went, the pane is left blank and the key to
-    /// select instead comes back: the next agent after it in the list, else the one before.
-    /// `None` when nothing shown went, nothing is awake, or there is no All Agents tab.
+    /// select instead comes back: the next agent after it in the list, else the one before, else
+    /// the list's first. `None` when nothing shown went, nothing is awake, or there is no All
+    /// Agents tab.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the All Agents tab is wired next")
     )]
     pub fn retain_all_agents(&mut self, awake: &[String]) -> Option<String> {
-        let order = std::mem::replace(&mut self.all_agents_order, awake.to_vec());
         let idx = self.tabs.iter().position(TabEntry::is_all_agents)?;
+        let order = std::mem::replace(&mut self.all_agents_order, awake.to_vec());
         let pane = &mut self.tabs[idx].primary;
         // The slots' own order stands in for a shown one the last list never held.
         let slots: Vec<String> = pane.agents.iter().map(|a| a.record_id.clone()).collect();
@@ -3281,6 +3282,23 @@ impl Registry {
 
     /// The Rex pane keys of the surfaces the active tab puts on screen ([`on_screen`](Self::on_screen)).
     fn shown_rex_keys(&self) -> Vec<String> {
+        self.shown_rex().into_iter().map(|(k, _)| k).collect()
+    }
+
+    /// Each live Rex surface the active tab puts on screen, at its size, for `rex::size` to send
+    /// while warden owns its block — after a tab switch. A block two of this window's tabs show
+    /// (a project's agent, and All Agents) is sized only by the surface on screen, so a switch is
+    /// where the newly shown one's size goes back to it; a claim waits on the user's next turn to
+    /// the pane, which may never come to a pane the switch didn't focus.
+    pub fn shown_rex_sizes(&self) -> Vec<PaneSize> {
+        self.shown_rex()
+            .into_iter()
+            .filter_map(|(k, s)| PaneSize::of(k, s))
+            .collect()
+    }
+
+    /// The live Rex surfaces the active tab puts on screen, with their Rex pane keys.
+    fn shown_rex(&self) -> Vec<(String, &GhosttySurface)> {
         let Some(t) = self
             .active
             .as_deref()
@@ -3290,7 +3308,7 @@ impl Registry {
         };
         self.on_screen(t)
             .into_iter()
-            .filter_map(|(_, s)| self.rex_key_of_surface(s.id()))
+            .filter_map(|(_, s)| Some((self.rex_key_of_surface(s.id())?, s)))
             .collect()
     }
 
@@ -5912,6 +5930,21 @@ mod tests {
             Some("k2".into())
         );
         assert!(all_agent_slots(&r).is_empty());
+    }
+
+    #[test]
+    fn retain_without_the_entry_remembers_no_order() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        let awake = |ks: &[&str]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(r.retain_all_agents(&awake(&["k1", "k2", "k3"])), None);
+        r.add_all_agents();
+        r.select_all_agent("k3", target("k3")).unwrap();
+        // No list was seen with the entry present, so the slots' order stands in, and with no
+        // neighbour there the list's first is the one to select.
+        assert_eq!(
+            r.retain_all_agents(&awake(&["k1", "k2"])),
+            Some("k1".into())
+        );
     }
 
     #[test]
