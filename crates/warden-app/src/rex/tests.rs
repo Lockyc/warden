@@ -3168,6 +3168,7 @@ mod all_agents_wiring {
         let list = |m: &WindowManager| {
             all_agents_list(
                 &m.rex_projects(),
+                |_| true,
                 &s.lock().unwrap(),
                 &Attention::default(),
                 |_| None,
@@ -3184,6 +3185,42 @@ mod all_agents_wiring {
             [("A".to_string(), None)]
         );
         assert_eq!(shown(&m, "A"), None);
+    }
+
+    /// The rows `t`'s stored Live record `a` gives once the hub has tried to watch `t`.
+    fn rows_after_watch(
+        alive: Option<&'static str>,
+    ) -> (Result<bool, rex_client::RexError>, Vec<String>) {
+        use super::super::agent_open::tests::open;
+        let f = fake(alive, vec![("window:1", "block:1", "a")]);
+        let dir = tempfile::tempdir().unwrap();
+        map(&dir.path().join("rex-sessions.json"), "s1");
+        let (hub, _): (RexHub, _) = hub(f.endpoint(), &dir);
+        let watched = hub.watch_project(&open(None));
+        let s = store(vec![record("a", RecordState::Live, Some("window:1"), None)]);
+        let m = manager(vec![("A", registry(&["t"]))]);
+        let list = all_agents_list(
+            &m.rex_projects(),
+            |p| hub.is_followed(p),
+            &s.lock().unwrap(),
+            &Attention::default(),
+            |_| None,
+        );
+        (watched, awake_keys(&list))
+    }
+
+    #[test]
+    fn a_stored_live_record_of_a_project_the_hub_doesnt_follow_gives_no_row() {
+        // Rex no longer has the stored session: last launch's Live record stays in the store.
+        assert_eq!(rows_after_watch(None), (Ok(false), Vec::new()));
+    }
+
+    #[test]
+    fn a_followed_projects_live_record_gives_its_row() {
+        assert_eq!(
+            rows_after_watch(Some("s1")),
+            (Ok(true), vec![agent_key("t", "a")])
+        );
     }
 
     #[test]

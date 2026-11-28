@@ -21,12 +21,15 @@ pub struct ProjectRef {
     pub colour: String,
 }
 
-/// The awake agent tabs of every project in `projects`, in that order, each project's in its own
-/// list's order: a row's `id` and `parent` are pane keys ([`agent_key`]), a fork nests under its
-/// nearest awake ancestor, and a row is `amber` when it needs you. It has no Asleep or Cold Cache
-/// group, no named groups and no closed fold, and selects nothing: the page owns its selection.
+/// The awake agent tabs of every project in `projects` that is `followed`
+/// ([`RexHub::is_followed`]), in that order, each project's in its own list's order: a row's `id`
+/// and `parent` are pane keys ([`agent_key`]), a fork nests under its nearest awake ancestor, and
+/// a row is `amber` when it needs you. It has no Asleep or Cold Cache group, no named groups and
+/// no closed fold, and selects nothing: the page owns its selection. An unfollowed project's Live
+/// records are last launch's, or a lost session's: none has a block a row could show.
 pub fn all_agents_list(
     projects: &[ProjectRef],
+    followed: impl Fn(&str) -> bool,
     store: &AgentStore,
     attention: &Attention,
     status: impl Fn(&str) -> Option<BlockStatus>,
@@ -34,7 +37,7 @@ pub fn all_agents_list(
     let now = unix_now();
     let mut rows = Vec::new();
     let mut groups = Vec::new();
-    for p in projects {
+    for p in projects.iter().filter(|p| followed(&p.id)) {
         let (records, all, _) = lifecycle::agent_rows(&p.id, store, attention, &status);
         let awake = |id: &str| all.iter().any(|r| r.id == id && r.state != "asleep");
         let mut kept: Vec<AgentRowDto> = Vec::new();
@@ -103,9 +106,13 @@ pub fn current_list(app: &AppHandle) -> Option<AgentListDto> {
     let store = app.try_state::<Mutex<AgentStore>>()?;
     let hub = app.try_state::<RexHub>()?;
     let attention = app.try_state::<Mutex<Attention>>()?;
-    let dto = all_agents_list(&projects, &lock(&store), &lock(&attention), |b| {
-        hub.block_status(b)
-    });
+    let dto = all_agents_list(
+        &projects,
+        |p| hub.is_followed(p),
+        &lock(&store),
+        &lock(&attention),
+        |b| hub.block_status(b),
+    );
     Some(dto)
 }
 
@@ -231,6 +238,7 @@ mod tests {
         ]);
         let list = all_agents_list(
             &[project("p1"), project("p2")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             idle,
@@ -282,6 +290,7 @@ mod tests {
         let s = store(vec![parent, fork]);
         let list = all_agents_list(
             &[project("p")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             idle,
@@ -312,6 +321,7 @@ mod tests {
         let s = store(vec![parent, fork]);
         let list = all_agents_list(
             &[project("p")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             idle,
@@ -340,6 +350,7 @@ mod tests {
         let s = store(vec![top, middle, leaf]);
         let list = all_agents_list(
             &[project("p")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             idle,
@@ -374,6 +385,7 @@ mod tests {
         };
         let list = all_agents_list(
             &[project("p1"), project("p2"), project("p3")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             st,
@@ -427,6 +439,7 @@ mod tests {
             .all(|r| r.project.is_none() && r.record.is_none()));
         let list = all_agents_list(
             &[project("p")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             cold,
@@ -450,6 +463,7 @@ mod tests {
         };
         let list = all_agents_list(
             &[project("p")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             st,
@@ -481,6 +495,7 @@ mod tests {
         ]);
         let list = all_agents_list(
             &[project("p1"), project("p2")],
+            |_| true,
             &s.lock().unwrap(),
             &Attention::default(),
             idle,
