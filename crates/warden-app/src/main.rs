@@ -142,6 +142,9 @@ const ALL_AGENTS_MENU: &str = "Open the agent's project for this";
 /// Why Pop Out Tab can't act while All Agents is the active tab.
 const ALL_AGENTS_POP_OUT: &str = "All Agents can't pop out";
 
+/// Why ⌘D can't act while All Agents is the active tab: it has no config entry or scratch column.
+const ALL_AGENTS_SPLIT: &str = "All Agents can't split";
+
 /// A menu item's enabled state and title: `enabled` under `title`, or disabled with `why`
 /// beside it.
 fn item_state(title: &str, enabled: bool, why: Option<&str>) -> (bool, String) {
@@ -352,8 +355,8 @@ fn focused_split(app: &tauri::AppHandle) -> Option<Result<pane_menu::SplitKind, 
 /// there is an agent tab or a window to reopen, the agent-step items (Fork Agent Tab among them)
 /// while the step can act, Focus Left / Right Pane while there's a pane that way, and New Scratch
 /// Tab while it has a Rex scratch column, Suspend / Terminate Session outside a pop-out; ⌘W is
-/// titled for what it closes. With All Agents active the agent items and Pop Out Tab are disabled
-/// with their reasons. A pop-out's one tab answers like any active tab. Runs on every menu
+/// titled for what it closes. With All Agents active the agent items, Split, Pop Out Tab and
+/// Suspend / Terminate Session are disabled with their reasons. A pop-out's one tab answers like any active tab. Runs on every menu
 /// build, window focus, pane focus, tab activation, agent list change and scratch column change
 /// (a Rex view landing); locks `ManagerState`, so callers must not hold it.
 #[cfg(target_os = "macos")]
@@ -382,10 +385,10 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         let m = st.lock();
         m.windows.get(&label).is_some_and(|ws| ws.origin.is_some())
     });
-    let end_why = popped.then_some(END_SESSION_POPOUT);
     let all_agents = keys
         .as_ref()
         .is_some_and(|k| k.1 == registry::ALL_AGENTS_ID);
+    let end_why = end_session_why(popped, all_agents);
     let agent_why = all_agents.then_some(ALL_AGENTS_MENU);
     // Cloned out first: off the main thread `set_enabled` waits on it, and the main thread may be
     // waiting on this lock.
@@ -440,6 +443,16 @@ pub(crate) fn sync_agent_menu(app: &tauri::AppHandle) {
         for (item, title) in [(&i.suspend, SUSPEND_TITLE), (&i.terminate, TERMINATE_TITLE)] {
             set(item, title, true, end_why);
         }
+    }
+}
+
+/// Why Suspend / Terminate Session can't act on the focused window's active tab: a pop-out's
+/// session ends once docked, and All Agents has no session of its own to end.
+fn end_session_why(popped: bool, all_agents: bool) -> Option<&'static str> {
+    if popped {
+        Some(END_SESSION_POPOUT)
+    } else {
+        all_agents.then_some(ALL_AGENTS_MENU)
     }
 }
 
@@ -1193,9 +1206,12 @@ fn split_tab(
 
 /// What ⌘D would do on tab `id`: stack a shell on its focused Rex scratch block, or split the
 /// tab — or why it can't (a Rex session opened from the sidebar has no config entry to save a
-/// split to). [`split_pane`] acts on it and the right-click menu shows it.
+/// split to, nor All Agents). [`split_pane`] acts on it and the right-click menu shows it.
 #[cfg(target_os = "macos")]
 fn split_kind(reg: &registry::Registry, id: &str) -> Result<pane_menu::SplitKind, String> {
+    if id == registry::ALL_AGENTS_ID {
+        return Err(ALL_AGENTS_SPLIT.into());
+    }
     if reg.focused_rex_block(id).is_some() {
         if let Some(why) = reg.column_change_blocked(id) {
             return Err(why.to_owned());
@@ -3634,6 +3650,24 @@ mod tests {
         assert_eq!(
             item_state("Pop Out Tab", true, Some(ALL_AGENTS_POP_OUT)),
             (false, "Pop Out Tab (All Agents can't pop out)".to_owned())
+        );
+    }
+
+    #[test]
+    fn end_session_items_disable_in_all_agents() {
+        assert_eq!(end_session_why(false, false), None);
+        assert_eq!(end_session_why(true, false), Some(END_SESSION_POPOUT));
+        assert_eq!(end_session_why(false, true), Some(ALL_AGENTS_MENU));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn all_agents_cant_split() {
+        let mut reg = registry::Registry::new(std::ptr::null_mut(), manager::INITIAL_RECT);
+        reg.add_all_agents();
+        assert_eq!(
+            split_kind(&reg, registry::ALL_AGENTS_ID),
+            Err("All Agents can't split".to_owned())
         );
     }
 
