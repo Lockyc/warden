@@ -846,6 +846,10 @@ pub struct AgentRowDto {
     /// Asleep with nothing awake under it: the list shows it in the Asleep group, not its own
     /// place.
     pub asleep_group: bool,
+    /// Awake with its prompt cache gone cold, and nothing under it warm or working: the list
+    /// shows it in the Cold Cache group, not its own place. The page pulls the list again when a
+    /// row's `cache` passes, so the row moves then.
+    pub cold_group: bool,
     /// Folded, with a row under it needing you.
     pub amber: bool,
     /// `working`, `blocked`, `done`, `error`, `idle` or `asleep`.
@@ -941,8 +945,8 @@ pub fn agent_step(list: &AgentListDto, step: Step) -> Option<String> {
 /// The selected row moved one place among its siblings, with its forks, as
 /// [`agents::Place::Sibling`] takes it: `(record id, index among its other siblings)`. Its
 /// siblings are its source's other forks, or for a top-level tab its group's other top-level
-/// tabs; a sibling the list shows apart from it (in or out of the Asleep group) is stepped
-/// over. `None` at their edge (leaving them is a drag), or with nothing selected.
+/// tabs; a sibling the list shows apart from it (in or out of the Asleep or Cold Cache group)
+/// is stepped over. `None` at their edge (leaving them is a drag), or with nothing selected.
 pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, usize)> {
     let sel = list.rows.iter().find(|r| r.selected)?;
     let members: Vec<&AgentRowDto> = list
@@ -951,8 +955,10 @@ pub fn agent_move(list: &AgentListDto, step: Step) -> Option<(String, usize)> {
         .filter(|r| r.parent == sel.parent && (sel.parent.is_some() || r.group == sel.group))
         .collect();
     let at = members.iter().position(|r| r.id == sel.id)?;
-    // Past the next sibling the list shows beside it: one in the Asleep group sits elsewhere.
-    let beside = |j: &usize| members[*j].asleep_group == sel.asleep_group;
+    // Past the next sibling the list shows beside it: one in the Asleep or Cold Cache group sits
+    // elsewhere.
+    let place = |r: &AgentRowDto| (r.asleep_group, r.cold_group);
+    let beside = |j: &usize| place(members[*j]) == place(sel);
     let to = match step {
         Step::Prev => (0..at).rev().find(beside)?,
         Step::Next => (at + 1..members.len()).find(beside)?,
@@ -968,6 +974,18 @@ pub fn agent_list(
     store: &AgentStore,
     attention: &Attention,
     status: impl Fn(&str) -> Option<BlockStatus>,
+) -> AgentListDto {
+    agent_list_at(tab_id, store, attention, status, unix_now())
+}
+
+/// [`agent_list`] as it stands at `now`, in Unix seconds: a cache expiring at or before it is
+/// cold.
+fn agent_list_at(
+    tab_id: &str,
+    store: &AgentStore,
+    attention: &Attention,
+    status: impl Fn(&str) -> Option<BlockStatus>,
+    now: u64,
 ) -> AgentListDto {
     let records = agents::in_list_order(&store.records(tab_id));
     let folded = store.folded(tab_id);
@@ -1031,6 +1049,7 @@ pub fn agent_list(
             folded: r.folded,
             hidden: false,
             asleep_group: false,
+            cold_group: false,
             amber: needs_you,
             state,
             blocked_kind: st.kind.filter(|_| state == "blocked").map(|k| match k {
@@ -1063,12 +1082,18 @@ pub fn agent_list(
     // each row's own need until here.
     let needs: Vec<bool> = rows.iter().map(|r| r.amber).collect();
     let asleep: Vec<bool> = rows.iter().map(|r| r.state == "asleep").collect();
+    // `cache` is only set while the agent isn't working, so a working row is never cold.
+    let cold: Vec<bool> = rows
+        .iter()
+        .map(|r| r.state != "asleep" && r.cache.is_some_and(|c| c <= now))
+        .collect();
     for i in 0..rows.len() {
         let end = (i + 1..rows.len())
             .find(|&j| rows[j].depth <= rows[i].depth)
             .unwrap_or(rows.len());
         let r = &mut rows[i];
         r.asleep_group = asleep[i..end].iter().all(|&a| a);
+        r.cold_group = cold[i] && (i..end).all(|j| cold[j] || asleep[j]);
         r.forks = (end - i - 1) as u32;
         r.folded &= r.forks > 0;
         r.amber = r.folded && needs[i + 1..end].contains(&true);
@@ -3608,6 +3633,7 @@ mod tests {
                     folded: false,
                     hidden: false,
                     asleep_group: false,
+                    cold_group: false,
                     amber: false,
                     state: "idle",
                     blocked_kind: None,
@@ -3838,6 +3864,71 @@ mod tests {
                 ("c", false)
             ]
         );
+    }
+
+    #[test]
+    fn cold_group_holds_cold_rows_with_nothing_warm_under_them() {
+        use crate::rex::windows::{AgentState, BlockStatus};
+        // a: cold over a warm fork. b: cold over an asleep fork. c: warm. d: no cache record.
+        let a = record("a", RecordState::Live, Some("window:1"), None);
+        let mut a1 = record("a1", RecordState::Live, Some("window:2"), None);
+        a1.lineage = vec!["a".into()];
+        let b = record("b", RecordState::Live, Some("window:3"), None);
+        let mut b1 = record("b1", RecordState::Asleep, None, None);
+        b1.lineage = vec!["b".into()];
+        let c = record("c", RecordState::Live, Some("window:5"), None);
+        let d = record("d", RecordState::Live, Some("window:6"), None);
+        let s = store(vec![a, a1, b, b1, c, d]);
+        let status = |block: &str| {
+            let cache = match block {
+                "block:1" | "block:3" => Some("100"),
+                "block:2" | "block:5" => Some("101"),
+                _ => None,
+            };
+            Some(BlockStatus {
+                state: AgentState::Idle,
+                kind: None,
+                msg: None,
+                title: None,
+                asked: None,
+                answered: None,
+                said: None,
+                topic: None,
+                story: None,
+                needs: None,
+                background: None,
+                cache: cache.map(Into::into),
+                at: None,
+            })
+        };
+        let l = super::agent_list_at("t", &s.lock().unwrap(), &Attention::default(), status, 100);
+        let got: Vec<_> = l
+            .rows
+            .iter()
+            .map(|r| (r.id.as_str(), r.asleep_group, r.cold_group))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a", false, false),
+                ("a1", false, false),
+                ("b", false, true),
+                ("b1", true, false),
+                ("c", false, false),
+                ("d", false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_move_steps_over_rows_in_the_cold_group() {
+        use super::{agent_move, Step};
+        let mut l = list(ROWS, "a", &[]);
+        l.rows
+            .iter_mut()
+            .filter(|r| r.id == "b")
+            .for_each(|r| r.cold_group = true);
+        assert_eq!(agent_move(&l, Step::Next), Some(("a".into(), 2)));
     }
 
     #[test]
