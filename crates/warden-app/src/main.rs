@@ -2700,6 +2700,7 @@ fn materialize_effective(
     rex::unclaimed::connect(app, &effective);
     app.state::<ManagerState>().lock().adopt(config, effective);
     app.state::<WindowSet>().materialize(app, decls);
+    rex::lifecycle::watch_projects(app);
 }
 
 /// The window `⌘⇧T` would reopen right now (its label), if any.
@@ -3463,6 +3464,7 @@ fn main() {
                                         // through `WardenHost`, which takes it.
                                         set.apply(&wh, decls);
                                         st.lock().record_all_sessions(&wh);
+                                        rex::lifecycle::watch_projects(&wh);
                                     }
                                     // Opt-in tidy: rewrite the file formatted. Diff-guarded in
                                     // format_file, so warden's own write doesn't loop the watcher.

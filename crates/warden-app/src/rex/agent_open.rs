@@ -37,6 +37,48 @@ impl RexHub {
         budgeted(deadline, opened)
     }
 
+    /// Follow `req`'s agent pane without opening it: attach its stored session, so its windows
+    /// changing reach [`RexHub::agent_panes`], and leave its records to the `Refresh` that
+    /// follows. `Ok(false)` when there's nothing to follow: no session stored for it on its
+    /// server, one Rex no longer has, or one a restarted server restored, which only an open
+    /// retires. Never creates a session or starts Rex; holds the pane as an open does, within
+    /// [`OPEN_BUDGET`].
+    pub fn watch_project(&self, req: &RexOpen) -> Result<bool, RexError> {
+        let deadline = Instant::now() + OPEN_BUDGET;
+        let (project, server) = (req.pane_key.as_str(), req.server.as_str());
+        let stored = |hub: &Self| {
+            let st = hub.inner.lock();
+            st.store
+                .get(project)
+                .filter(|r| r.server == server)
+                .map(|r| r.session_id.clone())
+        };
+        if stored(self).is_none() {
+            return Ok(false);
+        }
+        let _held = self.inner.hold_pane(project, Some(deadline))?;
+        let watched = (|| {
+            let (client, _) = self.inner.conn_with(server, deadline, false)?;
+            let Some(sid) = stored(self).filter(|_| !self.is_restored(project)) else {
+                return Ok(false);
+            };
+            match self.inner.attach(server, &client, &sid, Some(deadline)) {
+                Ok(_) => {}
+                Err(RexError::Api { code, .. }) if code == "session_not_found" => return Ok(false),
+                Err(e) => return Err(e),
+            }
+            self.inner.lock().agent_panes.insert(project.to_owned());
+            Ok(true)
+        })();
+        budgeted(deadline, watched)
+    }
+
+    /// Whether `pane_key` is followed as an agent pane ([`RexHub::agent_panes`]): opened, or
+    /// watched ([`RexHub::watch_project`]).
+    pub fn is_followed(&self, pane_key: &str) -> bool {
+        self.inner.lock().agent_panes.contains(pane_key)
+    }
+
     /// Let agent `agent_key` go if its program has finished ([`RexHub::block_exited`]): close its
     /// window, or, when that window was the session's last, end the session as a plain pane's
     /// exit does ([`RexHub::destroy_if_exited`]). Returns whether the agent was let go: false

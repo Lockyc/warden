@@ -1670,6 +1670,15 @@ impl Registry {
         })
     }
 
+    /// [`agent_request`](Self::agent_request) for every tab here whose main pane holds agent tabs,
+    /// in sidebar order.
+    pub fn agent_requests(&self) -> Vec<RexOpen> {
+        self.tabs
+            .iter()
+            .filter_map(|t| self.agent_request(&t.id))
+            .collect()
+    }
+
     /// The active tab when its main pane holds agent tabs — where ⌘T, ⌘⇧T and Sleep Agent Tab act.
     pub fn active_agent_tab(&self) -> Option<&str> {
         let id = self.active.as_deref()?;
@@ -1679,9 +1688,16 @@ impl Registry {
     /// lists, keeping each surface still on its terminal and closing the rest, and
     /// `found.selected` selected. On the visible tab the selected agent spawns and shows. With
     /// nothing live the pane settles asleep, so only a user open asks again. A pane holding no
-    /// agents that isn't on screen is left for its next open to reconcile, and a placeholder is
+    /// agents is left for its next open to reconcile unless it is on screen and either open and
+    /// blank or `asked` (this window ran the op), so an answer this window didn't ask for never
+    /// brings a cold tab live or settles a pane over its own open in flight. A placeholder is
     /// left alone: the pop-out holding the tab follows the op.
-    pub fn sync_agents(&mut self, id: &str, found: AgentsOpened) -> Result<(), SurfaceError> {
+    pub fn sync_agents(
+        &mut self,
+        id: &str,
+        found: AgentsOpened,
+        asked: bool,
+    ) -> Result<(), SurfaceError> {
         let Some(idx) = self
             .tabs
             .iter()
@@ -1691,7 +1707,10 @@ impl Registry {
         };
         let active = self.active.as_deref() == Some(id);
         let pane = &mut self.tabs[idx].primary;
-        if !hosts_agents(&pane.spec, PaneIdx::Primary) || (pane.agents.is_empty() && !active) {
+        let blank = pane.rex == RexState::Asleep;
+        if !hosts_agents(&pane.spec, PaneIdx::Primary)
+            || (pane.agents.is_empty() && !(active && (asked || blank)))
+        {
             return Ok(());
         }
         let mut old = std::mem::take(&mut pane.agents);
@@ -5143,7 +5162,7 @@ mod tests {
             ],
             selected: Some("r3".into()),
         };
-        r.sync_agents("t", found).unwrap();
+        r.sync_agents("t", found, true).unwrap();
         assert_eq!(r.agent_keys("t"), ["t::agent:r2", "t::agent:r3"]);
         assert_eq!(r.selected_agent("t"), Some("r3"));
     }
@@ -5160,7 +5179,7 @@ mod tests {
             agents: vec![("a".into(), target("block:a"))],
             selected: Some("a".into()),
         };
-        r.sync_agents("t", found).unwrap();
+        r.sync_agents("t", found, true).unwrap();
         assert!(r.agent_keys("t").is_empty(), "nothing to spawn here");
         assert_eq!(r.agent_request("t"), None);
         assert_eq!(r.active_agent_tab(), None);
@@ -5174,7 +5193,7 @@ mod tests {
             agents: vec![("r1".into(), target("block:r1"))],
             selected: Some("r1".into()),
         };
-        r.sync_agents("t", found).unwrap();
+        r.sync_agents("t", found, true).unwrap();
         assert!(r.agent_keys("t").is_empty());
     }
 
@@ -5183,7 +5202,7 @@ mod tests {
         let (mut r, asked) = rex_registry();
         r.add(&rex_spec("t", "local"), false).unwrap();
         r.force_ready_agents("t", &["r1"], Some("r1"));
-        r.sync_agents("t", AgentsOpened::default()).unwrap();
+        r.sync_agents("t", AgentsOpened::default(), true).unwrap();
         assert!(r.agent_keys("t").is_empty());
         let _ = r.activate("t");
         assert!(
@@ -5361,7 +5380,7 @@ mod tests {
         let (mut r, _) = rex_registry();
         r.add(&rex_spec("t", "local"), false).unwrap();
         r.force_ready_agents("t", &["r1"], Some("r1"));
-        r.sync_agents("t", AgentsOpened::default()).unwrap();
+        r.sync_agents("t", AgentsOpened::default(), true).unwrap();
         let moved = r.take_tab("t").unwrap();
         assert!(moved.is_up());
         let mut out = Registry::new(std::ptr::null_mut(), rect());
@@ -5743,7 +5762,7 @@ mod tests {
                                     .collect(),
                                 selected: sel.map(|i| RECORDS[i as usize].to_string()),
                             };
-                            let _ = r.sync_agents("t", found);
+                            let _ = r.sync_agents("t", found, true);
                         }
                     }
                     Op::Unload(w) => {

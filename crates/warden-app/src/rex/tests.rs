@@ -2866,3 +2866,132 @@ fn column_follows_rex_app_split() {
         "a block made in Rex.app is bound too"
     );
 }
+
+#[test]
+fn watch_project_attaches_a_stored_session_without_creating_one() {
+    use super::agent_open::tests::{fake, hub, map, open};
+    let f = fake(Some("s1"), vec![("window:1", "block:1", "a")]);
+    let dir = tempfile::tempdir().unwrap();
+    map(&dir.path().join("rex-sessions.json"), "s1");
+    let (hub, _) = hub(f.endpoint(), &dir);
+
+    assert_eq!(hub.watch_project(&open(None)), Ok(true));
+    let attached = f.requests_for("session.attach");
+    assert_eq!(attached.len(), 1);
+    assert_eq!(attached[0].payload["session_id"], "s1");
+    assert!(f.requests_for("session.create").is_empty());
+    assert_eq!(hub.agent_panes("local", "s1"), ["t"]);
+}
+
+#[test]
+fn watch_project_with_no_stored_session_does_nothing() {
+    use super::agent_open::tests::{fake, hub, open};
+    let f = fake(None, vec![]);
+    let dir = tempfile::tempdir().unwrap();
+    let (hub, _) = hub(f.endpoint(), &dir);
+
+    assert_eq!(hub.watch_project(&open(None)), Ok(false));
+    assert!(f.requests_for("session.attach").is_empty());
+    assert!(f.requests_for("session.create").is_empty());
+}
+
+#[test]
+fn watch_project_of_an_ended_session_does_nothing() {
+    use super::agent_open::tests::{fake, hub, map, open};
+    let f = fake(None, vec![]);
+    let dir = tempfile::tempdir().unwrap();
+    map(&dir.path().join("rex-sessions.json"), "s1");
+    let (hub, _) = hub(f.endpoint(), &dir);
+
+    assert_eq!(hub.watch_project(&open(None)), Ok(false));
+    assert!(f.requests_for("session.create").is_empty());
+    assert!(hub.agent_panes("local", "s1").is_empty());
+}
+
+static WATCH_AUTOSTARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn counting_watch_autostart(_: Duration) -> Result<(), RexError> {
+    WATCH_AUTOSTARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+#[test]
+fn watch_project_never_starts_rex() {
+    use std::sync::atomic::Ordering;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rex-sessions.json");
+    super::agent_open::tests::map(&path, "s1");
+    let missing = Endpoint::Unix(dir.path().join("no-server.sock"));
+    let hub = RexHub::for_test_autostart(path, info(), missing, counting_watch_autostart);
+
+    let req = super::agent_open::tests::open(None);
+    assert_eq!(hub.watch_project(&req), Err(RexError::Unreachable));
+    assert_eq!(
+        WATCH_AUTOSTARTS.load(Ordering::SeqCst),
+        0,
+        "a Rex the user quit stays quit"
+    );
+}
+
+#[test]
+fn a_watched_cold_tab_stays_cold_after_refresh() {
+    use super::agent_open::tests::{fake, hub, map, open, store};
+    use super::lifecycle::AgentOp;
+    use crate::registry::Registry;
+    use crate::surface::{PixelRect, TabSpec};
+
+    let f = fake(Some("s1"), vec![("window:1", "block:1", "a")]);
+    let dir = tempfile::tempdir().unwrap();
+    map(&dir.path().join("rex-sessions.json"), "s1");
+    let (hub, _) = hub(f.endpoint(), &dir);
+    let s = store(vec![]);
+    let req = open(None);
+    assert_eq!(hub.watch_project(&req), Ok(true));
+    let found = hub
+        .agent_op(&s, &req, &AgentOp::Refresh, 7)
+        .expect("refresh");
+    assert_eq!(
+        found.agents.len(),
+        1,
+        "the watched session's agent is followed"
+    );
+
+    let rect = PixelRect {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 100.0,
+    };
+    let mut r = Registry::new(std::ptr::null_mut(), rect);
+    r.set_rex_opener(Box::new(|_| Ok(())));
+    let spec = TabSpec {
+        colour: None,
+        id: "t".into(),
+        title: "t".into(),
+        dir: PathBuf::from("/work/t"),
+        shell: "fish".into(),
+        startup: Some("agent".into()),
+        group: None,
+        probe: None,
+        kill: None,
+        suspend: None,
+        tree: false,
+        tree_path: Vec::new(),
+        split: None,
+        server: Some("local".into()),
+        resume: None,
+    };
+    r.add(&spec, false).unwrap();
+    // On screen, its own open still in flight: nothing live yet.
+    let _ = r.activate("t");
+    assert!(r.is_connecting("t"));
+
+    // An answer with nothing live mustn't settle the pane over its open either.
+    r.sync_agents("t", Default::default(), false).unwrap();
+    assert!(r.is_connecting("t"), "its own open still lands");
+    r.sync_agents("t", found, false).unwrap();
+    let dto = r.tab_dtos().into_iter().find(|d| d.id == "t").unwrap();
+    assert!(!dto.spawned, "a followed answer brings no cold tab live");
+    assert!(r.agent_keys("t").is_empty(), "no agent slot to spawn");
+    assert!(r.is_connecting("t"));
+}

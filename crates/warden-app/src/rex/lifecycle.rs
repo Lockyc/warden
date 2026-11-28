@@ -155,8 +155,8 @@ impl RexHub {
         }
     }
 
-    /// The main panes followed as agent tabs (opened as agent panes) whose session is
-    /// `session_id` on `server`.
+    /// The main panes followed as agent tabs (opened as agent panes, or watched:
+    /// [`RexHub::watch_project`]) whose session is `session_id` on `server`.
     pub fn agent_panes(&self, server: &str, session_id: &str) -> Vec<String> {
         let st = self.inner.lock();
         let mut panes: Vec<String> = st
@@ -1650,7 +1650,8 @@ fn land(
             if focus_main && label == Some(l.as_str()) {
                 ws.registry.focus_pane(tab_id, PaneIdx::Primary);
             }
-            if let Err(e) = ws.registry.sync_agents(tab_id, found.clone()) {
+            let asked = label == Some(l.as_str());
+            if let Err(e) = ws.registry.sync_agents(tab_id, found.clone(), asked) {
                 log::error!("couldn't open an agent of tab {tab_id:?}: {e}");
             }
             refreshed.push(l.clone());
@@ -1903,6 +1904,69 @@ fn refresh(app: &AppHandle, project: String) {
         .spawn(move || follow(&app, &project, &AgentOp::Refresh));
     if let Err(e) = spawned {
         log::error!("couldn't start following agent tabs: {e}");
+    }
+}
+
+/// Follow every Rex project tab an open window holds and the hub doesn't follow yet
+/// ([`RexHub::watch_project`]), each then reconciled and landed as a window change there is
+/// ([`follow`]), so its agent tabs are known before its tab opens. One worker per server, which
+/// gives up on that server once it is unreachable; a failure is logged, never bannered.
+pub fn watch_projects(app: &AppHandle) {
+    let Some(hub) = app.try_state::<RexHub>() else {
+        return;
+    };
+    let mut by_server: Vec<(String, Vec<RexOpen>)> = Vec::new();
+    {
+        let st = app.state::<ManagerState>();
+        let m = st.lock();
+        for req in m
+            .windows
+            .values()
+            .flat_map(|ws| ws.registry.agent_requests())
+        {
+            if hub.is_followed(&req.pane_key) {
+                continue;
+            }
+            let at = match by_server.iter().position(|(s, _)| *s == req.server) {
+                Some(i) => i,
+                None => {
+                    by_server.push((req.server.clone(), Vec::new()));
+                    by_server.len() - 1
+                }
+            };
+            let reqs = &mut by_server[at].1;
+            if !reqs.iter().any(|r| r.pane_key == req.pane_key) {
+                reqs.push(req);
+            }
+        }
+    }
+    for (server, reqs) in by_server {
+        let (app, named) = (app.clone(), server.clone());
+        let spawned = std::thread::Builder::new()
+            .name("warden-agent-watch".into())
+            .spawn(move || {
+                let Some(hub) = app.try_state::<RexHub>() else {
+                    return;
+                };
+                for req in reqs {
+                    match hub.watch_project(&req) {
+                        Ok(true) => follow(&app, &req.pane_key, &AgentOp::Refresh),
+                        Ok(false) => {}
+                        Err(RexError::Unreachable) => {
+                            log::warn!(
+                                "Rex {server}: unreachable; its agent tabs wait for an open"
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            log::warn!("couldn't follow {:?}'s agent tabs: {e}", req.pane_key)
+                        }
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("couldn't start following Rex {named}'s agent tabs: {e}");
+        }
     }
 }
 
