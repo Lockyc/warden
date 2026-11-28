@@ -869,7 +869,8 @@ pub struct AgentRowDto {
     /// shows it in the Cold Cache group, not its own place. The page pulls the list again when a
     /// row's `cache` passes, so the row moves then.
     pub cold_group: bool,
-    /// Folded, with a row under it needing you.
+    /// In a project's list: folded, with a row under it needing you. In the All Agents list: it
+    /// needs you itself, or a row folded under it does.
     pub amber: bool,
     /// `working`, `blocked`, `done`, `error`, `idle` or `asleep`.
     pub state: &'static str,

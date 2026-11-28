@@ -45,6 +45,7 @@ public. Rex is chosen per tab.
 | `rex/layout.rs` | A session window's split tree (`Layout`) as tiles and dividers for the page, and a config pane stack as the layout a new session is created with (`stack_layout`). |
 | `rex/column.rs` | A split pane's scratch column: one session whose windows are scratch tabs and whose split trees are the stacked panes — opening it (created from the config stack, retyped when restored), new tab, split, divider resize, closing a block or a tab, each block's size key. |
 | `rex/agents.rs`, `rex/agent_open.rs` | Agent records (group, order, resume, asleep/closed) and folded groups, and opening a main pane: which agents are live. |
+| `rex/all_agents.rs` | The All Agents list: every project's awake agent tabs in one list, grouped by project (`warden:agents` for the pinned row). |
 | `rex/lifecycle.rs` | The agent tab list: new, wake, sleep, close, reopen, fork, rename (`RexHub::agent_op`), which agent shows (`settle`, an open's too), following a pane's windows and statuses, storing reported resume commands, and the list `warden:agents` carries. |
 | `rex/attention.rs` | Which agent tabs need you (blocked, or finished at a stamp not yet seen), and which change raises a banner. |
 
@@ -105,7 +106,8 @@ site omits it.
 - **A main pane's session windows are its agent tabs**, one surface each — the window's first
   terminal block — with only the selected one on screen. A split pane's session windows are its
   scratch tabs, each showing every block of its split tree (`docs/native-splits-direction.md`).
-  An unclaimed row shows one block: the first terminal block of its session's first window.
+  The All Agents tab holds its own surface per selected agent, on that agent's block, and the
+  size goes to whichever surface is on screen. An unclaimed row shows one block: the first terminal block of its session's first window.
 - **`cmd` and each split pane's `cmd` are typed once, when warden creates the session**
   (`initial_input`); a woken agent's window types its resume command instead. Reattaching types
   nothing (`spawn::effective_spec` clears `startup`).
@@ -127,7 +129,9 @@ site omits it.
 - **An open answers within `OPEN_BUDGET`**, every step on one deadline: a pane opens or reports its
   server unreachable. Starting a stopped local Rex fits inside that budget, and **only a tab open
   starts Rex** — the launch/reload connect (to the servers `unclaimed::launch_servers` returns)
-  never does, so a Rex the user quit stays quit.
+  never does, so a Rex the user quit stays quit. The same goes for the watch at launch, reload,
+  window open and rescan (`RexHub::watch_project`) and a followed Refresh or Exit: they attach
+  stored sessions and never create or start one.
 - **A change to an open scratch column waits out a slow Rex** (`column::CHANGE_BUDGET`, not
   `OPEN_BUDGET`): a sent request is carried out however late Rex answers. A column takes one new
   tab / split / tab close at a time (`Registry::begin_column_change`); Split and New Scratch Tab
@@ -137,6 +141,7 @@ site omits it.
 
 | Event | The pane's Rex session | Where |
 |---|---|---|
+| Launch, reload, a window opening, a root rescan | Every stored project session is attached, so its agent tabs are known before the tab opens. No session is created and Rex is not started. | `lifecycle::watch_projects` → `RexHub::watch_project` |
 | ⌘W unload, closing a window, quitting warden; the split removed from the config (its column's session) | Detached: the relay exits, the session keeps running. The next open reattaches. | `Registry::unload`, `Registry::unsplit` |
 | ☠ destroy | Both panes' sessions destroyed; the tab's resumable agents go to the closed fold, the rest drop. A Rex tab's `kill` is not run. | `EndTarget::Rex` → `spawn::destroy` |
 | An agent tab sleeps or closes | Its window closes; the record stays asleep, or goes to the closed fold, to wake later typing its resume command. One that never reported a resume command can't sleep, and closes for good only once confirmed. Closing the last leaves the session empty — Rex keeps it — and the next agent tab opens in it (`Inner::ensure_until`, behind `RexHub::ensure_session`); the tab stays open while its scratch column runs. | `lifecycle::run` → `RexHub::agent_op` |
