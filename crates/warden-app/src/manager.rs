@@ -2108,6 +2108,8 @@ mod tests {
             agents: false,
             colour: crate::project_colour::project_colour(id, None),
             server: None,
+            all_agents: false,
+            agents_selected: None,
             presence: None,
         }
     }

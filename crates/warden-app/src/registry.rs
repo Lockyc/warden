@@ -69,16 +69,43 @@ pub enum RexAnswer {
 }
 
 /// The id of the All Agents tab, a window's one row listing every project's awake agent tabs.
+pub const ALL_AGENTS_ID: &str = "warden:all-agents";
+
+/// The All Agents tab's row title.
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "the All Agents tab is wired next")
 )]
-pub const ALL_AGENTS_ID: &str = "warden:all-agents";
+const ALL_AGENTS_TITLE: &str = "All Agents";
 
 /// The Rex pane key and surface id of agent `record_id` in tab `tab_id`'s main pane. The one
 /// spelling: the registry, the hub's per-agent bindings and size claims all use it.
 pub(crate) fn agent_key(tab_id: &str, record_id: &str) -> String {
     format!("{tab_id}::agent:{record_id}")
+}
+
+/// The Rex pane key an agent slot of tab `tab_id` sizes and exit-checks: [`agent_key`] for a
+/// project's, and for the All Agents tab's — whose `record_id` is already that key — the key
+/// itself, so its claims land on the block the project's surface claims. Its surface key stays
+/// `agent_key(ALL_AGENTS_ID, …)`, distinct from the project's.
+fn agent_pane_key(tab_id: &str, record_id: &str) -> String {
+    match tab_id {
+        ALL_AGENTS_ID => record_id.to_owned(),
+        _ => agent_key(tab_id, record_id),
+    }
+}
+
+/// Whether a live Rex surface of tab `tab_id` on pane `key` sends its size when framed, given
+/// whether that tab is the active one and the pane keys the screen `shown`. A project's surfaces
+/// follow their panes' frames, hidden or not, except a hidden one whose block the screen shows
+/// through another surface; the All Agents tab's only while it shows them. Its blocks are each a
+/// project's, so a surface the user can't see sizing one would fight the one they can.
+fn sends_size(tab_id: &str, key: &str, active: bool, shown: &[String]) -> bool {
+    let on_screen = shown.iter().any(|k| k == key);
+    match tab_id {
+        ALL_AGENTS_ID => active && on_screen,
+        _ => active || !on_screen,
+    }
 }
 
 /// Starts a [`RexOpen`] somewhere that may block, and answers later through
@@ -222,6 +249,10 @@ pub struct TabDto {
     pub colour: crate::project_colour::ProjectColour,
     /// The Rex server the tab lives on, `None` for a plain tab.
     pub server: Option<String>,
+    /// This is the All Agents tab ([`ALL_AGENTS_ID`]).
+    pub all_agents: bool,
+    /// The agent key the All Agents tab's main pane shows; `None` for every other tab.
+    pub agents_selected: Option<String>,
     /// Last-known session presence: `"on"` (live), `"ghost"` (crashed but restorable), `"off"`
     /// (confirmed absent), or `null` — the manager's `PresenceCache` (see manager.rs) has no
     /// record for this tab yet. `null` covers two different cases and the chrome renders them
@@ -1011,6 +1042,12 @@ impl TabEntry {
         matches!(self.primary.slot, TabSlot::Detached)
     }
 
+    /// Whether this is the All Agents tab: a view of other tabs' agents, with no project, session
+    /// or column of its own.
+    fn is_all_agents(&self) -> bool {
+        self.id == ALL_AGENTS_ID
+    }
+
     /// How to end this tab's session the `how` way, else `None` (a plain tab without that
     /// command). Any Rex tab ends through Rex: a destroy is its panes' Rex sessions — both pane
     /// keys, mapped or not, since a split's session outlives the split — and a suspend sleeps
@@ -1121,6 +1158,13 @@ pub struct Registry {
     rex_opener: Option<RexOpener>,
     /// The socket Rex panes' relays report to (`rex::reports`); none, they report nowhere.
     report_socket: Option<PathBuf>,
+    /// The awake agent keys the last [`retain_all_agents`](Self::retain_all_agents) kept, in the
+    /// combined list's order: where an agent that leaves had its neighbours.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the All Agents tab is wired next")
+    )]
+    all_agents_order: Vec<String>,
 }
 
 // SAFETY: `ns_window` is a raw `NSWindow *` that is only ever read on the main
@@ -1138,6 +1182,7 @@ impl Registry {
             last_rect_blocks: Vec::new(),
             rex_opener: None,
             report_socket: None,
+            all_agents_order: Vec::new(),
         }
     }
 
@@ -1198,6 +1243,137 @@ impl Registry {
         err.map_or(Ok(()), Err)
     }
 
+    /// Pin the All Agents tab first in the sidebar. Its main pane holds one agent slot per agent
+    /// shown there ([`select_all_agent`](Self::select_all_agent)) and its spec is a stand-in —
+    /// no `server`, no commands, `/` as its dir — so every per-project path (probes, ☠ / ⏻, Rex
+    /// opens, a split, the dir check) finds nothing to do for it. Idempotent.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the All Agents tab is wired next")
+    )]
+    pub fn add_all_agents(&mut self) {
+        if self.tabs.iter().any(TabEntry::is_all_agents) {
+            return;
+        }
+        let spec = TabSpec {
+            colour: None,
+            id: ALL_AGENTS_ID.to_owned(),
+            title: ALL_AGENTS_TITLE.to_owned(),
+            dir: PathBuf::from("/"),
+            shell: String::new(),
+            startup: None,
+            group: None,
+            probe: None,
+            kill: None,
+            suspend: None,
+            tree: false,
+            tree_path: Vec::new(),
+            split: None,
+            server: None,
+            resume: None,
+        };
+        self.tabs.insert(
+            0,
+            TabEntry {
+                id: spec.id.clone(),
+                title: spec.title.clone(),
+                primary: Pane::new(spec, TabSlot::Cold),
+                column: None,
+                focused: PaneIdx::Primary,
+                rex_error: None,
+            },
+        );
+    }
+
+    /// Take the All Agents tab away, closing its surfaces. Idempotent.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the All Agents tab is wired next")
+    )]
+    pub fn remove_all_agents(&mut self) {
+        self.remove(ALL_AGENTS_ID);
+        self.all_agents_order.clear();
+    }
+
+    /// Show agent `key` ([`agent_key`]) in the All Agents tab's main pane through its own surface
+    /// on `target`, the agent's block, and hide the one shown before; the agent's project tab is
+    /// untouched. The first time, or when the agent has moved to another block, the slot takes
+    /// `target`; on screen its surface spawns if cold, else the choice waits for `activate`.
+    /// `Err` when this window has no All Agents tab, or the surface failed to spawn.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the All Agents tab is wired next")
+    )]
+    pub fn select_all_agent(&mut self, key: &str, target: PaneTarget) -> Result<(), String> {
+        let idx = self
+            .tabs
+            .iter()
+            .position(TabEntry::is_all_agents)
+            .ok_or("this window has no All Agents tab")?;
+        let pane = &mut self.tabs[idx].primary;
+        let ready = RexState::Ready(target);
+        match pane.agent_mut(key) {
+            Some(a) if a.rex != ready => {
+                if let TabSlot::Spawned(s) = std::mem::replace(&mut a.slot, TabSlot::Cold) {
+                    s.close();
+                }
+                a.rex = ready;
+            }
+            Some(_) => {}
+            None => pane.agents.push(AgentSlot {
+                record_id: key.to_owned(),
+                slot: TabSlot::Cold,
+                rex: ready,
+            }),
+        }
+        pane.selected = Some(key.to_owned());
+        if self.active.as_deref() != Some(ALL_AGENTS_ID) {
+            return Ok(());
+        }
+        let spawned = self.spawn_agent(idx, key);
+        self.show_active();
+        spawned.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// Follow the combined list's awake agents, `awake` in its order: close every All Agents slot
+    /// whose key isn't there. When the one shown went, the pane is left blank and the key to
+    /// select instead comes back: the next agent after it in the list, else the one before.
+    /// `None` when nothing shown went, nothing is awake, or there is no All Agents tab.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the All Agents tab is wired next")
+    )]
+    pub fn retain_all_agents(&mut self, awake: &[String]) -> Option<String> {
+        let order = std::mem::replace(&mut self.all_agents_order, awake.to_vec());
+        let idx = self.tabs.iter().position(TabEntry::is_all_agents)?;
+        let pane = &mut self.tabs[idx].primary;
+        // The slots' own order stands in for a shown one the last list never held.
+        let slots: Vec<String> = pane.agents.iter().map(|a| a.record_id.clone()).collect();
+        let (kept, gone): (Vec<AgentSlot>, Vec<AgentSlot>) = std::mem::take(&mut pane.agents)
+            .into_iter()
+            .partition(|a| awake.contains(&a.record_id));
+        pane.agents = kept;
+        for a in gone {
+            if let TabSlot::Spawned(s) = a.slot {
+                s.close();
+            }
+        }
+        let shown = pane.selected.clone()?;
+        if awake.contains(&shown) {
+            return None;
+        }
+        pane.selected = None;
+        let order = if order.contains(&shown) { order } else { slots };
+        let at = order.iter().position(|k| *k == shown)?;
+        let still = |k: &&String| awake.contains(k);
+        order[at + 1..]
+            .iter()
+            .find(still)
+            .or_else(|| order[..at].iter().rev().find(still))
+            .or(awake.first())
+            .cloned()
+    }
+
     /// Whether tab `id` currently has a second pane. Unknown tab = false.
     pub fn is_split(&self, id: &str) -> bool {
         self.tabs
@@ -1232,8 +1408,13 @@ impl Registry {
     ///
     /// Returns whether the tab is split now. An unclaimed Rex session's tab never is: its pane
     /// attaches the session it lists, and a second pane would have to make a session of its own.
+    /// Nor is the All Agents tab, which has no project for a column to run in.
     pub fn split(&mut self, id: &str) -> bool {
-        let Some(t) = self.tabs.iter_mut().find(|t| t.id == id) else {
+        let Some(t) = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == id && !t.is_all_agents())
+        else {
             return false;
         };
         if t.column.is_some() {
@@ -1607,7 +1788,7 @@ impl Registry {
         pane.selected.as_deref().filter(|r| pane.agent(r).is_some())
     }
 
-    /// The agent keys of tab `id`'s main pane ([`agent_key`]), in list order; empty for a tab
+    /// The agent keys of tab `id`'s main pane ([`agent_pane_key`]), in list order; empty for a tab
     /// holding no agents.
     #[cfg(test)]
     pub fn agent_keys(&self, id: &str) -> Vec<String> {
@@ -1618,7 +1799,7 @@ impl Registry {
                 t.primary
                     .agents
                     .iter()
-                    .map(|a| agent_key(id, &a.record_id))
+                    .map(|a| agent_pane_key(id, &a.record_id))
                     .collect()
             })
             .unwrap_or_default()
@@ -1847,6 +2028,11 @@ impl Registry {
                 agents: hosts_agents(&t.primary.spec, PaneIdx::Primary),
                 colour: crate::project_colour::project_colour(&t.title, t.primary.spec.colour),
                 server: t.primary.spec.server.clone(),
+                all_agents: t.is_all_agents(),
+                agents_selected: t
+                    .is_all_agents()
+                    .then(|| t.primary.selected.clone())
+                    .flatten(),
                 presence: None, // filled by the manager's PresenceCache, not the Registry
             })
             .collect()
@@ -1943,11 +2129,12 @@ impl Registry {
     }
 
     /// Ids of the tabs with a terminal standing — primary live here, or moved out to a pop-out
-    /// (a placeholder) — in sidebar order. What `remember_tabs` records as "loaded".
+    /// (a placeholder) — in sidebar order. What `remember_tabs` records as "loaded". Never the All
+    /// Agents tab: its surfaces follow the agents awake now, not a remembered session.
     pub fn loaded_ids(&self) -> Vec<String> {
         self.tabs
             .iter()
-            .filter(|t| t.primary.live() || t.is_placeholder())
+            .filter(|t| (t.primary.live() || t.is_placeholder()) && !t.is_all_agents())
             .map(|t| t.id.clone())
             .collect()
     }
@@ -1999,12 +2186,17 @@ impl Registry {
     }
 
     /// The Rex pane key of live surface `surface_id` ([`surface_key`](Self::surface_key)): what
-    /// its size claims and exit check name. `None` for a plain tab's surface.
+    /// its size claims and exit check name. For an All Agents surface that is the agent's own
+    /// ([`agent_pane_key`]). `None` for a plain tab's surface.
     pub fn rex_key_of_surface(&self, surface_id: usize) -> Option<String> {
         let key = self.surface_key(surface_id)?;
-        let (tab, _, _) = self.locate_key(&key)?;
-        self.spec_of(&tab)?.server.as_ref()?;
-        Some(key)
+        match self.locate_key(&key)? {
+            (tab, _, Some(record)) if tab == ALL_AGENTS_ID => Some(agent_pane_key(&tab, &record)),
+            (tab, _, _) => {
+                self.spec_of(&tab)?.server.as_ref()?;
+                Some(key)
+            }
+        }
     }
 
     /// The id of the tab owning the spawned surface with handle `surface_id`
@@ -2090,12 +2282,17 @@ impl Registry {
         if let PaneIdx::Block(_) = which {
             return self.ensure_column(idx);
         }
-        let agents = hosts_agents(&self.tabs[idx].primary.spec, which);
+        let all_agents = self.tabs[idx].is_all_agents();
+        let agents = all_agents || hosts_agents(&self.tabs[idx].primary.spec, which);
         let stack = stack_of(&self.tabs[idx].primary.spec);
         let tab = &mut self.tabs[idx];
         let label = session_label(&tab.title, which);
         let pane = &mut tab.primary;
         if !matches!(pane.slot, TabSlot::Cold) {
+            return Ok(false);
+        }
+        // The All Agents tab shows only agents' surfaces; with none chosen its pane stays blank.
+        if all_agents && pane.agents.is_empty() {
             return Ok(false);
         }
         if agents && !pane.agents.is_empty() {
@@ -2717,12 +2914,13 @@ impl Registry {
     /// [`adopt`](Self::adopt_tab): its entry leaves with every surface (none closed — the PTYs are
     /// what a move preserves), agent and scratch block, and a [`placeholder`](TabEntry::placeholder)
     /// stands at its index, so the row stays where it was and `reconcile` counts the tab present.
-    /// `None` for an unknown id or a placeholder: a tab already out has nothing here to move.
+    /// `None` for an unknown id or a placeholder: a tab already out has nothing here to move. Nor
+    /// does the All Agents tab move: its surfaces show other tabs' agents in this window.
     pub fn take_tab(&mut self, id: &str) -> Option<MovedTab> {
         let idx = self
             .tabs
             .iter()
-            .position(|t| t.id == id && !t.is_placeholder())?;
+            .position(|t| t.id == id && !t.is_placeholder() && !t.is_all_agents())?;
         let placeholder = self.tabs[idx].placeholder();
         let entry = Box::new(std::mem::replace(&mut self.tabs[idx], placeholder));
         Some(MovedTab {
@@ -3035,12 +3233,19 @@ impl Registry {
 
     /// Frame every surface of tab `idx`'s pane `which` — for the main pane its own and each
     /// agent's, shown or not; for a block, the block's — at `rect`, and remember it as that pane's
-    /// hole ([`Pane::rect`]). Returns each live Rex surface's size, for `rex::size` to send while
-    /// warden owns its block.
+    /// hole ([`Pane::rect`]). Returns the size of each live Rex surface that sends one
+    /// ([`sends_size`]), for `rex::size` to send while warden owns its block.
     fn frame_pane(&mut self, idx: usize, which: PaneIdx, rect: PixelRect) -> Vec<PaneSize> {
+        let shown = self.shown_rex_keys();
+        let active = self.active.as_deref() == Some(self.tabs[idx].id.as_str());
         let t = &mut self.tabs[idx];
         let rex = t.primary.spec.server.is_some();
         let mut sizes = Vec::new();
+        let mut size = |key: String, s: &GhosttySurface| {
+            if sends_size(&t.id, &key, active, &shown) {
+                sizes.extend(PaneSize::of(key, s));
+            }
+        };
         match which {
             PaneIdx::Primary => {
                 let pane = &mut t.primary;
@@ -3048,13 +3253,13 @@ impl Registry {
                 if let TabSlot::Spawned(s) = &pane.slot {
                     s.set_frame(rect);
                     if rex {
-                        sizes.extend(PaneSize::of(pane.spec.id.clone(), s));
+                        size(pane.spec.id.clone(), s);
                     }
                 }
                 for a in &pane.agents {
                     if let TabSlot::Spawned(s) = &a.slot {
                         s.set_frame(rect);
-                        sizes.extend(PaneSize::of(agent_key(&t.id, &a.record_id), s));
+                        size(agent_pane_key(&t.id, &a.record_id), s);
                     }
                 }
             }
@@ -3066,12 +3271,27 @@ impl Registry {
                 if let TabSlot::Spawned(s) = &b.slot {
                     s.set_frame(rect);
                     if rex {
-                        sizes.extend(PaneSize::of(b.spec.id.clone(), s));
+                        size(b.spec.id.clone(), s);
                     }
                 }
             }
         }
         sizes
+    }
+
+    /// The Rex pane keys of the surfaces the active tab puts on screen ([`on_screen`](Self::on_screen)).
+    fn shown_rex_keys(&self) -> Vec<String> {
+        let Some(t) = self
+            .active
+            .as_deref()
+            .and_then(|a| self.tabs.iter().find(|t| t.id == a))
+        else {
+            return Vec::new();
+        };
+        self.on_screen(t)
+            .into_iter()
+            .filter_map(|(_, s)| self.rex_key_of_surface(s.id()))
+            .collect()
     }
 
     /// The size of the live Rex pane surface `surface_id` shows, or `None` when it shows a plain
@@ -3094,7 +3314,18 @@ impl Registry {
     /// This pick stays apart from `rex::lifecycle::settle`, the records' decider: it chooses among
     /// slots by whether each has a terminal in hand, which no record carries, and the pane must
     /// show something now, before the worker's pass settles the records and `sync_agents` lands.
+    ///
+    /// In the All Agents tab only the surface closes: its slot stays, cold and still selected,
+    /// for [`retain_all_agents`](Self::retain_all_agents) to drop and lean from once the agent
+    /// leaves the awake list, or to reattach when shown again if it didn't. The tab never goes
+    /// cold.
     pub fn close_agent(&mut self, id: &str, record_id: &str) -> Option<AgentClosed> {
+        if id == ALL_AGENTS_ID {
+            let t = self.tabs.iter().find(|t| t.id == id)?;
+            t.primary.agent(record_id)?;
+            self.release_agent(id, record_id);
+            return Some(AgentClosed::PaneLive);
+        }
         let idx = self.tabs.iter().position(|t| t.id == id)?;
         let pane = &mut self.tabs[idx].primary;
         let at = pane.agents.iter().position(|a| a.record_id == record_id)?;
@@ -3171,10 +3402,12 @@ impl Registry {
     }
 
     /// Reorder entries to match `order` (by id). Ids not in `order` keep their
-    /// relative order, appended after the ordered ones.
+    /// relative order, appended after the ordered ones. The All Agents tab stays first.
     pub fn reorder(&mut self, order: &[String]) {
-        self.tabs
-            .sort_by_key(|t| order.iter().position(|o| o == &t.id).unwrap_or(usize::MAX));
+        self.tabs.sort_by_key(|t| {
+            let at = order.iter().position(|o| o == &t.id).unwrap_or(usize::MAX);
+            (!t.is_all_agents(), at)
+        });
     }
 
     /// Destroy all surfaces (called on window close / app exit).
@@ -5576,6 +5809,180 @@ mod tests {
         let named: Vec<PaneIdx> = r.tabs[0].keyed().map(|(_, w, _)| w).collect();
         let walked: Vec<PaneIdx> = r.tabs[0].slots_mut().map(|(w, _)| w).collect();
         assert_eq!(walked, named);
+    }
+
+    /// The All Agents tab's slot keys, in slot order.
+    fn all_agent_slots(r: &Registry) -> Vec<String> {
+        r.agent_keys(ALL_AGENTS_ID)
+    }
+
+    #[test]
+    fn all_agents_entry_is_pinned_first_and_not_persisted() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp"), false).unwrap();
+        r.add(&rex_spec("b", "local"), false).unwrap();
+        r.add_all_agents();
+        r.add_all_agents();
+        let dtos = r.tab_dtos();
+        let ids: Vec<&str> = dtos.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, [ALL_AGENTS_ID, "a", "b"]);
+        assert!(dtos[0].all_agents);
+        assert!(!dtos[1].all_agents && !dtos[2].all_agents);
+        assert_eq!(dtos[0].title, "All Agents");
+        assert_eq!(dtos[0].warn, None);
+        assert!(!dtos[0].has_probe && !dtos[0].has_kill && !dtos[0].has_suspend);
+        r.reorder(&["b".to_string(), "a".to_string()]);
+        let ids: Vec<String> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, [ALL_AGENTS_ID, "b", "a"], "a reorder keeps it pinned");
+        r.select_all_agent("b::agent:r1", target("block:r1"))
+            .unwrap();
+        assert!(!r.loaded_ids().contains(&ALL_AGENTS_ID.to_string()));
+        assert!(r.probe_targets().is_empty());
+        assert_eq!(r.rex_tabs(), [("b".to_string(), "local".to_string())]);
+        assert_eq!(r.agent_requests().len(), 1);
+        r.remove_all_agents();
+        r.remove_all_agents();
+        let ids: Vec<String> = r.tab_dtos().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, ["b", "a"]);
+    }
+
+    #[test]
+    fn selecting_spawns_one_surface_per_key_and_reuses_it() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add_all_agents();
+        r.select_all_agent("p::agent:k1", target("block:k1"))
+            .unwrap();
+        r.select_all_agent("q::agent:k2", target("block:k2"))
+            .unwrap();
+        r.select_all_agent("p::agent:k1", target("block:k1"))
+            .unwrap();
+        assert_eq!(all_agent_slots(&r), ["p::agent:k1", "q::agent:k2"]);
+        let dto = r.tab_dtos().remove(0);
+        assert_eq!(dto.agents_selected.as_deref(), Some("p::agent:k1"));
+        assert_eq!(r.selected_agent(ALL_AGENTS_ID), Some("p::agent:k1"));
+        // Its surface's key is its own; the Rex pane it sizes is the agent's.
+        assert_eq!(
+            agent_pane_key(ALL_AGENTS_ID, "p::agent:k1"),
+            "p::agent:k1".to_string()
+        );
+        assert_eq!(agent_pane_key("p", "k1"), agent_key("p", "k1"));
+        // Off screen nothing spawns; the choice waits for `activate`.
+        assert!(!r.is_spawned(ALL_AGENTS_ID));
+    }
+
+    #[test]
+    fn selecting_without_the_entry_is_an_error() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        assert!(r
+            .select_all_agent("p::agent:k1", target("block:k1"))
+            .is_err());
+        assert_eq!(r.retain_all_agents(&[]), None);
+    }
+
+    #[test]
+    fn retain_drops_gone_agents_and_leans_to_a_neighbour() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add_all_agents();
+        for k in ["k1", "k2", "k3", "k2"] {
+            r.select_all_agent(k, target(k)).unwrap();
+        }
+        let awake = |ks: &[&str]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            r.retain_all_agents(&awake(&["k1", "k3"])),
+            Some("k3".into())
+        );
+        assert_eq!(all_agent_slots(&r), ["k1", "k3"]);
+        assert_eq!(r.selected_agent(ALL_AGENTS_ID), None);
+        // A hidden one going changes nothing on screen.
+        r.select_all_agent("k3", target("k3")).unwrap();
+        assert_eq!(r.retain_all_agents(&awake(&["k3"])), None);
+        assert_eq!(all_agent_slots(&r), ["k3"]);
+        assert_eq!(r.selected_agent(ALL_AGENTS_ID), Some("k3"));
+    }
+
+    #[test]
+    fn retain_leans_in_list_order_to_an_agent_never_shown_here() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add_all_agents();
+        let awake = |ks: &[&str]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(r.retain_all_agents(&awake(&["k1", "k2", "k3"])), None);
+        r.select_all_agent("k3", target("k3")).unwrap();
+        assert_eq!(
+            r.retain_all_agents(&awake(&["k1", "k2"])),
+            Some("k2".into())
+        );
+        assert!(all_agent_slots(&r).is_empty());
+    }
+
+    #[test]
+    fn an_all_agents_relay_exit_keeps_its_slot_for_retain() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add_all_agents();
+        r.select_all_agent("k1", target("k1")).unwrap();
+        assert_eq!(
+            r.close_agent(ALL_AGENTS_ID, "k1"),
+            Some(AgentClosed::PaneLive)
+        );
+        assert_eq!(all_agent_slots(&r), ["k1"]);
+        assert_eq!(r.selected_agent(ALL_AGENTS_ID), Some("k1"));
+        assert_eq!(r.close_agent(ALL_AGENTS_ID, "gone"), None);
+        assert_eq!(r.tab_dtos()[0].id, ALL_AGENTS_ID, "the tab stays");
+    }
+
+    #[test]
+    fn retain_with_nothing_awake_blanks_the_pane() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add(&spec("a", "/tmp"), false).unwrap();
+        r.add_all_agents();
+        r.activate(ALL_AGENTS_ID).unwrap();
+        r.select_all_agent("k1", target("k1")).unwrap_err();
+        assert_eq!(r.retain_all_agents(&[]), None);
+        assert!(all_agent_slots(&r).is_empty());
+        assert_eq!(r.selected_agent(ALL_AGENTS_ID), None);
+        assert_eq!(r.active_tab(), Some(ALL_AGENTS_ID), "the tab stays, blank");
+        assert_eq!(r.tab_dtos()[0].agents_selected, None);
+    }
+
+    #[test]
+    fn the_combined_tab_refuses_split_pop_out_and_end() {
+        let mut r = Registry::new(std::ptr::null_mut(), rect());
+        r.add_all_agents();
+        r.activate(ALL_AGENTS_ID).unwrap();
+        assert!(
+            !r.is_spawned(ALL_AGENTS_ID),
+            "a blank entry spawns no shell"
+        );
+        assert!(!r.split(ALL_AGENTS_ID));
+        assert!(!r.is_split(ALL_AGENTS_ID));
+        assert!(r.take_tab(ALL_AGENTS_ID).is_none());
+        assert_eq!(r.end_target(ALL_AGENTS_ID, EndSession::Destroy), None);
+        assert_eq!(r.end_target(ALL_AGENTS_ID, EndSession::Suspend), None);
+        assert_eq!(r.agent_request(ALL_AGENTS_ID), None);
+        assert_eq!(r.active_agent_tab(), None);
+        assert!(!hosts_agents(
+            r.spec_of(ALL_AGENTS_ID).unwrap(),
+            PaneIdx::Primary
+        ));
+        assert!(!r.start_session(ALL_AGENTS_ID));
+        assert!(!r.tab_has_probe(ALL_AGENTS_ID));
+        assert_eq!(r.rex_pane_key(ALL_AGENTS_ID, PaneIdx::Primary), None);
+    }
+
+    #[test]
+    fn only_the_shown_surface_resizes() {
+        let shown = ["p::agent:k1".to_string()];
+        // The All Agents tab off screen: none of its slots sends a size.
+        assert!(!sends_size(ALL_AGENTS_ID, "p::agent:k1", false, &[]));
+        assert!(!sends_size(ALL_AGENTS_ID, "p::agent:k2", false, &shown));
+        // On screen, only the slot it shows.
+        assert!(sends_size(ALL_AGENTS_ID, "p::agent:k1", true, &shown));
+        assert!(!sends_size(ALL_AGENTS_ID, "p::agent:k2", true, &shown));
+        // A project's hidden surface keeps sizing its own block, except one the screen shows
+        // through another surface.
+        assert!(sends_size("p", "p::agent:k2", false, &shown));
+        assert!(!sends_size("p", "p::agent:k1", false, &shown));
+        assert!(sends_size("p", "p::agent:k1", true, &shown));
+        assert!(sends_size("p", "p::agent:k2", true, &shown));
     }
 
     /// A generated interleaving of the pop-out lifecycle over two registries — the origin window
