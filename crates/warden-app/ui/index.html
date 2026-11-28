@@ -422,11 +422,11 @@
       .a-gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .a-group .cc-attention { margin-left: auto; }
       .a-group .a-count { color: #6b7280; font-weight: 400; }
-      /* The Asleep header is a row's height, so it reads and clicks like a tab. */
-      .a-group.asleep-head { min-height: calc(var(--agents-row-font) * 2.5 + 8px); box-sizing: border-box;
+      /* The Asleep and Cold Cache headers are a row's height, so they read and click like a tab. */
+      .a-group.apart-head { min-height: calc(var(--agents-row-font) * 2.5 + 8px); box-sizing: border-box;
         padding: 4px 6px; margin-bottom: 4px; font-size: var(--agents-row-font); border-radius: 5px;
         background: #1c2128; }
-      .a-group.asleep-head:hover { background: #22272e; }
+      .a-group.apart-head:hover { background: #22272e; }
       /* `--a-pad` is the row's left inset, `--a-line` its name line's height: the caret and the
          guides' elbows are placed on that line, not the row's middle. */
       .a-row { --a-pad: 6px; --a-line: 1.4em; position: relative; padding-left: var(--a-pad); }
@@ -1599,11 +1599,15 @@
       const agentScroll = new Map();
       let agentScrollTab = null;
       const asleepFolded = new Set(); // tab ids whose Asleep group is folded
+      const coldFolded = new Set(); // tab ids whose Cold Cache group is folded
       // Unloading a tab forgets its list's view state, so its next load starts from the defaults.
       function forgetAgentView(id) {
         agentScroll.delete(id);
         asleepFolded.delete(id);
+        coldFolded.delete(id);
       }
+      // A row drawn in the Asleep or Cold Cache group rather than its own place.
+      const agentApart = (r) => r.asleepGroup || r.coldGroup;
       // Below this hole width the list folds to a rail of dots, leaving the agent ~480px. The fold
       // button overrides it per window (`railKey`); choosing what the width would pick clears that.
       const NARROW_HOLE = 700;
@@ -1703,14 +1707,22 @@
 
       // Tab ids whose `agents_init` is in flight.
       const agentPulls = new Set();
-      // Pull tab `tab`'s agent list once, for a tab that has none yet.
-      function pullAgents(tab) {
-        if (agentLists.has(tab) || agentPulls.has(tab)) return;
+      // tab id → when its list in `agentLists` arrived, in epoch seconds (`agentColdDue`).
+      const agentListAt = new Map();
+      function setAgentList(tab, dto) {
+        agentLists.set(tab, dto);
+        agentListAt.set(tab, Date.now() / 1000);
+      }
+      // Pull tab `tab`'s agent list: once, for a tab that has none yet, or `again` to replace a
+      // stale one.
+      function pullAgents(tab, again = false) {
+        if ((!again && agentLists.has(tab)) || agentPulls.has(tab)) return;
         agentPulls.add(tab);
+        const held = agentLists.get(tab);
         invoke("agents_init", { tabId: tab })
           .then((dto) => {
-            if (!dto || agentLists.has(tab)) return; // a `warden:agents` landed first — it's newer
-            agentLists.set(tab, dto);
+            if (!dto || agentLists.get(tab) !== held) return; // a `warden:agents` landed first — it's newer
+            setAgentList(tab, dto);
             agentsLanded(tab);
           })
           .catch((err) => console.error("warden: IPC agents_init failed", err))
@@ -1857,7 +1869,13 @@
         paintCache(el);
         return el;
       }
-      setInterval(() => document.querySelectorAll("[data-expires]").forEach(paintCache), 15000);
+      setInterval(() => {
+        document.querySelectorAll("[data-expires]").forEach(paintCache);
+        const now = Date.now() / 1000;
+        agentLists.forEach((dto, tab) => {
+          if (agentColdDue(dto.rows, agentListAt.get(tab) ?? 0, now)) pullAgents(tab, true);
+        });
+      }, 15000);
       function agentButton(text, onClick, cls) {
         const b = agentEl("button", cls, text);
         b.addEventListener("click", (e) => {
@@ -1901,7 +1919,7 @@
           out.push(g);
         };
         const lvOf = (x) => Math.min(x.depth, 2);
-        const shown = dto.rows.filter((x) => (x.group ?? null) === (r.group ?? null) && !x.hidden && !x.asleepGroup);
+        const shown = dto.rows.filter((x) => (x.group ?? null) === (r.group ?? null) && !x.hidden && !agentApart(x));
         const below = shown.slice(shown.findIndex((x) => x.id === r.id) + 1);
         const own = lvOf(r);
         for (let lv = 1; lv <= own; lv++) {
@@ -1977,16 +1995,19 @@
         }
         // The armed agent went (closed elsewhere, or by its own exit): nothing left to confirm.
         if (agentControls.armed !== null && !ids.has(agentControls.armed)) agentControls.disarm();
-        // Asleep rows with nothing awake under them sit in the Asleep group at the top, flat; each
-        // goes back to its own place when it wakes.
-        const asleep = dto.rows.filter((r) => r.asleepGroup);
-        if (asleep.length) {
-          list.append(asleepHeader(tab, asleep.length));
-          if (!asleepFolded.has(tab)) {
-            asleep.forEach((r) => list.append(...agentRow(tab, dto, { ...r, depth: 0, forks: 0, folded: false }, true, true)));
+        // Asleep rows with nothing awake under them sit in the Asleep group at the top, flat, and
+        // cold-cache rows with nothing warm under them in the Cold Cache group below it; each goes
+        // back to its own place when it wakes or warms.
+        const apart = (rows, name, folded) => {
+          if (!rows.length) return;
+          list.append(apartHeader(tab, name, rows.length, folded));
+          if (!folded.has(tab)) {
+            rows.forEach((r) => list.append(...agentRow(tab, dto, { ...r, depth: 0, forks: 0, folded: false }, true, true)));
           }
-        }
-        const inPlace = (r) => !r.hidden && !r.asleepGroup;
+        };
+        apart(dto.rows.filter((r) => r.asleepGroup), "Asleep", asleepFolded);
+        apart(dto.rows.filter((r) => r.coldGroup), "Cold Cache", coldFolded);
+        const inPlace = (r) => !r.hidden && !agentApart(r);
         dto.rows.filter((r) => !r.group && inPlace(r)).forEach((r) => list.append(...agentRow(tab, dto, r, false)));
         dto.groups.forEach((g) => {
           const members = dto.rows.filter((r) => r.group === g.name && inPlace(r));
@@ -2034,10 +2055,10 @@
         if (!busy || agentUi.tab !== agentsTab()) renderAgents();
       }
 
-      // `inAsleep`: drawn in the Asleep group, where it is no drop target.
-      function agentRow(tab, dto, r, grouped, inAsleep = false) {
+      // `inApart`: drawn in the Asleep or Cold Cache group, where it is no drop target.
+      function agentRow(tab, dto, r, grouped, inApart = false) {
         const row = agentEl("div", "a-row");
-        if (inAsleep) row.dataset.asleep = "1";
+        if (inApart) row.dataset.apart = "1";
         row.classList.toggle("k", grouped);
         row.classList.toggle("sel", !!r.selected);
         row.classList.toggle("asleep", r.state === "asleep");
@@ -2173,17 +2194,18 @@
         return box;
       }
 
-      // The Asleep group's header: its count and a fold kept for the tab's life (`asleepFolded`).
-      function asleepHeader(tab, n) {
-        const folded = asleepFolded.has(tab);
-        const h = agentEl("div", "a-group asleep-head");
+      // The Asleep or Cold Cache group's header (`name`): its count and a fold kept for the tab's
+      // life (`foldedSet`).
+      function apartHeader(tab, name, n, foldedSet) {
+        const folded = foldedSet.has(tab);
+        const h = agentEl("div", "a-group apart-head");
         h.classList.toggle("folded", folded);
-        h.title = folded ? "Show asleep tabs" : "Fold asleep tabs";
-        h.append(agentCaret(!folded), agentEl("span", "a-gname", "Asleep"),
+        h.title = `${folded ? "Show" : "Fold"} ${name.toLowerCase()} tabs`;
+        h.append(agentCaret(!folded), agentEl("span", "a-gname", name),
           agentEl("span", "a-count", String(n)));
         h.addEventListener("click", () => {
-          if (folded) asleepFolded.delete(tab);
-          else asleepFolded.add(tab);
+          if (folded) foldedSet.delete(tab);
+          else foldedSet.add(tab);
           renderAgents();
         });
         return h;
@@ -2306,10 +2328,10 @@
         if (!hit || !hit.closest("#agents-list")) return null;
         const nd = hit.closest(".a-newdrop");
         if (nd) return { newGroup: true, el: nd, cls: "over" };
-        if (hit.closest(".a-row[data-asleep], .asleep-head")) return null;
+        if (hit.closest(".a-row[data-apart], .apart-head")) return null;
         const row = hit.closest(".a-row");
         if (row) {
-          const drawn = [...document.querySelectorAll("#agents-list .a-row:not([data-asleep])")];
+          const drawn = [...document.querySelectorAll("#agents-list .a-row:not([data-apart])")];
           const r = row.getBoundingClientRect();
           const after = y > r.top + r.height / 2;
           const ids = drawn.map((x) => x.dataset.id);
@@ -2324,7 +2346,7 @@
         if (y > r.top + r.height / 2) {
           return { group: h.dataset.group, index: h.classList.contains("folded") ? null : 0, el: h, cls: "drop-into" };
         }
-        const heads = [...document.querySelectorAll("#agents-list .a-group:not(.asleep-head)")];
+        const heads = [...document.querySelectorAll("#agents-list .a-group:not(.apart-head)")];
         const prev = heads[heads.indexOf(h) - 1];
         return { group: prev ? prev.dataset.group : null, index: null, el: h, cls: "drop-before" };
       }
@@ -2842,7 +2864,7 @@
       listen("warden:agents", (e) => {
         const p = e.payload;
         if (!p || !p.tabId || !agentsById.has(p.tabId)) return;
-        agentLists.set(p.tabId, p);
+        setAgentList(p.tabId, p);
         agentsLanded(p.tabId);
       });
       // Tab ▸ Sleep Server, or ⏻ on a Rex tab, with something it can't bring back

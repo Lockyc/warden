@@ -100,3 +100,12 @@ test("an index counts Asleep-group siblings though they are drawn apart", () => 
     cls: "drop-before",
   });
 });
+
+test("a list goes stale once a row's cache passes after the list was built", () => {
+  const { agentColdDue } = vm.runInContext("({ agentColdDue })", ctx);
+  const rows = [row("a", null, null, { cache: 100 }), row("b"), row("c", null, null, { cache: 200 })];
+  assert.strictEqual(agentColdDue(rows, 50, 99), false, "nothing cold yet");
+  assert.strictEqual(agentColdDue(rows, 50, 100), true, "a went cold");
+  assert.strictEqual(agentColdDue(rows, 100, 150), false, "a was already cold when the list was built");
+  assert.strictEqual(agentColdDue(rows, 100, 200), true, "c went cold");
+});

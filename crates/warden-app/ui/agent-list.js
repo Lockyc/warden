@@ -31,8 +31,8 @@ function agentAncestors(rows, id) {
 }
 
 // Where row `dragId` dropped on row `rowId` lands — on its lower half when `after`. `shown` is the
-// ids of the rows drawn outside the Asleep group, in list order. A drop's index counts its
-// siblings in the store (`rows`), Asleep-group ones too, though they are drawn apart. `null` for
+// ids of the rows drawn outside the Asleep and Cold Cache groups, in list order. A drop's index
+// counts its siblings in the store (`rows`), those groups' too, though they are drawn apart. `null` for
 // no drop: on itself or its own fork, or a row the list no longer holds. Otherwise
 // `{ reorder: true, index }` (among its own source's other forks) or `{ group, index }` (a
 // top-level tab, before or after a whole family; on a fork, after that fork's family), with
@@ -60,3 +60,7 @@ function agentDropOnRow(rows, dragId, rowId, after, shown) {
   if (rowId === root) return { group, index: peers.indexOf(rowId) + (after ? 1 : 0), ...mark(rowId) };
   return { group, index: peers.indexOf(root) + 1, mark: lastOf(root), cls: "drop-after" };
 }
+
+// Whether a row of `rows` had its prompt cache go cold (`cache`, epoch seconds) after `since`, when
+// the list was built, and by `now`: the list's Cold Cache group is then stale and is pulled again.
+const agentColdDue = (rows, since, now) => rows.some((r) => r.cache && r.cache > since && r.cache <= now);
